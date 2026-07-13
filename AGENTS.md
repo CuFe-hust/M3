@@ -307,7 +307,7 @@ Do not write temporary ideas, abandoned solutions, invalid experiments, or chron
 ### 9.2 `docs/changes/`
 
 After every actual change to code, configuration, scripts, or interfaces, a modification note must be added under `docs/changes/`.
-Each modification note must record the exact local modification time, including hour and minute at minimum, and the modifier. Do not record only the date.
+Each modification note must record the exact local modification time, including hour and minute at minimum, and the modifier. The modifier must be the Git account that pushes the change to the remote repository. Do not record only the date.
 
 File naming format:
 
@@ -332,7 +332,7 @@ YYYY-MM-DD HH:mm:ss TZ
 
 ## Modifier
 
-Name, account, or AI agent identity that made the change.
+Git account that pushes the change to the remote repository.
 
 ## Modification Goal
 

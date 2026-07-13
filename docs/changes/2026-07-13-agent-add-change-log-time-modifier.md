@@ -6,11 +6,11 @@
 
 ## Modifier
 
-Codex
+cooper3516833584
 
 ## Modification Goal
 
-Require future `docs/changes/` records to include a precise local modification time and the modifier instead of only showing the date.
+Require future `docs/changes/` records to include a precise local modification time and the Git account that pushes the change instead of only showing the date.
 
 ## Modified Files
 
@@ -19,7 +19,7 @@ Require future `docs/changes/` records to include a precise local modification t
 
 ## Core Changes
 
-Added a rule under `AGENTS.md` section 9.2 requiring each modification note to record the exact local modification time and modifier, and updated the required note template accordingly.
+Added a rule under `AGENTS.md` section 9.2 requiring each modification note to record the exact local modification time and the Git account that pushes the change, and updated the required note template accordingly.
 
 ## Whether the Canonical Sample Format Was Changed
 
@@ -56,4 +56,4 @@ No. No new generated file type, cache, output, weight, or local configuration pa
 
 ## Risks and Follow-up TODOs
 
-- Future modification notes should follow the expanded template with `Modification Time` and `Modifier` fields.
+- Future modification notes should follow the expanded template with `Modification Time` and `Modifier` fields, where `Modifier` is the Git push account.
