@@ -147,6 +147,35 @@ Rules:
 - Optional dependencies should remain optional imports or have a clearly defined fallback path.
 - Do not allow ordinary development environments lacking deployment hardware dependencies to crash during import.
 
+### 5.6 Branch and Pull Request Workflow
+
+Repository changes must normally be developed on a dedicated branch and merged into `main` through a pull request. A direct push to `main` is allowed only when the user explicitly authorizes it for the specific task.
+
+Branch names must use the following format:
+
+```text
+type/short-english-description
+```
+
+Use a concise lowercase English description, preferably in kebab case. Choose one of these branch types:
+
+- `feature/` for a new feature or module, for example `feature/agent-router` or `feature/single-particle-flip`;
+- `fix/` for a bug fix, for example `fix/model-loading`;
+- `research/` for research, validation, or prototypes, for example `research/flip-baseline`;
+- `docs/` for documentation changes, for example `docs/experiment-notes`;
+- `refactor/` for a small-scope refactor.
+
+Before opening a pull request, run the relevant self-tests and confirm that the change is ready for review. If required validation cannot be run, state the command, reason, alternative checks, and remaining unvalidated items in the pull request.
+
+Every pull request description must explain:
+
+1. What problem the change solves;
+2. What content was changed;
+3. How the change was tested, the test results, and how the results were validated;
+4. Whether the change affects model interfaces, existing experiments, or other teams.
+
+After submission, the pull request must be reviewed and approved by an authorized maintainer or another team member before it is merged into `main`. An AI coding agent must not claim that review or approval occurred unless it actually occurred.
+
 ---
 
 ## 6. Data, Weights, Caches, and `.gitignore` Rules
