@@ -2,7 +2,7 @@
 
 ## Time
 
-2026-07-15 21:54:14 +08
+2026-07-15 22:51:41 +08
 
 ## Dataset
 
@@ -17,13 +17,13 @@
 
 ## Configuration File
 
-`config/baseline.example.json`, copied to an ignored Colab-local JSON file before execution.
+`config/baseline.example.json`, copied to ignored `config/local.baseline.json` before execution.
 
 ## Run Command
 
 ```bash
-python main.py --config /content/baseline.json download
-python main.py --config /content/baseline.json infer --dataset all --overwrite
+python main.py --config config/local.baseline.json download
+python main.py --config config/local.baseline.json infer --dataset all --overwrite
 ```
 
 ## Metric Results

@@ -27,41 +27,42 @@ the repository root:
 
 ```bash
 pip install -r requirements.txt
-cp config/baseline.example.json /content/baseline.json
+cp config/baseline.example.json config/local.baseline.json
 ```
 
-Edit `/content/baseline.json` only to choose Colab storage paths or supported model runtime
-settings. Do not put API keys in this file.
+Edit `config/local.baseline.json` only to choose storage paths or supported model runtime settings.
+The default paths keep downloaded data in `datasets/` and outputs in `outputs/`, both ignored by Git.
+Do not put API keys in this file.
 
 Download the official data releases:
 
 ```bash
-python main.py --config /content/baseline.json download
+python main.py --config config/local.baseline.json download
 ```
 
 Inspect each release before a full run. This prints the canonical sample derived from its
 released fields and fails visibly if a source release changes its format:
 
 ```bash
-python main.py --config /content/baseline.json inspect --dataset vrsbench_vqa
-python main.py --config /content/baseline.json inspect --dataset mme_real_rs
-python main.py --config /content/baseline.json inspect --dataset xlrs_vqa_lite
-python main.py --config /content/baseline.json inspect --dataset levir_cc
+python main.py --config config/local.baseline.json inspect --dataset vrsbench_vqa
+python main.py --config config/local.baseline.json inspect --dataset mme_real_rs
+python main.py --config config/local.baseline.json inspect --dataset xlrs_vqa_lite
+python main.py --config config/local.baseline.json inspect --dataset levir_cc
 ```
 
 Run a smoke test before the full evaluation. The `--limit` flag is only for smoke tests and
 must be omitted from final results.
 
 ```bash
-python main.py --config /content/baseline.json infer --dataset all --limit 2
-python main.py --config /content/baseline.json infer --dataset all --overwrite
+python main.py --config config/local.baseline.json infer --dataset all --limit 2
+python main.py --config config/local.baseline.json infer --dataset all --overwrite
 ```
 
 Compute deterministic metrics for one saved result file:
 
 ```bash
-python main.py --config /content/baseline.json evaluate \
-  --result /content/m3-baseline-outputs/mme_real_rs.jsonl
+python main.py --config config/local.baseline.json evaluate \
+  --result outputs/baseline/mme_real_rs.jsonl
 ```
 
 For VRSBench open-ended VQA, the optional DeepSeek semantic proxy requires the user to set
@@ -69,8 +70,8 @@ the key in the Colab session, never in a repository file:
 
 ```bash
 export DEEPSEEK_API_KEY='set-this-in-the-Colab-session'
-python main.py --config /content/baseline.json evaluate \
-  --result /content/m3-baseline-outputs/vrsbench_vqa.jsonl --deepseek-proxy
+python main.py --config config/local.baseline.json evaluate \
+  --result outputs/baseline/vrsbench_vqa.jsonl --deepseek-proxy
 ```
 
 The resulting `deepseek_semantic_match_proxy` is not the official GPT-based VRSBench score;

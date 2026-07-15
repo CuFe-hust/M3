@@ -8,8 +8,8 @@
     "max_pixels": null
   },
   "paths": {
-    "data_root": "/content/m3-baseline-data",
-    "output_root": "/content/m3-baseline-outputs"
+    "data_root": "datasets/baseline",
+    "output_root": "outputs/baseline"
   },
   "deepseek": {
     "base_url": "https://api.deepseek.com/v1",
