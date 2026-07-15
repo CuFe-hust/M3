@@ -1,0 +1,7 @@
+transformers>=4.57.0
+accelerate>=1.0.0
+datasets>=3.0.0
+huggingface_hub>=0.28.0
+Pillow>=10.0.0
+pycocoevalcap>=1.2
+pytest>=8.0.0

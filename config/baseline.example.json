@@ -1,0 +1,18 @@
+{
+  "model": {
+    "id": "Qwen/Qwen3-VL-4B-Instruct",
+    "dtype": "auto",
+    "device_map": "auto",
+    "max_new_tokens": 256,
+    "min_pixels": null,
+    "max_pixels": null
+  },
+  "paths": {
+    "data_root": "datasets/baseline",
+    "output_root": "outputs/baseline"
+  },
+  "deepseek": {
+    "base_url": "https://api.deepseek.com/v1",
+    "model": "deepseek-chat"
+  }
+}
