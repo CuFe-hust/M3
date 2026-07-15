@@ -414,3 +414,26 @@ Do not hard-code local absolute paths in code. Real local configurations should 
 - `tests/` is the pytest test directory; do not use `pytest/` as the directory name.
 - After adding output directories, cache directories, weight formats, data directories, or local configuration files, check `.gitignore` accordingly.
 - If the structures, interfaces, or conventions in this file are modified, a corresponding modification note must also be added in `docs/changes/`.
+
+## 6. Current Qwen3-VL-4B Baseline Interface
+
+The currently implemented zero-shot baseline is located in `main/run_baseline.py` and uses
+the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint. It accepts a JSON configuration file
+with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
+not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
+
+`data/schema.py` defines `CanonicalSample` and `CanonicalPrediction`. All implemented
+download adapters, Qwen3-VL inference, persisted JSONL records, and local metrics pass data
+through these two structures. A persisted result line contains the serialized source sample
+and the corresponding canonical prediction, allowing the original answers to be read without
+placing dataset-specific logic in `eval/`.
+
+Supported evaluation targets are `vrsbench_caption`, `vrsbench_vqa`,
+`vrsbench_grounding`, `mme_real_rs`, `xlrs_caption_en`, `xlrs_grounding_en`,
+`xlrs_vqa_lite`, and `levir_cc`. The MME target filters to the Remote Sensing subdomain.
+XLRS-Bench full English captioning and grounding releases are reported separately from the
+official Lite VQA release; these scores must not be labelled as a single full-XLRS score.
+
+The `evaluate --deepseek-proxy` command reads `DEEPSEEK_API_KEY` only from the runtime
+environment and produces a non-official `deepseek_semantic_match_proxy` for VRSBench VQA.
+It must not be described as the benchmark's official GPT-based evaluation metric.
