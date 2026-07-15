@@ -36,31 +36,31 @@ settings. Do not put API keys in this file.
 Download the official data releases:
 
 ```bash
-python main/run_baseline.py --config /content/baseline.json download
+python main.py --config /content/baseline.json download
 ```
 
 Inspect each release before a full run. This prints the canonical sample derived from its
 released fields and fails visibly if a source release changes its format:
 
 ```bash
-python main/run_baseline.py --config /content/baseline.json inspect --dataset vrsbench_vqa
-python main/run_baseline.py --config /content/baseline.json inspect --dataset mme_real_rs
-python main/run_baseline.py --config /content/baseline.json inspect --dataset xlrs_vqa_lite
-python main/run_baseline.py --config /content/baseline.json inspect --dataset levir_cc
+python main.py --config /content/baseline.json inspect --dataset vrsbench_vqa
+python main.py --config /content/baseline.json inspect --dataset mme_real_rs
+python main.py --config /content/baseline.json inspect --dataset xlrs_vqa_lite
+python main.py --config /content/baseline.json inspect --dataset levir_cc
 ```
 
 Run a smoke test before the full evaluation. The `--limit` flag is only for smoke tests and
 must be omitted from final results.
 
 ```bash
-python main/run_baseline.py --config /content/baseline.json infer --dataset all --limit 2
-python main/run_baseline.py --config /content/baseline.json infer --dataset all --overwrite
+python main.py --config /content/baseline.json infer --dataset all --limit 2
+python main.py --config /content/baseline.json infer --dataset all --overwrite
 ```
 
 Compute deterministic metrics for one saved result file:
 
 ```bash
-python main/run_baseline.py --config /content/baseline.json evaluate \
+python main.py --config /content/baseline.json evaluate \
   --result /content/m3-baseline-outputs/mme_real_rs.jsonl
 ```
 
@@ -69,7 +69,7 @@ the key in the Colab session, never in a repository file:
 
 ```bash
 export DEEPSEEK_API_KEY='set-this-in-the-Colab-session'
-python main/run_baseline.py --config /content/baseline.json evaluate \
+python main.py --config /content/baseline.json evaluate \
   --result /content/m3-baseline-outputs/vrsbench_vqa.jsonl --deepseek-proxy
 ```
 

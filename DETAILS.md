@@ -417,8 +417,9 @@ Do not hard-code local absolute paths in code. Real local configurations should 
 
 ## 6. Current Qwen3-VL-4B Baseline Interface
 
-The currently implemented zero-shot baseline is located in `main/run_baseline.py` and uses
-the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint. It accepts a JSON configuration file
+The currently implemented zero-shot baseline entry point is `main.py`; its model wrapper is
+located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint.
+It accepts a JSON configuration file
 with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
 not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
 

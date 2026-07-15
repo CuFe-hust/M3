@@ -22,8 +22,8 @@
 ## Run Command
 
 ```bash
-python main/run_baseline.py --config /content/baseline.json download
-python main/run_baseline.py --config /content/baseline.json infer --dataset all --overwrite
+python main.py --config /content/baseline.json download
+python main.py --config /content/baseline.json infer --dataset all --overwrite
 ```
 
 ## Metric Results
