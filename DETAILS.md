@@ -437,6 +437,30 @@ Supported evaluation targets are `vrsbench_caption`, `vrsbench_vqa`,
 XLRS-Bench full English captioning and grounding releases are reported separately from the
 official Lite VQA release; these scores must not be labelled as a single full-XLRS score.
 
+The VRSBench validation adapter accepts the official `image_id`, `ground_truth`, and
+`question_id` fields for captioning, VQA, and grounding annotations. `question_id` takes
+precedence over an image identifier when both are present so question-level records remain
+uniquely addressable. This compatibility handling does not modify official reference values.
+
 The `evaluate --deepseek-proxy` command reads `DEEPSEEK_API_KEY` only from the runtime
 environment and produces a non-official `deepseek_semantic_match_proxy` for VRSBench VQA.
 It must not be described as the benchmark's official GPT-based evaluation metric.
+
+Before caption and change-caption records are passed to `pycocoevalcap`, line breaks and
+repeated whitespace are folded to single spaces and the METEOR protocol separator `|||` is
+removed. Persisted canonical predictions and references remain unchanged. This prevents model
+formatting from being interpreted as commands by METEOR's line-oriented Java subprocess.
+
+The `infer` command runs the direct baseline. The `agent-infer` command runs the same model
+through the fixed LangGraph nodes `read_sample -> call_qwen -> validate_prediction ->
+save_result`; it does not train, replace, or modify the model. Baseline records use
+`<dataset>.jsonl`, while Agent records use `<dataset>.agent.jsonl`.
+
+Both inference commands save one canonical JSONL record at a time and flush it immediately.
+`--resume` appends to an existing result and skips sample IDs already present; `--overwrite`
+deletes that target's previous result, failure, and metadata files before a new run. The two
+flags are mutually exclusive. Per-sample exceptions are written to the corresponding
+`*.failures.jsonl` file and counted in metadata instead of being silently discarded. Metadata
+is written atomically every ten attempts and at normal completion, including elapsed time and
+peak allocated CUDA memory. A malformed existing result causes resume to fail visibly rather
+than guessing which samples completed.

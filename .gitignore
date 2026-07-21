@@ -12,4 +12,5 @@ config/local*.json
 
 # Python bytecode
 __pycache__/
+.pytest_cache/
 *.py[cod]

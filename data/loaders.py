@@ -92,7 +92,7 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
         image = _resolve_image(record, root, image_index)
         base_id = _record_id(record, f"vrs-{task_type}-{record_number}")
         if task_type == "caption":
-            caption = _first_text(record, ("caption", "text", "answer", "description"))
+            caption = _first_text(record, ("caption", "text", "answer", "description", "ground_truth"))
             if caption:
                 yield CanonicalSample(
                     id=base_id,
@@ -107,7 +107,7 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
             pairs = record.get("qa_pairs") or record.get("qas") or [record]
             for pair_number, pair in enumerate(pairs):
                 question = _first_text(pair, ("question", "ques", "text"))
-                answer = _first_text(pair, ("answer", "ans", "label"))
+                answer = _first_text(pair, ("answer", "ans", "label", "ground_truth"))
                 if question and answer:
                     yield CanonicalSample(
                         id=_record_id(pair, f"{base_id}-qa-{pair_number}"),
@@ -121,7 +121,7 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
         objects = record.get("objects") or record.get("refs") or [record]
         for object_number, obj in enumerate(objects):
             referring = _first_text(obj, ("ref", "referring", "question", "text"))
-            box = _first_value(obj, ("bbox", "box", "boxes", "polygon"))
+            box = _first_value(obj, ("bbox", "box", "boxes", "polygon", "ground_truth"))
             if referring and box is not None:
                 yield CanonicalSample(
                     id=_record_id(obj, f"{base_id}-ref-{object_number}"),
@@ -295,7 +295,7 @@ def _image_index(root: Path) -> dict[str, Path]:
 
 def _resolve_image(record: dict[str, Any], root: Path, image_index: dict[str, Path]) -> Image.Image:
     value = _first_value(
-        record, ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename")
+        record, ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename", "image_id")
     )
     if value is None:
         raise ValueError(f"No image field found in record keys: {record.keys()}")
@@ -380,7 +380,9 @@ def _caption_texts(value: Any) -> list[str]:
 
 
 def _record_id(record: dict[str, Any], fallback: str) -> str:
-    value = _first_value(record, ("id", "ID", "image_id", "imgid", "Question_id", "question_id", "ques_id", "uid"))
+    value = _first_value(
+        record, ("Question_id", "question_id", "ques_id", "id", "ID", "image_id", "imgid", "uid")
+    )
     return str(value) if value is not None else fallback
 
 

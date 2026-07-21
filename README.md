@@ -55,7 +55,20 @@ must be omitted from final results.
 
 ```bash
 python main.py --config config/local.baseline.json infer --dataset all --limit 2
-python main.py --config config/local.baseline.json infer --dataset all --overwrite
+python main.py --config config/local.baseline.json agent-infer --dataset all --limit 2
+```
+
+For a full run, start each dataset separately so its progress and failures remain easy to
+review. Use `--overwrite` only when intentionally starting that result from the beginning.
+If a process or SSH session is interrupted, rerun the same command with `--resume`; already
+saved sample IDs are skipped.
+
+```bash
+python main.py --config config/local.baseline.json infer --dataset levir_cc --overwrite
+python main.py --config config/local.baseline.json infer --dataset levir_cc --resume
+
+python main.py --config config/local.baseline.json agent-infer --dataset levir_cc --overwrite
+python main.py --config config/local.baseline.json agent-infer --dataset levir_cc --resume
 ```
 
 Compute deterministic metrics for one saved result file:
@@ -64,6 +77,10 @@ Compute deterministic metrics for one saved result file:
 python main.py --config config/local.baseline.json evaluate \
   --result outputs/baseline/mme_real_rs.jsonl
 ```
+
+For caption metrics, the evaluator folds line breaks and repeated whitespace before calling
+`pycocoevalcap` so generated formatting cannot break METEOR's line protocol. Saved raw
+predictions and references are not modified.
 
 For VRSBench open-ended VQA, the optional DeepSeek semantic proxy requires the user to set
 the key in the Colab session, never in a repository file:
@@ -81,17 +98,22 @@ its documented output fields.
 
 ### Output Format
 
-Each `outputs/*.jsonl` line contains:
+Baseline results use `<dataset>.jsonl`; fixed LangGraph workflow results use
+`<dataset>.agent.jsonl`. Each result line contains:
 
 ```json
 {
   "sample": {"id": "...", "task_type": "vqa", "prompt": "...", "answers": ["..."]},
-  "prediction": {"id": "...", "task_type": "vqa", "text": "...", "answer": "..."}
+  "prediction": {"id": "...", "task_type": "vqa", "text": "...", "answer": "..."},
+  "runtime": {"model_elapsed_seconds": 1.23}
 }
 ```
 
-`*.metadata.json` records the model settings, timestamp, completed sample count, and any
-dataset-scope qualification needed for a report.
+Results are flushed after every successful sample. `*.failures.jsonl` records the sample ID,
+error type, error message, traceback, and timestamp for failed samples without silently
+discarding them. `*.metadata.json` is refreshed every ten attempts and at normal completion;
+it records the workflow, model settings, completed/failed/skipped counts, elapsed time, peak
+GPU memory, timestamps, and any dataset-scope qualification needed for a report.
 
 For MME Real RS, inference also writes `mme_real_rs.official.json`, preserving each official
 record and replacing only its `Output` field. It can be passed directly to the upstream

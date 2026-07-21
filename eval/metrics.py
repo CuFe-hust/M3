@@ -56,8 +56,16 @@ def _caption_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     except ImportError as error:
         raise RuntimeError("Install pycocoevalcap to compute caption metrics.") from error
 
-    references = {record["sample"]["id"]: record["sample"]["answers"] for record in records}
-    candidates = {record["sample"]["id"]: [record["prediction"]["text"]] for record in records}
+    references = {
+        record["sample"]["id"]: [
+            _caption_metric_text(answer) for answer in record["sample"]["answers"]
+        ]
+        for record in records
+    }
+    candidates = {
+        record["sample"]["id"]: [_caption_metric_text(record["prediction"]["text"])]
+        for record in records
+    }
     results: dict[str, Any] = {"total": len(records)}
     bleu, _ = Bleu(4).compute_score(references, candidates)
     for index, score in enumerate(bleu, start=1):
@@ -166,6 +174,14 @@ def _box_iou(first: list[float], second: list[float]) -> float:
 
 def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", str(value).strip().lower().strip(".,;:!"))
+
+
+def _caption_metric_text(value: str) -> str:
+    """Make caption text safe for line-oriented metric subprocess protocols.
+    将描述文本转换为适合逐行指标子进程协议的安全格式。
+    """
+
+    return re.sub(r"\s+", " ", str(value).replace("|||", " ")).strip()
 
 
 def _ratio(numerator: int, denominator: int) -> float:
