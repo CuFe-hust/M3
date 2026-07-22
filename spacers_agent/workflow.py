@@ -128,10 +128,11 @@ class VisualExpert:
                 sample.question,
                 str(sample.metadata.get("question_type", "")),
             )
+            answer_vocabulary = [] if subtype == "grid_position" else vrsbench_answer_vocabulary(subtype)
             user_payload.update(
                 {
                     "semantic_subtype": subtype,
-                    "answer_vocabulary": vrsbench_answer_vocabulary(subtype),
+                    "answer_vocabulary": answer_vocabulary,
                 }
             )
         content.append(
@@ -184,7 +185,7 @@ class SpatialExpert(VisualExpert):
         model: str,
         review_prompt: str = "",
     ) -> None:
-        super().__init__(client, prompt, model, "spatial_expert", "spatial-v4")
+        super().__init__(client, prompt, model, "spatial_expert", "spatial-v5")
         self.review_prompt = review_prompt
 
     async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
@@ -207,13 +208,27 @@ class SpatialExpert(VisualExpert):
                 }
             )
             return result.model_copy(update={"geometry": geometry, "status": "partial"})
-        merged = _merge_visual_evidence(result.evidence_items, review.evidence_items)
+        first_evidence = result.evidence_items
+        replaced_evidence = 0
+        subtype = vrsbench_question_subtype(
+            sample.question,
+            str(sample.metadata.get("question_type", "")),
+        )
+        if subtype == "grid_position":
+            first_evidence = [
+                item
+                for item in result.evidence_items
+                if not (_matches_position_target(sample.question, item) and _is_corner_anchored_box(item))
+            ]
+            replaced_evidence = len(result.evidence_items) - len(first_evidence)
+        merged = _merge_visual_evidence(first_evidence, review.evidence_items)
         geometry = dict(result.geometry)
         merged_quality = ["trusted_box" if item.box is not None else "trusted_point" for item in merged]
         geometry.update(
             {
                 "candidate_review_used": True,
-                "candidate_review_added": len(merged) - len(result.evidence_items),
+                "candidate_review_added": len(merged) - len(first_evidence),
+                "candidate_review_replaced": replaced_evidence,
                 "candidate_review_geometry": review.geometry,
                 "evidence_quality": merged_quality,
                 "repair_severity": _maximum_repair_severity(
@@ -252,6 +267,7 @@ class SpatialExpert(VisualExpert):
             sample.question,
             str(sample.metadata.get("question_type", "")),
         )
+        answer_vocabulary = [] if subtype == "grid_position" else vrsbench_answer_vocabulary(subtype)
         content.append(
             {
                 "type": "text",
@@ -260,7 +276,7 @@ class SpatialExpert(VisualExpert):
                         "question": sample.question,
                         "dataset_question_type": sample.metadata.get("question_type"),
                         "semantic_subtype": subtype,
-                        "answer_vocabulary": vrsbench_answer_vocabulary(subtype),
+                        "answer_vocabulary": answer_vocabulary,
                         "coordinate_frame": "normalized_0_999_top_left",
                         "review_mode": "independent_candidate_enumeration",
                     },
@@ -280,7 +296,7 @@ class SpatialExpert(VisualExpert):
         request_hash = build_request_hash(
             model=self.model,
             generation={"temperature": 0.0},
-            prompt_version="spatial-candidate-review-v2",
+            prompt_version="spatial-candidate-review-v3",
             messages=messages,
             image_sha256="|".join(image_hashes),
         )
@@ -290,7 +306,7 @@ class SpatialExpert(VisualExpert):
             request_meta=RequestMeta(
                 request_id=f"{sample.sample_id}:spatial-candidate-review",
                 request_hash=request_hash,
-                prompt_version="spatial-candidate-review-v2",
+                prompt_version="spatial-candidate-review-v3",
                 sample_id=sample.sample_id,
                 artifact_dir=artifact_dir / "spatial_expert_candidate_review",
             ),
@@ -1062,24 +1078,48 @@ def _needs_spatial_candidate_review(sample: UnifiedSample, result: ExpertResult)
     )
     if subtype not in {"extreme_category", "extreme_existence", "grid_position", "arrangement", "proximity"}:
         return False
-    if not result.geometry.get("candidate_review_used"):
-        return True
     vehicles = [
         item
         for item in result.evidence_items
         if item.box is not None and vrsbench_vehicle_class(item.label) in {"small-vehicle", "large-vehicle"}
     ]
+    if subtype == "grid_position":
+        targets = [item for item in vehicles if _matches_position_target(sample.question, item)]
+        if result.geometry.get("candidate_review_used"):
+            return not targets
+        return len(targets) != 1 or _is_corner_anchored_box(targets[0])
+    if not result.geometry.get("candidate_review_used"):
+        return True
     if subtype in {"extreme_category", "arrangement"}:
         return len(vehicles) < 2
     if subtype == "extreme_existence":
         return not vehicles
-    if subtype == "grid_position":
-        lowered = sample.question.casefold()
-        desired = "large-vehicle" if "large vehicle" in lowered else (
-            "small-vehicle" if "small vehicle" in lowered else None
-        )
-        return not any(desired is None or vrsbench_vehicle_class(item.label) == desired for item in vehicles)
     return len(result.evidence_items) < 2
+
+
+def _matches_position_target(question: str, item: VisualEvidence) -> bool:
+    """Match evidence to the vehicle class named by a position question.
+    将证据与位置问题指定的车辆类别进行匹配。
+    """
+
+    lowered = question.casefold()
+    desired = "large-vehicle" if "large vehicle" in lowered else (
+        "small-vehicle" if "small vehicle" in lowered else None
+    )
+    return desired is None or vrsbench_vehicle_class(item.label) == desired
+
+
+def _is_corner_anchored_box(item: VisualEvidence, *, tolerance: int = 5) -> bool:
+    """Flag boxes anchored to two image borders as likely answer-region placeholders.
+    将同时贴住两条图像边界的框标记为可能的答案区域占位框。
+    """
+
+    if item.box is None:
+        return False
+    left, top, right, bottom = item.box
+    touches_horizontal_border = left <= tolerance or right >= 999 - tolerance
+    touches_vertical_border = top <= tolerance or bottom >= 999 - tolerance
+    return touches_horizontal_border and touches_vertical_border
 
 
 def _merge_visual_evidence(

@@ -340,7 +340,7 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
     assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
-    assert trace["prompt_version"] == "spatial-v4"
+    assert trace["prompt_version"] == "spatial-v5"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
 
@@ -609,6 +609,100 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
     assert initial_payload["answer_vocabulary"] == ["small-vehicle", "large-vehicle"]
     assert review_payload["review_mode"] == "independent_candidate_enumeration"
     assert "first_pass_evidence" not in review_payload
+
+
+@pytest.mark.asyncio
+async def test_grid_position_uses_unanchored_target_box_without_candidate_review(tmp_path: Path) -> None:
+    """Keep a valid physical target box and avoid answer-vocabulary anchoring.
+    保留有效物理目标框，并避免答案词表造成锚定。
+    """
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    sample = sample.model_copy(
+        update={
+            "question": "What is the position of the large vehicle in the image?",
+            "metadata": {**sample.metadata, "question_type": "object position"},
+        }
+    )
+    client = _MessageMockClient(
+        {
+            "7:spatial_expert": {
+                "expert": "spatial_expert",
+                "answer": "The bus is at the left edge.",
+                "evidence_items": [
+                    {"label": "large-vehicle", "box": [0, 384, 107, 600], "confidence": 0.9}
+                ],
+            }
+        }
+    )
+
+    from spacers_agent.workflow import SpatialExpert
+
+    result = await SpatialExpert(client, "spatial", "local-qwen", "review").run(
+        sample,
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    assert result.evidence_items[0].box == [0, 384, 107, 600]
+    assert len(client.message_history) == 1
+    payload = json.loads(client.message_history[0][1]["content"][-1]["text"])
+    assert payload["semantic_subtype"] == "grid_position"
+    assert payload["answer_vocabulary"] == []
+
+
+@pytest.mark.asyncio
+async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path: Path) -> None:
+    """Replace a corner-region placeholder with independently localized object evidence.
+    用独立定位的物体证据替换角落区域占位框。
+    """
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    sample = sample.model_copy(
+        update={
+            "question": "Where is the small vehicle located?",
+            "metadata": {**sample.metadata, "question_type": "object position"},
+        }
+    )
+    client = _MessageMockClient(
+        {
+            "7:spatial_expert": {
+                "expert": "spatial_expert",
+                "answer": "top-left",
+                "evidence_items": [
+                    {"label": "small-vehicle", "box": [0, 0, 100, 100], "confidence": 0.9}
+                ],
+            },
+            "7:spatial-candidate-review": {
+                "expert": "spatial_expert",
+                "answer": "upper right",
+                "evidence_items": [
+                    {"label": "small-vehicle", "box": [840, 273, 925, 312], "confidence": 0.9}
+                ],
+            },
+        }
+    )
+
+    from spacers_agent.vqa_geometry import apply_vrsbench_geometry
+    from spacers_agent.workflow import SpatialExpert
+
+    raw = await SpatialExpert(client, "spatial", "local-qwen", "review").run(
+        sample,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    result = apply_vrsbench_geometry(sample.question, "object position", raw)
+
+    assert [item.box for item in raw.evidence_items] == [[840, 273, 925, 312]]
+    assert raw.geometry["candidate_review_replaced"] == 1
+    assert result.answer == "top-right"
+    assert result.geometry["candidate_review_replaced"] == 1
+    review_payload = json.loads(client.message_history[1][1]["content"][-1]["text"])
+    assert review_payload["answer_vocabulary"] == []
 
 
 def test_spatial_evidence_merge_deduplicates_points_and_prefers_boxes() -> None:

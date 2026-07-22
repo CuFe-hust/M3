@@ -170,6 +170,7 @@ def apply_vrsbench_geometry(
         "input_normalizations",
         "candidate_review_used",
         "candidate_review_added",
+        "candidate_review_replaced",
         "candidate_review_error",
         "evidence_quality",
         "repair_severity",
