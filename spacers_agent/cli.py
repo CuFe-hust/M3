@@ -16,7 +16,7 @@ import httpx
 from spacers_agent.imaging import build_core_halo_tiles, read_normalized_image
 from spacers_agent.reporting import summarize_evaluations
 from spacers_agent.run_store import RunStore
-from spacers_agent.schemas import CountingResult
+from spacers_agent.schemas import CountingResult, ExpertResult, UnifiedSample
 from spacers_agent.settings import load_settings
 from spacers_agent.data_audit import inspect_dataset_root, write_dataset_audit
 from spacers_agent.evaluation import EvaluationRecord
@@ -27,7 +27,15 @@ from spacers_agent.clients.qwen_vllm import QwenVLLMClient
 from spacers_agent.clients.qwen_transformers import QwenTransformersClient
 from spacers_agent.counting import PointCountingOrchestrator
 from spacers_agent.dataset_adapters import get_adapter
-from spacers_agent.evaluation import build_count_judge_payload, build_judge_request_hash, merge_count_evaluation
+from spacers_agent.evaluation import (
+    VQAAnswerJudgeResult,
+    build_count_judge_payload,
+    build_judge_request_hash,
+    build_vqa_judge_payload,
+    build_vqa_judge_request_hash,
+    merge_count_evaluation,
+    merge_vqa_evaluation,
+)
 from spacers_agent.workflow import DatasetRunner, TargetParser, atomic_write_json
 from spacers_agent.vqa_report import build_multiagent_vqa_report
 from spacers_agent.commands import count_image as count_image_command
@@ -89,7 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     dataset.add_argument("--run-id")
     dataset.add_argument("--resume", action="store_true")
     dataset.add_argument("--evaluate", action="store_true")
-    dataset.add_argument("--judge-policy", choices=("none", "errors-only", "all"), default="errors-only")
+    dataset.add_argument("--judge-policy", choices=("none", "errors-only", "all"), default="all")
     dataset.add_argument("--judge-sample-rate", type=float, default=0.1)
     dataset.add_argument("--max-samples", "--limit", dest="limit", type=int, default=0)
     dataset.add_argument("--sample-ids", type=Path)
@@ -106,6 +114,12 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate.add_argument("--deepseek", action="store_true")
     evaluate.add_argument("--only-missing", action="store_true")
     evaluate.add_argument("--force-judge", action="store_true")
+    judge_vqa = commands.add_parser(
+        "judge-vqa-run",
+        help="Judge persisted VQA answers and rebuild the report without loading or calling Qwen.",
+    )
+    judge_vqa.add_argument("--run-id", required=True)
+    judge_vqa.add_argument("--force", action="store_true", help="Rejudge samples that already succeeded.")
     inspect_data = commands.add_parser("inspect-data", help="Read a local dataset layout without modifying source files.")
     inspect_data.add_argument("--root", type=Path, required=True, help="Local dataset root to inspect read-only.")
     inspect_data.add_argument("--output", type=Path, required=True, help="Separate JSON report output path.")
@@ -149,6 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_resume_run(settings, args.run_id))
     if args.command == "evaluate-run":
         return asyncio.run(_evaluate_run(settings, args.run_id, args.deepseek))
+    if args.command == "judge-vqa-run":
+        return asyncio.run(_judge_vqa_run(settings, args.run_id, force=args.force))
     store = RunStore(settings.runs.root, PROJECT_ROOT)
     manifest = store.create_run(
         settings,
@@ -306,13 +322,8 @@ async def _run_dataset(settings: object, args: object) -> int:
     selected_ids = set(args.sample_ids.read_text(encoding="utf-8").split()) if args.sample_ids else None
     qwen_client = _client(settings, run_dir)
     judge_client = None
-    if args.evaluate and args.judge_policy != "none" and os.environ.get(settings.models.deepseek.api_key_env):
-        judge_client = DeepSeekJudgeClient(
-            settings.models.deepseek,
-            judge_prompt=(PROJECT_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").read_text(encoding="utf-8"),
-            repair_prompt=(PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md").read_text(encoding="utf-8"),
-            cache=JsonResponseCache(run_dir / "deepseek_vqa_cache"),
-        )
+    if args.evaluate and args.judge_policy != "none" and "general_vqa" in requested:
+        judge_client = _vqa_judge_client(settings, run_dir)
     summaries = []
     for task in requested:
         summaries.append(await DatasetRunner(settings, adapter, run_dir=run_dir, client=qwen_client, prompts=_prompts(), judge_client=judge_client, judge_policy=args.judge_policy if args.evaluate else "none").run(split=args.split, task=task, resume=args.resume, limit=None if args.limit == 0 else args.limit, shard_index=args.shard_index, shard_count=args.shard_count, start_index=args.start_index, sample_ids=selected_ids, fail_fast=args.fail_fast, sample_concurrency=args.sample_concurrency))
@@ -382,6 +393,126 @@ async def _evaluate_run(settings: object, run_id: str, deepseek: bool) -> int:
     temporary.replace(jsonl_path)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0
+
+
+def _vqa_judge_client(settings: object, run_dir: Path) -> DeepSeekJudgeClient:
+    """Create the default text-only VQA Judge or fail visibly when its key is absent.
+    创建默认的纯文本 VQA Judge；密钥缺失时明确失败。
+    """
+
+    return DeepSeekJudgeClient(
+        settings.models.deepseek,
+        judge_prompt=(PROJECT_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").read_text(encoding="utf-8"),
+        repair_prompt=(PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md").read_text(encoding="utf-8"),
+        cache=JsonResponseCache(run_dir / "deepseek_vqa_cache"),
+    )
+
+
+async def _judge_vqa_run(
+    settings: object,
+    run_id: str,
+    *,
+    force: bool = False,
+    judge_client: DeepSeekJudgeClient | None = None,
+) -> int:
+    """Judge persisted VQA answers and rebuild their report without invoking Qwen.
+    对已持久化的 VQA 答案进行评判并重建报告，且不调用 Qwen。
+    """
+
+    run_dir = settings.runs.root / run_id
+    if not run_dir.is_dir():
+        raise FileNotFoundError(f"Run directory does not exist: {run_dir}")
+    client = judge_client or _vqa_judge_client(settings, run_dir)
+    judged = 0
+    skipped = 0
+    failed = 0
+    sample_dirs = sorted(
+        (path for path in (run_dir / "samples").iterdir() if path.is_dir()),
+        key=lambda path: (0, int(path.name)) if path.name.isdigit() else (1, path.name),
+    )
+    for sample_dir in sample_dirs:
+        sample_path = sample_dir / "sample.json"
+        result_path = sample_dir / "expert_result.json"
+        if not sample_path.is_file() or not result_path.is_file():
+            continue
+        sample = UnifiedSample.model_validate_json(sample_path.read_text(encoding="utf-8"))
+        if sample.task != "general_vqa":
+            continue
+        evaluation_path = sample_dir / "vqa_evaluation.json"
+        existing = (
+            json.loads(evaluation_path.read_text(encoding="utf-8"))
+            if evaluation_path.is_file()
+            else {}
+        )
+        if not force and existing.get("judge_status") == "succeeded":
+            skipped += 1
+            continue
+        result = ExpertResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        references = sample.ground_truth.answers if sample.ground_truth is not None else []
+        payload = build_vqa_judge_payload(
+            question=sample.question,
+            reference_answers=references,
+            candidate_answer=result.answer,
+        )
+        try:
+            verdict = await client.judge_json(
+                payload,
+                response_model=VQAAnswerJudgeResult,
+                request_meta=RequestMeta(
+                    request_id=f"{sample.sample_id}:deepseek-vqa",
+                    request_hash=build_vqa_judge_request_hash(
+                        model=settings.models.deepseek.model,
+                        prompt_text=client.judge_prompt,
+                        sample_id=sample.sample_id,
+                        payload=payload,
+                    ),
+                    prompt_version="deepseek-vqa-judge-v1",
+                    sample_id=sample.sample_id,
+                    artifact_dir=sample_dir / "deepseek_vqa_judge",
+                ),
+            )
+            evaluation = merge_vqa_evaluation(
+                sample_id=sample.sample_id,
+                question=sample.question,
+                reference_answers=references,
+                candidate_answer=result.answer,
+                judge_parsed=verdict,
+            )
+            judged += 1
+        except Exception as error:
+            evaluation = merge_vqa_evaluation(
+                sample_id=sample.sample_id,
+                question=sample.question,
+                reference_answers=references,
+                candidate_answer=result.answer,
+                judge_error=f"{type(error).__name__}: {error}",
+            )
+            failed += 1
+        atomic_write_json(evaluation_path, evaluation.model_dump(mode="json"))
+        trace_path = sample_dir / "agent_trace.json"
+        trace = json.loads(trace_path.read_text(encoding="utf-8")) if trace_path.is_file() else {}
+        trace["judge_status"] = evaluation.judge_status
+        route = str(trace.get("route", ""))
+        if "DeepSeekJudgeClient.judge" not in route:
+            trace["route"] = route + " -> DeepSeekJudgeClient.judge"
+        atomic_write_json(trace_path, trace)
+    metadata_path = run_dir / "vrsbench_vqa.metadata.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.is_file() else {}
+    report_path = build_multiagent_vqa_report(
+        run_dir,
+        qwen=settings.models.qwen,
+        model_load_seconds=float(metadata.get("model_load_seconds", 0.0) or 0.0),
+    )
+    summary = {
+        "run_id": run_id,
+        "judged": judged,
+        "skipped": skipped,
+        "failed": failed,
+        "qwen_calls": 0,
+        "html_report": str(report_path) if report_path is not None else None,
+    }
+    print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
+    return 0 if failed == 0 else 7
 
 
 def _list_datasets() -> int:

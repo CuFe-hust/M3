@@ -228,6 +228,7 @@ python -m spacers_agent.cli count-image --image .\demo.png --question "How many 
 python -m spacers_agent.cli run-dataset --dataset XLRS-Bench-lite --root D:\data\XLRS-Bench-lite --split test --task counting --run-id xlrs-count-v1 --resume
 python -m spacers_agent.cli resume-run --run-id xlrs-count-v1
 python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
+python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 ```
 
 The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
@@ -252,12 +253,23 @@ If an existing ignored `configs/local.spark.yaml` copied older counting keys, se
 a new run. This prevents a v4 prompt from being mislabeled as an older inference configuration.
 
 ```bash
+set -a
+source .env
+set +a
+
 python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
   --dataset VRSBench --root /path/to/vrsbench --split validation \
   --task general_vqa --run-id vrsbench-qwen3vl-router-20 \
   --max-samples 20 --sample-concurrency 1 \
   --evaluate --judge-policy all
 ```
+
+For VQA, `--evaluate` now defaults to `--judge-policy all`. If `DEEPSEEK_API_KEY` is not present
+in the process environment, the command fails visibly instead of silently marking Judge as
+`not_requested`; use `--judge-policy none` only when DeepSeek evaluation is intentionally disabled.
+To add or retry DeepSeek results for an existing run without loading or calling Qwen, export the
+same environment key and run `judge-vqa-run --run-id <run-id>`. Successful existing Judge records
+are reused unless `--force` is supplied, and the HTML report is rebuilt from persisted Qwen results.
 
 The official VRSBench type routes quantity questions through accepted-point counting,
 spatial/category/direction/existence questions through the spatial expert, and color questions

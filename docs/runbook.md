@@ -2,7 +2,7 @@
 
 ## Safety boundary
 
-All default commands below are local and do not call Qwen, DeepSeek, an SSH tunnel, or a cloud API. A live model smoke test requires the user's explicit authorization after code completion and a key placed only in ignored `.env` or the process environment.
+Commands are local unless they explicitly invoke Qwen or DeepSeek. `judge-vqa-run` is a live text-only DeepSeek operation and requires explicit authorization plus a key placed only in ignored `.env` or the process environment.
 
 ## Local environment
 
@@ -73,3 +73,18 @@ The local suite validates geometry, schema invariants, sequential Mock calls, re
 For Spark, copy `scripts/server/env.example` to a protected server-only environment file and run `scripts/server/bootstrap.sh` before selecting vLLM parameters. `start_qwen_vllm.sh` binds the configured host (the example is loopback), `healthcheck.sh` calls `/v1/models`, and `run_dataset.sh`/`resume_dataset.sh` invoke the new CLI. No real server, tunnel, model download, dataset run, start/stop, or API smoke test was performed during local development.
 
 `count-image` accepts `--target-spec`, `--resume`, `--force`, `--no-seam-verify`, and call-budget limits. Its final stdout line is a JSON summary and its exit code distinguishes data, Qwen, partial, Judge, and invariant failures. `run-dataset` supports comma-separated tasks, a stable SHA-256 sample-ID shard, `--max-samples 0` for no limit, explicit sample-ID filtering, start index, fail-fast, and append-only `predictions.jsonl`. The default sample concurrency is one; each image still processes tiles sequentially.
+
+For VQA, `run-dataset --evaluate` defaults to judging all persisted answers. Export `.env` into the
+process environment first; a missing `DEEPSEEK_API_KEY` is a visible error. To judge an existing run
+without any Qwen call, use:
+
+```bash
+set -a
+source .env
+set +a
+python -m spacers_agent.cli --config configs/local.spark.yaml judge-vqa-run --run-id <run-id>
+```
+
+The command skips successful existing Judge records, retries missing/failed ones, updates each
+`vqa_evaluation.json` and `agent_trace.json`, and rebuilds the HTML report. `--force` explicitly
+rejudges successful records.

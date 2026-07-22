@@ -682,6 +682,57 @@ async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path
     assert evaluation["judge_status"] == "succeeded" and evaluation["judge_score"] == 1
 
 
+@pytest.mark.asyncio
+async def test_judge_vqa_run_reuses_persisted_qwen_result_and_rebuilds_report(tmp_path: Path) -> None:
+    """Judge saved VQA answers and rebuild HTML without creating a Qwen client.
+    评判已保存的 VQA 答案并重建 HTML，且不创建 Qwen 客户端。
+    """
+
+    from spacers_agent.cli import _judge_vqa_run
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    run_dir = tmp_path / "persisted-run"
+    sample_dir = run_dir / "samples" / sample.sample_id
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "sample.json").write_text(sample.model_dump_json(), encoding="utf-8")
+    (sample_dir / "expert_result.json").write_text(
+        ExpertResult(expert="general_vqa_expert", answer="Yes", status="completed").model_dump_json(),
+        encoding="utf-8",
+    )
+    (sample_dir / "status.json").write_text(
+        json.dumps({"state": "succeeded"}), encoding="utf-8"
+    )
+    (sample_dir / "vqa_evaluation.json").write_text(
+        json.dumps({"judge_status": "not_requested", "exact_match": True}), encoding="utf-8"
+    )
+    (sample_dir / "agent_trace.json").write_text(
+        json.dumps({"route": "GeneralVQAExpert.run", "inference_seconds": 1.0}), encoding="utf-8"
+    )
+    settings = AppSettings(
+        paths=PathSettings(dataset_root=dataset_root),
+        runs=RunSettings(root=tmp_path),
+        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+    )
+
+    exit_code = await _judge_vqa_run(
+        settings,
+        "persisted-run",
+        judge_client=_Judge(),  # type: ignore[arg-type]
+    )
+
+    assert exit_code == 0
+    evaluation = json.loads((sample_dir / "vqa_evaluation.json").read_text(encoding="utf-8"))
+    assert evaluation["judge_status"] == "succeeded" and evaluation["judge_score"] == 1
+    trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
+    assert "DeepSeekJudgeClient.judge" in trace["route"]
+    metrics = json.loads((run_dir / "vrsbench_vqa.metrics.json").read_text(encoding="utf-8"))
+    assert metrics["deepseek_proxy"]["evaluated"] == 1
+    assert (run_dir / "vrsbench_vqa.report" / "report.html").is_file()
+
+
 def _png_bytes(root: Path) -> bytes:
     path = root / "input.png"
     Image.new("RGB", (4, 4)).save(path)

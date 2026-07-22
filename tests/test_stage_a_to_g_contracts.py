@@ -34,9 +34,10 @@ def test_new_cli_contracts_are_parseable() -> None:
     assert count.target_spec == Path("target.json") and count.force and count.no_seam_verify
     assert parser.parse_args(["run-dataset", "--dataset", "XLRS-Bench-lite", "--root", "data", "--split", "test", "--task", "counting", "--run-id", "r"]).command == "run-dataset"
     dataset = parser.parse_args(["run-dataset", "--dataset", "XLRS-Bench-lite", "--root", "data", "--split", "test", "--max-samples", "0", "--shard-index", "1", "--num-shards", "2", "--sample-concurrency", "1"])
-    assert dataset.limit == 0 and dataset.shard_count == 2
+    assert dataset.limit == 0 and dataset.shard_count == 2 and dataset.judge_policy == "all"
     assert parser.parse_args(["resume-run", "--run-id", "r"]).command == "resume-run"
     assert parser.parse_args(["evaluate-run", "--run-id", "r", "--deepseek"]).command == "evaluate-run"
+    assert parser.parse_args(["judge-vqa-run", "--run-id", "r"]).command == "judge-vqa-run"
 
 
 def test_manifest_adapter_probes_explicit_mapping_and_rejects_guessing(tmp_path: Path) -> None:
