@@ -109,6 +109,13 @@ class VisualExpert:
         self.client, self.prompt, self.model, self.name = client, prompt, model, name
         self.prompt_version = prompt_version
 
+    def _prompt_for_sample(self, sample: UnifiedSample) -> tuple[str, str]:
+        """Return the prompt asset and version selected for one sample.
+        返回为单条样本选择的 Prompt 资源及版本。
+        """
+
+        return self.prompt, self.prompt_version
+
     async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
         """Use overview images as evidence without adding any detector. / 使用概览图作为证据且不引入检测器。"""
 
@@ -141,18 +148,19 @@ class VisualExpert:
                 "text": json.dumps(user_payload, ensure_ascii=False),
             }
         )
+        prompt, prompt_version = self._prompt_for_sample(sample)
         structured_prompt = (
-            self.prompt
+            prompt
             + f"\n\nReturn valid JSON only. Set expert to {self.name!r}; put the concise final answer in answer, "
             "retain relevant labeled boxes or points in evidence_items, copy evidence boxes into boxes, "
             "use concise factual evidence strings, and set status to 'completed'."
         )
         messages: list[dict[str, Any]] = [{"role": "system", "content": structured_prompt}, {"role": "user", "content": content}]
-        request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=self.prompt_version, messages=messages, image_sha256="|".join(image_hashes))
+        request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=prompt_version, messages=messages, image_sha256="|".join(image_hashes))
         return await self.client.complete_json(
             messages=messages,
             response_model=ExpertResult,
-            request_meta=RequestMeta(request_id=f"{sample.sample_id}:{self.name}", request_hash=request_hash, prompt_version=self.prompt_version, sample_id=sample.sample_id, artifact_dir=artifact_dir / self.name),
+            request_meta=RequestMeta(request_id=f"{sample.sample_id}:{self.name}", request_hash=request_hash, prompt_version=prompt_version, sample_id=sample.sample_id, artifact_dir=artifact_dir / self.name),
         )
 
 
@@ -184,9 +192,39 @@ class SpatialExpert(VisualExpert):
         prompt: str,
         model: str,
         review_prompt: str = "",
+        grid_prompt: str = "",
+        grid_review_prompt: str = "",
     ) -> None:
-        super().__init__(client, prompt, model, "spatial_expert", "spatial-v5")
+        super().__init__(client, prompt, model, "spatial_expert", "spatial-v4")
         self.review_prompt = review_prompt
+        self.grid_prompt = grid_prompt
+        self.grid_review_prompt = grid_review_prompt
+
+    def _prompt_for_sample(self, sample: UnifiedSample) -> tuple[str, str]:
+        """Use the grounded prompt only for grid-position questions.
+        仅对九宫格位置问题使用实体定位 Prompt。
+        """
+
+        subtype = vrsbench_question_subtype(
+            sample.question,
+            str(sample.metadata.get("question_type", "")),
+        )
+        if subtype == "grid_position" and self.grid_prompt:
+            return self.grid_prompt, "spatial-v5"
+        return super()._prompt_for_sample(sample)
+
+    def _review_prompt_for_sample(self, sample: UnifiedSample) -> tuple[str, str]:
+        """Select the subtype-scoped independent review prompt.
+        选择限定于语义子类型的独立复查 Prompt。
+        """
+
+        subtype = vrsbench_question_subtype(
+            sample.question,
+            str(sample.metadata.get("question_type", "")),
+        )
+        if subtype == "grid_position" and self.grid_review_prompt:
+            return self.grid_review_prompt, "spatial-candidate-review-v3"
+        return self.review_prompt, "spatial-candidate-review-v2"
 
     async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
         """Run one spatial pass and repair incomplete candidate enumeration once.
@@ -194,7 +232,8 @@ class SpatialExpert(VisualExpert):
         """
 
         result = await super().run(sample, artifact_dir=artifact_dir)
-        if not self.review_prompt or not _needs_spatial_candidate_review(sample, result):
+        review_prompt, _ = self._review_prompt_for_sample(sample)
+        if not review_prompt or not _needs_spatial_candidate_review(sample, result):
             return result
         try:
             review = await self._review_candidates(sample, artifact_dir)
@@ -286,8 +325,9 @@ class SpatialExpert(VisualExpert):
                 ),
             }
         )
+        review_prompt, review_prompt_version = self._review_prompt_for_sample(sample)
         system_prompt = (
-            self.review_prompt
+            review_prompt
             + "\n\nReturn valid JSON only. Set expert to 'spatial_expert', keep answer concise, "
             "copy every evidence box into boxes, and set status to 'completed' only when enumeration is complete."
         )
@@ -298,7 +338,7 @@ class SpatialExpert(VisualExpert):
         request_hash = build_request_hash(
             model=self.model,
             generation={"temperature": 0.0},
-            prompt_version="spatial-candidate-review-v3",
+            prompt_version=review_prompt_version,
             messages=messages,
             image_sha256="|".join(image_hashes),
         )
@@ -308,7 +348,7 @@ class SpatialExpert(VisualExpert):
             request_meta=RequestMeta(
                 request_id=f"{sample.sample_id}:spatial-candidate-review",
                 request_hash=request_hash,
-                prompt_version="spatial-candidate-review-v3",
+                prompt_version=review_prompt_version,
                 sample_id=sample.sample_id,
                 artifact_dir=artifact_dir / "spatial_expert_candidate_review",
             ),
@@ -334,6 +374,8 @@ class WorkflowService:
                 prompts["spatial"],
                 model,
                 prompts.get("spatial_review", ""),
+                prompts.get("spatial_grid", ""),
+                prompts.get("spatial_grid_review", ""),
             ),
             "general_vqa_expert": GeneralVQAExpert(client, prompts["general"], model),
         }
@@ -483,7 +525,7 @@ class DatasetRunner:
                     service = WorkflowService(self.client, self.prompts, self.settings.models.qwen.model)
                     expert = service.experts[expert_name]
                     expert_class_name = type(expert).__name__
-                    prompt_version = expert.prompt_version
+                    prompt_version = expert._prompt_for_sample(sample)[1]
                     result = await service.execute(expert_name, sample, sample_dir)
                     if sample.dataset == "VRSBench" and sample.task == "general_vqa":
                         result = apply_vrsbench_geometry(sample.question, question_type, result)

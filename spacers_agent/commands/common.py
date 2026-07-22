@@ -37,8 +37,10 @@ def prompts() -> dict[str, str]:
         "count_localize": (root / "count_localize_v1.md").read_text(encoding="utf-8"),
         "target": (root / "target_parse_v1.md").read_text(encoding="utf-8"),
         "change": (root / "change_v1.md").read_text(encoding="utf-8"),
-        "spatial": (root / "spatial_v5.md").read_text(encoding="utf-8"),
-        "spatial_review": (root / "spatial_candidate_review_v3.md").read_text(encoding="utf-8"),
+        "spatial": (root / "spatial_v4.md").read_text(encoding="utf-8"),
+        "spatial_grid": (root / "spatial_v5.md").read_text(encoding="utf-8"),
+        "spatial_review": (root / "spatial_candidate_review_v2.md").read_text(encoding="utf-8"),
+        "spatial_grid_review": (root / "spatial_candidate_review_v3.md").read_text(encoding="utf-8"),
         "general": (root / "general_vqa_v2.md").read_text(encoding="utf-8"),
         "seam": (root / "seam_verify_v1.md").read_text(encoding="utf-8"),
     }

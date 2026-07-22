@@ -340,7 +340,7 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
     assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
-    assert trace["prompt_version"] == "spatial-v5"
+    assert trace["prompt_version"] == "spatial-v4"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
 
@@ -641,7 +641,7 @@ async def test_grid_position_uses_unanchored_target_box_without_candidate_review
 
     from spacers_agent.workflow import SpatialExpert
 
-    result = await SpatialExpert(client, "spatial", "local-qwen", "review").run(
+    result = await SpatialExpert(client, "spatial", "local-qwen", "review", "grid", "grid-review").run(
         sample,
         artifact_dir=tmp_path / "artifacts",
     )
@@ -651,6 +651,7 @@ async def test_grid_position_uses_unanchored_target_box_without_candidate_review
     payload = json.loads(client.message_history[0][1]["content"][-1]["text"])
     assert payload["semantic_subtype"] == "grid_position"
     assert payload["answer_vocabulary"] == []
+    assert str(client.message_history[0][0]["content"]).startswith("grid")
 
 
 @pytest.mark.asyncio
@@ -690,7 +691,7 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
     from spacers_agent.vqa_geometry import apply_vrsbench_geometry
     from spacers_agent.workflow import SpatialExpert
 
-    raw = await SpatialExpert(client, "spatial", "local-qwen", "review").run(
+    raw = await SpatialExpert(client, "spatial", "local-qwen", "review", "grid", "grid-review").run(
         sample,
         artifact_dir=tmp_path / "artifacts",
     )
