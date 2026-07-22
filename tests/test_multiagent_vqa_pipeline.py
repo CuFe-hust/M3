@@ -681,9 +681,8 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
             "7:spatial-candidate-review": {
                 "expert": "spatial_expert",
                 "answer": "upper right",
-                "evidence_items": [
-                    {"label": "small-vehicle", "box": [840, 273, 925, 312], "confidence": 0.9}
-                ],
+                "boxes": [[840, 273, 925, 312]],
+                "evidence_items": [],
             },
         }
     )
@@ -699,8 +698,10 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
 
     assert [item.box for item in raw.evidence_items] == [[840, 273, 925, 312]]
     assert raw.geometry["candidate_review_replaced"] == 1
+    assert raw.geometry["candidate_review_labeled_boxes"] == 1
     assert result.answer == "top-right"
     assert result.geometry["candidate_review_replaced"] == 1
+    assert result.geometry["candidate_review_labeled_boxes"] == 1
     review_payload = json.loads(client.message_history[1][1]["content"][-1]["text"])
     assert review_payload["answer_vocabulary"] == []
 

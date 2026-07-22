@@ -221,7 +221,8 @@ class SpatialExpert(VisualExpert):
                 if not (_matches_position_target(sample.question, item) and _is_corner_anchored_box(item))
             ]
             replaced_evidence = len(result.evidence_items) - len(first_evidence)
-        merged = _merge_visual_evidence(first_evidence, review.evidence_items)
+        review_evidence, labeled_review_boxes = _position_review_evidence(sample.question, subtype, review)
+        merged = _merge_visual_evidence(first_evidence, review_evidence)
         geometry = dict(result.geometry)
         merged_quality = ["trusted_box" if item.box is not None else "trusted_point" for item in merged]
         geometry.update(
@@ -229,6 +230,7 @@ class SpatialExpert(VisualExpert):
                 "candidate_review_used": True,
                 "candidate_review_added": len(merged) - len(first_evidence),
                 "candidate_review_replaced": replaced_evidence,
+                "candidate_review_labeled_boxes": labeled_review_boxes,
                 "candidate_review_geometry": review.geometry,
                 "evidence_quality": merged_quality,
                 "repair_severity": _maximum_repair_severity(
@@ -1102,11 +1104,47 @@ def _matches_position_target(question: str, item: VisualEvidence) -> bool:
     将证据与位置问题指定的车辆类别进行匹配。
     """
 
-    lowered = question.casefold()
-    desired = "large-vehicle" if "large vehicle" in lowered else (
-        "small-vehicle" if "small vehicle" in lowered else None
-    )
+    desired = _position_target_label(question)
     return desired is None or vrsbench_vehicle_class(item.label) == desired
+
+
+def _position_target_label(question: str) -> str | None:
+    """Return the explicit vehicle class named by a position question.
+    返回位置问题中明确指定的车辆类别。
+    """
+
+    lowered = question.casefold()
+    if "large vehicle" in lowered:
+        return "large-vehicle"
+    if "small vehicle" in lowered:
+        return "small-vehicle"
+    return None
+
+
+def _position_review_evidence(
+    question: str,
+    subtype: str,
+    review: ExpertResult,
+) -> tuple[list[VisualEvidence], int]:
+    """Label model-provided review boxes from an explicit singular target class.
+    使用明确的单数目标类别标注模型已返回的复查框。
+    """
+
+    evidence = list(review.evidence_items)
+    target_label = _position_target_label(question)
+    if subtype != "grid_position" or target_label is None:
+        return evidence, 0
+    if any(_matches_position_target(question, item) and item.box is not None for item in evidence):
+        return evidence, 0
+    labeled = [
+        VisualEvidence(
+            label=target_label,
+            box=[int(round(value)) for value in box],
+            confidence=0.0,
+        )
+        for box in review.boxes
+    ]
+    return evidence + labeled, len(labeled)
 
 
 def _is_corner_anchored_box(item: VisualEvidence, *, tolerance: int = 5) -> bool:
