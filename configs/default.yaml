@@ -1,0 +1,39 @@
+models:
+  qwen:
+    base_url: http://127.0.0.1:8000/v1
+    model: qwen3-vl-4b-instruct
+    api_key_env: QWEN_API_KEY
+    timeout_seconds: 120
+    max_retries: 2
+    temperature: 0.0
+    max_tokens: 4096
+  deepseek:
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    timeout_seconds: 120
+    max_retries: 3
+counting:
+  tile_core_size: 896
+  halo_size: 128
+  model_max_side: 1280
+  max_pixels_without_tiling: 1600000
+  boundary_band_px: 32
+  min_confidence: 0.2
+  max_points_per_tile: 200
+  sequential: true
+  concurrency: 1
+  seam_verify: true
+  recursive_split_enabled: true
+  max_recursive_depth: 2
+  min_core_size: 224
+  seam_crop_margin_px: 128
+  unresolved_conflict_policy: flag_for_review
+  prompt_version: count-point-v2
+runs:
+  root: outputs/runs
+  save_tiles: false
+  save_annotated_images: true
+  save_raw_responses: true
+paths:
+  dataset_root: dataset

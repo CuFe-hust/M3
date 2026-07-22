@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spacers-agent"
+version = "0.1.0"
+description = "Local orchestration foundations for remote-sensing multi-Agent evaluation."
+requires-python = ">=3.11"
+dependencies = [
+  "openai>=1.0",
+  "pydantic>=2.8",
+  "pydantic-settings>=2.4",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "live_qwen: requires an explicitly authorized live Qwen service",
+  "live_deepseek: requires an explicitly authorized live DeepSeek API",
+]

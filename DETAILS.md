@@ -440,3 +440,133 @@ official Lite VQA release; these scores must not be labelled as a single full-XL
 The `evaluate --deepseek-proxy` command reads `DEEPSEEK_API_KEY` only from the runtime
 environment and produces a non-official `deepseek_semantic_match_proxy` for VRSBench VQA.
 It must not be described as the benchmark's official GPT-based evaluation metric.
+
+## 7. Phase 1 Local Multi-Agent Foundation
+
+`spacers_agent/` is an additive local package that does not replace the existing `main.py`
+baseline. `python -m spacers_agent.cli run-init` loads `configs/default.yaml`, applies
+non-secret environment overrides from `.env` or the process environment, and creates a run
+directory with `manifest.json`, `config.snapshot.yaml`, `prompts.snapshot/`, and
+`events.jsonl`. API-key values are intentionally not read into the settings model or written
+to these artifacts.
+
+`spacers_agent.settings.AppSettings` validates the phase-one Qwen, DeepSeek, counting, run,
+and path settings. `EnvironmentOverrides` uses `pydantic-settings` to read only non-secret
+endpoint and path overrides from `.env` or the process environment. API-key values remain
+environment-only and are not placed in the settings model or run artifacts.
+
+The Phase 1 `health` command only prints configured endpoint metadata and explicitly performs
+no network check. Live endpoint health checks begin no earlier than Phase 2 and still require
+explicit user authorization.
+
+## 8. Phase 2 Structured Client Interfaces
+
+`spacers_agent.clients.VisionLanguageClient` defines async `complete_json` requests shared by
+the future Qwen client and the offline `MockVisionClient`. `QwenVLLMClient` is an
+OpenAI-compatible implementation that is inert until a caller invokes it with a key supplied
+through `QWEN_API_KEY` (or the configured environment-variable name). It supports bounded
+429/5xx/timeout retries, JSON fence normalization, one JSON repair request, Pydantic
+validation, a request-hash cache, and artifact persistence for raw responses, parsed JSON,
+validation errors, latency, and available token counters.
+
+`RequestMeta` and persisted request metadata exclude API keys and Base64 image data. Data URLs
+may be sent only by a live caller; `sanitize_messages` replaces them with a hash and encoded
+byte count before logging or hashing. No live client call has been made locally.
+
+## 9. Phase 3 Unified Schema, Geometry, and Dataset Audit
+
+`spacers_agent.schemas` adds Pydantic contracts for `UnifiedSample`, `ImageRef`,
+`GroundTruth`, half-open `PixelRect`, `TileSpec`, local/global point observations, and
+`CountingResult`. This is additive: the existing baseline `CanonicalSample` and
+`CanonicalPrediction` remain unchanged. Change samples require `t1` before `t2`; count results
+enforce `final_count == accepted point count` and cannot report completion if tiles failed.
+
+`spacers_agent.imaging` contains model-independent EXIF/RGB normalization, row-major owner-core
+plus halo planning, no-upscale resizing, `0..999` coordinate conversion, strict owner-core
+acceptance, boundary-candidate detection, and clamp provenance. Tile crops are transient in
+memory; no adapter writes permanent tiles to datasets.
+
+`python -m spacers_agent.cli inspect-data --root <dataset-root> --output <report.json>` performs
+a read-only generic layout audit and writes a separate JSON report. It reports file extensions,
+candidate manifests, image samples/damage, discovered JSON fields, split hints, duplicate IDs,
+encoding failures, and missing referenced images. It does not infer a dataset-specific Adapter
+mapping; that remains blocked until the named local datasets are available for audit.
+
+## 10. Phase 4 Point Counting Orchestration
+
+`spacers_agent.counting` is an additive module; it does not alter the baseline `main.py`, the
+existing canonical sample/prediction format, dataset splits, or evaluation metrics. Its
+`PointCountingOrchestrator` accepts a normalized image, a stable `CountTargetSpec`, and an
+injected `VisionLanguageClient`. It processes tiles row-major and sequentially, with one image per
+request. `TileCheckpointStore` writes `spec.json`, `parsed.json`, conversion validation, and a
+status checkpoint under `tiles/<tile_id>/`; a matching successful request hash is reused during
+resume, while a failed tile remains explicitly visible.
+
+`CountTargetSpec` is shared by all tiles of a sample and is included in request-cache inputs.
+`count_tile_v2.md` defines the owner-core-only point protocol. `TileCountResponse` is additionally
+checked against both the requested tile ID and the target label before coordinate conversion.
+Parents that request a split are stored as `superseded_by_children`; their four child owner cores
+are processed sequentially and replace the parent points. The final count is calculated only from
+accepted representatives. Boundary conflict discovery considers only matching-label points near
+neighbouring owner-core seams; it records candidates rather than applying a global clustering
+algorithm. Explicit same-instance decisions may be supplied to `finalize_representatives`; absent
+such a decision, the fixed current policy is to retain and flag the conflict for review.
+
+No live seam-verifier call, target-spec LLM parsing call, or missing-point review call is wired into
+the default path. These require a separately authorized live client and must preserve the same
+point/owner validation rules.
+
+## 11. Phase 5 Sparse Multi-Agent Routing and Prompt Assets
+
+`spacers_agent.routing.ROUTES` defines fixed expert routes for all declared multi-Agent tasks.
+`TaskRouter.route_known` is deterministic and makes no model call. `route_unknown` is explicitly
+separate, accepts only an injected client, uses a text-only request, records discrete reason codes,
+and consumes a Qwen entry from `CallBudget` before it can call the router. The budget is mutable,
+validated against its configured limits, and may be attached to `PointCountingOrchestrator` so tile,
+recursive, seam, or review calls cannot exceed the same Qwen limit.
+
+`CountingExpert` delegates to the existing `PointCountingOrchestrator`; it contains no duplicate
+geometry or counting logic. Its completed answer is derived from the accepted global-point set. If
+any tile failed, it reports the completed-tile fraction and confirmed points and marks the answer
+non-final. `CallBudget` also exposes a separate DeepSeek reservation method. No default route calls
+DeepSeek, and any future judge must receive only text and structured evidence rather than image data.
+
+The versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v2.md`,
+`count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
+`spatial_v1.md`, and `general_vqa_v1.md`. `run-init` snapshots each asset. Prompts are not changed
+in place when their behavior changes; a new versioned file must be added and selected explicitly.
+
+## 12. Phase 6 DeepSeek Structured Evaluator
+
+`spacers_agent.evaluation` computes deterministic counting metrics before and independently from
+LLM evaluation. With known count truth, it records exact match, absolute error, relative error, and
+the explicitly named `smooth_error_score` (which is not an accuracy metric). Its compact judge
+payload contains question text, target rules, display answer, count consistency, tile/conflict
+statistics, ground truth, and deterministic metrics; it deliberately excludes source images, image
+paths, Base64 values, and the full point list.
+
+`DeepSeekJudgeResult` hard-codes `judge_scope="text_and_structured_evidence_only"` and
+`can_verify_visual_truth=false`. `merge_count_evaluation` preserves the raw judge response and flags
+`judge_inconsistency` when a `correct` verdict conflicts with a known count mismatch. It does not
+rewrite the judge result. Samples without ground truth retain judge feedback only as internal quality
+evidence, separate from benchmark metrics.
+
+`spacers_agent.clients.DeepSeekJudgeClient` uses OpenAI Chat Completions JSON mode, reads its key
+only from the configured `DEEPSEEK_API_KEY` environment variable, retries transient and empty-content
+responses within `max_retries`, permits one JSON-format repair, and persists raw/parsed/validation,
+latency, retry, and token records. Its request hash includes the model, judge-prompt hash, sample ID,
+prediction hash, ground-truth hash, and deterministic-metrics hash. No live call is automatic.
+
+## 13. Phase 7 Offline Acceptance and Runbook
+
+`spacers_agent.visualization.render_counting_overlay` creates an explicit local artifact from a
+normalized source image, `CountingResult`, and rebuilt tile geometry. It renders blue owner-core
+grids, green accepted points, and red rejected points. It is a rendering tool only: it neither
+changes counting results nor calls a model. `spacers_agent.cli render-count` validates source/result
+dimensions before generating this artifact.
+
+`spacers_agent.reporting.summarize_evaluations` aggregates persisted `EvaluationRecord` values into
+an `EvaluationSummary`. It reports deterministic exact-match/MAE/relative-error fields separately
+from optional Judge success, failure, inconsistency, and semantic-quality fields. The CLI command
+`summarize-evaluations` reads JSONL locally and writes one JSON summary. The complete local command
+sequence and live-test safety boundary are recorded in `docs/runbook.md`.
