@@ -319,6 +319,74 @@ async def test_empty_leaf_review_can_add_point_and_unconfirmed_zero_is_partial(t
     assert any(item.code == "ZERO_COUNT_UNCONFIRMED" for item in uncertain.warnings)
 
 
+@pytest.mark.asyncio
+async def test_unconfirmed_overview_zero_triggers_finer_crops_with_reduced_halo(tmp_path: Path) -> None:
+    parent_empty = {
+        "target": "building",
+        "tile_id": "r000_c000",
+        "points": [],
+        "reported_count": 0,
+    }
+    responses: dict[str, dict[str, Any]] = {
+        "sample:r000_c000": parent_empty,
+        "sample:r000_c000:zero-review": {
+            **parent_empty,
+            "uncertainty": ["zero_unconfirmed"],
+        },
+    }
+    for index in range(4):
+        tile_id = f"r000_c000_d1_{index}"
+        responses[f"sample:{tile_id}"] = {
+            "target": "building",
+            "tile_id": tile_id,
+            "points": [
+                {
+                    "local_id": f"p{index}",
+                    "x": 500,
+                    "y": 500,
+                    "confidence": 0.9,
+                    "short_evidence": "localized building centre",
+                }
+            ],
+            "reported_count": 1,
+        }
+    client = MockVisionClient(responses)
+    result = await PointCountingOrchestrator(
+        client,
+        counting=CountingSettings(
+            tile_core_size=32,
+            halo_size=8,
+            model_max_side=64,
+            min_core_size=8,
+            max_recursive_depth=1,
+        ),
+        qwen=QwenSettings(model="mock-qwen"),
+        system_prompt="count points",
+        run_dir=tmp_path,
+        empty_review_prompt="review empty tile",
+    ).count_image(
+        Image.new("RGB", (32, 32)),
+        sample_id="sample",
+        question="count buildings",
+        target=_target(),
+        review_empty=True,
+    )
+
+    assert result.final_count == 4
+    assert [call.request_id for call in client.calls] == [
+        "sample:r000_c000",
+        "sample:r000_c000:zero-review",
+        "sample:r000_c000_d1_0",
+        "sample:r000_c000_d1_1",
+        "sample:r000_c000_d1_2",
+        "sample:r000_c000_d1_3",
+    ]
+    child_spec = json.loads(
+        (tmp_path / "tiles" / "r000_c000_d1_0" / "spec.json").read_text(encoding="utf-8")
+    )
+    assert child_spec["crop_global"] == {"left": 0, "top": 0, "right": 20, "bottom": 20}
+
+
 def _global_point(point_id: str, tile_id: str, x: int, y: int, confidence: float = 0.8) -> GlobalPointObservation:
     return GlobalPointObservation(
         global_id=point_id,

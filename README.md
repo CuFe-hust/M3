@@ -167,10 +167,11 @@ validated `0..999` local points to global pixels, and derives `final_count` sole
 global points. It writes each tile's geometry, parsed response, conversion report, and checkpoint
 below the selected run directory; a matching successful request hash is reused on resume.
 
-The active counting prompt is versioned in `prompts/count_tile_v3.md`; the superseded v2 prompt
-remains available for experiment reproducibility. The v3 contract expands known vehicle aliases,
-requires a systematic owner-core scan before returning zero, and supports an optional versioned
-empty-tile review. Point-counting tests use local Mock clients only. No Qwen, DeepSeek, SSH tunnel,
+The active counting prompt is versioned in `prompts/count_tile_v4.md`; superseded prompts remain
+available for experiment reproducibility. The v4 contract requires a systematic overview scan,
+explicit uncertainty for small candidates, and an independent versioned empty-tile review. An
+unconfirmed zero triggers finer crops with depth-reduced halo. Point-counting tests use local Mock
+clients only. No Qwen, DeepSeek, SSH tunnel,
 server, or cloud request is made by this module unless a caller explicitly constructs and invokes
 a live client after authorization.
 
@@ -246,6 +247,10 @@ models:
 
 Then run sequentially; this path does not require or contact vLLM:
 
+If an existing ignored `configs/local.spark.yaml` copied older counting keys, set
+`counting.prompt_version: count-point-v4` and `counting.vrsbench_min_scan_depth: 0` before creating
+a new run. This prevents a v4 prompt from being mislabeled as an older inference configuration.
+
 ```bash
 python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
   --dataset VRSBench --root /path/to/vrsbench --split validation \
@@ -261,15 +266,15 @@ HTML report records the actual Agent route and prompt version, overlays labeled 
 points on a report-only image copy, and includes the deterministic geometry audit.
 
 VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-aware target parse.
-The default configuration forces one non-overlapping owner-core subdivision, enlarges transmitted
-review crops to a maximum side of 768 pixels, and rechecks empty leaf tiles. A zero answer remains
-point-derived; an empty second pass must explicitly return `confirmed_absent`, otherwise the result
-is marked partial with `ZERO_COUNT_UNCONFIRMED`. For top-most/bottom-most category questions, the
-spatial expert may perform one candidate-completeness review. Program geometry requires at least
-two vehicle candidates before claiming an extreme comparison. Raw answers remain in the audit
-metadata while declared yes/no, vehicle-category, grid-position, color, and cardinal-direction
-vocabularies receive reference-independent normalization before evaluation.
+The default configuration scans a fitting image as one overview, enlarges small transmitted crops
+to a maximum side of 768 pixels, and independently rechecks empty results. A review that reports
+`zero_unconfirmed` triggers finer owner-core crops with a smaller halo; a zero answer remains solely
+point-derived. Spatial extreme, grid-position, arrangement, and proximity questions receive an
+independent candidate-enumeration pass that is not shown first-pass evidence. Question semantics
+are classified separately from the coarse official type and Qwen receives a reference-independent
+closed answer vocabulary when one exists. Program geometry requires at least two candidates before
+claiming an extreme comparison, and every local decision remains in the geometry audit.
 
 Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
 
-The local Transformers client normalizes Qwen's common two-corner box representation before strict validation. It orders reversed corners, expands zero-area axes by one normalized coordinate unit, and resolves a simultaneous box/point observation by retaining the valid box. These changes are recorded in the geometry audit. A malformed JSON response receives at most one versioned text-only format-repair call; the repair call does not receive the source image, and both attempts remain in the sample artifacts. A response truncated only at its final JSON member may be closed locally or have only that incomplete tail member removed; this recovery is explicitly recorded and never invents missing visual evidence.
+The local Transformers client normalizes Qwen's common two-corner box representation before strict validation. It orders reversed corners but never expands a zero-area line or point into a fabricated box. Labeled degenerate observations are retained as points, unlabeled legacy boxes are dropped, and a valid box/point conflict retains the box. The geometry audit records normalization names, evidence quality, and repair severity. A malformed JSON response receives at most one versioned text-only format-repair call; the repair call does not receive the source image, and both attempts remain in the sample artifacts. A response truncated only at its final JSON member may be closed locally or have only that incomplete tail member removed; this recovery is explicitly recorded and never invents missing visual evidence.

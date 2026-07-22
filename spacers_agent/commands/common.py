@@ -31,12 +31,12 @@ def prompts() -> dict[str, str]:
 
     root = project_root() / "prompts"
     return {
-        "count": (root / "count_tile_v3.md").read_text(encoding="utf-8"),
-        "count_zero_review": (root / "missing_point_review_v2.md").read_text(encoding="utf-8"),
+        "count": (root / "count_tile_v4.md").read_text(encoding="utf-8"),
+        "count_zero_review": (root / "missing_point_review_v3.md").read_text(encoding="utf-8"),
         "target": (root / "target_parse_v1.md").read_text(encoding="utf-8"),
         "change": (root / "change_v1.md").read_text(encoding="utf-8"),
-        "spatial": (root / "spatial_v3.md").read_text(encoding="utf-8"),
-        "spatial_review": (root / "spatial_candidate_review_v1.md").read_text(encoding="utf-8"),
+        "spatial": (root / "spatial_v4.md").read_text(encoding="utf-8"),
+        "spatial_review": (root / "spatial_candidate_review_v2.md").read_text(encoding="utf-8"),
         "general": (root / "general_vqa_v2.md").read_text(encoding="utf-8"),
         "seam": (root / "seam_verify_v1.md").read_text(encoding="utf-8"),
     }

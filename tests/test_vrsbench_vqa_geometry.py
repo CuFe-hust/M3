@@ -7,7 +7,9 @@ from spacers_agent.vqa_geometry import (
     apply_vrsbench_geometry,
     execution_task_for_vrsbench,
     normalize_vrsbench_answer,
+    vrsbench_answer_vocabulary,
     vrsbench_count_target,
+    vrsbench_question_subtype,
 )
 
 
@@ -147,11 +149,74 @@ def test_expert_result_repairs_degenerate_boxes_and_resolves_point_conflicts() -
         }
     )
 
-    assert result.evidence_items[0].box == [127, 407, 128, 408]
-    assert result.evidence_items[0].point is None
-    assert result.boxes == [[127, 407, 128, 408]]
+    assert result.evidence_items[0].box is None
+    assert result.evidence_items[0].point == [127, 407]
+    assert result.boxes == []
     normalizations = result.geometry["input_normalizations"]
     assert "box_corners_reordered" in normalizations
-    assert "degenerate_box_y_expanded_by_one" in normalizations
-    assert "degenerate_box_x_expanded_by_one" in normalizations
-    assert "evidence_point_dropped_in_favor_of_box" in normalizations
+    assert "degenerate_top_level_box_dropped" in normalizations
+    assert "degenerate_evidence_box_dropped_in_favor_of_point" in normalizations
+    assert result.geometry["repair_severity"] == "high"
+    assert result.geometry["evidence_quality"] == ["trusted_point"]
+
+
+def test_degenerate_line_without_point_is_retained_only_as_repaired_point() -> None:
+    result = ExpertResult.model_validate(
+        {
+            "expert": "spatial_expert",
+            "answer": "north-south",
+            "boxes": [[100, 250, 300, 250]],
+            "evidence_items": [
+                {"label": "road", "box": [100, 250, 300, 250], "confidence": 0.8}
+            ],
+        }
+    )
+
+    assert result.boxes == []
+    assert result.evidence_items[0].box is None
+    assert result.evidence_items[0].point == [200, 250]
+    assert result.geometry["evidence_quality"] == ["repaired_point"]
+
+
+def test_semantic_subtype_overrides_coarse_position_type_without_reference_access() -> None:
+    subtype = vrsbench_question_subtype(
+        "What is the orientation of the road in the image?",
+        "object position",
+    )
+
+    assert subtype == "orientation"
+    assert vrsbench_answer_vocabulary(subtype) == ["north-south", "east-west"]
+    result = apply_vrsbench_geometry(
+        "What is the orientation of the road in the image?",
+        "object position",
+        _result(answer="The road runs from the top-right to the bottom-left."),
+    )
+    assert result.answer == "The road runs from the top-right to the bottom-left."
+    assert result.geometry["semantic_subtype"] == "orientation"
+    assert result.geometry["rule"] == "cardinal_direction_requires_dataset_north_up_assumption"
+
+
+def test_top_most_existence_is_distinct_from_extreme_category() -> None:
+    subtype = vrsbench_question_subtype(
+        "Is there a vehicle located at the top-most position in the image?",
+        "object existence",
+    )
+
+    assert subtype == "extreme_existence"
+    assert vrsbench_answer_vocabulary(subtype) == ["yes", "no"]
+
+
+def test_arrangement_normalizes_descriptive_row_language_to_closed_vocabulary() -> None:
+    result = apply_vrsbench_geometry(
+        "What is the arrangement of the large vehicles?",
+        "object direction",
+        _result(
+            VisualEvidence(label="truck", box=[100, 100, 200, 400], confidence=0.9),
+            VisualEvidence(label="truck", box=[250, 100, 350, 400], confidence=0.9),
+            answer="They are parallel and parked side by side.",
+        ),
+    )
+
+    assert result.answer == "in rows"
+    assert result.geometry["semantic_subtype"] == "arrangement"
+    assert result.geometry["evidence_complete"] is True

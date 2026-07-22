@@ -108,6 +108,30 @@ class _CapturingClient:
         )
 
 
+class _MessageMockClient(MockVisionClient):
+    """Capture offline mock requests so review prompts remain auditable.
+    捕获离线模拟请求，使复查提示保持可审计。
+    """
+
+    def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
+        super().__init__(responses)
+        self.message_history: list[list[dict[str, Any]]] = []
+
+    async def complete_json(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        response_model: type[ExpertResult],
+        request_meta: RequestMeta,
+    ) -> ExpertResult:
+        self.message_history.append(messages)
+        return await super().complete_json(
+            messages=messages,
+            response_model=response_model,
+            request_meta=request_meta,
+        )
+
+
 def _official_vrsbench(root: Path) -> None:
     Image.new("RGB", (8, 8)).save(root / "P0003_0002.png")
     (root / "VRSBench_EVAL_vqa.json").write_text(
@@ -316,7 +340,7 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
     assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
-    assert trace["prompt_version"] == "spatial-v3"
+    assert trace["prompt_version"] == "spatial-v4"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
 
@@ -428,7 +452,7 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
             "metadata": {**sample.metadata, "question_type": "object category"},
         }
     )
-    client = MockVisionClient(
+    client = _MessageMockClient(
         {
             "7:spatial_expert": {
                 "expert": "spatial_expert",
@@ -461,6 +485,28 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
     assert raw.geometry["candidate_review_used"] is True
     assert result.answer == "small-vehicle"
     assert result.geometry["candidate_count"] == 2
+    initial_payload = json.loads(client.message_history[0][1]["content"][-1]["text"])
+    review_payload = json.loads(client.message_history[1][1]["content"][-1]["text"])
+    assert initial_payload["semantic_subtype"] == "extreme_category"
+    assert initial_payload["answer_vocabulary"] == ["small-vehicle", "large-vehicle"]
+    assert review_payload["review_mode"] == "independent_candidate_enumeration"
+    assert "first_pass_evidence" not in review_payload
+
+
+def test_spatial_evidence_merge_deduplicates_points_and_prefers_boxes() -> None:
+    from spacers_agent.schemas import VisualEvidence
+    from spacers_agent.workflow import _merge_visual_evidence
+
+    first = [VisualEvidence(label="small-vehicle", point=[500, 500], confidence=0.7)]
+    second = [
+        VisualEvidence(label="car", point=[506, 503], confidence=0.9),
+        VisualEvidence(label="small-vehicle", box=[480, 480, 530, 530], confidence=0.8),
+    ]
+
+    merged = _merge_visual_evidence(first, second)
+
+    assert len(merged) == 1
+    assert merged[0].box == [480, 480, 530, 530]
 
 
 @pytest.mark.asyncio

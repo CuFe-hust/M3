@@ -35,8 +35,8 @@ counting:
   min_core_size: 224
   seam_crop_margin_px: 128
   unresolved_conflict_policy: flag_for_review
-  prompt_version: count-point-v3
-  vrsbench_min_scan_depth: 1
+  prompt_version: count-point-v4
+  vrsbench_min_scan_depth: 0
   vrsbench_zero_review: true
   vrsbench_tile_upscale_max_side: 768
 runs:

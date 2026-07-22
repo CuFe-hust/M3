@@ -43,7 +43,9 @@ from spacers_agent.schemas import (
 from spacers_agent.settings import AppSettings
 from spacers_agent.vqa_geometry import (
     apply_vrsbench_geometry,
+    vrsbench_answer_vocabulary,
     vrsbench_count_target,
+    vrsbench_question_subtype,
     vrsbench_vehicle_class,
 )
 
@@ -100,17 +102,26 @@ class VisualExpert:
             data = image_ref.path.read_bytes()
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, "image/png")}})
             image_hashes.append(__import__("hashlib").sha256(data).hexdigest())
+        user_payload: dict[str, Any] = {
+            "question": sample.question,
+            "dataset_question_type": sample.metadata.get("question_type"),
+            "coordinate_frame": "normalized_0_999_top_left",
+        }
+        if sample.dataset == "VRSBench":
+            subtype = vrsbench_question_subtype(
+                sample.question,
+                str(sample.metadata.get("question_type", "")),
+            )
+            user_payload.update(
+                {
+                    "semantic_subtype": subtype,
+                    "answer_vocabulary": vrsbench_answer_vocabulary(subtype),
+                }
+            )
         content.append(
             {
                 "type": "text",
-                "text": json.dumps(
-                    {
-                        "question": sample.question,
-                        "dataset_question_type": sample.metadata.get("question_type"),
-                        "coordinate_frame": "normalized_0_999_top_left",
-                    },
-                    ensure_ascii=False,
-                ),
+                "text": json.dumps(user_payload, ensure_ascii=False),
             }
         )
         structured_prompt = (
@@ -157,7 +168,7 @@ class SpatialExpert(VisualExpert):
         model: str,
         review_prompt: str = "",
     ) -> None:
-        super().__init__(client, prompt, model, "spatial_expert", "spatial-v3")
+        super().__init__(client, prompt, model, "spatial_expert", "spatial-v4")
         self.review_prompt = review_prompt
 
     async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
@@ -169,7 +180,7 @@ class SpatialExpert(VisualExpert):
         if not self.review_prompt or not _needs_spatial_candidate_review(sample, result):
             return result
         try:
-            review = await self._review_candidates(sample, result, artifact_dir)
+            review = await self._review_candidates(sample, artifact_dir)
         except Exception as error:
             geometry = dict(result.geometry)
             geometry.update(
@@ -182,13 +193,20 @@ class SpatialExpert(VisualExpert):
             return result.model_copy(update={"geometry": geometry, "status": "partial"})
         merged = _merge_visual_evidence(result.evidence_items, review.evidence_items)
         geometry = dict(result.geometry)
+        merged_quality = ["trusted_box" if item.box is not None else "trusted_point" for item in merged]
         geometry.update(
             {
                 "candidate_review_used": True,
                 "candidate_review_added": len(merged) - len(result.evidence_items),
+                "candidate_review_geometry": review.geometry,
+                "evidence_quality": merged_quality,
+                "repair_severity": _maximum_repair_severity(
+                    str(result.geometry.get("repair_severity", "none")),
+                    str(review.geometry.get("repair_severity", "none")),
+                ),
             }
         )
-        reviewed_result = result.model_copy(update={"evidence_items": merged})
+        reviewed_result = result.model_copy(update={"evidence_items": merged, "geometry": geometry})
         status = "partial" if _needs_spatial_candidate_review(sample, reviewed_result) else "completed"
         return result.model_copy(
             update={
@@ -202,7 +220,6 @@ class SpatialExpert(VisualExpert):
     async def _review_candidates(
         self,
         sample: UnifiedSample,
-        first: ExpertResult,
         artifact_dir: Path,
     ) -> ExpertResult:
         """Request a localization-only completeness pass over the same image.
@@ -215,6 +232,10 @@ class SpatialExpert(VisualExpert):
             data = image_ref.path.read_bytes()
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, "image/png")}})
             image_hashes.append(hashlib.sha256(data).hexdigest())
+        subtype = vrsbench_question_subtype(
+            sample.question,
+            str(sample.metadata.get("question_type", "")),
+        )
         content.append(
             {
                 "type": "text",
@@ -222,8 +243,10 @@ class SpatialExpert(VisualExpert):
                     {
                         "question": sample.question,
                         "dataset_question_type": sample.metadata.get("question_type"),
-                        "first_pass_evidence": [item.model_dump(mode="json") for item in first.evidence_items],
+                        "semantic_subtype": subtype,
+                        "answer_vocabulary": vrsbench_answer_vocabulary(subtype),
                         "coordinate_frame": "normalized_0_999_top_left",
+                        "review_mode": "independent_candidate_enumeration",
                     },
                     ensure_ascii=False,
                 ),
@@ -241,7 +264,7 @@ class SpatialExpert(VisualExpert):
         request_hash = build_request_hash(
             model=self.model,
             generation={"temperature": 0.0},
-            prompt_version="spatial-candidate-review-v1",
+            prompt_version="spatial-candidate-review-v2",
             messages=messages,
             image_sha256="|".join(image_hashes),
         )
@@ -251,7 +274,7 @@ class SpatialExpert(VisualExpert):
             request_meta=RequestMeta(
                 request_id=f"{sample.sample_id}:spatial-candidate-review",
                 request_hash=request_hash,
-                prompt_version="spatial-candidate-review-v1",
+                prompt_version="spatial-candidate-review-v2",
                 sample_id=sample.sample_id,
                 artifact_dir=artifact_dir / "spatial_expert_candidate_review",
             ),
@@ -626,20 +649,30 @@ def _needs_spatial_candidate_review(sample: UnifiedSample, result: ExpertResult)
 
     if sample.dataset != "VRSBench":
         return False
-    lowered = sample.question.casefold()
-    requires_instances = bool(
-        re.search(r"\b(top|bottom)[ -]?most\b", lowered)
-        or "predominantly arranged" in lowered
-        or "arrangement" in lowered
+    subtype = vrsbench_question_subtype(
+        sample.question,
+        str(sample.metadata.get("question_type", "")),
     )
-    if not requires_instances:
+    if subtype not in {"extreme_category", "extreme_existence", "grid_position", "arrangement", "proximity"}:
         return False
+    if not result.geometry.get("candidate_review_used"):
+        return True
     vehicles = [
         item
         for item in result.evidence_items
         if item.box is not None and vrsbench_vehicle_class(item.label) in {"small-vehicle", "large-vehicle"}
     ]
-    return len(vehicles) < 2
+    if subtype in {"extreme_category", "arrangement"}:
+        return len(vehicles) < 2
+    if subtype == "extreme_existence":
+        return not vehicles
+    if subtype == "grid_position":
+        lowered = sample.question.casefold()
+        desired = "large-vehicle" if "large vehicle" in lowered else (
+            "small-vehicle" if "small vehicle" in lowered else None
+        )
+        return not any(desired is None or vrsbench_vehicle_class(item.label) == desired for item in vehicles)
+    return len(result.evidence_items) < 2
 
 
 def _merge_visual_evidence(
@@ -652,16 +685,66 @@ def _merge_visual_evidence(
 
     merged = list(first)
     for candidate in second:
-        duplicate = any(
-            candidate.box is not None
-            and existing.box is not None
-            and vrsbench_vehicle_class(candidate.label) == vrsbench_vehicle_class(existing.label)
-            and _box_iou(candidate.box, existing.box) >= 0.7
-            for existing in merged
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(merged)
+                if _same_visual_observation(candidate, existing)
+            ),
+            None,
         )
-        if not duplicate:
+        if duplicate_index is None:
             merged.append(candidate)
+        elif _prefer_candidate_evidence(candidate, merged[duplicate_index]):
+            merged[duplicate_index] = candidate
     return merged
+
+
+def _same_visual_observation(first: VisualEvidence, second: VisualEvidence) -> bool:
+    """Match repeated boxes or points without merging distinct nearby vehicles.
+    匹配重复框或点，同时避免合并相邻但不同的车辆。
+    """
+
+    if vrsbench_vehicle_class(first.label) != vrsbench_vehicle_class(second.label):
+        return False
+    if first.box is not None and second.box is not None:
+        return _box_iou(first.box, second.box) >= 0.7
+    if first.point is not None and second.point is not None:
+        return _point_distance(first.point, second.point) <= 12
+    box_item, point_item = (first, second) if first.box is not None else (second, first)
+    if box_item.box is None or point_item.point is None:
+        return False
+    x, y = point_item.point
+    return box_item.box[0] <= x <= box_item.box[2] and box_item.box[1] <= y <= box_item.box[3]
+
+
+def _prefer_candidate_evidence(candidate: VisualEvidence, existing: VisualEvidence) -> bool:
+    """Prefer a real box over a point, then retain the higher-confidence duplicate.
+    重复证据中优先保留真实框，其次保留置信度更高的观测。
+    """
+
+    if candidate.box is not None and existing.box is None:
+        return True
+    if candidate.box is None and existing.box is not None:
+        return False
+    return candidate.confidence > existing.confidence
+
+
+def _point_distance(first: list[int], second: list[int]) -> float:
+    """Return Euclidean distance between normalized evidence points.
+    返回归一化证据点之间的欧氏距离。
+    """
+
+    return ((first[0] - second[0]) ** 2 + (first[1] - second[1]) ** 2) ** 0.5
+
+
+def _maximum_repair_severity(first: str, second: str) -> str:
+    """Retain the highest evidence-repair severity across independent passes.
+    在独立复查轮次之间保留最高的证据修复严重度。
+    """
+
+    rank = {"none": 0, "low": 1, "high": 2}
+    return max((first, second), key=lambda value: rank.get(value, 2))
 
 
 def _box_iou(first: list[int], second: list[int]) -> float:

@@ -83,7 +83,7 @@ class CountingSettings(BaseModel):
     min_core_size: int = Field(default=224, gt=0)
     seam_crop_margin_px: int = Field(default=128, ge=0)
     unresolved_conflict_policy: Literal["flag_for_review"] = "flag_for_review"
-    prompt_version: str = "count-point-v3"
+    prompt_version: str = "count-point-v4"
     vrsbench_min_scan_depth: int = Field(default=0, ge=0)
     vrsbench_zero_review: bool = False
     vrsbench_tile_upscale_max_side: int | None = Field(default=None, gt=0)

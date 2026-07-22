@@ -124,40 +124,78 @@ class ExpertResult(BaseModel):
         raw_boxes = data.get("boxes")
         normalized_boxes, normalizations = _normalize_model_boxes(raw_boxes)
         items = data.get("evidence_items")
+        evidence_quality: list[str] = []
         if isinstance(items, list):
             normalized_items: list[Any] = []
             for index, raw_item in enumerate(items):
+                if isinstance(raw_item, VisualEvidence):
+                    normalized_items.append(raw_item)
+                    evidence_quality.append("trusted_box" if raw_item.box is not None else "trusted_point")
+                    continue
                 if not isinstance(raw_item, dict):
                     normalized_items.append(raw_item)
+                    evidence_quality.append("invalid")
                     continue
                 item = dict(raw_item)
                 box, point = item.get("box"), item.get("point")
                 if _is_coordinate_pair(box) and _is_coordinate_pair(point):
-                    item["box"] = _normalize_box_geometry([*box, *point], normalizations)
-                    item["point"] = None
-                    normalizations.append("evidence_box_and_point_combined_as_corners")
+                    normalized_box = _normalize_box_geometry([*box, *point], normalizations)
+                    if _box_is_degenerate(normalized_box):
+                        item["box"] = None
+                        item["point"] = _degenerate_box_point(normalized_box)
+                        normalizations.append("degenerate_evidence_box_reclassified_as_point")
+                        evidence_quality.append("repaired_point")
+                    else:
+                        item["box"] = normalized_box
+                        item["point"] = None
+                        normalizations.append("evidence_box_and_point_combined_as_corners")
+                        evidence_quality.append("trusted_box")
                 elif _is_coordinate_pair(box):
                     if index < len(normalized_boxes):
                         item["box"] = normalized_boxes[index]
                         normalizations.append("evidence_box_completed_from_top_level_corners")
+                        evidence_quality.append("trusted_box")
                     else:
                         item["box"] = None
                         item["point"] = [int(box[0]), int(box[1])]
                         normalizations.append("two_value_evidence_box_reclassified_as_point")
+                        evidence_quality.append("repaired_point")
                 elif isinstance(box, list) and len(box) == 4:
-                    item["box"] = _normalize_box_geometry(box, normalizations)
-                    if point is not None:
+                    normalized_box = _normalize_box_geometry(box, normalizations)
+                    if _box_is_degenerate(normalized_box):
+                        item["box"] = None
+                        if _is_coordinate_pair(point):
+                            item["point"] = [int(point[0]), int(point[1])]
+                            normalizations.append("degenerate_evidence_box_dropped_in_favor_of_point")
+                            evidence_quality.append("trusted_point")
+                        else:
+                            item["point"] = _degenerate_box_point(normalized_box)
+                            normalizations.append("degenerate_evidence_box_reclassified_as_point")
+                            evidence_quality.append("repaired_point")
+                    else:
+                        item["box"] = normalized_box
+                        evidence_quality.append("trusted_box")
+                    if point is not None and item.get("box") is not None:
                         item["point"] = None
                         normalizations.append("evidence_point_dropped_in_favor_of_box")
                 elif _is_coordinate_pair(point) and box is not None:
                     item["box"] = None
                     normalizations.append("invalid_evidence_box_dropped_in_favor_of_point")
+                    evidence_quality.append("trusted_point")
+                elif _is_coordinate_pair(point):
+                    evidence_quality.append("trusted_point")
+                else:
+                    evidence_quality.append("invalid")
                 normalized_items.append(item)
             data["evidence_items"] = normalized_items
         data["boxes"] = normalized_boxes
-        if normalizations:
+        if normalizations or evidence_quality:
             geometry = dict(data.get("geometry") or {})
-            geometry["input_normalizations"] = list(dict.fromkeys(normalizations))
+            if normalizations:
+                geometry["input_normalizations"] = list(dict.fromkeys(normalizations))
+            if evidence_quality:
+                geometry["evidence_quality"] = evidence_quality
+            geometry["repair_severity"] = _repair_severity(normalizations)
             data["geometry"] = geometry
         return data
 
@@ -182,17 +220,19 @@ def _normalize_model_boxes(value: Any) -> tuple[list[list[int]], list[str]]:
     if not isinstance(value, list):
         return [], normalizations
     if all(isinstance(item, list) and len(item) == 4 for item in value):
-        return [_normalize_box_geometry(item, normalizations) for item in value], normalizations
+        boxes = [_normalize_box_geometry(item, normalizations) for item in value]
+        return _drop_degenerate_top_level_boxes(boxes, normalizations), normalizations
     if value and len(value) % 2 == 0 and all(_is_coordinate_pair(item) for item in value):
         boxes = [
             _normalize_box_geometry([*value[index], *value[index + 1]], normalizations)
             for index in range(0, len(value), 2)
         ]
         normalizations.append("top_level_corner_pairs_combined_as_boxes")
-        return boxes, normalizations
+        return _drop_degenerate_top_level_boxes(boxes, normalizations), normalizations
     if len(value) == 4 and all(isinstance(item, (int, float)) for item in value):
         normalizations.append("flat_top_level_box_wrapped")
-        return [_normalize_box_geometry(value, normalizations)], normalizations
+        boxes = [_normalize_box_geometry(value, normalizations)]
+        return _drop_degenerate_top_level_boxes(boxes, normalizations), normalizations
     return [], normalizations
 
 
@@ -201,8 +241,8 @@ def _is_coordinate_pair(value: Any) -> bool:
 
 
 def _normalize_box_geometry(value: list[Any], normalizations: list[str]) -> list[int]:
-    """Canonicalize model box order and minimally expand zero-area axes.
-    规范化模型框的角点顺序，并以最小幅度扩展零面积坐标轴。
+    """Canonicalize box order without inventing area for a line or point.
+    规范化框的角点顺序，但不为线或点虚构面积。
     """
 
     converted = [int(item) for item in value]
@@ -213,19 +253,48 @@ def _normalize_box_geometry(value: list[Any], normalizations: list[str]) -> list
     ordered = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
     if ordered != clamped:
         normalizations.append("box_corners_reordered")
-    if ordered[0] == ordered[2]:
-        if ordered[2] < 999:
-            ordered[2] += 1
-        else:
-            ordered[0] -= 1
-        normalizations.append("degenerate_box_x_expanded_by_one")
-    if ordered[1] == ordered[3]:
-        if ordered[3] < 999:
-            ordered[3] += 1
-        else:
-            ordered[1] -= 1
-        normalizations.append("degenerate_box_y_expanded_by_one")
     return ordered
+
+
+def _box_is_degenerate(box: list[int]) -> bool:
+    """Return whether a normalized box has zero extent on either axis.
+    返回归一化框是否在任一坐标轴上为零长度。
+    """
+
+    return box[0] == box[2] or box[1] == box[3]
+
+
+def _degenerate_box_point(box: list[int]) -> list[int]:
+    """Preserve a degenerate observation as a midpoint, not a fabricated box.
+    将退化观测保留为中点，而不是虚构检测框。
+    """
+
+    return [round((box[0] + box[2]) / 2), round((box[1] + box[3]) / 2)]
+
+
+def _drop_degenerate_top_level_boxes(
+    boxes: list[list[int]], normalizations: list[str]
+) -> list[list[int]]:
+    """Drop unlabeled degenerate legacy boxes; labeled evidence keeps a point.
+    丢弃无标签的退化旧框；带标签证据则保留为点。
+    """
+
+    retained = [box for box in boxes if not _box_is_degenerate(box)]
+    if len(retained) != len(boxes):
+        normalizations.append("degenerate_top_level_box_dropped")
+    return retained
+
+
+def _repair_severity(normalizations: list[str]) -> str:
+    """Summarize whether a geometry repair reduced spatial information.
+    汇总几何修复是否降低了空间信息质量。
+    """
+
+    if any("degenerate" in value for value in normalizations):
+        return "high"
+    if normalizations:
+        return "low"
+    return "none"
 
 
 class ImageRef(BaseModel):

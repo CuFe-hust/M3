@@ -465,7 +465,7 @@ class PointCountingOrchestrator:
         if should_split and self._can_split(tile):
             children = split_tile_owner_core(
                 tile,
-                halo_size=self.counting.halo_size,
+                halo_size=_child_halo_size(self.counting.halo_size, tile.recursive_depth + 1),
                 model_max_side=self.counting.model_max_side,
             )
             self.checkpoints.write_success(tile, request_hash, response, points, status="needs_split")
@@ -567,8 +567,8 @@ class PointCountingOrchestrator:
                 "target_spec": target.model_dump(mode="json"),
                 "tile_id": tile.tile_id,
                 "owner_core_normalized": _owner_core_prompt_bounds(tile),
-                "first_pass": original_response.model_dump(mode="json"),
-                "instruction": "Re-scan for missed instances and return one point per supported instance.",
+                "review_mode": "independent_complete_rescan",
+                "instruction": "Independently re-scan for missed instances and return one point per supported instance.",
             },
             ensure_ascii=False,
         )
@@ -582,7 +582,7 @@ class PointCountingOrchestrator:
         request_hash = build_request_hash(
             model=self.qwen.model,
             generation={"temperature": self.qwen.temperature, "max_tokens": self.qwen.max_tokens},
-            prompt_version="missing-point-review-v2",
+            prompt_version="missing-point-review-v3",
             messages=messages,
             image_sha256=image_hash,
             tile_geometry=tile.model_dump(mode="json"),
@@ -596,7 +596,7 @@ class PointCountingOrchestrator:
             request_meta=RequestMeta(
                 request_id=f"{sample_id}:{tile.tile_id}:zero-review",
                 request_hash=request_hash,
-                prompt_version="missing-point-review-v2",
+                prompt_version="missing-point-review-v3",
                 sample_id=sample_id,
                 tile_id=tile.tile_id,
                 image_sha256=image_hash,
@@ -625,7 +625,7 @@ class PointCountingOrchestrator:
             tile.recursive_depth < minimum_scan_depth
             or response.needs_split
             or response.reported_count >= self.counting.max_points_per_tile
-            or bool({"dense", "too_small"}.intersection(uncertainties))
+            or bool({"dense", "too_small", "zero_unconfirmed"}.intersection(uncertainties))
         )
 
     def _can_split(self, tile: TileSpec) -> bool:
@@ -794,6 +794,14 @@ def _upscale_to_max_side(image: Image.Image, max_side: int) -> Image.Image:
     scale = max_side / current
     size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
     return image.resize(size, Image.Resampling.LANCZOS)
+
+
+def _child_halo_size(base_halo: int, child_depth: int) -> int:
+    """Reduce halo as recursive crops become smaller so each pass gains detail.
+    随递归裁剪缩小 halo，使每轮复查获得真正更细的局部细节。
+    """
+
+    return max(0, base_halo // (2 ** max(0, child_depth)))
 
 
 def _normalize_target_label(value: str) -> str:

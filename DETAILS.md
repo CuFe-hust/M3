@@ -529,11 +529,12 @@ status checkpoint under `tiles/<tile_id>/`; a matching successful request hash i
 resume, while a failed tile remains explicitly visible.
 
 `CountTargetSpec` is shared by all tiles of a sample and is included in request-cache inputs.
-`count_tile_v3.md` defines the active owner-core-only point protocol. It preserves point-only final
-counting while adding explicit VRSBench vehicle aliases and requiring a systematic scan before an
-empty response. `missing_point_review_v2.md` supports an optional second pass for empty leaf tiles;
-an empty review is trusted only when it explicitly records `confirmed_absent`. Otherwise the count
-remains zero because no point exists, but the result is partial with `ZERO_COUNT_UNCONFIRMED`.
+`count_tile_v4.md` defines the active owner-core-only point protocol. It preserves point-only final
+counting while adding explicit VRSBench vehicle aliases and requiring a systematic overview scan
+before an empty response. `missing_point_review_v3.md` supports an independent second pass for an
+empty tile; an empty review is trusted only when it explicitly records `confirmed_absent`. A
+`zero_unconfirmed` review triggers finer crops when geometry permits. Otherwise the count remains
+zero because no point exists, but the result is partial with `ZERO_COUNT_UNCONFIRMED`.
 `TileCountResponse` is additionally
 checked against both the requested tile ID and the target label before coordinate conversion.
 Parents that request a split are stored as `superseded_by_children`; their four child owner cores
@@ -562,9 +563,9 @@ any tile failed, it reports the completed-tile fraction and confirmed points and
 non-final. `CallBudget` also exposes a separate DeepSeek reservation method. No default route calls
 DeepSeek, and any future judge must receive only text and structured evidence rather than image data.
 
-The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v3.md`,
+The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v4.md`,
 `count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
-`missing_point_review_v2.md`, `spatial_v3.md`, `spatial_candidate_review_v1.md`, and
+`missing_point_review_v3.md`, `spatial_v4.md`, `spatial_candidate_review_v2.md`, and
 `general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
 snapshots each active asset. Prompts are not changed
 in place when their behavior changes; a new versioned file must be added and selected explicitly.
@@ -613,16 +614,18 @@ sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, and `evaluate-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `Qwen3VLForConditionalGeneration` and `AutoProcessor`; it does not start or contact vLLM. `TaskRouter.route_vrsbench_vqa` maps official `object quantity` questions to `CountingExpert`, position/existence/category/direction questions to `SpatialExpert`, and color questions to `GeneralVQAExpert`, without a router-model call. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
 
 Known VRSBench quantity questions use a fixed, reference-independent vehicle ontology rather than
-an LLM target parse. The default YAML forces one 2x2 owner-core subdivision, optionally enlarges
-transmitted crops without changing normalized coordinate semantics, and reviews empty leaf tiles.
-Spatial extreme/arrangement questions may perform one candidate-completeness pass; top/bottom
-geometry refuses to claim completeness with fewer than two vehicle candidates. Final VRSBench
-answers normalize only declared answer vocabularies and retain the raw Qwen answer in the geometry
-audit. Partial VQA artifacts remain visible in the HTML report instead of being silently omitted.
+an LLM target parse. The default YAML first scans the whole image when it fits one owner core,
+optionally enlarges the overview without changing normalized coordinates, and independently reviews
+an empty result. A `zero_unconfirmed` review triggers finer crops whose halo shrinks by depth.
+Accepted points remain the sole counting truth. Spatial extreme, grid-position, arrangement, and
+proximity questions perform an independent candidate-enumeration pass without first-pass evidence.
+Question text is classified into a semantic subtype independently from the coarse official type,
+and only reference-independent answer vocabularies are sent to Qwen. Raw answers remain in the
+geometry audit, and partial VQA artifacts remain visible in the HTML report.
 
 Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. With `--evaluate --judge-policy all`, the versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
 
-Before strict `VisualEvidence` validation, the structured result normalizes a model-emitted pair of corner points into one flat box and reclassifies a single two-value box as a point. Reversed corners are ordered, zero-width or zero-height boxes are expanded by one normalized coordinate unit within `0..999`, and a simultaneous valid box and point deterministically retains the box. Any clamp, shape conversion, degenerate-axis expansion, or box/point conflict resolution is retained in `geometry.input_normalizations`.
+Before strict `VisualEvidence` validation, the structured result normalizes a model-emitted pair of corner points into one flat box and reclassifies a single two-value box as a point. Reversed corners are ordered. A zero-width or zero-height observation is never expanded into a fabricated one-pixel box: labeled evidence is retained as a point and unlabeled legacy boxes are dropped. A simultaneous valid box and point retains the box, while a degenerate box with an explicit point retains the point. Normalization names, per-item evidence quality, and aggregate repair severity are retained in the geometry audit. Deterministic box geometry never consumes a repaired point.
 
 The Transformers client permits one versioned, text-only JSON-format repair after a parse or schema failure; the repair receives the failed raw output and validation error but no image. If either model response is truncated only at the end, the client first closes the known JSON containers. When the final array/object member is itself incomplete, it discards only that incomplete tail member and validates the remaining response. It does not synthesize missing visual evidence. Local truncation recovery is recorded in both `geometry.input_normalizations` and call validation metadata; both model attempts, validation errors, timing, and cumulative token usage remain persisted.
 
