@@ -1,5 +1,6 @@
 models:
   qwen:
+    backend: vllm
     base_url: http://127.0.0.1:8000/v1
     model: qwen3-vl-4b-instruct
     api_key_env: QWEN_API_KEY
@@ -7,6 +8,11 @@ models:
     max_retries: 2
     temperature: 0.0
     max_tokens: 4096
+    dtype: auto
+    device_map: auto
+    local_files_only: false
+    min_pixels: null
+    max_pixels: null
   deepseek:
     base_url: https://api.deepseek.com
     model: deepseek-v4-flash

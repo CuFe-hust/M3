@@ -21,6 +21,7 @@ class QwenSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    backend: Literal["vllm", "transformers"] = "vllm"
     base_url: str = "http://127.0.0.1:8000/v1"
     model: str = "qwen3-vl-4b-instruct"
     api_key_env: str = "QWEN_API_KEY"
@@ -28,6 +29,11 @@ class QwenSettings(BaseModel):
     max_retries: int = Field(default=2, ge=0)
     temperature: float = Field(default=0.0, ge=0.0)
     max_tokens: int = Field(default=4096, gt=0)
+    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+    device_map: str = "auto"
+    local_files_only: bool = False
+    min_pixels: int | None = Field(default=None, gt=0)
+    max_pixels: int | None = Field(default=None, gt=0)
 
 
 class DeepSeekSettings(BaseModel):
@@ -144,6 +150,7 @@ class EnvironmentOverrides(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    qwen_backend: Literal["vllm", "transformers"] | None = Field(default=None, validation_alias="QWEN_BACKEND")
     qwen_base_url: str | None = Field(default=None, validation_alias="QWEN_BASE_URL")
     qwen_model: str | None = Field(default=None, validation_alias="QWEN_MODEL")
     deepseek_base_url: str | None = Field(default=None, validation_alias="DEEPSEEK_BASE_URL")
@@ -179,6 +186,7 @@ def _environment_values(environ: Mapping[str, str] | None) -> dict[str, str]:
     overrides = EnvironmentOverrides()
     values = overrides.model_dump(exclude_none=True)
     return {
+        "QWEN_BACKEND": values.get("qwen_backend", ""),
         "QWEN_BASE_URL": values.get("qwen_base_url", ""),
         "QWEN_MODEL": values.get("qwen_model", ""),
         "DEEPSEEK_BASE_URL": values.get("deepseek_base_url", ""),
@@ -199,6 +207,7 @@ def _apply_environment_overrides(payload: dict[str, Any], environ: Mapping[str, 
     paths = payload.setdefault("paths", {})
     runs = payload.setdefault("runs", {})
     for key, destination in (
+        ("QWEN_BACKEND", (qwen, "backend")),
         ("QWEN_BASE_URL", (qwen, "base_url")),
         ("QWEN_MODEL", (qwen, "model")),
         ("DEEPSEEK_BASE_URL", (deepseek, "base_url")),

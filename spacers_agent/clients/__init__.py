@@ -6,5 +6,6 @@ from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, image_
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.clients.mock import MockVisionClient
 from spacers_agent.clients.qwen_vllm import QwenVLLMClient
+from spacers_agent.clients.qwen_transformers import QwenTransformersClient
 
-__all__ = ["DeepSeekJudgeClient", "MockVisionClient", "QwenVLLMClient", "RequestMeta", "VisionLanguageClient", "image_to_data_url"]
+__all__ = ["DeepSeekJudgeClient", "MockVisionClient", "QwenTransformersClient", "QwenVLLMClient", "RequestMeta", "VisionLanguageClient", "image_to_data_url"]

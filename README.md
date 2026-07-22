@@ -226,4 +226,29 @@ python -m spacers_agent.cli resume-run --run-id xlrs-count-v1
 python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
 ```
 
-The four dataset adapters are deliberately read-only and require a versioned `spacers_adapter.json` at each dataset root. It declares the sample file and exact field mappings; the runner probes and validates it before reading a sample, and reports observed fields on mismatch. No filename or field-name guessing is used by this new path. Spark deployment assets are under `scripts/server/`; copy `scripts/server/env.example` outside the repository before use.
+The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields and image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
+
+To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL checkpoint, create an ignored `configs/local.spark.yaml` from `configs/default.yaml` and set only local runtime values such as:
+
+```yaml
+models:
+  qwen:
+    backend: transformers
+    model: /path/to/Qwen3_vl_4b_instruct
+    dtype: bfloat16
+    device_map: auto
+    local_files_only: true
+    max_tokens: 256
+```
+
+Then run sequentially; this path does not require or contact vLLM:
+
+```bash
+python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
+  --dataset VRSBench --root /path/to/vrsbench --split validation \
+  --task general_vqa --run-id vrsbench-qwen3vl-router-20 \
+  --max-samples 20 --sample-concurrency 1 \
+  --evaluate --judge-policy all
+```
+
+Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns, and receives the question, official reference answers, candidate answer, and exact-match flag—not the image. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card contains the routed Agent chain, Qwen raw/final answer, standard answer, and DeepSeek validation.

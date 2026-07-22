@@ -47,6 +47,111 @@ class DeepSeekJudgeResult(BaseModel):
     concise_rationale: str = Field(max_length=500)
 
 
+class VQAEvaluationRecord(BaseModel):
+    """One deterministic VQA comparison plus optional text-only judge result.
+    一条确定性 VQA 对比及可选的纯文本审核结果。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str
+    question: str
+    reference_answers: list[str]
+    candidate_answer: str
+    exact_match: bool
+    judge_status: Literal["not_requested", "succeeded", "failed"]
+    judge_score: int | None = Field(default=None, ge=0, le=1)
+    judge_parsed: DeepSeekJudgeResult | None = None
+    judge_error: str | None = None
+
+
+def build_vqa_judge_payload(
+    *,
+    question: str,
+    reference_answers: list[str],
+    candidate_answer: str,
+) -> dict[str, Any]:
+    """Build a VQA judge payload containing no image data or paths.
+    构建不含图像数据或路径的 VQA 审核载荷。
+    """
+
+    normalized_candidate = _normalize_answer(candidate_answer)
+    normalized_references = {_normalize_answer(answer) for answer in reference_answers}
+    return {
+        "task": "general_vqa_answer_validation",
+        "question": question,
+        "prediction": {"answer": candidate_answer},
+        "ground_truth": {"answers": reference_answers},
+        "deterministic_metrics": {"exact_match": int(normalized_candidate in normalized_references)},
+    }
+
+
+def build_vqa_judge_request_hash(
+    *,
+    model: str,
+    prompt_text: str,
+    sample_id: str,
+    payload: dict[str, Any],
+) -> str:
+    """Hash all text-only VQA judge inputs for stable resume behavior.
+    对全部纯文本 VQA 审核输入计算哈希，以支持稳定续跑。
+    """
+
+    return _stable_hash(
+        {
+            "model": model,
+            "prompt_sha256": _stable_hash(prompt_text),
+            "sample_id": sample_id,
+            "payload": payload,
+        }
+    )
+
+
+def merge_vqa_evaluation(
+    *,
+    sample_id: str,
+    question: str,
+    reference_answers: list[str],
+    candidate_answer: str,
+    judge_parsed: DeepSeekJudgeResult | None = None,
+    judge_error: str | None = None,
+) -> VQAEvaluationRecord:
+    """Preserve exact comparison and map a successful judge verdict to binary score.
+    保留严格对比，并将成功审核结论映射为二值分数。
+    """
+
+    exact = _normalize_answer(candidate_answer) in {_normalize_answer(answer) for answer in reference_answers}
+    if judge_error is not None:
+        return VQAEvaluationRecord(
+            sample_id=sample_id,
+            question=question,
+            reference_answers=reference_answers,
+            candidate_answer=candidate_answer,
+            exact_match=exact,
+            judge_status="failed",
+            judge_error=judge_error,
+        )
+    if judge_parsed is None:
+        return VQAEvaluationRecord(
+            sample_id=sample_id,
+            question=question,
+            reference_answers=reference_answers,
+            candidate_answer=candidate_answer,
+            exact_match=exact,
+            judge_status="not_requested",
+        )
+    return VQAEvaluationRecord(
+        sample_id=sample_id,
+        question=question,
+        reference_answers=reference_answers,
+        candidate_answer=candidate_answer,
+        exact_match=exact,
+        judge_status="succeeded",
+        judge_score=int(judge_parsed.verdict == "correct"),
+        judge_parsed=judge_parsed,
+    )
+
+
 class CountJudgeResult(BaseModel):
     """Counting-specific Judge contract that cannot override metrics. / 不能覆盖指标的计数专用 Judge 契约。"""
     model_config = ConfigDict(extra="forbid")
@@ -233,3 +338,11 @@ def merge_count_evaluation(
 def _stable_hash(value: Any) -> str:
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _normalize_answer(value: str) -> str:
+    """Normalize surrounding punctuation and whitespace for exact VQA comparison.
+    规范首尾标点与空白，用于 VQA 严格对比。
+    """
+
+    return " ".join(str(value).strip().lower().strip(".,;:!").split())

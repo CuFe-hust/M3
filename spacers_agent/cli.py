@@ -21,13 +21,15 @@ from spacers_agent.settings import load_settings
 from spacers_agent.data_audit import inspect_dataset_root, write_dataset_audit
 from spacers_agent.evaluation import EvaluationRecord
 from spacers_agent.visualization import render_counting_overlay
-from spacers_agent.clients.base import JsonResponseCache, RequestMeta
+from spacers_agent.clients.base import JsonResponseCache, RequestMeta, VisionLanguageClient
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.clients.qwen_vllm import QwenVLLMClient
+from spacers_agent.clients.qwen_transformers import QwenTransformersClient
 from spacers_agent.counting import PointCountingOrchestrator
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import build_count_judge_payload, build_judge_request_hash, merge_count_evaluation
 from spacers_agent.workflow import DatasetRunner, TargetParser, atomic_write_json
+from spacers_agent.vqa_report import build_multiagent_vqa_report
 from spacers_agent.commands import count_image as count_image_command
 
 
@@ -48,6 +50,7 @@ DEFAULT_PROMPT_PATHS = [
     PROJECT_ROOT / "prompts" / "general_vqa_v1.md",
     PROJECT_ROOT / "prompts" / "deepseek_judge_v1.md",
     PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md",
+    PROJECT_ROOT / "prompts" / "deepseek_vqa_judge_v1.md",
 ]
 
 
@@ -215,10 +218,17 @@ def _show_health_metadata(settings: object, service: str, *, live: bool = False)
     return 0
 
 
-def _client(settings: object, run_dir: Path) -> QwenVLLMClient:
+def _client(settings: object, run_dir: Path) -> VisionLanguageClient:
     """Create a live Qwen client with run-scoped safe cache. / 创建带运行范围安全缓存的在线 Qwen 客户端。"""
 
-    return QwenVLLMClient(settings.models.qwen, repair_prompt=DEFAULT_JSON_REPAIR_PROMPT.read_text(encoding="utf-8"), cache=JsonResponseCache(run_dir / "cache"))
+    cache = JsonResponseCache(run_dir / "cache")
+    if settings.models.qwen.backend == "transformers":
+        return QwenTransformersClient(settings.models.qwen, cache=cache)
+    return QwenVLLMClient(
+        settings.models.qwen,
+        repair_prompt=DEFAULT_JSON_REPAIR_PROMPT.read_text(encoding="utf-8"),
+        cache=cache,
+    )
 
 
 def _prompts() -> dict[str, str]:
@@ -280,13 +290,30 @@ async def _run_dataset(settings: object, args: object) -> int:
     adapter = get_adapter(args.dataset)
     requested = args.task.split(",") if args.task else sorted(getattr(adapter, "supported_tasks", ()))
     selected_ids = set(args.sample_ids.read_text(encoding="utf-8").split()) if args.sample_ids else None
+    qwen_client = _client(settings, run_dir)
+    judge_client = None
+    if args.evaluate and args.judge_policy != "none" and os.environ.get(settings.models.deepseek.api_key_env):
+        judge_client = DeepSeekJudgeClient(
+            settings.models.deepseek,
+            judge_prompt=(PROJECT_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").read_text(encoding="utf-8"),
+            repair_prompt=(PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md").read_text(encoding="utf-8"),
+            cache=JsonResponseCache(run_dir / "deepseek_vqa_cache"),
+        )
     summaries = []
     for task in requested:
-        summaries.append(await DatasetRunner(settings, adapter, run_dir=run_dir, client=_client(settings, run_dir), prompts=_prompts()).run(split=args.split, task=task, resume=args.resume, limit=None if args.limit == 0 else args.limit, shard_index=args.shard_index, shard_count=args.shard_count, start_index=args.start_index, sample_ids=selected_ids, fail_fast=args.fail_fast, sample_concurrency=args.sample_concurrency))
-    if args.evaluate:
+        summaries.append(await DatasetRunner(settings, adapter, run_dir=run_dir, client=qwen_client, prompts=_prompts(), judge_client=judge_client, judge_policy=args.judge_policy if args.evaluate else "none").run(split=args.split, task=task, resume=args.resume, limit=None if args.limit == 0 else args.limit, shard_index=args.shard_index, shard_count=args.shard_count, start_index=args.start_index, sample_ids=selected_ids, fail_fast=args.fail_fast, sample_concurrency=args.sample_concurrency))
+    if args.evaluate and any(task in {"counting", "fine_grained_counting"} for task in requested):
         # A missing key still produces deterministic records; it never silently skips evaluation.
         # 缺少密钥时仍生成确定性记录，绝不静默跳过评估。
         await _evaluate_run(settings, run_id, bool(os.environ.get(settings.models.deepseek.api_key_env)))
+    if "general_vqa" in requested:
+        report_path = build_multiagent_vqa_report(
+            run_dir,
+            qwen=settings.models.qwen,
+            model_load_seconds=float(getattr(qwen_client, "load_seconds", 0.0)),
+        )
+        if report_path is not None:
+            print(json.dumps({"html_report": str(report_path)}, ensure_ascii=False))
     print(json.dumps([summary.model_dump(mode="json") for summary in summaries], ensure_ascii=False, indent=2))
     return 0
 

@@ -124,6 +124,90 @@ class ManifestDatasetAdapter:
             )
 
 
+class VRSBenchVQAAdapter:
+    """Read the official VRSBench evaluation VQA release without source edits.
+    只读加载官方 VRSBench VQA 评测发布，不修改源数据。
+    """
+
+    name = "VRSBench"
+    supported_tasks = {"general_vqa"}
+    annotation_name = "VRSBench_EVAL_vqa.json"
+
+    def probe(self, root: Path) -> AdapterProbe:
+        """Verify the official annotation fields before yielding any sample.
+        在产出样本前校验官方标注字段。
+        """
+
+        annotation = self._annotation_path(root)
+        rows = _read_rows(annotation)
+        required = {"image_id", "question", "ground_truth", "question_id"}
+        observed = tuple(sorted({key for row in rows[:20] for key in row}))
+        for index, row in enumerate(rows):
+            missing = sorted(required - set(row))
+            if missing:
+                raise DatasetProbeError(f"Official VRSBench VQA row {index} misses fields: {missing}")
+        return AdapterProbe(self.name, "official-eval-v1", annotation, observed, len(rows))
+
+    def iter_samples(self, root: Path, split: str, task: str) -> Iterator[UnifiedSample]:
+        """Map official VQA rows to validated unified samples in source order.
+        按源顺序将官方 VQA 行映射为经校验的统一样本。
+        """
+
+        if split not in {"validation", "val"}:
+            raise DatasetProbeError("Official VRSBench_EVAL_vqa.json supports split='validation' only")
+        if task != "general_vqa":
+            raise DatasetProbeError("Official VRSBench VQA adapter supports task='general_vqa' only")
+        probe = self.probe(root)
+        for index, row in enumerate(_read_rows(probe.sample_file)):
+            image_id = str(row["image_id"])
+            image_path = self._image_path(root, probe.sample_file.parent, image_id)
+            question = str(row["question"])
+            answer = str(row["ground_truth"])
+            question_id = str(row["question_id"])
+            yield UnifiedSample(
+                sample_id=stable_sample_id(question_id, image_path.relative_to(root), question, index),
+                dataset=self.name,
+                split="validation",
+                task="general_vqa",
+                images=[ImageRef(image_id=image_id, path=image_path, role="image")],
+                question=question,
+                ground_truth=GroundTruth(
+                    answers=[answer],
+                    raw={
+                        "adapter_version": "official-eval-v1",
+                        "image_id": image_id,
+                        "question_id": row["question_id"],
+                    },
+                ),
+                metadata={"source": "VRSBench", "source_index": index},
+            )
+
+    def _annotation_path(self, root: Path) -> Path:
+        direct = root / self.annotation_name
+        if direct.is_file():
+            return direct
+        matches = sorted(root.rglob(self.annotation_name)) if root.is_dir() else []
+        if len(matches) != 1:
+            raise DatasetProbeError(
+                f"Expected exactly one {self.annotation_name}; observed {len(matches)} under {root}"
+            )
+        return matches[0]
+
+    @staticmethod
+    def _image_path(root: Path, annotation_root: Path, image_id: str) -> Path:
+        candidates = (
+            root / image_id,
+            annotation_root / image_id,
+            root / "Images_val" / image_id,
+            root / "Images_val" / "Images_val" / image_id,
+            annotation_root / "Images_val" / "Images_val" / image_id,
+        )
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        raise DatasetProbeError(f"Official VRSBench image is missing: {image_id}")
+
+
 def _read_rows(path: Path) -> list[dict[str, Any]]:
     """Read a small explicit JSON or JSONL manifest without network fallback. / 读取显式 JSON 或 JSONL 清单且不使用网络回退。"""
 
@@ -143,7 +227,7 @@ def _read_rows(path: Path) -> list[dict[str, Any]]:
 
 ADAPTERS: dict[str, DatasetAdapter] = {
     "LEVIR-CC": ManifestDatasetAdapter("LEVIR-CC", {"change_caption", "change_qa"}),
-    "VRSBench": ManifestDatasetAdapter("VRSBench", {"general_vqa", "caption", "grounding", "spatial_relation"}),
+    "VRSBench": VRSBenchVQAAdapter(),
     "MME-RealWorld": ManifestDatasetAdapter("MME-RealWorld", {"general_vqa", "multiple_choice_vqa"}),
     "XLRS-Bench-lite": ManifestDatasetAdapter("XLRS-Bench-lite", {"counting", "general_vqa", "caption", "grounding"}),
 }

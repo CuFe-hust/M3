@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,17 @@ from typing import Any
 from PIL import Image
 
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
+from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.counting import PointCountingOrchestrator
 from spacers_agent.dataset_adapters import DatasetAdapter
-from spacers_agent.evaluation import build_count_judge_payload, build_judge_request_hash, merge_count_evaluation
+from spacers_agent.evaluation import (
+    build_count_judge_payload,
+    build_judge_request_hash,
+    build_vqa_judge_payload,
+    build_vqa_judge_request_hash,
+    merge_count_evaluation,
+    merge_vqa_evaluation,
+)
 from spacers_agent.imaging import read_normalized_image
 from spacers_agent.routing import CallBudget, TaskRouter
 from spacers_agent.schemas import (
@@ -75,7 +84,12 @@ class VisualExpert:
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, "image/png")}})
             image_hashes.append(__import__("hashlib").sha256(data).hexdigest())
         content.append({"type": "text", "text": sample.question})
-        messages: list[dict[str, Any]] = [{"role": "system", "content": self.prompt}, {"role": "user", "content": content}]
+        structured_prompt = (
+            self.prompt
+            + f"\n\nReturn valid JSON only. Set expert to {self.name!r}; put the concise final answer in answer, "
+            "use empty boxes/evidence when they are not needed, and set status to 'completed'."
+        )
+        messages: list[dict[str, Any]] = [{"role": "system", "content": structured_prompt}, {"role": "user", "content": content}]
         request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=f"{self.name}-v1", messages=messages, image_sha256="|".join(image_hashes))
         return await self.client.complete_json(
             messages=messages,
@@ -141,8 +155,20 @@ class WorkflowService:
 class DatasetRunner:
     """Sequential sample runner with durable status and resume semantics. / 具有持久状态和恢复语义的顺序样本运行器。"""
 
-    def __init__(self, settings: AppSettings, adapter: DatasetAdapter, *, run_dir: Path, client: VisionLanguageClient, prompts: dict[str, str]) -> None:
+    def __init__(
+        self,
+        settings: AppSettings,
+        adapter: DatasetAdapter,
+        *,
+        run_dir: Path,
+        client: VisionLanguageClient,
+        prompts: dict[str, str],
+        judge_client: DeepSeekJudgeClient | None = None,
+        judge_policy: str = "none",
+    ) -> None:
         self.settings, self.adapter, self.run_dir, self.client, self.prompts = settings, adapter, run_dir, client, prompts
+        self.judge_client = judge_client
+        self.judge_policy = judge_policy
 
     async def run(self, *, split: str, task: str, resume: bool = False, limit: int | None = None, shard_index: int = 0, shard_count: int = 1, start_index: int = 0, sample_ids: set[str] | None = None, fail_fast: bool = False, sample_concurrency: int = 1) -> DatasetRunSummary:
         """Run selected samples sequentially and keep every failure visible. / 顺序运行选中样本并保持每个失败可见。"""
@@ -219,6 +245,7 @@ class DatasetRunner:
         atomic_write_json(status_path, started.model_dump(mode="json"))
         try:
             decision = TaskRouter().route_known(sample.task, high_resolution=any((ref.width or 0) * (ref.height or 0) > self.settings.counting.max_pixels_without_tiling for ref in sample.images))
+            atomic_write_json(sample_dir / "routing_decision.json", decision.model_dump(mode="json"))
             if sample.task in {"counting", "fine_grained_counting"}:
                 target = await TargetParser(self.client, self.prompts["target"], self.settings.models.qwen.model).parse(sample.question, sample_id=sample.sample_id, artifact_dir=sample_dir)
                 image = read_normalized_image(sample.images[0].path)
@@ -230,13 +257,104 @@ class DatasetRunner:
                 final = _status(sample, state, result_path=sample_dir / "counting_result.json")
             else:
                 expert_name = decision.experts[0].name
-                result = await WorkflowService(self.client, self.prompts, self.settings.models.qwen.model).execute(expert_name, sample, sample_dir)
+                service = WorkflowService(self.client, self.prompts, self.settings.models.qwen.model)
+                expert_class_name = type(service.experts[expert_name]).__name__
+                inference_started = time.perf_counter()
+                result = await service.execute(expert_name, sample, sample_dir)
+                inference_seconds = round(time.perf_counter() - inference_started, 6)
                 atomic_write_json(sample_dir / "expert_result.json", result.model_dump(mode="json"))
-                final = _status(sample, result.status, result_path=sample_dir / "expert_result.json")
+                judge_status = "not_requested"
+                if sample.task == "general_vqa":
+                    evaluation = await self._evaluate_vqa(sample, result, sample_dir)
+                    judge_status = evaluation.judge_status
+                route = (
+                    f"{type(self.adapter).__name__} -> TaskRouter.route_known -> "
+                    f"{expert_class_name}.run -> "
+                    f"{type(self.client).__name__}.complete_json"
+                )
+                if sample.task == "general_vqa" and judge_status != "not_requested":
+                    route += " -> DeepSeekJudgeClient.judge"
+                atomic_write_json(
+                    sample_dir / "agent_trace.json",
+                    {
+                        "agent_class": f"spacers_agent.workflow.{expert_class_name}",
+                        "entrypoint": "run",
+                        "route": route,
+                        "router_used": True,
+                        "task_type": sample.task,
+                        "qwen_backend": self.settings.models.qwen.backend,
+                        "judge_status": judge_status,
+                        "inference_seconds": inference_seconds,
+                    },
+                )
+                state = {"completed": "succeeded", "partial": "partial", "failed": "failed"}[result.status]
+                final = _status(sample, state, result_path=sample_dir / "expert_result.json")
         except Exception as error:
             final = _status(sample, "failed", error_code=type(error).__name__, error_message=str(error))
         atomic_write_json(status_path, final.model_dump(mode="json"))
         return final
+
+    async def _evaluate_vqa(
+        self,
+        sample: UnifiedSample,
+        result: ExpertResult,
+        sample_dir: Path,
+    ) -> Any:
+        """Compare answers deterministically and optionally call the text-only judge.
+        确定性比较答案，并可选调用纯文本审核器。
+        """
+
+        references = sample.ground_truth.answers if sample.ground_truth is not None else []
+        initial = merge_vqa_evaluation(
+            sample_id=sample.sample_id,
+            question=sample.question,
+            reference_answers=references,
+            candidate_answer=result.answer,
+        )
+        should_judge = self.judge_client is not None and (
+            self.judge_policy == "all" or (self.judge_policy == "errors-only" and not initial.exact_match)
+        )
+        if not should_judge:
+            atomic_write_json(sample_dir / "vqa_evaluation.json", initial.model_dump(mode="json"))
+            return initial
+        payload = build_vqa_judge_payload(
+            question=sample.question,
+            reference_answers=references,
+            candidate_answer=result.answer,
+        )
+        try:
+            verdict = await self.judge_client.judge(
+                payload,
+                request_meta=RequestMeta(
+                    request_id=f"{sample.sample_id}:deepseek-vqa",
+                    request_hash=build_vqa_judge_request_hash(
+                        model=self.settings.models.deepseek.model,
+                        prompt_text=self.judge_client.judge_prompt,
+                        sample_id=sample.sample_id,
+                        payload=payload,
+                    ),
+                    prompt_version="deepseek-vqa-judge-v1",
+                    sample_id=sample.sample_id,
+                    artifact_dir=sample_dir / "deepseek_vqa_judge",
+                ),
+            )
+            evaluation = merge_vqa_evaluation(
+                sample_id=sample.sample_id,
+                question=sample.question,
+                reference_answers=references,
+                candidate_answer=result.answer,
+                judge_parsed=verdict,
+            )
+        except Exception as error:
+            evaluation = merge_vqa_evaluation(
+                sample_id=sample.sample_id,
+                question=sample.question,
+                reference_answers=references,
+                candidate_answer=result.answer,
+                judge_error=f"{type(error).__name__}: {error}",
+            )
+        atomic_write_json(sample_dir / "vqa_evaluation.json", evaluation.model_dump(mode="json"))
+        return evaluation
 
 
 def _status(sample: UnifiedSample, state: str, *, error_code: str | None = None, error_message: str | None = None, result_path: Path | None = None) -> SampleRunStatus:
