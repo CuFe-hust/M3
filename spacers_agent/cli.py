@@ -247,6 +247,8 @@ def _prompts() -> dict[str, str]:
     return {
         "count": DEFAULT_COUNT_PROMPT.read_text(encoding="utf-8"),
         "count_zero_review": (PROJECT_ROOT / "prompts" / "missing_point_review_v3.md").read_text(encoding="utf-8"),
+        "count_proposal": (PROJECT_ROOT / "prompts" / "general_vqa_v1.md").read_text(encoding="utf-8"),
+        "count_localize": (PROJECT_ROOT / "prompts" / "count_localize_v1.md").read_text(encoding="utf-8"),
         "target": (PROJECT_ROOT / "prompts" / "target_parse_v1.md").read_text(encoding="utf-8"),
         "change": (PROJECT_ROOT / "prompts" / "change_v1.md").read_text(encoding="utf-8"),
         "spatial": (PROJECT_ROOT / "prompts" / "spatial_v4.md").read_text(encoding="utf-8"),

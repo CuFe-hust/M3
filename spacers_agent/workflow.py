@@ -11,9 +11,10 @@ import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from PIL import Image
+from pydantic import BaseModel, ConfigDict, Field
 
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
@@ -31,16 +32,18 @@ from spacers_agent.evaluation import (
 from spacers_agent.imaging import read_normalized_image
 from spacers_agent.routing import CallBudget, TaskRouter
 from spacers_agent.routing import CountingExpert
+from spacers_agent.settings import AppSettings
 from spacers_agent.schemas import (
     CountTargetSpec,
     CountingResult,
     DatasetRunSummary,
     ExpertResult,
+    GlobalPointObservation,
+    IssueRecord,
     SampleRunStatus,
     UnifiedSample,
     VisualEvidence,
 )
-from spacers_agent.settings import AppSettings
 from spacers_agent.vqa_geometry import (
     apply_vrsbench_geometry,
     vrsbench_answer_vocabulary,
@@ -48,6 +51,19 @@ from spacers_agent.vqa_geometry import (
     vrsbench_question_subtype,
     vrsbench_vehicle_class,
 )
+
+
+class _CountProposalResult(BaseModel):
+    """Compact whole-image count proposal matching the proven GeneralVQA contract.
+    匹配已验证 GeneralVQA 契约的紧凑整图计数提议。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expert: str
+    answer: str
+    boxes: list[list[float]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    status: Literal["completed", "partial", "failed"] = "completed"
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -436,13 +452,15 @@ class DatasetRunner:
                 inference_started = time.perf_counter()
                 if expert_name == "counting_expert":
                     expert_class_name = "CountingExpert"
-                    prompt_version = self.settings.counting.prompt_version
                     result = await self._run_vqa_counting(sample, sample_dir)
+                    prompt_version = str(result.geometry.get("prompt_version", "vrsbench-count-hybrid-v1"))
                     route = (
                         f"{type(self.adapter).__name__} -> TaskRouter.route_vrsbench_vqa -> "
-                        "vrsbench_count_target -> CountingExpert.answer -> "
-                        f"PointCountingOrchestrator.count_image -> {type(self.client).__name__}.complete_json"
+                        "vrsbench_count_target -> CountingExpert.run -> GeneralVQA count proposal -> "
+                        f"{type(self.client).__name__}.complete_json -> accepted points"
                     )
+                    if result.geometry.get("localization_used"):
+                        route += f" -> CountEvidenceLocalizer -> {type(self.client).__name__}.complete_json"
                 else:
                     service = WorkflowService(self.client, self.prompts, self.settings.models.qwen.model)
                     expert = service.experts[expert_name]
@@ -495,62 +513,267 @@ class DatasetRunner:
         return final
 
     async def _run_vqa_counting(self, sample: UnifiedSample, sample_dir: Path) -> ExpertResult:
-        """Run VRSBench quantity VQA through accepted-point counting.
-        通过接受点计数运行 VRSBench 数量问答。
+        """Run VRSBench quantity VQA through proposal-grounded accepted points.
+        通过数量提议及其定位证据运行 VRSBench 接受点计数。
         """
 
-        artifact_dir = sample_dir / "counting_expert"
         target = vrsbench_count_target(sample.question)
         image = read_normalized_image(sample.images[0].path)
-        pipeline = PointCountingOrchestrator(
-            self.client,
-            counting=self.settings.counting,
-            qwen=self.settings.models.qwen,
-            system_prompt=self.prompts["count"],
-            run_dir=artifact_dir,
-            seam_prompt=self.prompts["seam"],
-            empty_review_prompt=self.prompts.get("count_zero_review"),
-        )
-        counted = await CountingExpert(pipeline).answer(
-            image,
-            sample_id=sample.sample_id,
-            question=sample.question,
-            target=target,
-            minimum_scan_depth=self.settings.counting.vrsbench_min_scan_depth,
-            review_empty=self.settings.counting.vrsbench_zero_review,
-            upscale_max_side=self.settings.counting.vrsbench_tile_upscale_max_side,
-        )
-        counting = counted.counting_result
-        atomic_write_json(sample_dir / "counting_result.json", counting.model_dump(mode="json"))
-        points = [
-            VisualEvidence(
-                label=point.target,
-                point=[point.global_x_norm, point.global_y_norm],
-                confidence=point.confidence,
-                image_id=sample.images[0].image_id,
+        proposal, recovery = await self._run_vqa_count_proposal(sample, sample_dir)
+        proposal_count = _parse_count_answer(proposal.answer)
+        issues: list[IssueRecord] = []
+        if recovery is not None:
+            issues.append(
+                IssueRecord(code="COUNT_PROPOSAL_HEADER_RECOVERED", message=recovery)
             )
-            for point in counting.global_points
-            if point.accepted
+        proposal_evidence = _box_evidence(
+            proposal.boxes,
+            target.canonical_label,
+            sample.images[0].image_id,
+        )
+        points, supporting_boxes, dropped = _accepted_count_evidence(
+            proposal_evidence,
+            target.canonical_label,
+            sample.images[0].image_id,
+        )
+        localization_used = proposal_count == 0 or len(points) != proposal_count
+        localizer_answer: int | None = None
+        if localization_used:
+            issues.append(
+                IssueRecord(
+                    code="COUNT_PROPOSAL_EVIDENCE_MISMATCH",
+                    message=f"proposal={proposal_count}, proposal_boxes={len(points)}",
+                )
+            )
+            localized = await self._run_vqa_count_localizer(
+                sample,
+                sample_dir,
+                target,
+                proposal_count,
+            )
+            try:
+                localizer_answer = _parse_count_answer(localized.answer)
+            except ValueError:
+                localizer_answer = None
+            localized_evidence = localized.evidence_items or _box_evidence(
+                localized.boxes,
+                target.canonical_label,
+                sample.images[0].image_id,
+            )
+            points, supporting_boxes, dropped = _accepted_count_evidence(
+                localized_evidence,
+                target.canonical_label,
+                sample.images[0].image_id,
+            )
+        if dropped:
+            issues.append(
+                IssueRecord(
+                    code="COUNT_BORDER_OR_DUPLICATE_EVIDENCE_DROPPED",
+                    message=f"Dropped {dropped} duplicate or tiny border-fragment observations.",
+                )
+            )
+        complete = len(points) == proposal_count and (
+            localizer_answer is None or localizer_answer == len(points) or dropped > 0
+        )
+        if not complete:
+            issues.append(
+                IssueRecord(
+                    code="COUNT_LOCALIZATION_EVIDENCE_MISMATCH",
+                    message=(
+                        f"proposal={proposal_count}, localizer={localizer_answer}, "
+                        f"accepted_points={len(points)}"
+                    ),
+                )
+            )
+        global_points = [
+            _global_count_point(
+                sample.sample_id,
+                target.canonical_label,
+                item,
+                index,
+                image.width,
+                image.height,
+            )
+            for index, item in enumerate(points, start=1)
         ]
+        counting_status: Literal["completed", "completed_with_warnings", "partial"] = (
+            "partial" if not complete else "completed_with_warnings" if issues else "completed"
+        )
+        counting = CountingResult(
+            sample_id=sample.sample_id,
+            target=target.canonical_label,
+            question=sample.question,
+            source_width=image.width,
+            source_height=image.height,
+            tile_count=1,
+            initial_tile_count=1,
+            leaf_tile_count=1,
+            succeeded_tiles=["whole_image_overview"],
+            failed_tiles=[],
+            global_points=global_points,
+            merged_groups=[],
+            unresolved_conflicts=[],
+            warnings=issues,
+            final_count=len(global_points),
+            status=counting_status,
+        )
+        atomic_write_json(sample_dir / "counting_result.json", counting.model_dump(mode="json"))
         geometry = {
-            "version": "accepted-point-count-v2",
+            "version": "accepted-point-count-v3",
+            "prompt_version": "vrsbench-count-hybrid-v1",
             "coordinate_frame": "normalized_0_999_top_left",
             "rule": "final_count_equals_accepted_points",
             "accepted_point_count": len(points),
             "final_count": counting.final_count,
-            "minimum_scan_depth": self.settings.counting.vrsbench_min_scan_depth,
-            "zero_review_enabled": self.settings.counting.vrsbench_zero_review,
-            "tile_upscale_max_side": self.settings.counting.vrsbench_tile_upscale_max_side,
+            "proposal_count": proposal_count,
+            "proposal_status": proposal.status,
+            "proposal_recovery": recovery,
+            "localization_used": localization_used,
+            "localizer_answer": localizer_answer,
+            "supporting_box_count": len(supporting_boxes),
+            "pipeline": "general_vqa_v1_proposal_then_grounded_localization",
             "counting_status": counting.status,
             "warnings": [item.model_dump(mode="json") for item in counting.warnings],
         }
         return ExpertResult(
             expert="counting_expert",
-            answer=str(counting.final_count) if counted.complete else counted.answer,
+            answer=(
+                str(counting.final_count)
+                if complete
+                else f"Confirmed {counting.final_count} localized instances; the count is incomplete."
+            ),
+            boxes=[[float(value) for value in box] for box in supporting_boxes],
             evidence=[f"Accepted point {index + 1}: {item.point}" for index, item in enumerate(points)],
             evidence_items=points,
             geometry=geometry,
-            status="completed" if counted.complete else "partial",
+            status="completed" if complete else "partial",
+        )
+
+    async def _run_vqa_count_proposal(
+        self,
+        sample: UnifiedSample,
+        sample_dir: Path,
+    ) -> tuple[_CountProposalResult, str | None]:
+        """Request an independent count and recover only a complete integer header.
+        请求独立数量，并且只恢复完整的整数头部。
+        """
+
+        image_bytes = sample.images[0].path.read_bytes()
+        system_prompt = self.prompts["count_proposal"] + (
+            "\n\nReturn valid JSON only. Set expert to 'general_vqa_expert'; put the concise "
+            "final answer in answer, use empty boxes/evidence when they are not needed, and set "
+            "status to 'completed'."
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_to_data_url(image_bytes, "image/png")},
+                    },
+                    {"type": "text", "text": sample.question},
+                ],
+            },
+        ]
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        request_hash = build_request_hash(
+            model=self.settings.models.qwen.model,
+            generation={"temperature": 0.0, "max_tokens": self.settings.models.qwen.max_tokens},
+            prompt_version="general-vqa-v1-count-proposal",
+            messages=messages,
+            image_sha256=image_hash,
+        )
+        artifact_dir = sample_dir / "counting_expert" / "count_proposal"
+        try:
+            proposal = await self.client.complete_json(
+                messages=messages,
+                response_model=_CountProposalResult,
+                request_meta=RequestMeta(
+                    request_id=f"{sample.sample_id}:count-proposal",
+                    request_hash=request_hash,
+                    prompt_version="general-vqa-v1-count-proposal",
+                    sample_id=sample.sample_id,
+                    image_sha256=image_hash,
+                    artifact_dir=artifact_dir,
+                ),
+            )
+            return proposal, None
+        except Exception:
+            raw_path = artifact_dir / "raw_response.txt"
+            recovered = _recover_count_proposal_header(
+                raw_path.read_text(encoding="utf-8") if raw_path.is_file() else ""
+            )
+            if recovered is None:
+                raise
+            return (
+                _CountProposalResult(
+                    expert="general_vqa_expert",
+                    answer=str(recovered),
+                    boxes=[],
+                    evidence=[],
+                    status="partial",
+                ),
+                "Recovered a complete integer answer header; malformed geometry was discarded.",
+            )
+
+    async def _run_vqa_count_localizer(
+        self,
+        sample: UnifiedSample,
+        sample_dir: Path,
+        target: CountTargetSpec,
+        proposal_count: int,
+    ) -> ExpertResult:
+        """Independently localize a count proposal with tight whole-image boxes.
+        使用整图紧框独立定位数量提议。
+        """
+
+        image_bytes = sample.images[0].path.read_bytes()
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self.prompts["count_localize"]},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_to_data_url(image_bytes, "image/png")},
+                    },
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "question": sample.question,
+                                "target_spec": target.model_dump(mode="json"),
+                                "independent_count_proposal": proposal_count,
+                                "image_scope": "complete_image",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+            },
+        ]
+        request_hash = build_request_hash(
+            model=self.settings.models.qwen.model,
+            generation={"temperature": 0.0, "max_tokens": self.settings.models.qwen.max_tokens},
+            prompt_version="count-localize-v1",
+            messages=messages,
+            image_sha256=image_hash,
+            target_spec=target.model_dump(mode="json"),
+        )
+        return await self.client.complete_json(
+            messages=messages,
+            response_model=ExpertResult,
+            request_meta=RequestMeta(
+                request_id=f"{sample.sample_id}:count-localizer",
+                request_hash=request_hash,
+                prompt_version="count-localize-v1",
+                sample_id=sample.sample_id,
+                image_sha256=image_hash,
+                artifact_dir=sample_dir / "counting_expert" / "count_localizer",
+            ),
         )
 
     async def _evaluate_vqa(
@@ -640,6 +863,147 @@ class DatasetRunner:
             trace["route"] = route + " -> DeepSeekJudgeClient.judge"
         atomic_write_json(trace_path, trace)
         return True
+
+
+def _parse_count_answer(value: str) -> int:
+    """Parse one non-negative integer without consulting reference answers.
+    在不读取参考答案的前提下解析一个非负整数。
+    """
+
+    normalized = value.strip()
+    if re.fullmatch(r"\d+", normalized) is None:
+        raise ValueError(f"Count proposal is not a non-negative integer: {value!r}")
+    return int(normalized)
+
+
+def _recover_count_proposal_header(raw_response: str) -> int | None:
+    """Recover only a syntactically complete integer answer before malformed geometry.
+    仅恢复畸形几何之前语法完整的整数答案。
+    """
+
+    match = re.search(r'"answer"\s*:\s*"(\d+)"', raw_response)
+    return int(match.group(1)) if match is not None else None
+
+
+def _box_evidence(
+    boxes: list[list[float]],
+    target: str,
+    image_id: str,
+) -> list[VisualEvidence]:
+    """Normalize legacy proposal boxes without inventing missing geometry.
+    规范化旧版提议框，但不虚构缺失几何。
+    """
+
+    evidence: list[VisualEvidence] = []
+    for raw_box in boxes:
+        if len(raw_box) != 4 or any(not isinstance(value, (int, float)) for value in raw_box):
+            continue
+        x1, y1, x2, y2 = [max(0, min(999, round(value))) for value in raw_box]
+        box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+        if box[0] >= box[2] or box[1] >= box[3]:
+            continue
+        evidence.append(
+            VisualEvidence(
+                label=target,
+                box=box,
+                confidence=0.9,
+                image_id=image_id,
+            )
+        )
+    return evidence
+
+
+def _accepted_count_evidence(
+    evidence: list[VisualEvidence],
+    target: str,
+    image_id: str,
+) -> tuple[list[VisualEvidence], list[list[int]], int]:
+    """Deduplicate evidence, reject tiny border fragments, and emit accepted centres.
+    去重证据、拒绝微小边界残片并输出接受中心点。
+    """
+
+    merged = _merge_visual_evidence([], evidence)
+    raw_points: list[VisualEvidence] = []
+    boxes: list[list[int]] = []
+    dropped = len(evidence) - len(merged)
+    for item in merged:
+        if item.box is not None:
+            if _is_tiny_border_fragment(item.box):
+                dropped += 1
+                continue
+            boxes.append(list(item.box))
+            point = [
+                round((item.box[0] + item.box[2]) / 2),
+                round((item.box[1] + item.box[3]) / 2),
+            ]
+        elif item.point is not None:
+            point = list(item.point)
+        else:
+            dropped += 1
+            continue
+        raw_points.append(
+            VisualEvidence(
+                label=target,
+                point=point,
+                confidence=item.confidence,
+                image_id=image_id,
+            )
+        )
+    points = _merge_visual_evidence([], raw_points)
+    dropped += len(raw_points) - len(points)
+    return points, boxes, max(0, dropped)
+
+
+def _is_tiny_border_fragment(box: list[int]) -> bool:
+    """Identify a border-clipped fragment whose visible centre remains at the edge.
+    识别可见中心仍贴近边缘的边界截断残片。
+    """
+
+    center_x = (box[0] + box[2]) / 2
+    center_y = (box[1] + box[3]) / 2
+    return (
+        (box[0] == 0 and center_x < 25)
+        or (box[1] == 0 and center_y < 25)
+        or (box[2] == 999 and center_x > 974)
+        or (box[3] == 999 and center_y > 974)
+    )
+
+
+def _global_count_point(
+    sample_id: str,
+    target: str,
+    evidence: VisualEvidence,
+    index: int,
+    width: int,
+    height: int,
+) -> GlobalPointObservation:
+    """Convert one normalized accepted centre into durable whole-image provenance.
+    将一个归一化接受中心转换为持久化的整图来源记录。
+    """
+
+    if evidence.point is None:
+        raise ValueError("Accepted count evidence requires a point")
+    x, y = evidence.point
+    local_id = f"p{index:03d}"
+    return GlobalPointObservation(
+        global_id=f"{sample_id}:whole_image_overview:{local_id}",
+        target=target,
+        source_tile_id="whole_image_overview",
+        local_id=local_id,
+        local_x_norm=x,
+        local_y_norm=y,
+        local_radius_norm=0,
+        global_x_px=round(x * (width - 1) / 999),
+        global_y_px=round(y * (height - 1) / 999),
+        global_x_norm=x,
+        global_y_norm=y,
+        radius_px=0.0,
+        confidence=evidence.confidence,
+        ownership_valid=True,
+        near_core_boundary=False,
+        accepted=True,
+        short_evidence="whole-image localized instance centre",
+    )
 
 
 def _needs_spatial_candidate_review(sample: UnifiedSample, result: ExpertResult) -> bool:

@@ -376,24 +376,12 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
     run_dir.mkdir()
     client = MockVisionClient(
         {
-            "9:target": {
-                "canonical_label": "small vehicle",
-                "inclusion_rule": "Count each visible small vehicle.",
-                "exclusion_rule": "Exclude non-vehicles.",
-            },
-            "9:r000_c000": {
-                "target": "small vehicle",
-                "tile_id": "r000_c000",
-                "points": [
-                    {
-                        "local_id": "p1",
-                        "x": 500,
-                        "y": 500,
-                        "confidence": 0.9,
-                        "short_evidence": "vehicle centre",
-                    }
-                ],
-                "reported_count": 1,
+            "9:count-proposal": {
+                "expert": "general_vqa_expert",
+                "answer": "1",
+                "boxes": [[400, 400, 600, 600]],
+                "evidence": [],
+                "status": "completed",
             },
         }
     )
@@ -402,7 +390,16 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
         runs=RunSettings(root=tmp_path),
         models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
     )
-    prompts = {"count": "count", "target": "target", "change": "change", "spatial": "spatial", "general": "vqa", "seam": "seam"}
+    prompts = {
+        "count": "count",
+        "count_proposal": "count proposal",
+        "count_localize": "count localize",
+        "target": "target",
+        "change": "change",
+        "spatial": "spatial",
+        "general": "vqa",
+        "seam": "seam",
+    }
 
     summary = await DatasetRunner(
         settings,
@@ -421,6 +418,106 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
     assert result["geometry"]["final_count"] == len(result["evidence_items"]) == 1
     point = result["evidence_items"][0]["point"]
     assert point[0] == point[1] and 0 <= point[0] <= 999
+
+
+@pytest.mark.asyncio
+async def test_vrsbench_quantity_localizes_missing_boxes_and_drops_border_fragment(tmp_path: Path) -> None:
+    """Keep the independent count while converting verified boxes into accepted points.
+    保留独立计数，并将核验框转换为接受点，同时排除图外边界残片。
+    """
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    Image.new("RGB", (64, 64)).save(dataset_root / "quantity.png")
+    (dataset_root / "VRSBench_EVAL_vqa.json").write_text(
+        json.dumps(
+            [
+                {
+                    "image_id": "quantity.png",
+                    "question": "How many vehicles are visible?",
+                    "ground_truth": "3",
+                    "question_id": 4,
+                    "type": "object quantity",
+                    "dataset": "RSBench",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    client = MockVisionClient(
+        {
+            "4:count-proposal": {
+                "expert": "general_vqa_expert",
+                "answer": "3",
+                "boxes": [],
+                "evidence": [],
+                "status": "completed",
+            },
+            "4:count-localizer": {
+                "expert": "counting_localizer",
+                "answer": "4",
+                "boxes": [],
+                "evidence": [],
+                "evidence_items": [
+                    {"label": "vehicle", "box": [600, 280, 700, 400], "confidence": 0.9},
+                    {"label": "vehicle", "box": [600, 800, 700, 900], "confidence": 0.9},
+                    {"label": "vehicle", "box": [20, 430, 90, 560], "confidence": 0.9},
+                    {"label": "vehicle", "box": [680, 970, 740, 999], "confidence": 0.7},
+                ],
+                "status": "completed",
+            },
+        }
+    )
+    settings = AppSettings(
+        paths=PathSettings(dataset_root=dataset_root),
+        runs=RunSettings(root=tmp_path),
+        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+    )
+    prompts = {
+        "count": "count",
+        "count_proposal": "count proposal",
+        "count_localize": "count localize",
+        "target": "target",
+        "change": "change",
+        "spatial": "spatial",
+        "general": "vqa",
+        "seam": "seam",
+    }
+
+    summary = await DatasetRunner(
+        settings,
+        get_adapter("VRSBench"),
+        run_dir=run_dir,
+        client=client,
+        prompts=prompts,
+        judge_client=_Judge(),  # type: ignore[arg-type]
+        judge_policy="all",
+    ).run(split="validation", task="general_vqa", limit=1)
+
+    assert summary.succeeded == 1
+    result = json.loads((run_dir / "samples" / "4" / "expert_result.json").read_text(encoding="utf-8"))
+    counting = json.loads((run_dir / "samples" / "4" / "counting_result.json").read_text(encoding="utf-8"))
+    assert result["answer"] == "3"
+    assert len(result["boxes"]) == len(result["evidence_items"]) == 3
+    assert counting["final_count"] == len(counting["global_points"]) == 3
+    assert result["geometry"]["localization_used"] is True
+    assert result["geometry"]["localizer_answer"] == 4
+    assert any(item["code"] == "COUNT_BORDER_OR_DUPLICATE_EVIDENCE_DROPPED" for item in counting["warnings"])
+
+
+def test_count_header_recovery_and_border_fragment_filter_are_conservative() -> None:
+    """Recover only a complete answer header and reject only centre-outside fragments.
+    仅恢复完整答案头，并且只排除中心位于图外的边界残片。
+    """
+
+    from spacers_agent.workflow import _is_tiny_border_fragment, _recover_count_proposal_header
+
+    assert _recover_count_proposal_header('{"answer":"3","boxes":[[1,2') == 3
+    assert _recover_count_proposal_header('{"answer":"') is None
+    assert _is_tiny_border_fragment([680, 970, 740, 999]) is True
+    assert _is_tiny_border_fragment([0, 388, 100, 600]) is False
 
 
 @pytest.mark.asyncio

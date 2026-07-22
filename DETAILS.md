@@ -614,10 +614,16 @@ sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, and `evaluate-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `Qwen3VLForConditionalGeneration` and `AutoProcessor`; it does not start or contact vLLM. `TaskRouter.route_vrsbench_vqa` maps official `object quantity` questions to `CountingExpert`, position/existence/category/direction questions to `SpatialExpert`, and color questions to `GeneralVQAExpert`, without a router-model call. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
 
 Known VRSBench quantity questions use a fixed, reference-independent vehicle ontology rather than
-an LLM target parse. The default YAML first scans the whole image when it fits one owner core,
-optionally enlarges the overview without changing normalized coordinates, and independently reviews
-an empty result. A `zero_unconfirmed` review triggers finer crops whose halo shrinks by depth.
-Accepted points remain the sole counting truth. Spatial extreme, grid-position, arrangement, and
+an LLM target parse. Their dedicated route first obtains a compact whole-image count proposal using
+the proven GeneralVQA v1 contract. Proposal boxes are normalized and converted to accepted centre
+points; when boxes are missing or disagree with the proposed integer, an independent localization
+pass enumerates tight boxes without treating that integer as ground truth. Duplicate evidence and
+tiny border fragments whose visible centre remains at the image edge are rejected. Malformed or
+truncated proposal geometry may recover only a syntactically complete integer answer header, after
+which localization is mandatory. `final_count` always equals the final accepted point count, while
+retained supporting boxes remain available in the result and HTML overlay. The tiled owner-core and
+halo `PointCountingOrchestrator` remains unchanged for native counting tasks outside this VRSBench
+VQA route. Spatial extreme, grid-position, arrangement, and
 proximity questions perform an independent candidate-enumeration pass without first-pass evidence.
 Question text is classified into a semantic subtype independently from the coarse official type,
 and only reference-independent answer vocabularies are sent to Qwen. Raw answers remain in the
