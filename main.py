@@ -187,7 +187,15 @@ def _infer_target(
             record = {"sample": sample.serializable(), "prediction": prediction.serializable()}
             result_file.write(json.dumps(record, ensure_ascii=False) + "\n")
             if report_writer is not None:
-                report_writer.capture(sample, prediction, sample_seconds)
+                default_agent_trace = {
+                    "agent_class": f"{model.__class__.__module__}.{model.__class__.__name__}",
+                    "entrypoint": "predict",
+                    "route": "direct_baseline",
+                    "router_used": False,
+                    "task_type": sample.task_type,
+                }
+                agent_trace = prediction.meta.get("agent_trace", default_agent_trace)
+                report_writer.capture(sample, prediction, sample_seconds, agent_trace)
             if dataset_name == "mme_real_rs":
                 official_record = dict(sample.meta["record"])
                 official_record["Output"] = prediction.answer

@@ -454,6 +454,12 @@ default and writes `<result-stem>.report/report.html` plus `samples.csv`, a boun
 number of displayed visual records, not inference or metric scope. Each inference and evaluation
 command prints the absolute report path.
 
+Each captured sample has a separate `agent_trace` in the report artifact with `agent_class`,
+`entrypoint`, `route`, `router_used`, and `task_type`. Baseline inference records
+`models.qwen3vl.Qwen3VLBaseline`, `predict`, `direct_baseline`, and `false`. This is report-only
+debug metadata and does not alter canonical predictions. If `prediction.meta.agent_trace` exists,
+the report uses that explicit workflow-provided trace instead of the baseline fallback.
+
 When `evaluate --deepseek-proxy` runs, `eval.metrics.evaluate_records` retains its existing metric
 return format and may additionally receive a caller-owned audit list. The baseline CLI writes that
 list to `<result-stem>.report/deepseek_audit.jsonl` with request payload, raw response, parsed

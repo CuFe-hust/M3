@@ -48,6 +48,7 @@ class AuditReportWriter:
         sample: CanonicalSample,
         prediction: CanonicalPrediction,
         inference_seconds: float,
+        agent_trace: dict[str, Any] | None = None,
     ) -> None:
         if self._file is None:
             raise RuntimeError("AuditReportWriter must be used as a context manager.")
@@ -59,6 +60,7 @@ class AuditReportWriter:
             "prediction": prediction.serializable(),
             "image_files": image_files,
             "inference_seconds": round(inference_seconds, 6),
+            "agent_trace": agent_trace or {},
         }
         self._file.write(json.dumps(artifact, ensure_ascii=False) + "\n")
         self._file.flush()
@@ -140,6 +142,7 @@ def build_audit_report(
             semantic_evaluated += 1
             displayed_semantic += int(semantic)
         usage = deepseek.get("token_usage") if deepseek else None
+        agent_trace = artifact.get("agent_trace", {})
         rows.append(
             {
                 "index": index,
@@ -152,6 +155,10 @@ def build_audit_report(
                 "deepseek_score": "" if semantic is None else int(semantic),
                 "inference_seconds": artifact.get("inference_seconds", ""),
                 "deepseek_seconds": "" if not deepseek else deepseek.get("duration_seconds", ""),
+                "agent_class": agent_trace.get("agent_class", ""),
+                "agent_entrypoint": agent_trace.get("entrypoint", ""),
+                "agent_route": agent_trace.get("route", ""),
+                "router_used": agent_trace.get("router_used", ""),
             }
         )
         cards.append(_sample_card(index, artifact, exact, deepseek, usage))
@@ -191,6 +198,7 @@ def _sample_card(
 ) -> str:
     sample = artifact["sample"]
     prediction = artifact["prediction"]
+    agent_trace = artifact.get("agent_trace", {})
     candidate = prediction.get("answer") or prediction.get("text", "")
     raw_text = prediction.get("meta", {}).get("raw_text", prediction.get("text", ""))
     references = " | ".join(map(str, sample.get("answers", []))) or "—"
@@ -229,6 +237,9 @@ def _sample_card(
     <dt>Qwen 原始回复</dt><dd class="answer">{_escape(raw_text)}</dd>
     <dt>Qwen 最终答案</dt><dd class="answer">{_escape(candidate)}</dd>
     <dt>标准答案</dt><dd class="reference">{_escape(references)}</dd>
+    <dt>调用 Agent</dt><dd><code>{_escape(agent_trace.get('agent_class', '未记录'))}</code></dd>
+    <dt>Agent 调用入口</dt><dd><code>{_escape(agent_trace.get('entrypoint', '未记录'))}</code></dd>
+    <dt>Agent 路由</dt><dd><code>{_escape(agent_trace.get('route', '未记录'))}</code> · router_used={_escape(agent_trace.get('router_used', '未记录'))} · task_type={_escape(agent_trace.get('task_type', sample.get('task_type', '')))}</dd>
     <dt>Qwen 单条推理耗时</dt><dd>{_escape(artifact.get('inference_seconds', ''))} 秒</dd>
     {deepseek_section}
   </dl>{details}</section></div>
@@ -274,7 +285,7 @@ def _page(
 <h1>Qwen3-VL 逐样本审计报告</h1>
 <p class="lead">结果文件：{_escape(result_path)}。共完成 {completed} 条，报告展示 {displayed} 条。{_escape(metric_summary)}</p>
 <section class="summary"><h2>运行信息</h2><p>模型：{_escape(model.get('id', ''))}；dtype：{_escape(model.get('dtype', ''))}；max_new_tokens：{_escape(model.get('max_new_tokens', ''))}；local_files_only：{_escape(model.get('local_files_only', False))}。</p><p>模型加载耗时：{_escape(metadata.get('model_load_seconds', ''))} 秒；推理总耗时：{_escape(metadata.get('inference_seconds', ''))} 秒。</p></section>
-<section class="process"><h2>可审计运行过程</h2><ol><li>加载配置指定的 Qwen3-VL 权重和 processor。</li><li>逐条校验规范样本，将图片与提示交给模型确定性生成。</li><li>保存 Qwen 原始回复、最终答案、标准答案、图片和单条耗时。</li><li>评测命令计算原有指标；启用 DeepSeek 时，它只接收问题、参考答案和候选答案，不查看图片。</li></ol><p>本报告不保存、生成或推测隐藏思维链。DeepSeek 逐条审查：{'已保存' if has_deepseek else '未运行'}。<a href="samples.csv">打开 CSV 对照表</a></p></section>
+<section class="process"><h2>可审计运行过程</h2><ol><li>加载配置指定的 Qwen3-VL 权重和 processor。</li><li>逐条校验规范样本，记录实际 Agent 类、入口和路由，再将图片与提示交给模型确定性生成。</li><li>保存 Qwen 原始回复、最终答案、标准答案、图片和单条耗时。</li><li>评测命令计算原有指标；启用 DeepSeek 时，它只接收问题、参考答案和候选答案，不查看图片。</li></ol><p>本报告不保存、生成或推测隐藏思维链。DeepSeek 逐条审查：{'已保存' if has_deepseek else '未运行'}。<a href="samples.csv">打开 CSV 对照表</a></p></section>
 {''.join(cards)}
 </main></body></html>"""
 

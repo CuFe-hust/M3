@@ -23,6 +23,8 @@ Turn the validated 20-sample HTML audit layout into the default baseline report 
 - Added additive DeepSeek audit collection for request payloads, raw and parsed responses, duration, attempts, token usage, and errors.
 - Regenerate the same report after evaluation and print the absolute report and metric paths.
 - Added model-load, total-inference, and per-sample inference durations without changing generation behavior.
+- Added per-sample Agent debug traces with class, entrypoint, route, Router usage, and task type;
+  explicit `prediction.meta.agent_trace` values override the direct-baseline fallback.
 
 ## Whether the Canonical Sample Format Was Changed
 

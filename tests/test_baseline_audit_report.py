@@ -49,8 +49,15 @@ def test_audit_report_persists_images_html_csv_and_deepseek_details(tmp_path: Pa
         encoding="utf-8",
     )
     with AuditReportWriter(result_path, max_samples=2) as writer:
-        writer.capture(_sample("q-1"), _prediction("q-1"), 0.1)
-        writer.capture(_sample("q-2"), _prediction("q-2", "a harbor"), 0.2)
+        agent_trace = {
+            "agent_class": "models.qwen3vl.Qwen3VLBaseline",
+            "entrypoint": "predict",
+            "route": "direct_baseline",
+            "router_used": False,
+            "task_type": "vqa",
+        }
+        writer.capture(_sample("q-1"), _prediction("q-1"), 0.1, agent_trace)
+        writer.capture(_sample("q-2"), _prediction("q-2", "a harbor"), 0.2, agent_trace)
 
     metrics_path = result_path.with_suffix(".metrics.json")
     metrics_path.write_text(
@@ -89,6 +96,8 @@ def test_audit_report_persists_images_html_csv_and_deepseek_details(tmp_path: Pa
     report_html = html_path.read_text(encoding="utf-8")
     assert "Qwen 原始回复" in report_html
     assert "DeepSeek 完整原始 API 响应" in report_html
+    assert "models.qwen3vl.Qwen3VLBaseline" in report_html
+    assert "direct_baseline" in report_html
     assert "local-qwen" in report_html
     assert report_html.count('<article class="card">') == 2
     assert len(list((report_dir_for_result(result_path) / "images").glob("*.png"))) == 1
@@ -156,3 +165,6 @@ def test_infer_prints_default_report_absolute_path(tmp_path: Path, monkeypatch, 
     expected = (tmp_path / "output" / "vrsbench_vqa.report" / "report.html").resolve()
     assert f"Saved default audit report to {expected}" in output
     assert expected.is_file()
+    report_html = expected.read_text(encoding="utf-8")
+    assert f"{FakeModel.__module__}.{FakeModel.__name__}" in report_html
+    assert "router_used=False" in report_html

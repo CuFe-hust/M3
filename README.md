@@ -71,7 +71,11 @@ Each inference command prints the absolute path of its default HTML report. For 
 `outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
 `outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
 questions/prompts, Qwen raw and final answers, references, exact-match comparison, and per-sample
-inference duration. Images are content-addressed so repeated source images are stored only once.
+inference duration. Each sample also records the actual Agent class, call entrypoint, route name,
+task type, and whether a Router was used. The direct baseline is reported truthfully as
+`models.qwen3vl.Qwen3VLBaseline` with `route=direct_baseline` and `router_used=false`; a future
+workflow may provide `prediction.meta.agent_trace` to replace that fallback with its actual trace.
+Images are content-addressed so repeated source images are stored only once.
 
 Compute deterministic metrics for one saved result file:
 
