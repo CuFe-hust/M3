@@ -4,7 +4,8 @@ from PIL import Image
 
 from data.loaders import _caption_texts, _load_vrsbench, _normalize_box
 from eval.metrics import evaluate_records
-from models.qwen3vl import _choice_letter, _extract_boxes
+from data.schema import CanonicalSample
+from models.qwen3vl import _choice_letter, _extract_boxes, _grounding_postprocess, _message_content, _official_pixel_boxes, _task_max_new_tokens
 
 
 def test_vrs_vqa_adapter_expands_question_answer_pairs(tmp_path) -> None:
@@ -29,7 +30,23 @@ def test_vrs_vqa_adapter_expands_question_answer_pairs(tmp_path) -> None:
 def test_baseline_parses_choice_and_grounding_box() -> None:
     assert _choice_letter("The answer is (C).") == "C"
     assert _extract_boxes("[1, 2, 3, 4]") == [[1.0, 2.0, 3.0, 4.0]]
+    vrs_caption = CanonicalSample(id="vrs", task_type="caption", images=["image"], prompt="caption", meta={"source": "VRSBench"})
+    xlrs_caption = CanonicalSample(id="xlrs", task_type="caption", images=["image"], prompt="caption", meta={"source": "XLRS-Bench full English caption release"})
+    assert _task_max_new_tokens(vrs_caption) == 512
+    assert _task_max_new_tokens(xlrs_caption) == 768
     assert _normalize_box([1, 2, 5, 6]) == [1.0, 2.0, 5.0, 6.0]
+    assert _official_pixel_boxes([], xlrs_caption) == []
+    xlrs_grounding = CanonicalSample(
+        id="grounding", task_type="grounding", images=["image"], prompt="official pixel prompt",
+        meta={"source": "XLRS-Bench full English grounding release", "image_width": 4000, "image_height": 2000},
+    )
+    boxes, status, source, conversion = _grounding_postprocess([[100.0, 200.0, 500.0, 500.0]], xlrs_grounding)
+    assert boxes == [[10.0, 20.0, 50.0, 50.0]]
+    assert status == "converted_model_native"
+    assert source == "qwen3vl_normalized_0_1000"
+    assert conversion == "value * 100 / 1000"
+    assert _official_pixel_boxes([[400.0, 400.0, 500.0, 500.0]], xlrs_grounding) == [[1600.0, 800.0, 2000.0, 1000.0]]
+    assert _message_content(xlrs_grounding)[-1]["text"] == "official pixel prompt"
     assert _caption_texts([{"raw": " a new building appears ."}]) == ["a new building appears ."]
 
 
