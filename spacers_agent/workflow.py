@@ -25,6 +25,7 @@ from spacers_agent.evaluation import (
     build_vqa_judge_request_hash,
     merge_count_evaluation,
     merge_vqa_evaluation,
+    VQAAnswerJudgeResult,
 )
 from spacers_agent.imaging import read_normalized_image
 from spacers_agent.routing import CallBudget, TaskRouter
@@ -223,6 +224,9 @@ class DatasetRunner:
             if resume and status_path.is_file():
                 previous = SampleRunStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
                 if previous.state == "succeeded":
+                    if await self._resume_vqa_judge(sample, status_path.parent):
+                        statuses.append(previous)
+                        continue
                     statuses.append(previous.model_copy(update={"state": "skipped"}))
                     continue
             pending[asyncio.create_task(self._run_one(sample, status_path))] = sample
@@ -328,8 +332,9 @@ class DatasetRunner:
             candidate_answer=result.answer,
         )
         try:
-            verdict = await self.judge_client.judge(
+            verdict = await self.judge_client.judge_json(
                 payload,
+                response_model=VQAAnswerJudgeResult,
                 request_meta=RequestMeta(
                     request_id=f"{sample.sample_id}:deepseek-vqa",
                     request_hash=build_vqa_judge_request_hash(
@@ -360,6 +365,31 @@ class DatasetRunner:
             )
         atomic_write_json(sample_dir / "vqa_evaluation.json", evaluation.model_dump(mode="json"))
         return evaluation
+
+    async def _resume_vqa_judge(self, sample: UnifiedSample, sample_dir: Path) -> bool:
+        """Retry only a missing or failed VQA Judge while reusing saved Qwen output.
+        仅重试缺失或失败的 VQA 审核，并复用已保存的 Qwen 输出。
+        """
+
+        if sample.task != "general_vqa" or self.judge_client is None or self.judge_policy == "none":
+            return False
+        evaluation_path = sample_dir / "vqa_evaluation.json"
+        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8")) if evaluation_path.is_file() else {}
+        if evaluation.get("judge_status") == "succeeded":
+            return False
+        result_path = sample_dir / "expert_result.json"
+        if not result_path.is_file():
+            return False
+        result = ExpertResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        refreshed = await self._evaluate_vqa(sample, result, sample_dir)
+        trace_path = sample_dir / "agent_trace.json"
+        trace = json.loads(trace_path.read_text(encoding="utf-8")) if trace_path.is_file() else {}
+        trace["judge_status"] = refreshed.judge_status
+        route = str(trace.get("route", ""))
+        if "DeepSeekJudgeClient.judge" not in route:
+            trace["route"] = route + " -> DeepSeekJudgeClient.judge"
+        atomic_write_json(trace_path, trace)
+        return True
 
 
 def _status(sample: UnifiedSample, state: str, *, error_code: str | None = None, error_message: str | None = None, result_path: Path | None = None) -> SampleRunStatus:

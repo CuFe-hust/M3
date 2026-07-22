@@ -11,7 +11,7 @@ from spacers_agent.clients.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
 from spacers_agent.clients.qwen_transformers import QwenTransformersClient
 from spacers_agent.dataset_adapters import get_adapter
-from spacers_agent.evaluation import DeepSeekJudgeResult
+from spacers_agent.evaluation import VQAAnswerJudgeResult
 from spacers_agent.schemas import ExpertResult
 from spacers_agent.settings import AppSettings, PathSettings, QwenSettings, RunSettings
 from spacers_agent.vqa_report import build_multiagent_vqa_report
@@ -66,17 +66,17 @@ class _FakeModel:
 class _Judge:
     judge_prompt = "vqa-judge-v1"
 
-    async def judge(self, payload: dict[str, Any], *, request_meta: RequestMeta) -> DeepSeekJudgeResult:
+    async def judge_json(
+        self,
+        payload: dict[str, Any],
+        *,
+        response_model: type[VQAAnswerJudgeResult],
+        request_meta: RequestMeta,
+    ) -> VQAAnswerJudgeResult:
         assert set(payload) == {"task", "question", "prediction", "ground_truth", "deterministic_metrics"}
         assert "image" not in json.dumps(payload).lower()
-        return DeepSeekJudgeResult(
-            judge_scope="text_and_structured_evidence_only",
-            can_verify_visual_truth=False,
-            semantic_correctness=1.0,
-            answer_evidence_consistency=1.0,
-            constraint_following=1.0,
-            clarity=1.0,
-            verdict="correct",
+        return response_model(
+            score=1,
             concise_rationale="Equivalent to the reference answer.",
         )
 
@@ -243,6 +243,61 @@ async def test_general_vqa_contract_requires_empty_boxes(tmp_path: Path) -> None
     system_prompt = str(client.messages[0]["content"])
     assert "boxes must always be []" in system_prompt
     assert '"boxes":[]' in system_prompt
+
+
+@pytest.mark.asyncio
+async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    run_dir = tmp_path / "run"
+    sample_dir = run_dir / "samples" / "7"
+    sample_dir.mkdir(parents=True)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    (sample_dir / "sample.json").write_text(sample.model_dump_json(), encoding="utf-8")
+    (sample_dir / "expert_result.json").write_text(
+        ExpertResult(expert="general_vqa_expert", answer="Yes", status="completed").model_dump_json(),
+        encoding="utf-8",
+    )
+    (sample_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "sample_id": "7",
+                "task": "general_vqa",
+                "state": "succeeded",
+                "error_code": None,
+                "error_message": None,
+                "result_path": str(sample_dir / "expert_result.json"),
+                "updated_at": "2026-07-22T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (sample_dir / "vqa_evaluation.json").write_text(
+        json.dumps({"judge_status": "failed", "exact_match": True}), encoding="utf-8"
+    )
+    qwen = MockVisionClient({})
+    settings = AppSettings(
+        paths=PathSettings(dataset_root=dataset_root),
+        runs=RunSettings(root=tmp_path),
+        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+    )
+    prompts = {"count": "count", "target": "target", "change": "change", "spatial": "spatial", "general": "vqa", "seam": "seam"}
+
+    summary = await DatasetRunner(
+        settings,
+        get_adapter("VRSBench"),
+        run_dir=run_dir,
+        client=qwen,
+        prompts=prompts,
+        judge_client=_Judge(),  # type: ignore[arg-type]
+        judge_policy="all",
+    ).run(split="validation", task="general_vqa", resume=True, limit=1)
+
+    assert summary.succeeded == 1
+    assert qwen.calls == []
+    evaluation = json.loads((sample_dir / "vqa_evaluation.json").read_text(encoding="utf-8"))
+    assert evaluation["judge_status"] == "succeeded" and evaluation["judge_score"] == 1
 
 
 def _png_bytes(root: Path) -> bytes:

@@ -14,9 +14,9 @@ from typing import Any
 
 import httpx
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-from spacers_agent.clients.base import CacheEntry, JsonResponseCache, RequestMeta
+from spacers_agent.clients.base import CacheEntry, JsonResponseCache, ModelT, RequestMeta
 from spacers_agent.evaluation import DeepSeekJudgeResult
 from spacers_agent.settings import DeepSeekSettings
 
@@ -63,10 +63,23 @@ class DeepSeekJudgeClient:
         返回缓存或在线的经 Schema 校验仅文本评估结果。
         """
 
+        return await self.judge_json(payload, response_model=DeepSeekJudgeResult, request_meta=request_meta)
+
+    async def judge_json(
+        self,
+        payload: dict[str, Any],
+        *,
+        response_model: type[ModelT],
+        request_meta: RequestMeta,
+    ) -> ModelT:
+        """Return a schema-validated text-only result for a declared Judge contract.
+        按声明的 Judge 契约返回经 Schema 校验的纯文本结果。
+        """
+
         _assert_text_only_payload(payload)
         cached = self.cache.load(request_meta.request_hash) if self.cache else None
         if cached is not None:
-            result = DeepSeekJudgeResult.model_validate(cached.parsed)
+            result = response_model.model_validate(cached.parsed)
             self._write_artifacts(request_meta, [cached.raw_response], result, [], cache_hit=True, metadata={"latency_seconds": 0.0, "token_usage": None})
             return result
 
@@ -88,7 +101,7 @@ class DeepSeekJudgeClient:
                 )
                 raw_response = _response_content(response)
                 raw_responses.append(raw_response)
-                result = DeepSeekJudgeResult.model_validate(json.loads(_strip_json_fence(raw_response)))
+                result = response_model.model_validate(json.loads(_strip_json_fence(raw_response)))
                 if self.cache:
                     self.cache.save(
                         request_meta.request_hash,
@@ -142,7 +155,7 @@ class DeepSeekJudgeClient:
         self,
         request_meta: RequestMeta,
         raw_responses: list[str],
-        result: DeepSeekJudgeResult | None,
+        result: BaseModel | None,
         errors: list[dict[str, Any]],
         *,
         cache_hit: bool,

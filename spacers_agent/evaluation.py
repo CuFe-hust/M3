@@ -47,6 +47,19 @@ class DeepSeekJudgeResult(BaseModel):
     concise_rationale: str = Field(max_length=500)
 
 
+class VQAAnswerJudgeResult(BaseModel):
+    """Minimal binary answer-validation result for text-only VQA judging.
+    用于纯文本 VQA 审核的最小二值答案验证结果。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    score: int = Field(ge=0, le=1)
+    concise_rationale: str = Field(default="", max_length=500)
+    judge_scope: Literal["text_and_structured_evidence_only"] = "text_and_structured_evidence_only"
+    can_verify_visual_truth: Literal[False] = False
+
+
 class VQAEvaluationRecord(BaseModel):
     """One deterministic VQA comparison plus optional text-only judge result.
     一条确定性 VQA 对比及可选的纯文本审核结果。
@@ -61,7 +74,7 @@ class VQAEvaluationRecord(BaseModel):
     exact_match: bool
     judge_status: Literal["not_requested", "succeeded", "failed"]
     judge_score: int | None = Field(default=None, ge=0, le=1)
-    judge_parsed: DeepSeekJudgeResult | None = None
+    judge_parsed: VQAAnswerJudgeResult | None = None
     judge_error: str | None = None
 
 
@@ -113,7 +126,7 @@ def merge_vqa_evaluation(
     question: str,
     reference_answers: list[str],
     candidate_answer: str,
-    judge_parsed: DeepSeekJudgeResult | None = None,
+    judge_parsed: VQAAnswerJudgeResult | None = None,
     judge_error: str | None = None,
 ) -> VQAEvaluationRecord:
     """Preserve exact comparison and map a successful judge verdict to binary score.
@@ -147,7 +160,7 @@ def merge_vqa_evaluation(
         candidate_answer=candidate_answer,
         exact_match=exact,
         judge_status="succeeded",
-        judge_score=int(judge_parsed.verdict == "correct"),
+        judge_score=judge_parsed.score,
         judge_parsed=judge_parsed,
     )
 

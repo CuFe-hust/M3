@@ -29,6 +29,7 @@ Run official VRSBench VQA samples through the real `TaskRouter -> GeneralVQAExpe
 - Added versioned text-only DeepSeek VQA validation and separated Judge failure from Qwen inference status.
 - Reused the existing audit report component to create canonical JSONL, metrics, DeepSeek audit JSONL, CSV, copied images, and HTML from multi-Agent artifacts.
 - Required `GeneralVQAExpert` to emit `boxes: []` in its single JSON object after the live smoke exposed malformed extra VQA box arrays; failed samples remain visible and can be resumed without rerunning successful samples.
+- Replaced the counting-oriented multi-field Judge response for VQA with the minimal versioned `VQAAnswerJudgeResult` binary score contract, and made resume retry failed VQA Judge calls from the saved Qwen result without issuing Qwen inference again.
 
 ## Whether the Canonical Sample Format Was Changed
 
