@@ -520,6 +520,27 @@ def test_count_header_recovery_and_border_fragment_filter_are_conservative() -> 
     assert _is_tiny_border_fragment([0, 388, 100, 600]) is False
 
 
+def test_count_deduplication_retains_adjacent_overlapping_vehicle_boxes() -> None:
+    """Do not merge adjacent coarse boxes that represent separate vehicle centres.
+    不合并代表不同车辆中心的相邻粗略框。
+    """
+
+    from spacers_agent.schemas import VisualEvidence
+    from spacers_agent.workflow import _accepted_count_evidence
+
+    evidence = [
+        VisualEvidence(label="large-vehicle", box=[750, 585, 880, 935]),
+        VisualEvidence(label="large-vehicle", box=[850, 585, 980, 935]),
+        VisualEvidence(label="large-vehicle", box=[670, 640, 750, 935]),
+        VisualEvidence(label="large-vehicle", box=[880, 585, 980, 935]),
+    ]
+
+    points, boxes, dropped = _accepted_count_evidence(evidence, "large-vehicle", "image.png")
+
+    assert len(points) == len(boxes) == 4
+    assert dropped == 0
+
+
 @pytest.mark.asyncio
 async def test_general_vqa_contract_retains_labeled_boxes(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"

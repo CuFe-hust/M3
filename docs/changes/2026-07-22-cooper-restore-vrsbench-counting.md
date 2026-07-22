@@ -27,6 +27,7 @@ Fix the regression where VRSBench quantity questions became zero whenever the lo
 - Convert valid proposal boxes to accepted centre points; when boxes are absent or disagree with the proposal, run an independent tight-box localization pass.
 - Recover only a complete integer answer header from a malformed or truncated proposal, discard its malformed geometry, and require localization.
 - Deduplicate evidence and reject only tiny boundary fragments whose visible centre remains at the image edge.
+- Use a count-specific near-identical-box threshold so adjacent vehicles with coarse overlapping boxes are not collapsed; general spatial deduplication remains unchanged.
 - Persist the proposal, optional localizer, accepted points, supporting boxes, warnings, raw responses, and route information for HTML debugging.
 
 ## Whether the Canonical Sample Format Was Changed
@@ -68,3 +69,4 @@ No. No new output, cache, secret, dataset, model, or checkpoint file type was in
 - Mock tests cannot measure Qwen visual recall; a new Spark run with a fresh run ID is required.
 - The integer proposal is never accepted as the persisted final count without a matching accepted point set.
 - Border-fragment filtering is intentionally conservative and requires both border contact and an edge-adjacent visible centre.
+- The first Spark run found one false count merge at box IoU 0.77; the count-only threshold now requires IoU 0.90 and has a regression test using the persisted box geometry.

@@ -922,7 +922,7 @@ def _accepted_count_evidence(
     去重证据、拒绝微小边界残片并输出接受中心点。
     """
 
-    merged = _merge_visual_evidence([], evidence)
+    merged = _merge_count_evidence(evidence)
     raw_points: list[VisualEvidence] = []
     boxes: list[list[int]] = []
     dropped = len(evidence) - len(merged)
@@ -949,9 +949,52 @@ def _accepted_count_evidence(
                 image_id=image_id,
             )
         )
-    points = _merge_visual_evidence([], raw_points)
+    points = _merge_count_evidence(raw_points)
     dropped += len(raw_points) - len(points)
     return points, boxes, max(0, dropped)
+
+
+def _merge_count_evidence(evidence: list[VisualEvidence]) -> list[VisualEvidence]:
+    """Deduplicate count evidence without collapsing adjacent coarse vehicle boxes.
+    对计数证据去重，同时避免合并相邻车辆的粗略框。
+    """
+
+    merged: list[VisualEvidence] = []
+    for candidate in evidence:
+        duplicate_index = next(
+            (
+                index
+                for index, existing in enumerate(merged)
+                if _same_count_observation(candidate, existing)
+            ),
+            None,
+        )
+        if duplicate_index is None:
+            merged.append(candidate)
+        elif _prefer_candidate_evidence(candidate, merged[duplicate_index]):
+            merged[duplicate_index] = candidate
+    return merged
+
+
+def _same_count_observation(first: VisualEvidence, second: VisualEvidence) -> bool:
+    """Match only near-identical count evidence because adjacent vehicles may overlap.
+    计数时只匹配近乎相同的证据，因为相邻车辆的粗略框可能重叠。
+    """
+
+    if vrsbench_vehicle_class(first.label) != vrsbench_vehicle_class(second.label):
+        return False
+    if first.box is not None and second.box is not None:
+        return _box_iou(first.box, second.box) >= 0.9
+    if first.point is not None and second.point is not None:
+        return _point_distance(first.point, second.point) <= 12
+    box_item, point_item = (first, second) if first.box is not None else (second, first)
+    if box_item.box is None or point_item.point is None:
+        return False
+    box_center = [
+        round((box_item.box[0] + box_item.box[2]) / 2),
+        round((box_item.box[1] + box_item.box[3]) / 2),
+    ]
+    return _point_distance(box_center, point_item.point) <= 12
 
 
 def _is_tiny_border_fragment(box: list[int]) -> bool:

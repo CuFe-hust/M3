@@ -618,7 +618,9 @@ an LLM target parse. Their dedicated route first obtains a compact whole-image c
 the proven GeneralVQA v1 contract. Proposal boxes are normalized and converted to accepted centre
 points; when boxes are missing or disagree with the proposed integer, an independent localization
 pass enumerates tight boxes without treating that integer as ground truth. Duplicate evidence and
-tiny border fragments whose visible centre remains at the image edge are rejected. Malformed or
+tiny border fragments whose visible centre remains at the image edge are rejected. Count-specific
+deduplication merges only near-identical boxes so adjacent vehicles with coarse overlapping boxes
+remain distinct; the broader spatial-evidence merge threshold is unchanged. Malformed or
 truncated proposal geometry may recover only a syntactically complete integer answer header, after
 which localization is mandatory. `final_count` always equals the final accepted point count, while
 retained supporting boxes remain available in the result and HTML overlay. The tiled owner-core and
