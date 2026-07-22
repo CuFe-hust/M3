@@ -23,6 +23,7 @@ class Qwen3VLSettings:
     max_new_tokens: int = 256
     min_pixels: int | None = None
     max_pixels: int | None = None
+    local_files_only: bool = False
 
 
 class Qwen3VLBaseline:
@@ -44,15 +45,20 @@ class Qwen3VLBaseline:
         dtype = _resolve_dtype(torch, self.settings.dtype)
         model = Qwen3VLForConditionalGeneration.from_pretrained(
             self.settings.model_id,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=self.settings.device_map,
+            local_files_only=self.settings.local_files_only,
         )
         processor_kwargs = {}
         if self.settings.min_pixels is not None:
             processor_kwargs["min_pixels"] = self.settings.min_pixels
         if self.settings.max_pixels is not None:
             processor_kwargs["max_pixels"] = self.settings.max_pixels
-        processor = AutoProcessor.from_pretrained(self.settings.model_id, **processor_kwargs)
+        processor = AutoProcessor.from_pretrained(
+            self.settings.model_id,
+            local_files_only=self.settings.local_files_only,
+            **processor_kwargs,
+        )
         model.eval()
         return model, processor
 

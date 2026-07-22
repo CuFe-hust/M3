@@ -34,6 +34,11 @@ Edit `config/local.baseline.json` only to choose storage paths or supported mode
 The default paths keep downloaded data in `datasets/` and outputs in `outputs/`, both ignored by Git.
 Do not put API keys in this file.
 
+For a checkpoint that is already present on a local server, set `model.id` to that external
+directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
+network fallback while preserving the original Qwen3-VL loading and prediction interfaces.
+Keep the server-specific absolute path only in the ignored `config/local.baseline.json` file.
+
 Download the official data releases:
 
 ```bash

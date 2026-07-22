@@ -101,6 +101,7 @@ def _load_model(config: dict[str, Any]) -> Qwen3VLBaseline:
         max_new_tokens=int(model_config.get("max_new_tokens", 256)),
         min_pixels=model_config.get("min_pixels"),
         max_pixels=model_config.get("max_pixels"),
+        local_files_only=bool(model_config.get("local_files_only", False)),
     )
     return Qwen3VLBaseline(settings)
 

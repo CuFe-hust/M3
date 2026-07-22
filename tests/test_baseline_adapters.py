@@ -26,6 +26,27 @@ def test_vrs_vqa_adapter_expands_question_answer_pairs(tmp_path) -> None:
     assert samples[0].answers == ["2"]
 
 
+def test_vrs_vqa_adapter_supports_official_eval_fields(tmp_path) -> None:
+    image_path = tmp_path / "P0003_0002.png"
+    Image.new("RGB", (8, 8)).save(image_path)
+    annotation = [
+        {
+            "image_id": "P0003_0002.png",
+            "question": "What is visible?",
+            "ground_truth": "a harbor",
+            "question_id": 7,
+        }
+    ]
+    (tmp_path / "VRSBench_EVAL_vqa.json").write_text(json.dumps(annotation), encoding="utf-8")
+
+    samples = list(_load_vrsbench(tmp_path, "vqa"))
+
+    assert len(samples) == 1
+    assert samples[0].id == "7"
+    assert samples[0].answers == ["a harbor"]
+    assert samples[0].images[0].size == (8, 8)
+
+
 def test_baseline_parses_choice_and_grounding_box() -> None:
     assert _choice_letter("The answer is (C).") == "C"
     assert _extract_boxes("[1, 2, 3, 4]") == [[1.0, 2.0, 3.0, 4.0]]

@@ -422,6 +422,9 @@ located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct`
 It accepts a JSON configuration file
 with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
 not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
+The optional `model.local_files_only` setting is `false` by default. Set it to `true` together
+with an external local `model.id` path to prohibit network fallback during server inference;
+the model, processor, tokenizer, checkpoint contents, and prediction contract remain unchanged.
 `config/baseline.example.json` uses project-relative `datasets/baseline` and `outputs/baseline`
 paths. Users copy it to the ignored `config/local.baseline.json` before running Colab commands.
 
@@ -434,6 +437,9 @@ placing dataset-specific logic in `eval/`.
 Supported evaluation targets are `vrsbench_caption`, `vrsbench_vqa`,
 `vrsbench_grounding`, `mme_real_rs`, `xlrs_caption_en`, `xlrs_grounding_en`,
 `xlrs_vqa_lite`, and `levir_cc`. The MME target filters to the Remote Sensing subdomain.
+The VRSBench VQA adapter accepts the official evaluation release fields `image_id`,
+`question`, `ground_truth`, and `question_id` in addition to its existing nested QA-pair form;
+the question identifier remains the canonical sample ID when several questions share one image.
 XLRS-Bench full English captioning and grounding releases are reported separately from the
 official Lite VQA release; these scores must not be labelled as a single full-XLRS score.
 

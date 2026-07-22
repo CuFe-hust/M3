@@ -107,10 +107,11 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
             pairs = record.get("qa_pairs") or record.get("qas") or [record]
             for pair_number, pair in enumerate(pairs):
                 question = _first_text(pair, ("question", "ques", "text"))
-                answer = _first_text(pair, ("answer", "ans", "label"))
+                answer = _first_text(pair, ("answer", "ans", "label", "ground_truth"))
+                question_id = _first_value(pair, ("question_id", "ques_id", "id", "ID", "uid"))
                 if question and answer:
                     yield CanonicalSample(
-                        id=_record_id(pair, f"{base_id}-qa-{pair_number}"),
+                        id=str(question_id) if question_id is not None else f"{base_id}-qa-{pair_number}",
                         task_type="vqa",
                         images=[image],
                         prompt=f"Answer the question using only the image. {question}",
@@ -295,7 +296,8 @@ def _image_index(root: Path) -> dict[str, Path]:
 
 def _resolve_image(record: dict[str, Any], root: Path, image_index: dict[str, Path]) -> Image.Image:
     value = _first_value(
-        record, ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename")
+        record,
+        ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename", "image_id"),
     )
     if value is None:
         raise ValueError(f"No image field found in record keys: {record.keys()}")

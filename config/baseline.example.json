@@ -5,7 +5,8 @@
     "device_map": "auto",
     "max_new_tokens": 256,
     "min_pixels": null,
-    "max_pixels": null
+    "max_pixels": null,
+    "local_files_only": false
   },
   "paths": {
     "data_root": "datasets/baseline",
