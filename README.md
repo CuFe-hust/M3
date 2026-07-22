@@ -167,9 +167,12 @@ validated `0..999` local points to global pixels, and derives `final_count` sole
 global points. It writes each tile's geometry, parsed response, conversion report, and checkpoint
 below the selected run directory; a matching successful request hash is reused on resume.
 
-The v2 counting prompt is versioned in `prompts/count_tile_v2.md`. Point-counting tests use local
-Mock clients only. No Qwen, DeepSeek, SSH tunnel, server, or cloud request is made by this module
-unless a caller explicitly constructs and invokes a live client after authorization.
+The active counting prompt is versioned in `prompts/count_tile_v3.md`; the superseded v2 prompt
+remains available for experiment reproducibility. The v3 contract expands known vehicle aliases,
+requires a systematic owner-core scan before returning zero, and supports an optional versioned
+empty-tile review. Point-counting tests use local Mock clients only. No Qwen, DeepSeek, SSH tunnel,
+server, or cloud request is made by this module unless a caller explicitly constructs and invokes
+a live client after authorization.
 
 ## Sparse Multi-Agent Routing (Phase 5)
 
@@ -256,6 +259,16 @@ spatial/category/direction/existence questions through the spatial expert, and c
 through general VQA. The canonical evaluation task and reference answers remain unchanged. The
 HTML report records the actual Agent route and prompt version, overlays labeled boxes or accepted
 points on a report-only image copy, and includes the deterministic geometry audit.
+
+VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-aware target parse.
+The default configuration forces one non-overlapping owner-core subdivision, enlarges transmitted
+review crops to a maximum side of 768 pixels, and rechecks empty leaf tiles. A zero answer remains
+point-derived; an empty second pass must explicitly return `confirmed_absent`, otherwise the result
+is marked partial with `ZERO_COUNT_UNCONFIRMED`. For top-most/bottom-most category questions, the
+spatial expert may perform one candidate-completeness review. Program geometry requires at least
+two vehicle candidates before claiming an extreme comparison. Raw answers remain in the audit
+metadata while declared yes/no, vehicle-category, grid-position, color, and cardinal-direction
+vocabularies receive reference-independent normalization before evaluation.
 
 Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
 

@@ -529,7 +529,12 @@ status checkpoint under `tiles/<tile_id>/`; a matching successful request hash i
 resume, while a failed tile remains explicitly visible.
 
 `CountTargetSpec` is shared by all tiles of a sample and is included in request-cache inputs.
-`count_tile_v2.md` defines the owner-core-only point protocol. `TileCountResponse` is additionally
+`count_tile_v3.md` defines the active owner-core-only point protocol. It preserves point-only final
+counting while adding explicit VRSBench vehicle aliases and requiring a systematic scan before an
+empty response. `missing_point_review_v2.md` supports an optional second pass for empty leaf tiles;
+an empty review is trusted only when it explicitly records `confirmed_absent`. Otherwise the count
+remains zero because no point exists, but the result is partial with `ZERO_COUNT_UNCONFIRMED`.
+`TileCountResponse` is additionally
 checked against both the requested tile ID and the target label before coordinate conversion.
 Parents that request a split are stored as `superseded_by_children`; their four child owner cores
 are processed sequentially and replace the parent points. The final count is calculated only from
@@ -557,10 +562,11 @@ any tile failed, it reports the completed-tile fraction and confirmed points and
 non-final. `CallBudget` also exposes a separate DeepSeek reservation method. No default route calls
 DeepSeek, and any future judge must receive only text and structured evidence rather than image data.
 
-The versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v2.md`,
+The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v3.md`,
 `count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
-`spatial_v2.md`, and `general_vqa_v2.md`. The superseded spatial/general v1 assets remain in Git
-for reproducibility. `run-init` snapshots each active asset. Prompts are not changed
+`missing_point_review_v2.md`, `spatial_v3.md`, `spatial_candidate_review_v1.md`, and
+`general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
+snapshots each active asset. Prompts are not changed
 in place when their behavior changes; a new versioned file must be added and selected explicitly.
 
 ## 12. Phase 6 DeepSeek Structured Evaluator
@@ -605,6 +611,14 @@ sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 `spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
 
 The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, and `evaluate-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `Qwen3VLForConditionalGeneration` and `AutoProcessor`; it does not start or contact vLLM. `TaskRouter.route_vrsbench_vqa` maps official `object quantity` questions to `CountingExpert`, position/existence/category/direction questions to `SpatialExpert`, and color questions to `GeneralVQAExpert`, without a router-model call. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
+
+Known VRSBench quantity questions use a fixed, reference-independent vehicle ontology rather than
+an LLM target parse. The default YAML forces one 2x2 owner-core subdivision, optionally enlarges
+transmitted crops without changing normalized coordinate semantics, and reviews empty leaf tiles.
+Spatial extreme/arrangement questions may perform one candidate-completeness pass; top/bottom
+geometry refuses to claim completeness with fewer than two vehicle candidates. Final VRSBench
+answers normalize only declared answer vocabularies and retain the raw Qwen answer in the geometry
+audit. Partial VQA artifacts remain visible in the HTML report instead of being silently omitted.
 
 Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. With `--evaluate --judge-policy all`, the versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
 

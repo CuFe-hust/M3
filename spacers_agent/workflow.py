@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -40,7 +41,11 @@ from spacers_agent.schemas import (
     VisualEvidence,
 )
 from spacers_agent.settings import AppSettings
-from spacers_agent.vqa_geometry import apply_vrsbench_geometry
+from spacers_agent.vqa_geometry import (
+    apply_vrsbench_geometry,
+    vrsbench_count_target,
+    vrsbench_vehicle_class,
+)
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -145,8 +150,112 @@ class GroundingExpert(VisualExpert):
 class SpatialExpert(VisualExpert):
     """Run the spatial visual primitive. / 运行空间关系视觉原语。"""
 
-    def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
-        super().__init__(client, prompt, model, "spatial_expert", "spatial-v2")
+    def __init__(
+        self,
+        client: VisionLanguageClient,
+        prompt: str,
+        model: str,
+        review_prompt: str = "",
+    ) -> None:
+        super().__init__(client, prompt, model, "spatial_expert", "spatial-v3")
+        self.review_prompt = review_prompt
+
+    async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
+        """Run one spatial pass and repair incomplete candidate enumeration once.
+        执行一次空间推理，并对不完整候选枚举最多补全一次。
+        """
+
+        result = await super().run(sample, artifact_dir=artifact_dir)
+        if not self.review_prompt or not _needs_spatial_candidate_review(sample, result):
+            return result
+        try:
+            review = await self._review_candidates(sample, result, artifact_dir)
+        except Exception as error:
+            geometry = dict(result.geometry)
+            geometry.update(
+                {
+                    "candidate_review_used": True,
+                    "candidate_review_added": 0,
+                    "candidate_review_error": f"{type(error).__name__}: {error}",
+                }
+            )
+            return result.model_copy(update={"geometry": geometry, "status": "partial"})
+        merged = _merge_visual_evidence(result.evidence_items, review.evidence_items)
+        geometry = dict(result.geometry)
+        geometry.update(
+            {
+                "candidate_review_used": True,
+                "candidate_review_added": len(merged) - len(result.evidence_items),
+            }
+        )
+        reviewed_result = result.model_copy(update={"evidence_items": merged})
+        status = "partial" if _needs_spatial_candidate_review(sample, reviewed_result) else "completed"
+        return result.model_copy(
+            update={
+                "boxes": [list(item.box) for item in merged if item.box is not None],
+                "evidence_items": merged,
+                "geometry": geometry,
+                "status": status,
+            }
+        )
+
+    async def _review_candidates(
+        self,
+        sample: UnifiedSample,
+        first: ExpertResult,
+        artifact_dir: Path,
+    ) -> ExpertResult:
+        """Request a localization-only completeness pass over the same image.
+        对同一图像请求一次仅定位的完整性复查。
+        """
+
+        content: list[dict[str, Any]] = []
+        image_hashes: list[str] = []
+        for image_ref in sample.images:
+            data = image_ref.path.read_bytes()
+            content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, "image/png")}})
+            image_hashes.append(hashlib.sha256(data).hexdigest())
+        content.append(
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "question": sample.question,
+                        "dataset_question_type": sample.metadata.get("question_type"),
+                        "first_pass_evidence": [item.model_dump(mode="json") for item in first.evidence_items],
+                        "coordinate_frame": "normalized_0_999_top_left",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
+        system_prompt = (
+            self.review_prompt
+            + "\n\nReturn valid JSON only. Set expert to 'spatial_expert', keep answer concise, "
+            "copy every evidence box into boxes, and set status to 'completed' only when enumeration is complete."
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": content},
+        ]
+        request_hash = build_request_hash(
+            model=self.model,
+            generation={"temperature": 0.0},
+            prompt_version="spatial-candidate-review-v1",
+            messages=messages,
+            image_sha256="|".join(image_hashes),
+        )
+        return await self.client.complete_json(
+            messages=messages,
+            response_model=ExpertResult,
+            request_meta=RequestMeta(
+                request_id=f"{sample.sample_id}:spatial-candidate-review",
+                request_hash=request_hash,
+                prompt_version="spatial-candidate-review-v1",
+                sample_id=sample.sample_id,
+                artifact_dir=artifact_dir / "spatial_expert_candidate_review",
+            ),
+        )
 
 
 class GeneralVQAExpert(VisualExpert):
@@ -163,7 +272,12 @@ class WorkflowService:
         self.experts = {
             "change_expert": ChangeExpert(client, prompts["change"], model),
             "grounding_expert": GroundingExpert(client, prompts["general"], model),
-            "spatial_expert": SpatialExpert(client, prompts["spatial"], model),
+            "spatial_expert": SpatialExpert(
+                client,
+                prompts["spatial"],
+                model,
+                prompts.get("spatial_review", ""),
+            ),
             "general_vqa_expert": GeneralVQAExpert(client, prompts["general"], model),
         }
 
@@ -303,7 +417,7 @@ class DatasetRunner:
                     result = await self._run_vqa_counting(sample, sample_dir)
                     route = (
                         f"{type(self.adapter).__name__} -> TaskRouter.route_vrsbench_vqa -> "
-                        "CountTargetParser.parse -> CountingExpert.answer -> "
+                        "vrsbench_count_target -> CountingExpert.answer -> "
                         f"PointCountingOrchestrator.count_image -> {type(self.client).__name__}.complete_json"
                     )
                 else:
@@ -323,6 +437,8 @@ class DatasetRunner:
                         f"{type(self.adapter).__name__} -> {route_entry} -> "
                         f"{expert_class_name}.run -> {type(self.client).__name__}.complete_json"
                     )
+                    if result.geometry.get("candidate_review_used"):
+                        route += " -> SpatialExpert.candidate_review"
                 inference_seconds = round(time.perf_counter() - inference_started, 6)
                 atomic_write_json(sample_dir / "expert_result.json", result.model_dump(mode="json"))
                 judge_status = "not_requested"
@@ -361,11 +477,7 @@ class DatasetRunner:
         """
 
         artifact_dir = sample_dir / "counting_expert"
-        target = await TargetParser(
-            self.client,
-            self.prompts["target"],
-            self.settings.models.qwen.model,
-        ).parse(sample.question, sample_id=sample.sample_id, artifact_dir=artifact_dir)
+        target = vrsbench_count_target(sample.question)
         image = read_normalized_image(sample.images[0].path)
         pipeline = PointCountingOrchestrator(
             self.client,
@@ -374,12 +486,16 @@ class DatasetRunner:
             system_prompt=self.prompts["count"],
             run_dir=artifact_dir,
             seam_prompt=self.prompts["seam"],
+            empty_review_prompt=self.prompts.get("count_zero_review"),
         )
         counted = await CountingExpert(pipeline).answer(
             image,
             sample_id=sample.sample_id,
             question=sample.question,
             target=target,
+            minimum_scan_depth=self.settings.counting.vrsbench_min_scan_depth,
+            review_empty=self.settings.counting.vrsbench_zero_review,
+            upscale_max_side=self.settings.counting.vrsbench_tile_upscale_max_side,
         )
         counting = counted.counting_result
         atomic_write_json(sample_dir / "counting_result.json", counting.model_dump(mode="json"))
@@ -394,11 +510,16 @@ class DatasetRunner:
             if point.accepted
         ]
         geometry = {
-            "version": "accepted-point-count-v1",
+            "version": "accepted-point-count-v2",
             "coordinate_frame": "normalized_0_999_top_left",
             "rule": "final_count_equals_accepted_points",
             "accepted_point_count": len(points),
             "final_count": counting.final_count,
+            "minimum_scan_depth": self.settings.counting.vrsbench_min_scan_depth,
+            "zero_review_enabled": self.settings.counting.vrsbench_zero_review,
+            "tile_upscale_max_side": self.settings.counting.vrsbench_tile_upscale_max_side,
+            "counting_status": counting.status,
+            "warnings": [item.model_dump(mode="json") for item in counting.warnings],
         }
         return ExpertResult(
             expert="counting_expert",
@@ -496,6 +617,65 @@ class DatasetRunner:
             trace["route"] = route + " -> DeepSeekJudgeClient.judge"
         atomic_write_json(trace_path, trace)
         return True
+
+
+def _needs_spatial_candidate_review(sample: UnifiedSample, result: ExpertResult) -> bool:
+    """Detect spatial questions whose instance evidence is not yet enumerable.
+    检测实例证据尚不足以枚举的空间问题。
+    """
+
+    if sample.dataset != "VRSBench":
+        return False
+    lowered = sample.question.casefold()
+    requires_instances = bool(
+        re.search(r"\b(top|bottom)[ -]?most\b", lowered)
+        or "predominantly arranged" in lowered
+        or "arrangement" in lowered
+    )
+    if not requires_instances:
+        return False
+    vehicles = [
+        item
+        for item in result.evidence_items
+        if item.box is not None and vrsbench_vehicle_class(item.label) in {"small-vehicle", "large-vehicle"}
+    ]
+    return len(vehicles) < 2
+
+
+def _merge_visual_evidence(
+    first: list[VisualEvidence],
+    second: list[VisualEvidence],
+) -> list[VisualEvidence]:
+    """Merge two evidence passes while suppressing strongly overlapping duplicates.
+    合并两轮视觉证据，并去除高度重叠的重复项。
+    """
+
+    merged = list(first)
+    for candidate in second:
+        duplicate = any(
+            candidate.box is not None
+            and existing.box is not None
+            and vrsbench_vehicle_class(candidate.label) == vrsbench_vehicle_class(existing.label)
+            and _box_iou(candidate.box, existing.box) >= 0.7
+            for existing in merged
+        )
+        if not duplicate:
+            merged.append(candidate)
+    return merged
+
+
+def _box_iou(first: list[int], second: list[int]) -> float:
+    """Return intersection over union for normalized axis-aligned boxes.
+    返回归一化轴对齐框的交并比。
+    """
+
+    intersection_width = max(0, min(first[2], second[2]) - max(first[0], second[0]))
+    intersection_height = max(0, min(first[3], second[3]) - max(first[1], second[1]))
+    intersection = intersection_width * intersection_height
+    first_area = (first[2] - first[0]) * (first[3] - first[1])
+    second_area = (second[2] - second[0]) * (second[3] - second[1])
+    union = first_area + second_area - intersection
+    return intersection / union if union else 0.0
 
 
 def _status(sample: UnifiedSample, state: str, *, error_code: str | None = None, error_message: str | None = None, result_path: Path | None = None) -> SampleRunStatus:

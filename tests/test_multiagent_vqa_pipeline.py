@@ -14,7 +14,7 @@ from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import VQAAnswerJudgeResult
 from spacers_agent.schemas import ExpertResult
 from spacers_agent.settings import AppSettings, PathSettings, QwenSettings, RunSettings
-from spacers_agent.vqa_report import build_multiagent_vqa_report
+from spacers_agent.vqa_report import _successful_vqa_sample_dirs, build_multiagent_vqa_report
 from spacers_agent.workflow import DatasetRunner
 
 
@@ -277,7 +277,7 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
     assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
-    assert trace["prompt_version"] == "spatial-v2"
+    assert trace["prompt_version"] == "spatial-v3"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
 
@@ -378,6 +378,53 @@ async def test_general_vqa_contract_retains_labeled_boxes(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    sample = sample.model_copy(
+        update={
+            "question": "What object class is the top-most vehicle?",
+            "metadata": {**sample.metadata, "question_type": "object category"},
+        }
+    )
+    client = MockVisionClient(
+        {
+            "7:spatial_expert": {
+                "expert": "spatial_expert",
+                "answer": "bus",
+                "evidence_items": [
+                    {"label": "large-vehicle", "box": [0, 400, 100, 600], "confidence": 0.8}
+                ],
+            },
+            "7:spatial-candidate-review": {
+                "expert": "spatial_expert",
+                "answer": "small-vehicle",
+                "evidence_items": [
+                    {"label": "large-vehicle", "box": [0, 400, 100, 600], "confidence": 0.8},
+                    {"label": "small-vehicle", "box": [600, 100, 680, 180], "confidence": 0.9},
+                ],
+            },
+        }
+    )
+
+    from spacers_agent.workflow import SpatialExpert
+    from spacers_agent.vqa_geometry import apply_vrsbench_geometry
+
+    raw = await SpatialExpert(client, "spatial", "local-qwen", "review").run(
+        sample,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    result = apply_vrsbench_geometry(sample.question, "object category", raw)
+
+    assert len(raw.evidence_items) == 2
+    assert raw.geometry["candidate_review_used"] is True
+    assert result.answer == "small-vehicle"
+    assert result.geometry["candidate_count"] == 2
+
+
+@pytest.mark.asyncio
 async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset_root.mkdir()
@@ -436,3 +483,13 @@ def _png_bytes(root: Path) -> bytes:
     path = root / "input.png"
     Image.new("RGB", (4, 4)).save(path)
     return path.read_bytes()
+
+
+def test_partial_vqa_artifacts_remain_visible_to_report(tmp_path: Path) -> None:
+    sample_dir = tmp_path / "samples" / "partial-id"
+    sample_dir.mkdir(parents=True)
+    (sample_dir / "status.json").write_text(json.dumps({"state": "partial"}), encoding="utf-8")
+    (sample_dir / "sample.json").write_text(json.dumps({"task": "general_vqa"}), encoding="utf-8")
+    (sample_dir / "expert_result.json").write_text("{}", encoding="utf-8")
+
+    assert _successful_vqa_sample_dirs(tmp_path) == [sample_dir]

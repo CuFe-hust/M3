@@ -35,7 +35,7 @@ from spacers_agent.commands import count_image as count_image_command
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
-DEFAULT_COUNT_PROMPT = PROJECT_ROOT / "prompts" / "count_tile_v2.md"
+DEFAULT_COUNT_PROMPT = PROJECT_ROOT / "prompts" / "count_tile_v3.md"
 DEFAULT_JSON_REPAIR_PROMPT = PROJECT_ROOT / "prompts" / "json_repair_v1.md"
 DEFAULT_PROMPT_PATHS = [
     DEFAULT_COUNT_PROMPT,
@@ -45,8 +45,11 @@ DEFAULT_PROMPT_PATHS = [
     PROJECT_ROOT / "prompts" / "count_repair_v1.md",
     PROJECT_ROOT / "prompts" / "seam_verify_v1.md",
     PROJECT_ROOT / "prompts" / "missing_point_review_v1.md",
+    PROJECT_ROOT / "prompts" / "missing_point_review_v2.md",
     PROJECT_ROOT / "prompts" / "change_v1.md",
     PROJECT_ROOT / "prompts" / "spatial_v2.md",
+    PROJECT_ROOT / "prompts" / "spatial_v3.md",
+    PROJECT_ROOT / "prompts" / "spatial_candidate_review_v1.md",
     PROJECT_ROOT / "prompts" / "general_vqa_v2.md",
     PROJECT_ROOT / "prompts" / "deepseek_judge_v1.md",
     PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md",
@@ -240,9 +243,11 @@ def _prompts() -> dict[str, str]:
 
     return {
         "count": DEFAULT_COUNT_PROMPT.read_text(encoding="utf-8"),
+        "count_zero_review": (PROJECT_ROOT / "prompts" / "missing_point_review_v2.md").read_text(encoding="utf-8"),
         "target": (PROJECT_ROOT / "prompts" / "target_parse_v1.md").read_text(encoding="utf-8"),
         "change": (PROJECT_ROOT / "prompts" / "change_v1.md").read_text(encoding="utf-8"),
-        "spatial": (PROJECT_ROOT / "prompts" / "spatial_v2.md").read_text(encoding="utf-8"),
+        "spatial": (PROJECT_ROOT / "prompts" / "spatial_v3.md").read_text(encoding="utf-8"),
+        "spatial_review": (PROJECT_ROOT / "prompts" / "spatial_candidate_review_v1.md").read_text(encoding="utf-8"),
         "general": (PROJECT_ROOT / "prompts" / "general_vqa_v2.md").read_text(encoding="utf-8"),
         "seam": (PROJECT_ROOT / "prompts" / "seam_verify_v1.md").read_text(encoding="utf-8"),
     }

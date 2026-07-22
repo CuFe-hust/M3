@@ -133,7 +133,7 @@ def _successful_vqa_sample_dirs(run_dir: Path) -> list[Path]:
     for status_path in (run_dir / "samples").glob("*/status.json"):
         status = _read_json(status_path)
         sample_path = status_path.parent / "sample.json"
-        if status.get("state") != "succeeded" or not sample_path.is_file():
+        if status.get("state") not in {"succeeded", "partial"} or not sample_path.is_file():
             continue
         sample = _read_json(sample_path)
         if sample.get("task") == "general_vqa" and (status_path.parent / "expert_result.json").is_file():
@@ -178,9 +178,6 @@ def _read_raw_qwen(sample_dir: Path, result: ExpertResult) -> str:
     收集单次视觉路由或点计数路由产生的 Qwen 原始响应。
     """
 
-    direct = sample_dir / result.expert / "raw_response.txt"
-    if direct.is_file():
-        return direct.read_text(encoding="utf-8")
     records: list[str] = []
     for path in sorted(sample_dir.rglob("raw_response.txt")):
         if any(part.casefold().startswith("deepseek") for part in path.relative_to(sample_dir).parts):

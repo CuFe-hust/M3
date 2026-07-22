@@ -66,7 +66,12 @@ async def _run(settings: AppSettings, args: Any) -> int:
         emit_summary({"run_id": run_id, "sample_id": sample_id, "status": "resumed", "result_path": str(result_path)})
         return EXIT_OK
     if not run_dir.exists():
-        RunStore(settings.runs.root, Path(__file__).resolve().parents[2]).create_run(settings, prompt_paths=[path for path in (Path(__file__).resolve().parents[2] / "prompts").glob("*_v1.md")] + [Path(__file__).resolve().parents[2] / "prompts" / "count_tile_v2.md"], run_id=run_id)
+        RunStore(settings.runs.root, Path(__file__).resolve().parents[2]).create_run(
+            settings,
+            prompt_paths=[path for path in (Path(__file__).resolve().parents[2] / "prompts").glob("*_v1.md")]
+            + [Path(__file__).resolve().parents[2] / "prompts" / "count_tile_v3.md"],
+            run_id=run_id,
+        )
     image = read_normalized_image(args.image)
     counting = settings.counting.model_copy(update={"seam_verify": not args.no_seam_verify})
     client = qwen_client(settings, run_dir)

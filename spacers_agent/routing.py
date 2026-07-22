@@ -241,12 +241,23 @@ class CountingExpert:
         sample_id: str,
         question: str,
         target: CountTargetSpec,
+        minimum_scan_depth: int = 0,
+        review_empty: bool = False,
+        upscale_max_side: int | None = None,
     ) -> CountingExpertAnswer:
         """Run the point pipeline and derive user-facing text from its final status.
         运行点式管线，并从最终状态生成面向用户的文本。
         """
 
-        result = await self.pipeline.count_image(image, sample_id=sample_id, question=question, target=target)
+        result = await self.pipeline.count_image(
+            image,
+            sample_id=sample_id,
+            question=question,
+            target=target,
+            minimum_scan_depth=minimum_scan_depth,
+            review_empty=review_empty,
+            upscale_max_side=upscale_max_side,
+        )
         total_tiles = len(result.succeeded_tiles) + len(result.failed_tiles)
         if result.status in {"partial", "failed"}:
             answer = (

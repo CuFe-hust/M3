@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -7,6 +8,7 @@ import pytest
 from PIL import Image
 
 from spacers_agent.clients.base import RequestMeta
+from spacers_agent.clients.mock import MockVisionClient
 from spacers_agent.counting import PointCountingOrchestrator, finalize_representatives, find_boundary_conflicts
 from spacers_agent.imaging import build_core_halo_tiles, should_tile_image, split_tile_owner_core
 from spacers_agent.schemas import CountTargetSpec, GlobalPointObservation, TileCountResponse
@@ -21,6 +23,7 @@ class RecordingTileClient:
     def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
         self.responses = responses
         self.calls: list[RequestMeta] = []
+        self.message_history: list[list[dict[str, Any]]] = []
 
     async def complete_json(
         self,
@@ -31,6 +34,7 @@ class RecordingTileClient:
     ) -> TileCountResponse:
         assert len(messages) == 2
         assert len(messages[1]["content"]) == 2
+        self.message_history.append(messages)
         self.calls.append(request_meta)
         return response_model.model_validate(self.responses[request_meta.tile_id or ""])
 
@@ -44,7 +48,13 @@ def _target() -> CountTargetSpec:
     )
 
 
-def _orchestrator(client: RecordingTileClient, run_dir: Path, **counting: Any) -> PointCountingOrchestrator:
+def _orchestrator(
+    client: RecordingTileClient,
+    run_dir: Path,
+    *,
+    empty_review_prompt: str | None = None,
+    **counting: Any,
+) -> PointCountingOrchestrator:
     values: dict[str, Any] = {
         "tile_core_size": 32,
         "halo_size": 4,
@@ -61,6 +71,7 @@ def _orchestrator(client: RecordingTileClient, run_dir: Path, **counting: Any) -
         qwen=QwenSettings(model="mock-qwen"),
         system_prompt="count points",
         run_dir=run_dir,
+        empty_review_prompt=empty_review_prompt,
     )
 
 
@@ -68,7 +79,7 @@ def _orchestrator(client: RecordingTileClient, run_dir: Path, **counting: Any) -
 async def test_sequential_counting_uses_points_and_resume_avoids_second_call(tmp_path: Path) -> None:
     response = {
         "r000_c000": {
-            "target": "building",
+            "target": "buildings",
             "tile_id": "r000_c000",
             "points": [
                 {
@@ -157,6 +168,155 @@ async def test_needs_split_replaces_parent_with_children_and_resumes_children(tm
     )
     assert resumed.succeeded_tiles == first.succeeded_tiles
     assert resumed_client.calls == []
+
+
+@pytest.mark.asyncio
+async def test_minimum_scan_depth_forces_non_overlapping_child_cores(tmp_path: Path) -> None:
+    responses: dict[str, dict[str, Any]] = {
+        "r000_c000": {
+            "target": "building",
+            "tile_id": "r000_c000",
+            "points": [],
+            "reported_count": 0,
+        }
+    }
+    for index in range(4):
+        tile_id = f"r000_c000_d1_{index}"
+        points = [] if index else [
+            {
+                "local_id": "p1",
+                "x": 500,
+                "y": 500,
+                "confidence": 0.9,
+                "short_evidence": "building centre",
+            }
+        ]
+        responses[tile_id] = {
+            "target": "building",
+            "tile_id": tile_id,
+            "points": points,
+            "reported_count": len(points),
+        }
+    client = RecordingTileClient(responses)
+
+    result = await _orchestrator(
+        client,
+        tmp_path,
+        tile_core_size=16,
+        min_core_size=8,
+    ).count_image(
+        Image.new("RGB", (16, 16)),
+        sample_id="sample",
+        question="count buildings",
+        target=_target(),
+        minimum_scan_depth=1,
+    )
+
+    assert result.final_count == 1
+    assert result.leaf_tile_count == 4
+    assert [call.tile_id for call in client.calls] == [
+        "r000_c000",
+        "r000_c000_d1_0",
+        "r000_c000_d1_1",
+        "r000_c000_d1_2",
+        "r000_c000_d1_3",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_optional_tile_upscale_is_recorded_in_request(tmp_path: Path) -> None:
+    client = RecordingTileClient(
+        {
+            "r000_c000": {
+                "target": "building",
+                "tile_id": "r000_c000",
+                "points": [],
+                "reported_count": 0,
+                "uncertainty": ["confirmed_absent"],
+            }
+        }
+    )
+
+    await _orchestrator(client, tmp_path, tile_core_size=32, halo_size=0).count_image(
+        Image.new("RGB", (16, 8)),
+        sample_id="sample",
+        question="count buildings",
+        target=_target(),
+        upscale_max_side=64,
+    )
+
+    request_text = client.message_history[0][1]["content"][1]["text"]
+    assert json.loads(request_text)["transmitted_image_size"] == [64, 32]
+
+
+@pytest.mark.asyncio
+async def test_empty_leaf_review_can_add_point_and_unconfirmed_zero_is_partial(tmp_path: Path) -> None:
+    first_empty = {
+        "target": "building",
+        "tile_id": "r000_c000",
+        "points": [],
+        "reported_count": 0,
+    }
+    recovered_client = MockVisionClient(
+        {
+            "sample:r000_c000": first_empty,
+            "sample:r000_c000:zero-review": {
+                "target": "building",
+                "tile_id": "r000_c000",
+                "points": [
+                    {
+                        "local_id": "review-p1",
+                        "x": 500,
+                        "y": 500,
+                        "confidence": 0.9,
+                        "short_evidence": "missed building centre",
+                    }
+                ],
+                "reported_count": 1,
+            },
+        }
+    )
+    recovered = await PointCountingOrchestrator(
+        recovered_client,
+        counting=CountingSettings(tile_core_size=32, halo_size=0, model_max_side=32),
+        qwen=QwenSettings(model="mock-qwen"),
+        system_prompt="count points",
+        run_dir=tmp_path / "recovered",
+        empty_review_prompt="review empty tile",
+    ).count_image(
+        Image.new("RGB", (16, 16)),
+        sample_id="sample",
+        question="count buildings",
+        target=_target(),
+        review_empty=True,
+    )
+    assert recovered.final_count == 1 and recovered.status == "completed"
+
+    uncertain_client = MockVisionClient(
+        {
+            "sample:r000_c000": first_empty,
+            "sample:r000_c000:zero-review": {
+                **first_empty,
+                "uncertainty": ["zero_unconfirmed"],
+            },
+        }
+    )
+    uncertain = await PointCountingOrchestrator(
+        uncertain_client,
+        counting=CountingSettings(tile_core_size=32, halo_size=0, model_max_side=32),
+        qwen=QwenSettings(model="mock-qwen"),
+        system_prompt="count points",
+        run_dir=tmp_path / "uncertain",
+        empty_review_prompt="review empty tile",
+    ).count_image(
+        Image.new("RGB", (16, 16)),
+        sample_id="sample",
+        question="count buildings",
+        target=_target(),
+        review_empty=True,
+    )
+    assert uncertain.final_count == 0 and uncertain.status == "partial"
+    assert any(item.code == "ZERO_COUNT_UNCONFIRMED" for item in uncertain.warnings)
 
 
 def _global_point(point_id: str, tile_id: str, x: int, y: int, confidence: float = 0.8) -> GlobalPointObservation:

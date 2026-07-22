@@ -83,11 +83,16 @@ class CountingSettings(BaseModel):
     min_core_size: int = Field(default=224, gt=0)
     seam_crop_margin_px: int = Field(default=128, ge=0)
     unresolved_conflict_policy: Literal["flag_for_review"] = "flag_for_review"
-    prompt_version: str = "count-point-v2"
+    prompt_version: str = "count-point-v3"
+    vrsbench_min_scan_depth: int = Field(default=0, ge=0)
+    vrsbench_zero_review: bool = False
+    vrsbench_tile_upscale_max_side: int | None = Field(default=None, gt=0)
 
     def model_post_init(self, __context: Any) -> None:
         if self.sequential and self.concurrency != 1:
             raise ValueError("sequential counting requires concurrency=1")
+        if self.vrsbench_min_scan_depth > self.max_recursive_depth:
+            raise ValueError("vrsbench_min_scan_depth cannot exceed max_recursive_depth")
 
 
 class RunSettings(BaseModel):
