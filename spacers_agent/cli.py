@@ -46,8 +46,8 @@ DEFAULT_PROMPT_PATHS = [
     PROJECT_ROOT / "prompts" / "seam_verify_v1.md",
     PROJECT_ROOT / "prompts" / "missing_point_review_v1.md",
     PROJECT_ROOT / "prompts" / "change_v1.md",
-    PROJECT_ROOT / "prompts" / "spatial_v1.md",
-    PROJECT_ROOT / "prompts" / "general_vqa_v1.md",
+    PROJECT_ROOT / "prompts" / "spatial_v2.md",
+    PROJECT_ROOT / "prompts" / "general_vqa_v2.md",
     PROJECT_ROOT / "prompts" / "deepseek_judge_v1.md",
     PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md",
     PROJECT_ROOT / "prompts" / "deepseek_vqa_judge_v1.md",
@@ -238,8 +238,8 @@ def _prompts() -> dict[str, str]:
         "count": DEFAULT_COUNT_PROMPT.read_text(encoding="utf-8"),
         "target": (PROJECT_ROOT / "prompts" / "target_parse_v1.md").read_text(encoding="utf-8"),
         "change": (PROJECT_ROOT / "prompts" / "change_v1.md").read_text(encoding="utf-8"),
-        "spatial": (PROJECT_ROOT / "prompts" / "spatial_v1.md").read_text(encoding="utf-8"),
-        "general": (PROJECT_ROOT / "prompts" / "general_vqa_v1.md").read_text(encoding="utf-8"),
+        "spatial": (PROJECT_ROOT / "prompts" / "spatial_v2.md").read_text(encoding="utf-8"),
+        "general": (PROJECT_ROOT / "prompts" / "general_vqa_v2.md").read_text(encoding="utf-8"),
         "seam": (PROJECT_ROOT / "prompts" / "seam_verify_v1.md").read_text(encoding="utf-8"),
     }
 
@@ -251,7 +251,7 @@ async def _smoke_qwen(settings: object, image_path: Path, question: str) -> int:
     client = _client(settings, settings.runs.root / "smoke")
     data = image_path.read_bytes()
     messages = [{"role": "system", "content": _prompts()["general"]}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(data).decode("ascii")}}, {"type": "text", "text": question}]}]
-    result = await client.complete_json(messages=messages, response_model=ExpertResult, request_meta=RequestMeta(request_id="smoke-qwen", request_hash=__import__("hashlib").sha256((question + str(image_path.stat().st_size)).encode()).hexdigest(), prompt_version="general-vqa-v1", artifact_dir=settings.runs.root / "smoke" / "artifacts"))
+    result = await client.complete_json(messages=messages, response_model=ExpertResult, request_meta=RequestMeta(request_id="smoke-qwen", request_hash=__import__("hashlib").sha256((question + str(image_path.stat().st_size)).encode()).hexdigest(), prompt_version="general-vqa-v2", artifact_dir=settings.runs.root / "smoke" / "artifacts"))
     print(result.model_dump_json(indent=2))
     return 0
 

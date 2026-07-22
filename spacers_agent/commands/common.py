@@ -34,8 +34,8 @@ def prompts() -> dict[str, str]:
         "count": (root / "count_tile_v2.md").read_text(encoding="utf-8"),
         "target": (root / "target_parse_v1.md").read_text(encoding="utf-8"),
         "change": (root / "change_v1.md").read_text(encoding="utf-8"),
-        "spatial": (root / "spatial_v1.md").read_text(encoding="utf-8"),
-        "general": (root / "general_vqa_v1.md").read_text(encoding="utf-8"),
+        "spatial": (root / "spatial_v2.md").read_text(encoding="utf-8"),
+        "general": (root / "general_vqa_v2.md").read_text(encoding="utf-8"),
         "seam": (root / "seam_verify_v1.md").read_text(encoding="utf-8"),
     }
 

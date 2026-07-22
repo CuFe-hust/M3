@@ -226,7 +226,7 @@ python -m spacers_agent.cli resume-run --run-id xlrs-count-v1
 python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
 ```
 
-The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields and image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
+The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
 
 To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL checkpoint, create an ignored `configs/local.spark.yaml` from `configs/default.yaml` and set only local runtime values such as:
 
@@ -238,7 +238,7 @@ models:
     dtype: bfloat16
     device_map: auto
     local_files_only: true
-    max_tokens: 256
+    max_tokens: 512
 ```
 
 Then run sequentially; this path does not require or contact vLLM:
@@ -251,4 +251,10 @@ python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
   --evaluate --judge-policy all
 ```
 
-Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns, and receives the question, official reference answers, candidate answer, and exact-match flag—not the image. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card contains the routed Agent chain, Qwen raw/final answer, standard answer, and DeepSeek validation.
+The official VRSBench type routes quantity questions through accepted-point counting,
+spatial/category/direction/existence questions through the spatial expert, and color questions
+through general VQA. The canonical evaluation task and reference answers remain unchanged. The
+HTML report records the actual Agent route and prompt version, overlays labeled boxes or accepted
+points on a report-only image copy, and includes the deterministic geometry audit.
+
+Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.

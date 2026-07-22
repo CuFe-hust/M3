@@ -13,7 +13,7 @@ import re
 from pathlib import Path
 from typing import Any, TextIO
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from data.schema import CanonicalPrediction, CanonicalSample
 
@@ -49,37 +49,75 @@ class AuditReportWriter:
         prediction: CanonicalPrediction,
         inference_seconds: float,
         agent_trace: dict[str, Any] | None = None,
+        visual_evidence: list[dict[str, Any]] | None = None,
     ) -> None:
         if self._file is None:
             raise RuntimeError("AuditReportWriter must be used as a context manager.")
         if self.captured_samples >= self.max_samples:
             return
-        image_files = [self._save_image(image) for image in sample.images]
+        image_files = [
+            self._save_image(image, visual_evidence if index == 0 else None)
+            for index, image in enumerate(sample.images)
+        ]
         artifact = {
             "sample": sample.serializable(),
             "prediction": prediction.serializable(),
             "image_files": image_files,
             "inference_seconds": round(inference_seconds, 6),
             "agent_trace": agent_trace or {},
+            "visual_evidence": visual_evidence or [],
         }
         self._file.write(json.dumps(artifact, ensure_ascii=False) + "\n")
         self._file.flush()
         self.captured_samples += 1
 
-    def _save_image(self, value: Any) -> str:
+    def _save_image(self, value: Any, visual_evidence: list[dict[str, Any]] | None = None) -> str:
         buffer = io.BytesIO()
         if isinstance(value, Image.Image):
-            image = value
-            image.convert("RGB").save(buffer, format="PNG")
+            image = value.convert("RGB")
         else:
             with Image.open(Path(str(value))) as opened:
-                opened.convert("RGB").save(buffer, format="PNG")
+                image = opened.convert("RGB")
+        if visual_evidence:
+            image = _draw_visual_evidence(image, visual_evidence)
+        image.save(buffer, format="PNG")
         content = buffer.getvalue()
         filename = f"{hashlib.sha256(content).hexdigest()[:20]}.png"
         destination = self.images_dir / filename
         if not destination.exists():
             destination.write_bytes(content)
         return f"images/{filename}"
+
+
+def _draw_visual_evidence(image: Image.Image, evidence: list[dict[str, Any]]) -> Image.Image:
+    """Render normalized boxes and points onto a report-only image copy.
+    在仅用于报告的图像副本上绘制归一化框与点。
+    """
+
+    rendered = image.copy()
+    draw = ImageDraw.Draw(rendered)
+    width, height = rendered.size
+
+    def pixel_x(value: float) -> int:
+        return round(max(0.0, min(999.0, value)) * max(width - 1, 0) / 999)
+
+    def pixel_y(value: float) -> int:
+        return round(max(0.0, min(999.0, value)) * max(height - 1, 0) / 999)
+
+    for index, item in enumerate(evidence, start=1):
+        label = f"{index}:{item.get('label', 'object')}"
+        box = item.get("box")
+        point = item.get("point")
+        if isinstance(box, list) and len(box) == 4:
+            xy = [pixel_x(float(box[0])), pixel_y(float(box[1])), pixel_x(float(box[2])), pixel_y(float(box[3]))]
+            draw.rectangle(xy, outline="#00ff66", width=max(2, min(width, height) // 250))
+            draw.text((xy[0] + 3, max(0, xy[1] - 12)), label, fill="#00ff66", stroke_width=2, stroke_fill="#000000")
+        elif isinstance(point, list) and len(point) == 2:
+            x, y = pixel_x(float(point[0])), pixel_y(float(point[1]))
+            radius = max(4, min(width, height) // 100)
+            draw.ellipse((x - radius, y - radius, x + radius, y + radius), outline="#00ff66", width=3)
+            draw.text((x + radius + 2, y - radius), label, fill="#00ff66", stroke_width=2, stroke_fill="#000000")
+    return rendered
 
 
 def report_dir_for_result(result_path: Path) -> Path:
@@ -201,6 +239,13 @@ def _sample_card(
     agent_trace = artifact.get("agent_trace", {})
     candidate = prediction.get("answer") or prediction.get("text", "")
     raw_text = prediction.get("meta", {}).get("raw_text", prediction.get("text", ""))
+    visual_evidence = artifact.get("visual_evidence", [])
+    evidence_section = (
+        "<dt>结构化视觉证据（已绘制在左图）</dt><dd><pre>"
+        f"{_escape(json.dumps(visual_evidence, ensure_ascii=False, indent=2))}</pre></dd>"
+        if visual_evidence
+        else "<dt>结构化视觉证据</dt><dd>本条未返回框或点。</dd>"
+    )
     references = " | ".join(map(str, sample.get("answers", []))) or "—"
     semantic = None if not deepseek or deepseek.get("score") is None else float(deepseek["score"]) == 1.0
     semantic_badge = "未评判" if semantic is None else ("正确" if semantic else "错误")
@@ -240,6 +285,10 @@ def _sample_card(
     <dt>调用 Agent</dt><dd><code>{_escape(agent_trace.get('agent_class', '未记录'))}</code></dd>
     <dt>Agent 调用入口</dt><dd><code>{_escape(agent_trace.get('entrypoint', '未记录'))}</code></dd>
     <dt>Agent 路由</dt><dd><code>{_escape(agent_trace.get('route', '未记录'))}</code> · router_used={_escape(agent_trace.get('router_used', '未记录'))} · task_type={_escape(agent_trace.get('task_type', sample.get('task_type', '')))}</dd>
+    <dt>官方题型 / 执行任务</dt><dd>{_escape(agent_trace.get('official_question_type', '未记录'))} / {_escape(agent_trace.get('execution_task', '未记录'))}</dd>
+    <dt>Prompt 版本</dt><dd><code>{_escape(agent_trace.get('prompt_version', '未记录'))}</code></dd>
+    {evidence_section}
+    <dt>程序几何审计</dt><dd><pre>{_escape(json.dumps(agent_trace.get('geometry', {}), ensure_ascii=False, indent=2))}</pre></dd>
     <dt>Qwen 单条推理耗时</dt><dd>{_escape(artifact.get('inference_seconds', ''))} 秒</dd>
     {deepseek_section}
   </dl>{details}</section></div>

@@ -68,6 +68,18 @@ def test_known_tasks_route_without_model_calls() -> None:
     assert decision.reason_codes == ["task_fine_grained_counting", "high_resolution"]
 
 
+def test_vrsbench_official_types_select_declared_execution_tasks() -> None:
+    router = TaskRouter()
+
+    quantity = router.route_vrsbench_vqa("object quantity")
+    position = router.route_vrsbench_vqa("object position")
+    color = router.route_vrsbench_vqa("object color")
+
+    assert quantity.task == "counting" and quantity.experts[0].name == "counting_expert"
+    assert position.task == "spatial_relation" and position.experts[0].name == "spatial_expert"
+    assert color.task == "general_vqa" and color.experts[0].name == "general_vqa_expert"
+
+
 @pytest.mark.asyncio
 async def test_unknown_task_uses_one_text_router_call_and_budget(tmp_path: Path) -> None:
     mock = MockVisionClient(

@@ -29,6 +29,7 @@ from spacers_agent.evaluation import (
 )
 from spacers_agent.imaging import read_normalized_image
 from spacers_agent.routing import CallBudget, TaskRouter
+from spacers_agent.routing import CountingExpert
 from spacers_agent.schemas import (
     CountTargetSpec,
     CountingResult,
@@ -36,8 +37,10 @@ from spacers_agent.schemas import (
     ExpertResult,
     SampleRunStatus,
     UnifiedSample,
+    VisualEvidence,
 )
 from spacers_agent.settings import AppSettings
+from spacers_agent.vqa_geometry import apply_vrsbench_geometry
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -72,8 +75,16 @@ class CountTargetParser:
 class VisualExpert:
     """Generic Qwen visual primitive for change, grounding, spatial and VQA. / 用于变化、定位、空间和问答的通用 Qwen 视觉原语。"""
 
-    def __init__(self, client: VisionLanguageClient, prompt: str, model: str, name: str) -> None:
+    def __init__(
+        self,
+        client: VisionLanguageClient,
+        prompt: str,
+        model: str,
+        name: str,
+        prompt_version: str,
+    ) -> None:
         self.client, self.prompt, self.model, self.name = client, prompt, model, name
+        self.prompt_version = prompt_version
 
     async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
         """Use overview images as evidence without adding any detector. / 使用概览图作为证据且不引入检测器。"""
@@ -84,23 +95,31 @@ class VisualExpert:
             data = image_ref.path.read_bytes()
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, "image/png")}})
             image_hashes.append(__import__("hashlib").sha256(data).hexdigest())
-        content.append({"type": "text", "text": sample.question})
+        content.append(
+            {
+                "type": "text",
+                "text": json.dumps(
+                    {
+                        "question": sample.question,
+                        "dataset_question_type": sample.metadata.get("question_type"),
+                        "coordinate_frame": "normalized_0_999_top_left",
+                    },
+                    ensure_ascii=False,
+                ),
+            }
+        )
         structured_prompt = (
             self.prompt
             + f"\n\nReturn valid JSON only. Set expert to {self.name!r}; put the concise final answer in answer, "
-            "use empty boxes/evidence when they are not needed, and set status to 'completed'."
+            "retain relevant labeled boxes or points in evidence_items, copy evidence boxes into boxes, "
+            "use concise factual evidence strings, and set status to 'completed'."
         )
-        if self.name == "general_vqa_expert":
-            structured_prompt += (
-                " For general VQA, boxes must always be []. Return exactly one object shaped as "
-                f'{{"expert":"{self.name}","answer":"...","boxes":[],"evidence":["..."],"status":"completed"}}.'
-            )
         messages: list[dict[str, Any]] = [{"role": "system", "content": structured_prompt}, {"role": "user", "content": content}]
-        request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=f"{self.name}-v1", messages=messages, image_sha256="|".join(image_hashes))
+        request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=self.prompt_version, messages=messages, image_sha256="|".join(image_hashes))
         return await self.client.complete_json(
             messages=messages,
             response_model=ExpertResult,
-            request_meta=RequestMeta(request_id=f"{sample.sample_id}:{self.name}", request_hash=request_hash, prompt_version=f"{self.name}-v1", sample_id=sample.sample_id, artifact_dir=artifact_dir / self.name),
+            request_meta=RequestMeta(request_id=f"{sample.sample_id}:{self.name}", request_hash=request_hash, prompt_version=self.prompt_version, sample_id=sample.sample_id, artifact_dir=artifact_dir / self.name),
         )
 
 
@@ -113,28 +132,28 @@ class ChangeExpert(VisualExpert):
     """Run the change visual primitive. / 运行变化视觉原语。"""
 
     def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
-        super().__init__(client, prompt, model, "change_expert")
+        super().__init__(client, prompt, model, "change_expert", "change-expert-v1")
 
 
 class GroundingExpert(VisualExpert):
     """Run the grounding visual primitive. / 运行定位视觉原语。"""
 
     def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
-        super().__init__(client, prompt, model, "grounding_expert")
+        super().__init__(client, prompt, model, "grounding_expert", "general-vqa-v2")
 
 
 class SpatialExpert(VisualExpert):
     """Run the spatial visual primitive. / 运行空间关系视觉原语。"""
 
     def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
-        super().__init__(client, prompt, model, "spatial_expert")
+        super().__init__(client, prompt, model, "spatial_expert", "spatial-v2")
 
 
 class GeneralVQAExpert(VisualExpert):
     """Run the general-VQA visual primitive. / 运行通用问答视觉原语。"""
 
     def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
-        super().__init__(client, prompt, model, "general_vqa_expert")
+        super().__init__(client, prompt, model, "general_vqa_expert", "general-vqa-v2")
 
 
 class WorkflowService:
@@ -253,7 +272,18 @@ class DatasetRunner:
         started = _status(sample, "running")
         atomic_write_json(status_path, started.model_dump(mode="json"))
         try:
-            decision = TaskRouter().route_known(sample.task, high_resolution=any((ref.width or 0) * (ref.height or 0) > self.settings.counting.max_pixels_without_tiling for ref in sample.images))
+            high_resolution = any(
+                (ref.width or 0) * (ref.height or 0) > self.settings.counting.max_pixels_without_tiling
+                for ref in sample.images
+            )
+            question_type = str(sample.metadata.get("question_type", ""))
+            if sample.dataset == "VRSBench" and sample.task == "general_vqa":
+                decision = TaskRouter().route_vrsbench_vqa(
+                    question_type,
+                    high_resolution=high_resolution,
+                )
+            else:
+                decision = TaskRouter().route_known(sample.task, high_resolution=high_resolution)
             atomic_write_json(sample_dir / "routing_decision.json", decision.model_dump(mode="json"))
             if sample.task in {"counting", "fine_grained_counting"}:
                 target = await TargetParser(self.client, self.prompts["target"], self.settings.models.qwen.model).parse(sample.question, sample_id=sample.sample_id, artifact_dir=sample_dir)
@@ -266,21 +296,39 @@ class DatasetRunner:
                 final = _status(sample, state, result_path=sample_dir / "counting_result.json")
             else:
                 expert_name = decision.experts[0].name
-                service = WorkflowService(self.client, self.prompts, self.settings.models.qwen.model)
-                expert_class_name = type(service.experts[expert_name]).__name__
                 inference_started = time.perf_counter()
-                result = await service.execute(expert_name, sample, sample_dir)
+                if expert_name == "counting_expert":
+                    expert_class_name = "CountingExpert"
+                    prompt_version = self.settings.counting.prompt_version
+                    result = await self._run_vqa_counting(sample, sample_dir)
+                    route = (
+                        f"{type(self.adapter).__name__} -> TaskRouter.route_vrsbench_vqa -> "
+                        "CountTargetParser.parse -> CountingExpert.answer -> "
+                        f"PointCountingOrchestrator.count_image -> {type(self.client).__name__}.complete_json"
+                    )
+                else:
+                    service = WorkflowService(self.client, self.prompts, self.settings.models.qwen.model)
+                    expert = service.experts[expert_name]
+                    expert_class_name = type(expert).__name__
+                    prompt_version = expert.prompt_version
+                    result = await service.execute(expert_name, sample, sample_dir)
+                    if sample.dataset == "VRSBench" and sample.task == "general_vqa":
+                        result = apply_vrsbench_geometry(sample.question, question_type, result)
+                    route_entry = (
+                        "TaskRouter.route_vrsbench_vqa"
+                        if sample.dataset == "VRSBench" and sample.task == "general_vqa"
+                        else "TaskRouter.route_known"
+                    )
+                    route = (
+                        f"{type(self.adapter).__name__} -> {route_entry} -> "
+                        f"{expert_class_name}.run -> {type(self.client).__name__}.complete_json"
+                    )
                 inference_seconds = round(time.perf_counter() - inference_started, 6)
                 atomic_write_json(sample_dir / "expert_result.json", result.model_dump(mode="json"))
                 judge_status = "not_requested"
                 if sample.task == "general_vqa":
                     evaluation = await self._evaluate_vqa(sample, result, sample_dir)
                     judge_status = evaluation.judge_status
-                route = (
-                    f"{type(self.adapter).__name__} -> TaskRouter.route_known -> "
-                    f"{expert_class_name}.run -> "
-                    f"{type(self.client).__name__}.complete_json"
-                )
                 if sample.task == "general_vqa" and judge_status != "not_requested":
                     route += " -> DeepSeekJudgeClient.judge"
                 atomic_write_json(
@@ -294,6 +342,10 @@ class DatasetRunner:
                         "qwen_backend": self.settings.models.qwen.backend,
                         "judge_status": judge_status,
                         "inference_seconds": inference_seconds,
+                        "execution_task": decision.task,
+                        "official_question_type": question_type or None,
+                        "prompt_version": prompt_version,
+                        "geometry": result.geometry,
                     },
                 )
                 state = {"completed": "succeeded", "partial": "partial", "failed": "failed"}[result.status]
@@ -302,6 +354,60 @@ class DatasetRunner:
             final = _status(sample, "failed", error_code=type(error).__name__, error_message=str(error))
         atomic_write_json(status_path, final.model_dump(mode="json"))
         return final
+
+    async def _run_vqa_counting(self, sample: UnifiedSample, sample_dir: Path) -> ExpertResult:
+        """Run VRSBench quantity VQA through accepted-point counting.
+        通过接受点计数运行 VRSBench 数量问答。
+        """
+
+        artifact_dir = sample_dir / "counting_expert"
+        target = await TargetParser(
+            self.client,
+            self.prompts["target"],
+            self.settings.models.qwen.model,
+        ).parse(sample.question, sample_id=sample.sample_id, artifact_dir=artifact_dir)
+        image = read_normalized_image(sample.images[0].path)
+        pipeline = PointCountingOrchestrator(
+            self.client,
+            counting=self.settings.counting,
+            qwen=self.settings.models.qwen,
+            system_prompt=self.prompts["count"],
+            run_dir=artifact_dir,
+            seam_prompt=self.prompts["seam"],
+        )
+        counted = await CountingExpert(pipeline).answer(
+            image,
+            sample_id=sample.sample_id,
+            question=sample.question,
+            target=target,
+        )
+        counting = counted.counting_result
+        atomic_write_json(sample_dir / "counting_result.json", counting.model_dump(mode="json"))
+        points = [
+            VisualEvidence(
+                label=point.target,
+                point=[point.global_x_norm, point.global_y_norm],
+                confidence=point.confidence,
+                image_id=sample.images[0].image_id,
+            )
+            for point in counting.global_points
+            if point.accepted
+        ]
+        geometry = {
+            "version": "accepted-point-count-v1",
+            "coordinate_frame": "normalized_0_999_top_left",
+            "rule": "final_count_equals_accepted_points",
+            "accepted_point_count": len(points),
+            "final_count": counting.final_count,
+        }
+        return ExpertResult(
+            expert="counting_expert",
+            answer=str(counting.final_count) if counted.complete else counted.answer,
+            evidence=[f"Accepted point {index + 1}: {item.point}" for index, item in enumerate(points)],
+            evidence_items=points,
+            geometry=geometry,
+            status="completed" if counted.complete else "partial",
+        )
 
     async def _evaluate_vqa(
         self,

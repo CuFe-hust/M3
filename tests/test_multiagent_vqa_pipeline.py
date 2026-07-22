@@ -116,6 +116,8 @@ def _official_vrsbench(root: Path) -> None:
                     "question": "Is a vehicle visible?",
                     "ground_truth": "Yes",
                     "question_id": 7,
+                    "type": "object existence",
+                    "dataset": "RSBench",
                 }
             ]
         ),
@@ -175,6 +177,7 @@ def test_official_vrsbench_adapter_is_read_only_and_preserves_answer(tmp_path: P
     assert sample.sample_id == "7"
     assert sample.question == "Is a vehicle visible?"
     assert sample.ground_truth is not None and sample.ground_truth.answers == ["Yes"]
+    assert sample.metadata["question_type"] == "object existence"
     assert not (tmp_path / "spacers_adapter.json").exists()
 
 
@@ -187,11 +190,14 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     run_dir.mkdir()
     client = MockVisionClient(
         {
-            "7:general_vqa_expert": {
-                "expert": "general_vqa_expert",
+            "7:spatial_expert": {
+                "expert": "spatial_expert",
                 "answer": "Yes",
-                "boxes": [],
+                "boxes": [[100, 100, 200, 200]],
                 "evidence": ["vehicle visible"],
+                "evidence_items": [
+                    {"label": "small-vehicle", "box": [100, 100, 200, 200], "confidence": 0.9}
+                ],
                 "status": "completed",
             }
         }
@@ -214,22 +220,96 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
 
     assert summary.succeeded == 1
     route = json.loads((run_dir / "samples" / "7" / "routing_decision.json").read_text(encoding="utf-8"))
-    assert route["experts"][0]["name"] == "general_vqa_expert"
+    assert route["experts"][0]["name"] == "spatial_expert"
+    assert "vrsbench_type_object_existence" in route["reason_codes"]
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
-    assert "TaskRouter.route_known" in trace["route"]
+    assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
+    assert trace["prompt_version"] == "spatial-v2"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
 
     report = build_multiagent_vqa_report(run_dir, qwen=settings.models.qwen)
     assert report is not None and report.is_file()
     html = report.read_text(encoding="utf-8")
-    assert "spacers_agent.workflow.GeneralVQAExpert" in html
-    assert "TaskRouter.route_known" in html
+    assert "spacers_agent.workflow.SpatialExpert" in html
+    assert "TaskRouter.route_vrsbench_vqa" in html
+    assert "结构化视觉证据" in html
 
 
 @pytest.mark.asyncio
-async def test_general_vqa_contract_requires_empty_boxes(tmp_path: Path) -> None:
+async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    Image.new("RGB", (32, 32)).save(dataset_root / "quantity.png")
+    (dataset_root / "VRSBench_EVAL_vqa.json").write_text(
+        json.dumps(
+            [
+                {
+                    "image_id": "quantity.png",
+                    "question": "How many small vehicles are visible?",
+                    "ground_truth": "1",
+                    "question_id": 9,
+                    "type": "object quantity",
+                    "dataset": "RSBench",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    client = MockVisionClient(
+        {
+            "9:target": {
+                "canonical_label": "small vehicle",
+                "inclusion_rule": "Count each visible small vehicle.",
+                "exclusion_rule": "Exclude non-vehicles.",
+            },
+            "9:r000_c000": {
+                "target": "small vehicle",
+                "tile_id": "r000_c000",
+                "points": [
+                    {
+                        "local_id": "p1",
+                        "x": 500,
+                        "y": 500,
+                        "confidence": 0.9,
+                        "short_evidence": "vehicle centre",
+                    }
+                ],
+                "reported_count": 1,
+            },
+        }
+    )
+    settings = AppSettings(
+        paths=PathSettings(dataset_root=dataset_root),
+        runs=RunSettings(root=tmp_path),
+        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+    )
+    prompts = {"count": "count", "target": "target", "change": "change", "spatial": "spatial", "general": "vqa", "seam": "seam"}
+
+    summary = await DatasetRunner(
+        settings,
+        get_adapter("VRSBench"),
+        run_dir=run_dir,
+        client=client,
+        prompts=prompts,
+        judge_client=_Judge(),  # type: ignore[arg-type]
+        judge_policy="all",
+    ).run(split="validation", task="general_vqa", limit=1)
+
+    assert summary.succeeded == 1
+    result = json.loads((run_dir / "samples" / "9" / "expert_result.json").read_text(encoding="utf-8"))
+    assert result["expert"] == "counting_expert"
+    assert result["answer"] == "1"
+    assert result["geometry"]["final_count"] == len(result["evidence_items"]) == 1
+    point = result["evidence_items"][0]["point"]
+    assert point[0] == point[1] and 0 <= point[0] <= 999
+
+
+@pytest.mark.asyncio
+async def test_general_vqa_contract_retains_labeled_boxes(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset_root.mkdir()
     _official_vrsbench(dataset_root)
@@ -241,8 +321,8 @@ async def test_general_vqa_contract_requires_empty_boxes(tmp_path: Path) -> None
     await GeneralVQAExpert(client, "answer", "local-qwen").run(sample, artifact_dir=tmp_path / "artifacts")
 
     system_prompt = str(client.messages[0]["content"])
-    assert "boxes must always be []" in system_prompt
-    assert '"boxes":[]' in system_prompt
+    assert "retain relevant labeled boxes or points" in system_prompt
+    assert "copy evidence boxes into boxes" in system_prompt
 
 
 @pytest.mark.asyncio

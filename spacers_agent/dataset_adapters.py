@@ -140,7 +140,7 @@ class VRSBenchVQAAdapter:
 
         annotation = self._annotation_path(root)
         rows = _read_rows(annotation)
-        required = {"image_id", "question", "ground_truth", "question_id"}
+        required = {"image_id", "question", "ground_truth", "question_id", "type"}
         observed = tuple(sorted({key for row in rows[:20] for key in row}))
         for index, row in enumerate(rows):
             missing = sorted(required - set(row))
@@ -177,9 +177,16 @@ class VRSBenchVQAAdapter:
                         "adapter_version": "official-eval-v1",
                         "image_id": image_id,
                         "question_id": row["question_id"],
+                        "question_type": row["type"],
+                        "source_dataset": row.get("dataset"),
                     },
                 ),
-                metadata={"source": "VRSBench", "source_index": index},
+                metadata={
+                    "source": "VRSBench",
+                    "source_index": index,
+                    "question_type": str(row["type"]),
+                    "source_dataset": row.get("dataset"),
+                },
             )
 
     def _annotation_path(self, root: Path) -> Path:

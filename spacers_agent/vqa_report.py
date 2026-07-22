@@ -50,14 +50,19 @@ def build_multiagent_vqa_report(
                 answers=references,
                 meta={"source": sample.dataset, "question": sample.question},
             )
-            raw_text = _read_raw_qwen(sample_dir / "general_vqa_expert" / "raw_response.txt", result.answer)
+            raw_text = _read_raw_qwen(sample_dir, result)
             canonical_prediction = CanonicalPrediction(
                 id=sample.sample_id,
                 task_type="vqa",
                 text=result.answer,
                 answer=result.answer,
                 boxes=result.boxes,
-                meta={"model_id": qwen.model, "raw_text": raw_text},
+                meta={
+                    "model_id": qwen.model,
+                    "raw_text": raw_text,
+                    "visual_evidence": [item.model_dump(mode="json") for item in result.evidence_items],
+                    "geometry": result.geometry,
+                },
             )
             record = {
                 "sample": canonical_sample.serializable(),
@@ -67,7 +72,13 @@ def build_multiagent_vqa_report(
             exact_correct += int(bool(evaluation.get("exact_match")))
             seconds = float(trace.get("inference_seconds", 0.0) or 0.0)
             inference_seconds += seconds
-            writer.capture(canonical_sample, canonical_prediction, seconds, agent_trace=trace)
+            writer.capture(
+                canonical_sample,
+                canonical_prediction,
+                seconds,
+                agent_trace=trace,
+                visual_evidence=[item.model_dump(mode="json") for item in result.evidence_items],
+            )
             deepseek_audit.append(_deepseek_audit_record(sample_dir, sample, result, evaluation))
     result_path.write_text("\n".join(result_lines) + "\n", encoding="utf-8")
     evaluated = [record for record in deepseek_audit if record.get("score") is not None]
@@ -106,8 +117,8 @@ def build_multiagent_vqa_report(
             "inference_seconds": round(inference_seconds, 6),
             "pipeline": [
                 "VRSBenchVQAAdapter",
-                "TaskRouter",
-                "GeneralVQAExpert",
+                "TaskRouter.route_vrsbench_vqa",
+                "CountingExpert | SpatialExpert | GeneralVQAExpert",
                 "QwenTransformersClient",
                 "DeepSeekJudgeClient",
                 "AuditReportWriter",
@@ -162,8 +173,20 @@ def _deepseek_audit_record(
     }
 
 
-def _read_raw_qwen(path: Path, fallback: str) -> str:
-    return path.read_text(encoding="utf-8") if path.is_file() else fallback
+def _read_raw_qwen(sample_dir: Path, result: ExpertResult) -> str:
+    """Collect Qwen raw responses for either one-shot or point-counting routes.
+    收集单次视觉路由或点计数路由产生的 Qwen 原始响应。
+    """
+
+    direct = sample_dir / result.expert / "raw_response.txt"
+    if direct.is_file():
+        return direct.read_text(encoding="utf-8")
+    records: list[str] = []
+    for path in sorted(sample_dir.rglob("raw_response.txt")):
+        if any(part.casefold().startswith("deepseek") for part in path.relative_to(sample_dir).parts):
+            continue
+        records.append(f"[{path.relative_to(sample_dir).as_posix()}]\n{path.read_text(encoding='utf-8')}")
+    return "\n\n".join(records) if records else result.model_dump_json()
 
 
 def _read_json(path: Path) -> dict[str, Any]:

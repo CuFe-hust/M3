@@ -64,6 +64,40 @@ class DatasetRunSummary(BaseModel):
     skipped: int = Field(ge=0)
 
 
+class VisualEvidence(BaseModel):
+    """One labeled visual observation in normalized whole-image coordinates.
+    一条使用整图归一化坐标的带标签视觉证据。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = Field(min_length=1)
+    box: list[int] | None = None
+    point: list[int] | None = None
+    confidence: float = Field(ge=0.0, le=1.0)
+    image_id: str | None = None
+    coordinate_frame: Literal["normalized_0_999_top_left"] = "normalized_0_999_top_left"
+
+    @model_validator(mode="after")
+    def validate_geometry(self) -> "VisualEvidence":
+        """Require exactly one valid box or point in the declared coordinate frame.
+        要求在声明的坐标系中恰好提供一个合法框或点。
+        """
+
+        if (self.box is None) == (self.point is None):
+            raise ValueError("visual evidence requires exactly one of box or point")
+        if self.box is not None:
+            if len(self.box) != 4 or any(value < 0 or value > 999 for value in self.box):
+                raise ValueError("box must be [x1,y1,x2,y2] in 0..999")
+            if self.box[0] >= self.box[2] or self.box[1] >= self.box[3]:
+                raise ValueError("box corners must satisfy x1<x2 and y1<y2")
+        if self.point is not None and (
+            len(self.point) != 2 or any(value < 0 or value > 999 for value in self.point)
+        ):
+            raise ValueError("point must be [x,y] in 0..999")
+        return self
+
+
 class ExpertResult(BaseModel):
     """Uniform non-counting expert result with verifiable evidence. / 含可验证证据的统一非计数专家结果。"""
 
@@ -73,7 +107,20 @@ class ExpertResult(BaseModel):
     answer: str
     boxes: list[list[float]] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list, max_length=12)
+    evidence_items: list[VisualEvidence] = Field(default_factory=list, max_length=200)
+    geometry: dict[str, Any] = Field(default_factory=dict)
     status: Literal["completed", "partial", "failed"] = "completed"
+
+    @model_validator(mode="after")
+    def retain_evidence_boxes(self) -> "ExpertResult":
+        """Retain labeled evidence boxes in the legacy canonical box list.
+        将带标签证据框同步保留到旧版统一框列表中。
+        """
+
+        labeled_boxes = [list(item.box) for item in self.evidence_items if item.box is not None]
+        if labeled_boxes:
+            self.boxes = labeled_boxes
+        return self
 
 
 class ImageRef(BaseModel):

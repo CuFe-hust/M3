@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash
 from spacers_agent.counting import PointCountingOrchestrator
 from spacers_agent.schemas import CountTargetSpec, CountingResult
+from spacers_agent.vqa_geometry import execution_task_for_vrsbench
 
 
 ExpertName = Literal[
@@ -158,6 +159,21 @@ class TaskRouter:
             requires_tiling=task in {"counting", "fine_grained_counting", "grounding", "change_caption", "change_qa"},
             reason_codes=reason_codes,
         )
+
+    def route_vrsbench_vqa(
+        self,
+        question_type: str,
+        *,
+        high_resolution: bool = False,
+    ) -> RoutingDecision:
+        """Route VRSBench VQA by its audited official type without a model call.
+        按审计确认的 VRSBench 官方类型路由 VQA，且不调用模型。
+        """
+
+        task = execution_task_for_vrsbench(question_type)
+        decision = self.route_known(task, high_resolution=high_resolution)
+        reason = "vrsbench_type_" + "_".join(question_type.casefold().split())
+        return decision.model_copy(update={"reason_codes": [*decision.reason_codes, reason]})
 
     async def route_unknown(
         self,
