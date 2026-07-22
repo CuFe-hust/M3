@@ -34,6 +34,10 @@ Edit `config/local.baseline.json` only to choose storage paths or supported mode
 The default paths keep downloaded data in `datasets/` and outputs in `outputs/`, both ignored by Git.
 Do not put API keys in this file.
 
+The default `report` settings generate a visual audit report for up to 200 samples per result.
+Increase `report.max_samples` only when the additional image and HTML size is acceptable, or set
+`report.enabled` to `false` to disable report artifacts for a particular local run.
+
 For a checkpoint that is already present on a local server, set `model.id` to that external
 directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
 network fallback while preserving the original Qwen3-VL loading and prediction interfaces.
@@ -63,6 +67,12 @@ python main.py --config config/local.baseline.json infer --dataset all --limit 2
 python main.py --config config/local.baseline.json infer --dataset all --overwrite
 ```
 
+Each inference command prints the absolute path of its default HTML report. For a result named
+`outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
+`outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
+questions/prompts, Qwen raw and final answers, references, exact-match comparison, and per-sample
+inference duration. Images are content-addressed so repeated source images are stored only once.
+
 Compute deterministic metrics for one saved result file:
 
 ```bash
@@ -84,6 +94,11 @@ report it as a separate proxy metric. For official oriented-box grounding metric
 upstream VRSBench or XLRS-Bench evaluator on the canonical prediction file after converting
 its documented output fields.
 
+When `--deepseek-proxy` is used, the same report is regenerated with per-sample DeepSeek scores,
+raw API responses, parsed results, duration, attempts, and token usage. The key is read only from
+`DEEPSEEK_API_KEY` and is never written to the report. DeepSeek receives text and reference
+answers only; it does not inspect the source image.
+
 ### Output Format
 
 Each `outputs/*.jsonl` line contains:
@@ -96,7 +111,10 @@ Each `outputs/*.jsonl` line contains:
 ```
 
 `*.metadata.json` records the model settings, timestamp, completed sample count, and any
-dataset-scope qualification needed for a report.
+dataset-scope qualification needed for a report. It also records model-load and inference timing.
+The sibling `*.report/` directory contains `report.html`, `samples.csv`, a bounded `samples.jsonl`
+visual subset, deduplicated images, and optional `deepseek_audit.jsonl`. These report artifacts do
+not change the canonical prediction JSONL or the metric JSON format.
 
 For MME Real RS, inference also writes `mme_real_rs.official.json`, preserving each official
 record and replacing only its `Output` field. It can be passed directly to the upstream

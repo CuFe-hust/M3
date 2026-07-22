@@ -8,6 +8,8 @@ import argparse
 import json
 import platform
 import sys
+import time
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -18,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from data.loaders import DATASET_REPOS, download_datasets, load_samples
 from data.schema import CanonicalPrediction, CanonicalSample
+from eval.audit_report import AuditReportWriter, build_audit_report, report_dir_for_result, write_deepseek_audit
 from eval.metrics import evaluate_records
 from models.qwen3vl import Qwen3VLBaseline, Qwen3VLSettings
 
@@ -81,15 +84,42 @@ def main() -> None:
         return
     if args.command == "infer":
         targets = EVALUATION_TARGETS if args.dataset == "all" else (args.dataset,)
+        model_load_started = time.perf_counter()
         model = _load_model(config)
+        model_load_seconds = time.perf_counter() - model_load_started
         for target in targets:
-            _infer_target(target, data_root, output_root, model, args.limit, args.overwrite, config)
+            _infer_target(
+                target,
+                data_root,
+                output_root,
+                model,
+                args.limit,
+                args.overwrite,
+                config,
+                model_load_seconds,
+            )
         return
     records = _read_jsonl(args.result)
-    metrics = evaluate_records(records, use_deepseek=args.deepseek_proxy, deepseek_config=config.get("deepseek", {}))
+    deepseek_audit: list[dict[str, Any]] | None = [] if args.deepseek_proxy else None
+    metrics = evaluate_records(
+        records,
+        use_deepseek=args.deepseek_proxy,
+        deepseek_config=config.get("deepseek", {}),
+        deepseek_audit=deepseek_audit,
+    )
     metric_path = args.result.with_suffix(".metrics.json")
     metric_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    audit_path = None
+    if deepseek_audit is not None:
+        audit_path = report_dir_for_result(args.result) / "deepseek_audit.jsonl"
+        write_deepseek_audit(audit_path, deepseek_audit)
+    report_path = build_audit_report(args.result, metric_path, audit_path)
     print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    print(f"Saved evaluation metrics to {metric_path.resolve()}")
+    if report_path is not None:
+        print(f"Saved default audit report to {report_path}")
+    else:
+        print("Default audit report unavailable; run inference again with report.enabled=true.")
 
 
 def _load_model(config: dict[str, Any]) -> Qwen3VLBaseline:
@@ -126,6 +156,7 @@ def _infer_target(
     limit: int | None,
     overwrite: bool,
     config: dict[str, Any],
+    model_load_seconds: float = 0.0,
 ) -> None:
     output_root.mkdir(parents=True, exist_ok=True)
     result_path = output_root / f"{dataset_name}.jsonl"
@@ -138,15 +169,25 @@ def _infer_target(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "python": platform.python_version(),
         "scope_note": _scope_note(dataset_name),
+        "model_load_seconds": round(model_load_seconds, 6),
     }
+    report_config = config.get("report", {})
+    report_enabled = bool(report_config.get("enabled", True))
+    report_max_samples = int(report_config.get("max_samples", 200))
+    report_context = AuditReportWriter(result_path, report_max_samples) if report_enabled else nullcontext(None)
     completed = 0
     official_mme_records = []
-    with result_path.open("w", encoding="utf-8") as result_file:
+    inference_started = time.perf_counter()
+    with result_path.open("w", encoding="utf-8") as result_file, report_context as report_writer:
         for sample in load_samples(dataset_name, data_root):
+            sample_started = time.perf_counter()
             prediction = model.predict(sample)
+            sample_seconds = time.perf_counter() - sample_started
             prediction.validate()
             record = {"sample": sample.serializable(), "prediction": prediction.serializable()}
             result_file.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if report_writer is not None:
+                report_writer.capture(sample, prediction, sample_seconds)
             if dataset_name == "mme_real_rs":
                 official_record = dict(sample.meta["record"])
                 official_record["Output"] = prediction.answer
@@ -157,11 +198,18 @@ def _infer_target(
             if limit is not None and completed >= limit:
                 break
     metadata["completed_samples"] = completed
+    metadata["inference_seconds"] = round(time.perf_counter() - inference_started, 6)
+    metadata["report_enabled"] = report_enabled
+    metadata["report_max_samples"] = report_max_samples if report_enabled else 0
     metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     if official_mme_records:
         official_path = output_root / "mme_real_rs.official.json"
         official_path.write_text(json.dumps(official_mme_records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"Saved {completed} predictions to {result_path}")
+    if report_enabled:
+        report_path = build_audit_report(result_path)
+        if report_path is not None:
+            print(f"Saved default audit report to {report_path}")
 
 
 def _scope_note(dataset_name: str) -> str:

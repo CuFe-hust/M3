@@ -447,6 +447,20 @@ The `evaluate --deepseek-proxy` command reads `DEEPSEEK_API_KEY` only from the r
 environment and produces a non-official `deepseek_semantic_match_proxy` for VRSBench VQA.
 It must not be described as the benchmark's official GPT-based evaluation metric.
 
+`eval/audit_report.py` is the baseline visual-report component. Baseline inference enables it by
+default and writes `<result-stem>.report/report.html` plus `samples.csv`, a bounded visual
+`samples.jsonl`, and content-addressed PNG files without changing the canonical prediction file.
+`report.enabled` defaults to `true`; `report.max_samples` defaults to `200` and limits only the
+number of displayed visual records, not inference or metric scope. Each inference and evaluation
+command prints the absolute report path.
+
+When `evaluate --deepseek-proxy` runs, `eval.metrics.evaluate_records` retains its existing metric
+return format and may additionally receive a caller-owned audit list. The baseline CLI writes that
+list to `<result-stem>.report/deepseek_audit.jsonl` with request payload, raw response, parsed
+result, duration, attempts, token usage, and errors. It never stores the API key. The report is
+then regenerated with per-sample Qwen/reference comparison and DeepSeek judgment. DeepSeek remains
+text-only and never claims visual verification.
+
 ## 7. Phase 1 Local Multi-Agent Foundation
 
 `spacers_agent/` is an additive local package that does not replace the existing `main.py`
