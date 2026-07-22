@@ -148,7 +148,7 @@ def test_infer_prints_default_report_absolute_path(tmp_path: Path, monkeypatch, 
         FakeModel(),
         limit=1,
         overwrite=False,
-        config={"model": {"id": "local-qwen"}, "report": {"enabled": True, "max_samples": 20}},
+        config={"model": {"id": "local-qwen"}},
         model_load_seconds=1.0,
     )
 
