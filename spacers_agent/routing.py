@@ -164,16 +164,22 @@ class TaskRouter:
         self,
         question_type: str,
         *,
+        question: str | None = None,
         high_resolution: bool = False,
     ) -> RoutingDecision:
-        """Route VRSBench VQA by its audited official type without a model call.
-        按审计确认的 VRSBench 官方类型路由 VQA，且不调用模型。
+        """Route VRSBench conservatively from question semantics without a model call.
+        根据问题语义保守路由 VRSBench，且不调用额外模型。
         """
 
-        task = execution_task_for_vrsbench(question_type)
+        task = execution_task_for_vrsbench(question_type, question)
         decision = self.route_known(task, high_resolution=high_resolution)
-        reason = "vrsbench_type_" + "_".join(question_type.casefold().split())
-        return decision.model_copy(update={"reason_codes": [*decision.reason_codes, reason]})
+        normalized_type = "_".join(question_type.casefold().split()) or "unspecified"
+        reason_codes = [*decision.reason_codes, f"vrsbench_type_{normalized_type}"]
+        if question:
+            reason_codes.append(f"vrsbench_semantic_{task}")
+        else:
+            reason_codes.append("vrsbench_conservative_fallback")
+        return decision.model_copy(update={"reason_codes": reason_codes})
 
     async def route_unknown(
         self,

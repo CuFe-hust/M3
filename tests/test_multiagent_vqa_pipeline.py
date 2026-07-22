@@ -305,8 +305,8 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     run_dir.mkdir()
     client = MockVisionClient(
         {
-            "7:spatial_expert": {
-                "expert": "spatial_expert",
+            "7:general_vqa_expert": {
+                "expert": "general_vqa_expert",
                 "answer": "Yes",
                 "boxes": [[100, 100, 200, 200]],
                 "evidence": ["vehicle visible"],
@@ -335,19 +335,19 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
 
     assert summary.succeeded == 1
     route = json.loads((run_dir / "samples" / "7" / "routing_decision.json").read_text(encoding="utf-8"))
-    assert route["experts"][0]["name"] == "spatial_expert"
+    assert route["experts"][0]["name"] == "general_vqa_expert"
     assert "vrsbench_type_object_existence" in route["reason_codes"]
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
     assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
-    assert trace["prompt_version"] == "spatial-v4"
+    assert trace["prompt_version"] == "general-vqa-v2"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
 
     report = build_multiagent_vqa_report(run_dir, qwen=settings.models.qwen)
     assert report is not None and report.is_file()
     html = report.read_text(encoding="utf-8")
-    assert "spacers_agent.workflow.SpatialExpert" in html
+    assert "spacers_agent.workflow.GeneralVQAExpert" in html
     assert "TaskRouter.route_vrsbench_vqa" in html
     assert "结构化视觉证据" in html
 
@@ -559,6 +559,36 @@ async def test_general_vqa_contract_retains_labeled_boxes(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
+async def test_mislabeled_scene_question_keeps_open_general_vqa_vocabulary(tmp_path: Path) -> None:
+    """Do not force vehicle labels onto an area question with a coarse category type.
+    不因粗粒度类别标签而将车辆词表强加给区域问题。
+    """
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    sample = sample.model_copy(
+        update={
+            "question": "What kind of area is shown in the image?",
+            "metadata": {**sample.metadata, "question_type": "object category"},
+        }
+    )
+    client = _CapturingClient()
+
+    from spacers_agent.workflow import GeneralVQAExpert
+
+    await GeneralVQAExpert(client, "answer", "local-qwen").run(
+        sample,
+        artifact_dir=tmp_path / "artifacts",
+    )
+
+    payload = json.loads(client.messages[1]["content"][-1]["text"])
+    assert payload["semantic_subtype"] == "general"
+    assert payload["answer_vocabulary"] == []
+
+
+@pytest.mark.asyncio
 async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset_root.mkdir()
@@ -705,6 +735,58 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
     assert result.geometry["candidate_review_labeled_boxes"] == 1
     review_payload = json.loads(client.message_history[1][1]["content"][-1]["text"])
     assert review_payload["answer_vocabulary"] == []
+
+
+@pytest.mark.asyncio
+async def test_grid_position_review_recovers_generic_target_from_top_level_box(tmp_path: Path) -> None:
+    """Use valid review geometry even when the question names no closed vehicle class.
+    即使问题未指定封闭车辆类别，也使用有效的复查几何。
+    """
+
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    sample = sample.model_copy(
+        update={
+            "question": "Where is the vehicle positioned in the image?",
+            "metadata": {**sample.metadata, "question_type": "object position"},
+        }
+    )
+    client = _MessageMockClient(
+        {
+            "7:spatial_expert": {
+                "expert": "spatial_expert",
+                "answer": "partial",
+                "boxes": [],
+                "evidence_items": [],
+                "status": "partial",
+            },
+            "7:spatial-candidate-review": {
+                "expert": "spatial_expert",
+                "answer": "The vehicle is near the bottom center.",
+                "boxes": [[420, 670, 520, 770]],
+                "evidence_items": [],
+                "status": "completed",
+            },
+        }
+    )
+
+    from spacers_agent.vqa_geometry import apply_vrsbench_geometry
+    from spacers_agent.workflow import SpatialExpert
+
+    raw = await SpatialExpert(client, "spatial", "local-qwen", "review", "grid", "grid-review").run(
+        sample,
+        artifact_dir=tmp_path / "artifacts",
+    )
+    result = apply_vrsbench_geometry(sample.question, "object position", raw)
+
+    assert raw.answer == "The vehicle is near the bottom center."
+    assert raw.evidence_items[0].label == "position-target"
+    assert raw.evidence_items[0].box == [420, 670, 520, 770]
+    assert result.answer == "bottom-middle"
+    assert result.status == "completed"
+    assert result.geometry["candidate_review_labeled_boxes"] == 1
 
 
 def test_spatial_evidence_merge_deduplicates_points_and_prefers_boxes() -> None:

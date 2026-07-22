@@ -612,7 +612,7 @@ sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 
 `spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
 
-The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `Qwen3VLForConditionalGeneration` and `AutoProcessor`; it does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` maps official `object quantity` questions to `CountingExpert`, position/existence/category/direction questions to `SpatialExpert`, and color questions to `GeneralVQAExpert`, without a router-model call. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
+The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `Qwen3VLForConditionalGeneration` and `AutoProcessor`; it does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingExpert`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialExpert`; every other or unknown form falls back to `GeneralVQAExpert` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
 
 Known VRSBench quantity questions use a fixed, reference-independent vehicle ontology rather than
 an LLM target parse. Their dedicated route first obtains a compact whole-image count proposal using
@@ -626,15 +626,18 @@ truncated proposal geometry may recover only a syntactically complete integer an
 which localization is mandatory. `final_count` always equals the final accepted point count, while
 retained supporting boxes remain available in the result and HTML overlay. The tiled owner-core and
 halo `PointCountingOrchestrator` remains unchanged for native counting tasks outside this VRSBench
-VQA route. Spatial extreme, arrangement, and proximity questions perform an independent
+VQA route. Spatial extreme and arrangement questions perform an independent
 candidate-enumeration pass without first-pass evidence. Grid-position questions first request one
 tight physical target box without sending the closed grid-label vocabulary; a valid single target
 box is used directly, while missing, ambiguous, or corner-region placeholder evidence triggers an
 independent localization review. Review boxes that omit `evidence_items` retain their model-provided
-geometry and receive only the explicit target class named by the question. The final grid label is
-derived from the retained box centre. Question text is classified into a semantic subtype
-independently from the coarse official type. Raw answers remain in the geometry audit, and partial
-VQA artifacts remain visible in the HTML report.
+geometry; explicit small/large vehicle targets retain that class, while other singular targets use
+a neutral `position-target` evidence label instead of discarding valid coordinates. The final grid
+label is derived from the retained box centre. Question text is classified into a semantic subtype
+independently from the coarse official type. Raw answers remain in the geometry audit. Workflow
+status tokens such as `partial` are removed from the semantic answer field, and global/open VQA
+answers are not downgraded solely because they have no localizable box. Partial VQA artifacts remain
+visible in the HTML report.
 
 Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. With `--evaluate`, VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--judge-policy none` remains the explicit offline opt-out. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
 

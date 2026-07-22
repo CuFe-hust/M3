@@ -25,14 +25,7 @@ VRSBenchQuestionSubtype = Literal[
     "general",
 ]
 
-VRSBENCH_TYPE_ROUTES: dict[str, ExecutionTask] = {
-    "object quantity": "counting",
-    "object existence": "spatial_relation",
-    "object position": "spatial_relation",
-    "object category": "spatial_relation",
-    "object direction": "spatial_relation",
-    "object color": "general_vqa",
-}
+_STATUS_ANSWER_PLACEHOLDERS = {"completed", "failed", "partial"}
 
 _SMALL_VEHICLE_ALIASES = (
     "small vehicle",
@@ -52,16 +45,19 @@ _LARGE_VEHICLE_ALIASES = (
 )
 
 
-def execution_task_for_vrsbench(question_type: str) -> ExecutionTask:
-    """Map an official VRSBench question type to a declared execution task.
-    将 VRSBench 官方问题类型映射到已声明的执行任务。
+def execution_task_for_vrsbench(question_type: str, question: str | None = None) -> ExecutionTask:
+    """Select a conservative task from question semantics, with a general fallback.
+    根据问题语义保守选择任务，并为所有未知情况提供通用回退。
     """
 
-    normalized = " ".join(question_type.casefold().split())
-    try:
-        return VRSBENCH_TYPE_ROUTES[normalized]
-    except KeyError as error:
-        raise ValueError(f"Unsupported VRSBench VQA type: {question_type!r}") from error
+    if not question:
+        return "general_vqa"
+    subtype = vrsbench_question_subtype(question, question_type)
+    if subtype == "counting":
+        return "counting"
+    if subtype in {"extreme_category", "grid_position", "orientation", "arrangement"}:
+        return "spatial_relation"
+    return "general_vqa"
 
 
 def vrsbench_question_subtype(question: str, question_type: str) -> VRSBenchQuestionSubtype:
@@ -70,54 +66,93 @@ def vrsbench_question_subtype(question: str, question_type: str) -> VRSBenchQues
     """
 
     lowered = " ".join(question.casefold().replace("_", " ").split())
-    normalized_type = " ".join(question_type.casefold().replace("_", " ").split())
-    if re.search(r"\bhow many\b|\bnumber of\b|\bcount\b", lowered):
+    if re.search(r"\bhow many\b|\b(?:total )?number of\b|\bcount(?: of)?\b|\bquantity of\b", lowered):
         return "counting"
-    if re.search(r"\b(top|bottom)[ -]?most\b", lowered):
-        return "extreme_category" if "class" in lowered or "category" in lowered else "extreme_existence"
-    if "orientation" in lowered or re.search(r"\bdirection\b", lowered):
+    if _asks_extreme_vehicle_category(lowered):
+        return "extreme_category"
+    if re.search(r"\b(?:what|which)\b.*\b(?:orientation|direction)\b", lowered):
         return "orientation"
-    if "arrangement" in lowered or "arranged" in lowered:
+    if re.search(r"\b(?:arrangement|arranged|layout)\b", lowered):
         return "arrangement"
-    if "near" in lowered or "adjacent" in lowered or "close to" in lowered:
-        return "proximity"
-    if "color" in lowered or "colour" in lowered:
-        return "color"
     if _asks_grid_position(lowered):
         return "grid_position"
-    fallback: dict[str, VRSBenchQuestionSubtype] = {
-        "object existence": "existence",
-        "object position": "grid_position",
-        "object category": "category",
-        "object direction": "orientation",
-        "object color": "color",
-        "object quantity": "counting",
-    }
-    return fallback.get(normalized_type, "general")
+    if _is_yes_no_question(lowered):
+        if re.search(r"\b(top|bottom)[ -]?most\b", lowered):
+            return "extreme_existence"
+        if re.search(r"\b(?:near|adjacent|close to|next to)\b", lowered):
+            return "proximity"
+        return "existence"
+    if re.search(r"\bwhat\s+colou?r\b|\bcolou?r\s+(?:is|are)\b", lowered):
+        return "color"
+    if re.search(r"\b(?:area|scene|landscape|region|surroundings)\b", lowered):
+        return "general"
+    if re.search(r"\b(?:class|category|type|kind)\b", lowered):
+        return "category"
+    return "general"
 
 
-def vrsbench_answer_vocabulary(subtype: VRSBenchQuestionSubtype) -> list[str]:
-    """Return the reference-independent closed vocabulary for a semantic subtype.
-    返回与参考答案无关的语义子类型封闭词表。
+def vrsbench_answer_vocabulary(
+    subtype: VRSBenchQuestionSubtype,
+    question: str = "",
+) -> list[str]:
+    """Return a closed vocabulary only when the question itself entails it.
+    仅在问题文本本身能够推出封闭答案空间时返回词表。
     """
 
-    if subtype in {"existence", "extreme_existence", "proximity"}:
+    lowered = " ".join(question.casefold().replace("_", " ").split())
+    if subtype in {"existence", "extreme_existence", "proximity"} and _is_yes_no_question(lowered):
         return ["yes", "no"]
-    if subtype in {"extreme_category", "category"}:
+    if subtype == "extreme_category" and _asks_extreme_vehicle_category(lowered):
         return ["small-vehicle", "large-vehicle"]
-    if subtype == "grid_position":
+    if subtype == "category" and _asks_vehicle_category(lowered):
+        return ["small-vehicle", "large-vehicle"]
+    if subtype == "grid_position" and _asks_grid_position(lowered):
         return [
             f"{vertical}-{horizontal}"
             for vertical in ("top", "middle", "bottom")
             for horizontal in ("left", "middle", "right")
         ]
-    if subtype == "orientation":
+    if subtype == "orientation" and re.search(r"\b(?:orientation|direction)\b", lowered):
         return ["north-south", "east-west"]
-    if subtype == "arrangement":
+    if subtype == "arrangement" and re.search(r"\b(?:arrangement|arranged|layout)\b", lowered):
         return ["in rows", "clustered", "scattered"]
-    if subtype == "color":
+    if subtype == "color" and re.search(r"\bcolou?r\b", lowered):
         return ["black", "blue", "brown", "gray", "green", "orange", "red", "white", "yellow"]
     return []
+
+
+def _is_yes_no_question(question: str) -> bool:
+    """Recognize unambiguous polar questions without alternative-answer clauses.
+    识别不含二选一答案分支的明确是非问题。
+    """
+
+    return bool(
+        question
+        and " or " not in question
+        and re.match(r"^(?:is|are|was|were|do|does|did|can|could|has|have|will|would)\b", question)
+    )
+
+
+def _asks_vehicle_category(question: str) -> bool:
+    """Require both an explicit vehicle target and a class/category request.
+    要求问题同时明确车辆目标以及类别询问。
+    """
+
+    return bool(
+        re.search(r"\b(?:vehicle|car|truck|bus|trailer|motorcycle)s?\b", question)
+        and re.search(r"\b(?:class|category|type|kind)\b", question)
+    )
+
+
+def _asks_extreme_vehicle_category(question: str) -> bool:
+    """Recognize top/bottom vehicle-class questions supported by box geometry.
+    识别可由框几何支持的最上方或最下方车辆类别问题。
+    """
+
+    return bool(
+        re.search(r"\b(?:top|bottom)[ -]?most\b", question)
+        and _asks_vehicle_category(question)
+    )
 
 
 def vrsbench_count_target(question: str) -> CountTargetSpec:
@@ -159,7 +194,7 @@ def apply_vrsbench_geometry(
 
     subtype = vrsbench_question_subtype(question, question_type)
     audit: dict[str, Any] = {
-        "version": "vrsbench-evidence-geometry-v3",
+        "version": "vrsbench-evidence-geometry-v4",
         "coordinate_frame": "normalized_0_999_top_left",
         "question_type": question_type,
         "semantic_subtype": subtype,
@@ -217,7 +252,6 @@ def apply_vrsbench_geometry(
             {
                 "rule": "extreme_existence_requires_candidate_enumeration",
                 "candidate_count": len(vehicle_boxes),
-                "evidence_complete": bool(vehicle_boxes),
             }
         )
 
@@ -233,6 +267,7 @@ def apply_vrsbench_geometry(
                     "selected_box": target.box,
                     "grid_boundaries": [333, 666],
                     "candidate_count": len(_position_candidates(lowered, boxed)),
+                    "evidence_complete": True,
                 }
             )
             return _finalize_vrsbench_answer(result, subtype, audit, answer)
@@ -249,7 +284,6 @@ def apply_vrsbench_geometry(
             {
                 "rule": "cardinal_direction_requires_dataset_north_up_assumption",
                 "north_metadata_available": False,
-                "evidence_complete": bool(boxed),
             }
         )
     elif subtype == "proximity" and len(boxed) >= 2:
@@ -258,17 +292,13 @@ def apply_vrsbench_geometry(
             {
                 "rule": "box_gap_recorded_without_threshold_override",
                 "nearest_box_gap": round(_box_gap(first, second), 3),
-                "evidence_complete": True,
             }
         )
-    elif subtype == "proximity":
-        audit.update({"rule": "insufficient_proximity_evidence", "evidence_complete": False})
     elif subtype == "arrangement":
         audit.update(
             {
                 "rule": "arrangement_requires_instance_set",
                 "candidate_count": len(vehicle_boxes),
-                "evidence_complete": len(vehicle_boxes) >= 2,
             }
         )
     return _finalize_vrsbench_answer(result, subtype, audit, result.answer)
@@ -293,7 +323,22 @@ def _grid_position(item: VisualEvidence) -> str:
 
 
 def _asks_grid_position(question: str) -> bool:
-    return "what is the position of" in question or question.startswith("where is ")
+    """Recognize direct singular image-location questions without relation clauses.
+    识别不含关系或比较分支的直接单目标图像位置问题。
+    """
+
+    if not question or _is_yes_no_question(question):
+        return False
+    if re.search(
+        r"\b(?:relative|relation|closer|closest|touch(?:ing)?|next to|near|adjacent|open space)\b"
+        r"|\b(?:top|bottom|left|right)[ -]?most\b|\b(?:upper|lower)most\b",
+        question,
+    ):
+        return False
+    return bool(
+        re.match(r"^where is\b.+?(?:located|positioned)?(?:\s+(?:in|within)\s+(?:the\s+)?image)?\??$", question)
+        or re.match(r"^what is the (?:position|location) of\b", question)
+    )
 
 
 def _select_position_target(question: str, boxed: list[VisualEvidence]) -> VisualEvidence | None:
@@ -413,14 +458,24 @@ def _finalize_vrsbench_answer(
 ) -> ExpertResult:
     raw_answer = result.answer
     normalized = normalize_vrsbench_answer(question_type, answer)
+    placeholder_token = re.sub(r"[^a-z]+", "", normalized.casefold())
+    placeholder_removed = placeholder_token in _STATUS_ANSWER_PLACEHOLDERS
+    if placeholder_removed:
+        normalized = ""
     audit.update(
         {
             "raw_answer": raw_answer,
             "normalized_answer": normalized,
-            "answer_normalization_version": "vrsbench-answer-v1",
+            "answer_normalization_version": "vrsbench-answer-v2",
+            "status_answer_placeholder_removed": placeholder_removed,
         }
     )
-    status = "partial" if audit.get("evidence_complete") is False else result.status
+    if placeholder_removed or audit.get("evidence_complete") is False:
+        status = "partial"
+    elif audit.get("answer_source") == "deterministic_geometry" and audit.get("evidence_complete") is True:
+        status = "completed"
+    else:
+        status = result.status
     audit["workflow_status"] = status
     return result.model_copy(update={"answer": normalized, "geometry": audit, "status": status})
 

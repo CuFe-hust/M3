@@ -271,25 +271,29 @@ To add or retry DeepSeek results for an existing run without loading or calling 
 same environment key and run `judge-vqa-run --run-id <run-id>`. Successful existing Judge records
 are reused unless `--force` is supplied, and the HTML report is rebuilt from persisted Qwen results.
 
-The official VRSBench type routes quantity questions through accepted-point counting,
-spatial/category/direction/existence questions through the spatial expert, and color questions
-through general VQA. The canonical evaluation task and reference answers remain unchanged. The
-HTML report records the actual Agent route and prompt version, overlays labeled boxes or accepted
-points on a report-only image copy, and includes the deterministic geometry audit.
+VRSBench routing is conservative and question-driven. The official `type` is retained for audit but
+does not force an Agent or answer vocabulary. Explicit numerical questions use accepted-point
+counting; direct single-target grid location, vehicle extreme-category, orientation, and arrangement
+questions use the spatial expert; open categories, scenes, existence/relation questions, and unknown
+types fall back to general VQA. A closed vocabulary is included only when the question text itself
+entails it. The canonical evaluation task and reference answers remain unchanged. The HTML report
+records the actual Agent route and prompt version, overlays labeled boxes or accepted points on a
+report-only image copy, and includes the deterministic geometry audit.
 
 VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-aware target parse.
 The default configuration scans a fitting image as one overview, enlarges small transmitted crops
 to a maximum side of 768 pixels, and independently rechecks empty results. A review that reports
 `zero_unconfirmed` triggers finer owner-core crops with a smaller halo; a zero answer remains solely
-point-derived. Spatial extreme, arrangement, and proximity questions receive an independent
+point-derived. Spatial extreme and arrangement questions receive an independent
 candidate-enumeration pass that is not shown first-pass evidence. Grid-position questions instead
 localize the singular physical target before the program derives its three-by-three label from the
 box centre. Their visual localization call does not receive the grid-label vocabulary, and an
 independent review is used only for missing, ambiguous, or corner-region placeholder evidence. A
-review may attach the explicit question target class to model-provided top-level boxes, but it never
-fabricates coordinates. Question semantics remain separate from the coarse official type. Program
-geometry requires at least two candidates before claiming an extreme comparison, and every local
-decision remains in the geometry audit.
+review may attach the explicit small/large vehicle class to model-provided top-level boxes; otherwise
+it uses a neutral target label while preserving the returned coordinates. It never fabricates
+coordinates. Question semantics remain separate from the coarse official type. Program geometry
+requires at least two candidates before claiming an extreme comparison, workflow status tokens are
+never retained as semantic answers, and every local decision remains in the geometry audit.
 
 Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
 

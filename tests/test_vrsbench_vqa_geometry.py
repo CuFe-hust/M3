@@ -84,9 +84,8 @@ def test_direction_without_north_metadata_is_not_overridden(question_type: str) 
     assert result.geometry["answer_source"] == "qwen_visual_answer"
 
 
-def test_unknown_official_question_type_fails_visibly() -> None:
-    with pytest.raises(ValueError, match="Unsupported VRSBench VQA type"):
-        execution_task_for_vrsbench("unregistered type")
+def test_unknown_official_question_type_falls_back_to_general_vqa() -> None:
+    assert execution_task_for_vrsbench("unregistered type", "What kind of area is shown?") == "general_vqa"
 
 
 def test_answer_normalization_uses_declared_vocabularies_only() -> None:
@@ -185,7 +184,10 @@ def test_semantic_subtype_overrides_coarse_position_type_without_reference_acces
     )
 
     assert subtype == "orientation"
-    assert vrsbench_answer_vocabulary(subtype) == ["north-south", "east-west"]
+    assert vrsbench_answer_vocabulary(subtype, "What is the orientation of the road in the image?") == [
+        "north-south",
+        "east-west",
+    ]
     result = apply_vrsbench_geometry(
         "What is the orientation of the road in the image?",
         "object position",
@@ -203,7 +205,10 @@ def test_top_most_existence_is_distinct_from_extreme_category() -> None:
     )
 
     assert subtype == "extreme_existence"
-    assert vrsbench_answer_vocabulary(subtype) == ["yes", "no"]
+    assert vrsbench_answer_vocabulary(
+        subtype,
+        "Is there a vehicle located at the top-most position in the image?",
+    ) == ["yes", "no"]
 
 
 def test_arrangement_normalizes_descriptive_row_language_to_closed_vocabulary() -> None:
@@ -219,4 +224,72 @@ def test_arrangement_normalizes_descriptive_row_language_to_closed_vocabulary() 
 
     assert result.answer == "in rows"
     assert result.geometry["semantic_subtype"] == "arrangement"
-    assert result.geometry["evidence_complete"] is True
+    assert result.geometry["candidate_count"] == 2
+    assert result.status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("question", "question_type", "expected_subtype"),
+    [
+        ("What type of area is visible in the image?", "object category", "general"),
+        ("What object class do these structures belong to?", "object category", "category"),
+        ("Where is the lighter colored vehicle positioned?", "object position", "grid_position"),
+        ("Where is the top-most harbor located?", "object position", "general"),
+        ("Is the harbor closer to the top or bottom?", "object position", "general"),
+    ],
+)
+def test_semantic_subtypes_do_not_inherit_coarse_official_assumptions(
+    question: str,
+    question_type: str,
+    expected_subtype: str,
+) -> None:
+    """Keep coarse dataset labels from forcing unrelated specialized semantics.
+    防止粗粒度数据集标签强制产生无关的专用语义。
+    """
+
+    assert vrsbench_question_subtype(question, question_type) == expected_subtype
+
+
+def test_closed_vocabulary_requires_explicit_question_evidence() -> None:
+    """Use vehicle labels only for an explicit vehicle-class question.
+    仅对明确的车辆类别问题使用车辆封闭词表。
+    """
+
+    assert vrsbench_answer_vocabulary("category", "What kind of area is shown?") == []
+    assert vrsbench_answer_vocabulary("category", "What object class are the ships?") == []
+    assert vrsbench_answer_vocabulary("category", "What type of vehicles are visible?") == [
+        "small-vehicle",
+        "large-vehicle",
+    ]
+
+
+def test_general_answers_do_not_require_localized_boxes() -> None:
+    """Do not downgrade a supported global answer only because it has no box.
+    不因全局答案缺少目标框而将其降级为部分结果。
+    """
+
+    result = apply_vrsbench_geometry(
+        "What kind of area is shown in the image?",
+        "object category",
+        _result(answer="residential"),
+    )
+
+    assert result.answer == "residential"
+    assert result.status == "completed"
+    assert result.geometry["semantic_subtype"] == "general"
+
+
+def test_status_tokens_are_not_persisted_as_vqa_answers() -> None:
+    """Separate incomplete workflow status from the semantic answer value.
+    将未完成工作流状态与语义答案值分离。
+    """
+
+    result = apply_vrsbench_geometry(
+        "What kind of area is shown in the image?",
+        "object category",
+        ExpertResult(expert="general_vqa_expert", answer="Partial.", status="partial"),
+    )
+
+    assert result.answer == ""
+    assert result.status == "partial"
+    assert result.geometry["status_answer_placeholder_removed"] is True

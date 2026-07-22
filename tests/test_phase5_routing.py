@@ -68,16 +68,30 @@ def test_known_tasks_route_without_model_calls() -> None:
     assert decision.reason_codes == ["task_fine_grained_counting", "high_resolution"]
 
 
-def test_vrsbench_official_types_select_declared_execution_tasks() -> None:
+def test_vrsbench_question_semantics_select_conservative_execution_tasks() -> None:
     router = TaskRouter()
 
-    quantity = router.route_vrsbench_vqa("object quantity")
-    position = router.route_vrsbench_vqa("object position")
-    color = router.route_vrsbench_vqa("object color")
+    quantity = router.route_vrsbench_vqa(
+        "object quantity",
+        question="How many small vehicles are visible?",
+    )
+    position = router.route_vrsbench_vqa(
+        "object position",
+        question="Where is the small vehicle located?",
+    )
+    scene = router.route_vrsbench_vqa(
+        "object category",
+        question="What kind of area is shown in the image?",
+    )
+    unknown = router.route_vrsbench_vqa(
+        "scene type",
+        question="What kind of scene is visible?",
+    )
 
     assert quantity.task == "counting" and quantity.experts[0].name == "counting_expert"
     assert position.task == "spatial_relation" and position.experts[0].name == "spatial_expert"
-    assert color.task == "general_vqa" and color.experts[0].name == "general_vqa_expert"
+    assert scene.task == "general_vqa" and scene.experts[0].name == "general_vqa_expert"
+    assert unknown.task == "general_vqa" and unknown.experts[0].name == "general_vqa_expert"
 
 
 @pytest.mark.asyncio

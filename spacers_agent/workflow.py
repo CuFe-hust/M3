@@ -135,7 +135,9 @@ class VisualExpert:
                 sample.question,
                 str(sample.metadata.get("question_type", "")),
             )
-            answer_vocabulary = [] if subtype == "grid_position" else vrsbench_answer_vocabulary(subtype)
+            answer_vocabulary = (
+                [] if subtype == "grid_position" else vrsbench_answer_vocabulary(subtype, sample.question)
+            )
             user_payload.update(
                 {
                     "semantic_subtype": subtype,
@@ -278,10 +280,16 @@ class SpatialExpert(VisualExpert):
                 ),
             }
         )
-        reviewed_result = result.model_copy(update={"evidence_items": merged, "geometry": geometry})
+        reviewed_answer = result.answer
+        if _is_status_answer_placeholder(reviewed_answer) and not _is_status_answer_placeholder(review.answer):
+            reviewed_answer = review.answer
+        reviewed_result = result.model_copy(
+            update={"answer": reviewed_answer, "evidence_items": merged, "geometry": geometry}
+        )
         status = "partial" if _needs_spatial_candidate_review(sample, reviewed_result) else "completed"
         return result.model_copy(
             update={
+                "answer": reviewed_answer,
                 "boxes": [list(item.box) for item in merged if item.box is not None],
                 "evidence_items": merged,
                 "geometry": geometry,
@@ -308,7 +316,9 @@ class SpatialExpert(VisualExpert):
             sample.question,
             str(sample.metadata.get("question_type", "")),
         )
-        answer_vocabulary = [] if subtype == "grid_position" else vrsbench_answer_vocabulary(subtype)
+        answer_vocabulary = (
+            [] if subtype == "grid_position" else vrsbench_answer_vocabulary(subtype, sample.question)
+        )
         content.append(
             {
                 "type": "text",
@@ -493,6 +503,7 @@ class DatasetRunner:
             if sample.dataset == "VRSBench" and sample.task == "general_vqa":
                 decision = TaskRouter().route_vrsbench_vqa(
                     question_type,
+                    question=sample.question,
                     high_resolution=high_resolution,
                 )
             else:
@@ -1120,25 +1131,24 @@ def _needs_spatial_candidate_review(sample: UnifiedSample, result: ExpertResult)
         sample.question,
         str(sample.metadata.get("question_type", "")),
     )
-    if subtype not in {"extreme_category", "extreme_existence", "grid_position", "arrangement", "proximity"}:
+    if subtype not in {"extreme_category", "grid_position", "arrangement"}:
         return False
+    boxed = [item for item in result.evidence_items if item.box is not None]
     vehicles = [
         item
-        for item in result.evidence_items
-        if item.box is not None and vrsbench_vehicle_class(item.label) in {"small-vehicle", "large-vehicle"}
+        for item in boxed
+        if vrsbench_vehicle_class(item.label) in {"small-vehicle", "large-vehicle"}
     ]
     if subtype == "grid_position":
-        targets = [item for item in vehicles if _matches_position_target(sample.question, item)]
+        targets = [item for item in boxed if _matches_position_target(sample.question, item)]
         if result.geometry.get("candidate_review_used"):
-            return not targets
+            return len(targets) != 1
         return len(targets) != 1 or _is_corner_anchored_box(targets[0])
     if not result.geometry.get("candidate_review_used"):
         return True
     if subtype in {"extreme_category", "arrangement"}:
         return len(vehicles) < 2
-    if subtype == "extreme_existence":
-        return not vehicles
-    return len(result.evidence_items) < 2
+    return False
 
 
 def _matches_position_target(question: str, item: VisualEvidence) -> bool:
@@ -1174,19 +1184,29 @@ def _position_review_evidence(
 
     evidence = list(review.evidence_items)
     target_label = _position_target_label(question)
-    if subtype != "grid_position" or target_label is None:
+    if subtype != "grid_position":
         return evidence, 0
-    if any(_matches_position_target(question, item) and item.box is not None for item in evidence):
+    if any(item.box is not None for item in evidence):
         return evidence, 0
+    review_label = target_label or "position-target"
     labeled = [
         VisualEvidence(
-            label=target_label,
+            label=review_label,
             box=[int(round(value)) for value in box],
             confidence=0.0,
         )
         for box in review.boxes
     ]
     return evidence + labeled, len(labeled)
+
+
+def _is_status_answer_placeholder(answer: str) -> bool:
+    """Keep workflow status tokens out of the semantic answer channel.
+    防止工作流状态词进入语义答案通道。
+    """
+
+    token = re.sub(r"[^a-z]+", "", answer.casefold())
+    return token in {"completed", "failed", "partial"}
 
 
 def _is_corner_anchored_box(item: VisualEvidence, *, tolerance: int = 5) -> bool:
