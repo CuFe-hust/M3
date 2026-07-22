@@ -184,3 +184,19 @@ python -m spacers_agent.cli summarize-evaluations --input .\evaluation_records.j
 ```
 
 The overlay renders owner cores, accepted points, and rejected points; the summary keeps deterministic benchmark metrics separate from optional DeepSeek quality metrics. See [the local runbook](C:\Users\TZDEZACR\Desktop\spacers-agent\code\docs\runbook.md) for required interpreter paths, safeguards, and commands.
+
+## Runnable Qwen Agent and Dataset Commands
+
+The baseline `main.py` remains unchanged. New operations use `python -m spacers_agent.cli` and make network calls only for commands explicitly marked `--live` or requiring inference:
+
+```powershell
+python -m spacers_agent.cli health qwen --live
+python -m spacers_agent.cli list-datasets
+python -m spacers_agent.cli smoke-qwen --image tests/fixtures/smoke.png --question "Describe this image"
+python -m spacers_agent.cli count-image --image .\demo.png --question "How many buildings?" --run-id demo-count --evaluate --render
+python -m spacers_agent.cli run-dataset --dataset XLRS-Bench-lite --root D:\data\XLRS-Bench-lite --split test --task counting --run-id xlrs-count-v1 --resume
+python -m spacers_agent.cli resume-run --run-id xlrs-count-v1
+python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
+```
+
+The four dataset adapters are deliberately read-only and require a versioned `spacers_adapter.json` at each dataset root. It declares the sample file and exact field mappings; the runner probes and validates it before reading a sample, and reports observed fields on mismatch. No filename or field-name guessing is used by this new path. Spark deployment assets are under `scripts/server/`; copy `scripts/server/env.example` outside the repository before use.

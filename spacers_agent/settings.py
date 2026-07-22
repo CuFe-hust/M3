@@ -96,6 +96,22 @@ class RunSettings(BaseModel):
     save_annotated_images: bool = True
     save_raw_responses: bool = True
 
+class RouterSettings(BaseModel):
+    """Sparse router thresholds and safety limits. / 稀疏路由阈值和安全限制。"""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    trust_dataset_task_type: bool = True
+    use_router_agent_when_task_missing: bool = True
+    high_confidence_threshold: float = Field(default=0.8, ge=0, le=1)
+    medium_confidence_threshold: float = Field(default=0.6, ge=0, le=1)
+    max_total_experts: int = Field(default=3, ge=1)
+    repair_attempts: int = Field(default=1, ge=0, le=1)
+    enable_rule_fallback: bool = True
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.medium_confidence_threshold >= self.high_confidence_threshold:
+            raise ValueError("router medium threshold must be below high threshold")
+
 
 class PathSettings(BaseModel):
     """Project-relative input locations.
@@ -117,6 +133,7 @@ class AppSettings(BaseModel):
     models: ModelSettings = Field(default_factory=ModelSettings)
     counting: CountingSettings = Field(default_factory=CountingSettings)
     runs: RunSettings = Field(default_factory=RunSettings)
+    router: RouterSettings = Field(default_factory=RouterSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
 
 
@@ -190,5 +207,7 @@ def _apply_environment_overrides(payload: dict[str, Any], environ: Mapping[str, 
         ("OUTPUT_ROOT", (runs, "root")),
     ):
         value = environ.get(key)
-        if value:
+        # An explicit YAML run root scopes reproducible artifacts; dotenv must not redirect it.
+        # 显式 YAML 运行根目录限定可复现产物；dotenv 不得重定向它。
+        if value and not (key == "OUTPUT_ROOT" and destination[1] in destination[0]):
             destination[0][destination[1]] = value

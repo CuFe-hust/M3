@@ -65,3 +65,11 @@ C:\Users\TZDEZACR\miniconda3\envs\m3\python.exe -m spacers_agent.cli summarize-e
 ## Current acceptance boundary
 
 The local suite validates geometry, schema invariants, sequential Mock calls, repair/retry/cache paths, resume behavior, recursive parent replacement, routing budgets, DeepSeek non-visual scope, overlays, and evaluation summaries. It does not yet validate real datasets, live endpoints, model accuracy, or benchmark/ablation results.
+
+## Dataset and Spark operations
+
+`run-dataset` requires an explicit `spacers_adapter.json` in the selected `--root`. The adapter rejects unproven layouts and prints the observed field names; source datasets are never modified. Successful sample status files are reused by `--resume`, while partial and failed samples remain visible in `dataset_summary.json`.
+
+For Spark, copy `scripts/server/env.example` to a protected server-only environment file and run `scripts/server/bootstrap.sh` before selecting vLLM parameters. `start_qwen_vllm.sh` binds the configured host (the example is loopback), `healthcheck.sh` calls `/v1/models`, and `run_dataset.sh`/`resume_dataset.sh` invoke the new CLI. No real server, tunnel, model download, dataset run, start/stop, or API smoke test was performed during local development.
+
+`count-image` accepts `--target-spec`, `--resume`, `--force`, `--no-seam-verify`, and call-budget limits. Its final stdout line is a JSON summary and its exit code distinguishes data, Qwen, partial, Judge, and invariant failures. `run-dataset` supports comma-separated tasks, a stable SHA-256 sample-ID shard, `--max-samples 0` for no limit, explicit sample-ID filtering, start index, fail-fast, and append-only `predictions.jsonl`. The default sample concurrency is one; each image still processes tiles sequentially.

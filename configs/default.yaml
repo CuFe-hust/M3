@@ -37,3 +37,12 @@ runs:
   save_raw_responses: true
 paths:
   dataset_root: dataset
+router:
+  enabled: true
+  trust_dataset_task_type: true
+  use_router_agent_when_task_missing: true
+  high_confidence_threshold: 0.80
+  medium_confidence_threshold: 0.60
+  max_total_experts: 3
+  repair_attempts: 1
+  enable_rule_fallback: true

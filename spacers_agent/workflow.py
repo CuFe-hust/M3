@@ -1,0 +1,259 @@
+"""Runnable per-image and per-dataset multi-agent workflows.
+可运行的单图和数据集多 Agent 工作流。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from PIL import Image
+
+from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
+from spacers_agent.counting import PointCountingOrchestrator
+from spacers_agent.dataset_adapters import DatasetAdapter
+from spacers_agent.evaluation import build_count_judge_payload, build_judge_request_hash, merge_count_evaluation
+from spacers_agent.imaging import read_normalized_image
+from spacers_agent.routing import CallBudget, TaskRouter
+from spacers_agent.schemas import (
+    CountTargetSpec,
+    CountingResult,
+    DatasetRunSummary,
+    ExpertResult,
+    SampleRunStatus,
+    UnifiedSample,
+)
+from spacers_agent.settings import AppSettings
+
+
+def atomic_write_json(path: Path, value: Any) -> None:
+    """Atomically publish a JSON artifact after a complete temporary write. / 完整写入临时文件后原子发布 JSON 产物。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
+
+
+class CountTargetParser:
+    """Parse a stable counting target using a structured Qwen request. / 使用结构化 Qwen 请求解析稳定的计数目标。"""
+
+    def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
+        self.client = client
+        self.prompt = prompt
+        self.model = model
+
+    async def parse(self, question: str, *, sample_id: str, artifact_dir: Path) -> CountTargetSpec:
+        """Return a cached-schema target specification for one question. / 返回单个问题经缓存和 Schema 校验的目标规范。"""
+
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self.prompt}, {"role": "user", "content": question}]
+        request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version="target-parse-v1", messages=messages, image_sha256=None)
+        return await self.client.complete_json(
+            messages=messages,
+            response_model=CountTargetSpec,
+            request_meta=RequestMeta(request_id=f"{sample_id}:target", request_hash=request_hash, prompt_version="target-parse-v1", sample_id=sample_id, artifact_dir=artifact_dir / "target_parse"),
+        )
+
+
+class VisualExpert:
+    """Generic Qwen visual primitive for change, grounding, spatial and VQA. / 用于变化、定位、空间和问答的通用 Qwen 视觉原语。"""
+
+    def __init__(self, client: VisionLanguageClient, prompt: str, model: str, name: str) -> None:
+        self.client, self.prompt, self.model, self.name = client, prompt, model, name
+
+    async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
+        """Use overview images as evidence without adding any detector. / 使用概览图作为证据且不引入检测器。"""
+
+        content: list[dict[str, Any]] = []
+        image_hashes: list[str] = []
+        for image_ref in sample.images:
+            data = image_ref.path.read_bytes()
+            content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, "image/png")}})
+            image_hashes.append(__import__("hashlib").sha256(data).hexdigest())
+        content.append({"type": "text", "text": sample.question})
+        messages: list[dict[str, Any]] = [{"role": "system", "content": self.prompt}, {"role": "user", "content": content}]
+        request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=f"{self.name}-v1", messages=messages, image_sha256="|".join(image_hashes))
+        return await self.client.complete_json(
+            messages=messages,
+            response_model=ExpertResult,
+            request_meta=RequestMeta(request_id=f"{sample.sample_id}:{self.name}", request_hash=request_hash, prompt_version=f"{self.name}-v1", sample_id=sample.sample_id, artifact_dir=artifact_dir / self.name),
+        )
+
+
+# Preserve the original internal name while exposing the requested public contract.
+# 保留原有内部名称，同时暴露所需的公开契约。
+TargetParser = CountTargetParser
+
+
+class ChangeExpert(VisualExpert):
+    """Run the change visual primitive. / 运行变化视觉原语。"""
+
+    def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
+        super().__init__(client, prompt, model, "change_expert")
+
+
+class GroundingExpert(VisualExpert):
+    """Run the grounding visual primitive. / 运行定位视觉原语。"""
+
+    def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
+        super().__init__(client, prompt, model, "grounding_expert")
+
+
+class SpatialExpert(VisualExpert):
+    """Run the spatial visual primitive. / 运行空间关系视觉原语。"""
+
+    def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
+        super().__init__(client, prompt, model, "spatial_expert")
+
+
+class GeneralVQAExpert(VisualExpert):
+    """Run the general-VQA visual primitive. / 运行通用问答视觉原语。"""
+
+    def __init__(self, client: VisionLanguageClient, prompt: str, model: str) -> None:
+        super().__init__(client, prompt, model, "general_vqa_expert")
+
+
+class WorkflowService:
+    """Dispatch routed non-counting tasks to concrete experts. / 将已路由的非计数任务分派给具体专家。"""
+
+    def __init__(self, client: VisionLanguageClient, prompts: dict[str, str], model: str) -> None:
+        self.experts = {
+            "change_expert": ChangeExpert(client, prompts["change"], model),
+            "grounding_expert": GroundingExpert(client, prompts["general"], model),
+            "spatial_expert": SpatialExpert(client, prompts["spatial"], model),
+            "general_vqa_expert": GeneralVQAExpert(client, prompts["general"], model),
+        }
+
+    async def execute(self, expert_name: str, sample: UnifiedSample, artifact_dir: Path) -> ExpertResult:
+        """Execute one named expert or fail with a visible code. / 执行一个具名专家，或以可见代码失败。"""
+
+        try:
+            expert = self.experts[expert_name]
+        except KeyError as error:
+            raise ValueError(f"UNSUPPORTED_EXPERT:{expert_name}") from error
+        return await expert.run(sample, artifact_dir=artifact_dir)
+
+
+class DatasetRunner:
+    """Sequential sample runner with durable status and resume semantics. / 具有持久状态和恢复语义的顺序样本运行器。"""
+
+    def __init__(self, settings: AppSettings, adapter: DatasetAdapter, *, run_dir: Path, client: VisionLanguageClient, prompts: dict[str, str]) -> None:
+        self.settings, self.adapter, self.run_dir, self.client, self.prompts = settings, adapter, run_dir, client, prompts
+
+    async def run(self, *, split: str, task: str, resume: bool = False, limit: int | None = None, shard_index: int = 0, shard_count: int = 1, start_index: int = 0, sample_ids: set[str] | None = None, fail_fast: bool = False, sample_concurrency: int = 1) -> DatasetRunSummary:
+        """Run selected samples sequentially and keep every failure visible. / 顺序运行选中样本并保持每个失败可见。"""
+
+        if shard_count < 1 or not 0 <= shard_index < shard_count:
+            raise ValueError("invalid shard selection")
+        if sample_concurrency < 1:
+            raise ValueError("sample_concurrency must be positive")
+        probe = self.adapter.probe(self.settings.paths.dataset_root)
+        manifest_path = self.run_dir / "manifest.json"
+        if manifest_path.is_file():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["dataset_probe"] = {
+                "dataset": probe.dataset,
+                "version": probe.version,
+                "sample_file": str(probe.sample_file),
+                "observed_fields": list(probe.observed_fields),
+                "sample_count": probe.sample_count,
+            }
+            atomic_write_json(manifest_path, manifest)
+        statuses: list[SampleRunStatus] = []
+        pending: dict[asyncio.Task[SampleRunStatus], UnifiedSample] = {}
+
+        async def collect_one() -> bool:
+            """Persist one completed sample outcome before scheduling more work. / 在调度更多工作前持久化一个已完成样本结果。"""
+
+            done, _ = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            stop = False
+            for future in done:
+                sample = pending.pop(future)
+                status = await future
+                statuses.append(status)
+                _append_jsonl(self.run_dir / "predictions.jsonl", {"sample_id": sample.sample_id, "task": sample.task, "status": status.state, "result_path": str(status.result_path) if status.result_path else None})
+                stop = stop or (fail_fast and status.state == "failed")
+            return stop
+
+        selected = 0
+        for index, sample in enumerate(self.adapter.iter_samples(self.settings.paths.dataset_root, split, task)):
+            if index < start_index or _shard_for_sample(sample.sample_id, shard_count) != shard_index:
+                continue
+            if sample_ids is not None and sample.sample_id not in sample_ids:
+                continue
+            if limit is not None and selected >= limit:
+                break
+            selected += 1
+            status_path = self.run_dir / "samples" / sample.sample_id / "status.json"
+            if resume and status_path.is_file():
+                previous = SampleRunStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+                if previous.state == "succeeded":
+                    statuses.append(previous.model_copy(update={"state": "skipped"}))
+                    continue
+            pending[asyncio.create_task(self._run_one(sample, status_path))] = sample
+            if len(pending) >= sample_concurrency and await collect_one():
+                break
+        while pending:
+            if await collect_one():
+                for future in pending:
+                    future.cancel()
+                break
+        summary = DatasetRunSummary(
+            run_id=self.run_dir.name, dataset=getattr(self.adapter, "name"), split=split, task=task, total=len(statuses),
+            succeeded=sum(item.state == "succeeded" for item in statuses), partial=sum(item.state == "partial" for item in statuses),
+            failed=sum(item.state == "failed" for item in statuses), skipped=sum(item.state == "skipped" for item in statuses),
+        )
+        atomic_write_json(self.run_dir / "dataset_summary.json", summary.model_dump(mode="json"))
+        return summary
+
+    async def _run_one(self, sample: UnifiedSample, status_path: Path) -> SampleRunStatus:
+        """Execute one routed sample and translate exceptions to visible status. / 执行一个路由样本并将异常转换为可见状态。"""
+
+        sample_dir = status_path.parent
+        atomic_write_json(sample_dir / "sample.json", sample.model_dump(mode="json"))
+        started = _status(sample, "running")
+        atomic_write_json(status_path, started.model_dump(mode="json"))
+        try:
+            decision = TaskRouter().route_known(sample.task, high_resolution=any((ref.width or 0) * (ref.height or 0) > self.settings.counting.max_pixels_without_tiling for ref in sample.images))
+            if sample.task in {"counting", "fine_grained_counting"}:
+                target = await TargetParser(self.client, self.prompts["target"], self.settings.models.qwen.model).parse(sample.question, sample_id=sample.sample_id, artifact_dir=sample_dir)
+                image = read_normalized_image(sample.images[0].path)
+                result = await PointCountingOrchestrator(self.client, counting=self.settings.counting, qwen=self.settings.models.qwen, system_prompt=self.prompts["count"], run_dir=sample_dir, seam_prompt=self.prompts["seam"]).count_image(image, sample_id=sample.sample_id, question=sample.question, target=target)
+                atomic_write_json(sample_dir / "counting_result.json", result.model_dump(mode="json"))
+                from spacers_agent.evaluation import merge_count_evaluation
+                atomic_write_json(sample_dir / "evaluation_record.json", merge_count_evaluation(sample_id=sample.sample_id, counting=result, ground_truth=sample.ground_truth).model_dump(mode="json"))
+                state = "succeeded" if result.status in {"completed", "completed_with_warnings"} else "partial"
+                final = _status(sample, state, result_path=sample_dir / "counting_result.json")
+            else:
+                expert_name = decision.experts[0].name
+                result = await WorkflowService(self.client, self.prompts, self.settings.models.qwen.model).execute(expert_name, sample, sample_dir)
+                atomic_write_json(sample_dir / "expert_result.json", result.model_dump(mode="json"))
+                final = _status(sample, result.status, result_path=sample_dir / "expert_result.json")
+        except Exception as error:
+            final = _status(sample, "failed", error_code=type(error).__name__, error_message=str(error))
+        atomic_write_json(status_path, final.model_dump(mode="json"))
+        return final
+
+
+def _status(sample: UnifiedSample, state: str, *, error_code: str | None = None, error_message: str | None = None, result_path: Path | None = None) -> SampleRunStatus:
+    """Create a timestamped status with no traceback payload. / 创建不含 traceback 载荷的带时间戳状态。"""
+
+    return SampleRunStatus(sample_id=sample.sample_id, task=sample.task, state=state, error_code=error_code, error_message=error_message, result_path=result_path, updated_at=datetime.now(timezone.utc).isoformat())  # type: ignore[arg-type]
+
+
+def _shard_for_sample(sample_id: str, shard_count: int) -> int:
+    """Map a stable sample ID to a stable shard. / 将稳定样本 ID 映射到稳定分片。"""
+
+    return int(hashlib.sha256(sample_id.encode("utf-8")).hexdigest(), 16) % shard_count
+
+
+def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
+    """Append one completed sample record after its atomic status write. / 在原子状态写入后追加一条完成样本记录。"""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")

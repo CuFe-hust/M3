@@ -47,6 +47,33 @@ class DeepSeekJudgeResult(BaseModel):
     concise_rationale: str = Field(max_length=500)
 
 
+class CountJudgeResult(BaseModel):
+    """Counting-specific Judge contract that cannot override metrics. / 不能覆盖指标的计数专用 Judge 契约。"""
+    model_config = ConfigDict(extra="forbid")
+    verdict: Literal["correct", "incorrect", "uncertain", "not_visually_verifiable"]
+    pipeline_consistency: Literal["pass", "fail"]
+    completeness_claim_valid: bool
+    error_codes: list[Literal["COUNT_POINT_MISMATCH", "PARTIAL_CLAIMED_COMPLETE", "UNRESOLVED_CONFLICT", "LOW_CONFIDENCE_RISK", "GROUND_TRUTH_MISMATCH", "INSUFFICIENT_INFORMATION"]] = Field(default_factory=list)
+    score: float = Field(ge=0.0, le=1.0)
+    short_reason: str = Field(max_length=500)
+
+
+def sample_count_evidence(result: CountingResult, *, seed: int = 0, limit: int = 64) -> list[dict[str, Any]]:
+    """Deterministically stratify sampled point evidence by tile. / 按 tile 确定性分层抽样点证据。"""
+    import random
+    buckets: dict[str, list[Any]] = {}
+    for point in result.global_points:
+        buckets.setdefault(point.source_tile_id, []).append(point)
+    rng = random.Random(seed); chosen = []
+    for tile_id in sorted(buckets):
+        point = rng.choice(sorted(buckets[tile_id], key=lambda item: item.global_id))
+        chosen.append({"point_id": point.global_id, "tile_id": tile_id, "accepted": point.accepted, "confidence": point.confidence, "reason": point.rejection_reason})
+    remaining = [point for tile in buckets.values() for point in tile if point.global_id not in {item["point_id"] for item in chosen}]
+    rng.shuffle(remaining)
+    chosen.extend({"point_id": point.global_id, "tile_id": point.source_tile_id, "accepted": point.accepted, "confidence": point.confidence, "reason": point.rejection_reason} for point in remaining[:max(0, limit-len(chosen))])
+    return chosen[:limit]
+
+
 class EvaluationRecord(BaseModel):
     """One merged deterministic and optional text-only judge evaluation record.
     一条合并确定性指标与可选仅文本评估器结果的评估记录。

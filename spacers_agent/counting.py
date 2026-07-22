@@ -22,7 +22,7 @@ from spacers_agent.imaging import (
     crop_for_tile,
     split_tile_owner_core,
 )
-from spacers_agent.schemas import CountTargetSpec, CountingResult, GlobalPointObservation, TileCountResponse, TileSpec
+from spacers_agent.schemas import CountTargetSpec, CountingDraft, CountingResult, GlobalPointObservation, IssueRecord, TileCountResponse, TileSpec
 from spacers_agent.settings import CountingSettings, QwenSettings
 
 
@@ -220,7 +220,9 @@ class TileCheckpointStore:
 
     @staticmethod
     def _write_json(path: Path, payload: Any) -> None:
-        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(path)
 
 
 class PointCountingOrchestrator:
@@ -237,6 +239,7 @@ class PointCountingOrchestrator:
         system_prompt: str,
         run_dir: Path,
         before_qwen_call: Callable[[], None] | None = None,
+        seam_prompt: str | None = None,
     ) -> None:
         self.client = client
         self.counting = counting
@@ -244,6 +247,7 @@ class PointCountingOrchestrator:
         self.system_prompt = system_prompt
         self.checkpoints = TileCheckpointStore(run_dir)
         self.before_qwen_call = before_qwen_call
+        self.seam_prompt = seam_prompt
 
     async def count_image(
         self,
@@ -256,6 +260,23 @@ class PointCountingOrchestrator:
         """Process initial tiles row-major and aggregate only final accepted points.
 按行优先处理初始切片，并且只聚合最终接受点。
         """
+
+        draft = await self.collect_points(image, sample_id=sample_id, question=question, target=target)
+        conflicts = [BoundaryConflict.model_validate(value) for value in draft.boundary_conflicts]
+        decisions, seam_warnings = await self._verify_seams(image.convert("RGB"), conflicts, draft.raw_global_points, sample_id)
+        final_points, merged_groups = finalize_representatives(draft.raw_global_points, [
+            (conflict.first_global_id, conflict.second_global_id)
+            for conflict in conflicts if decisions.get(conflict.conflict_id) == "same_instance"
+        ])
+        unresolved = [conflict.conflict_id for conflict in conflicts if decisions.get(conflict.conflict_id) != "same_instance"]
+        warnings = draft.warnings + [IssueRecord(code="SEAM_VERIFY_FAILED", message=value) for value in seam_warnings]
+        status: Literal["completed", "completed_with_warnings", "partial", "failed"] = "partial" if draft.failed_tiles and draft.succeeded_tiles else "failed" if draft.failed_tiles else "completed_with_warnings" if unresolved or warnings else "completed"
+        return CountingResult(sample_id=sample_id, target=target.canonical_label, question=question, source_width=draft.source_width, source_height=draft.source_height, tile_count=len(draft.processed_tiles), initial_tile_count=draft.initial_tile_count, leaf_tile_count=len(draft.processed_tiles), succeeded_tiles=draft.succeeded_tiles, failed_tiles=draft.failed_tiles, global_points=final_points, merged_groups=merged_groups, unresolved_conflicts=unresolved, warnings=warnings, final_count=sum(point.accepted for point in final_points), status=status)
+
+    async def collect_points(
+        self, image: Image.Image, *, sample_id: str, question: str, target: CountTargetSpec
+    ) -> CountingDraft:
+        """Collect accepted-policy tile points without seam finalization. / 收集经过接受策略的 tile 点但不做 seam 最终化。"""
 
         normalized = image.convert("RGB")
         tiles = build_core_halo_tiles(
@@ -272,29 +293,21 @@ class PointCountingOrchestrator:
         succeeded_tiles = [tile_id for outcome in outcomes for tile_id in outcome.succeeded_tile_ids]
         processed_tiles = [tile for outcome in outcomes for tile in outcome.processed_tiles]
         conflicts = find_boundary_conflicts(points, processed_tiles)
-        final_points, merged_groups = finalize_representatives(points, ())
-        warnings = [warning for outcome in outcomes for warning in outcome.warnings]
-        status: Literal["completed", "completed_with_warnings", "partial", "failed"]
-        if failed_tiles:
-            status = "partial" if succeeded_tiles else "failed"
-        elif conflicts or warnings:
-            status = "completed_with_warnings"
-        else:
-            status = "completed"
-        return CountingResult(
+        warning_records = [IssueRecord(code="TILE_WARNING", message=warning) for outcome in outcomes for warning in outcome.warnings]
+        warning_records.extend(IssueRecord(code="UNRESOLVED_SEAM_CONFLICT", message="Seam candidate requires explicit verification.", tile_ids=[point.source_tile_id for point in points if point.global_id in {conflict.first_global_id, conflict.second_global_id}], point_ids=[conflict.first_global_id, conflict.second_global_id]) for conflict in conflicts)
+        return CountingDraft(
             sample_id=sample_id,
             target=target.canonical_label,
             question=question,
             source_width=normalized.width,
             source_height=normalized.height,
-            tile_count=len(tiles),
+            initial_tile_count=len(tiles),
             succeeded_tiles=succeeded_tiles,
             failed_tiles=failed_tiles,
-            global_points=final_points,
-            merged_groups=merged_groups,
-            unresolved_conflicts=[conflict.conflict_id for conflict in conflicts],
-            final_count=sum(point.accepted for point in final_points),
-            status=status,
+            raw_global_points=points,
+            processed_tiles=processed_tiles,
+            boundary_conflicts=[conflict.model_dump(mode="json") for conflict in conflicts],
+            warnings=warning_records,
         )
 
     async def _process_tile(
@@ -354,6 +367,7 @@ class PointCountingOrchestrator:
             )
             for point in response.points
         ]
+        points = [apply_acceptance_policy(point, min_confidence=self.counting.min_confidence) for point in points]
         should_split = self._should_split(response)
         if should_split and self._can_split(tile):
             children = split_tile_owner_core(
@@ -447,6 +461,45 @@ class PointCountingOrchestrator:
             and core.height >= self.counting.min_core_size * 2
         )
 
+    async def _verify_seams(
+        self,
+        image: Image.Image,
+        conflicts: Sequence[BoundaryConflict],
+        points: Sequence[GlobalPointObservation],
+        sample_id: str,
+    ) -> tuple[dict[str, str], list[str]]:
+        """Ask Qwen only for explicit local seam relations. / 仅为显式局部 seam 关系请求 Qwen。"""
+
+        if not conflicts or not self.counting.seam_verify or not self.seam_prompt:
+            return {}, []
+        by_id = {point.global_id: point for point in points}
+        decisions: dict[str, str] = {}
+        warnings: list[str] = []
+        for conflict in conflicts:
+            first, second = by_id[conflict.first_global_id], by_id[conflict.second_global_id]
+            margin = self.counting.seam_crop_margin_px
+            left, top = max(0, min(first.global_x_px, second.global_x_px) - margin), max(0, min(first.global_y_px, second.global_y_px) - margin)
+            right, bottom = min(image.width, max(first.global_x_px, second.global_x_px) + margin + 1), min(image.height, max(first.global_y_px, second.global_y_px) + margin + 1)
+            crop = image.crop((left, top, right, bottom))
+            with io.BytesIO() as buffer:
+                crop.save(buffer, format="JPEG", quality=95)
+                image_bytes = buffer.getvalue()
+            messages: list[dict[str, Any]] = [
+                {"role": "system", "content": self.seam_prompt},
+                {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_to_data_url(image_bytes)}}, {"type": "text", "text": json.dumps({"conflict_id": conflict.conflict_id, "first_point": [first.global_x_px - left, first.global_y_px - top], "second_point": [second.global_x_px - left, second.global_y_px - top]}, ensure_ascii=False)}]},
+            ]
+            request_hash = build_request_hash(model=self.qwen.model, generation={"temperature": self.qwen.temperature, "max_tokens": self.qwen.max_tokens}, prompt_version="seam-verify-v1", messages=messages, image_sha256=hashlib.sha256(image_bytes).hexdigest())
+            try:
+                if self.before_qwen_call is not None:
+                    self.before_qwen_call()
+                decision = await self.client.complete_json(messages=messages, response_model=SeamDecision, request_meta=RequestMeta(request_id=f"{sample_id}:seam:{conflict.conflict_id}", request_hash=request_hash, prompt_version="seam-verify-v1", sample_id=sample_id, artifact_dir=self.run_dir / "seams" / hashlib.sha256(conflict.conflict_id.encode()).hexdigest()[:16]))
+                if decision.conflict_id != conflict.conflict_id:
+                    raise ValueError("seam conflict_id mismatch")
+                decisions[conflict.conflict_id] = decision.decision
+            except Exception as error:
+                warnings.append(f"SEAM_VERIFY_FAILED:{conflict.conflict_id}:{type(error).__name__}")
+        return decisions, warnings
+
 
 def find_boundary_conflicts(
     points: Sequence[GlobalPointObservation],
@@ -482,6 +535,20 @@ def find_boundary_conflicts(
                     )
                 )
     return conflicts
+
+
+def apply_acceptance_policy(
+    point: GlobalPointObservation, *, min_confidence: float
+) -> GlobalPointObservation:
+    """Apply owner-core and confidence acceptance without geometry coupling. / 在不耦合几何的情况下应用 owner-core 与置信度接受策略。"""
+
+    if not 0.0 <= min_confidence <= 1.0:
+        raise ValueError("min_confidence must be in [0, 1]")
+    if not point.ownership_valid:
+        return point.model_copy(update={"accepted": False, "rejection_reason": "OUTSIDE_OWNER_CORE"})
+    if point.confidence < min_confidence:
+        return point.model_copy(update={"accepted": False, "rejection_reason": "LOW_CONFIDENCE"})
+    return point.model_copy(update={"accepted": True, "rejection_reason": None})
 
 
 def finalize_representatives(

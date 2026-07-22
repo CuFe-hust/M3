@@ -570,3 +570,11 @@ an `EvaluationSummary`. It reports deterministic exact-match/MAE/relative-error 
 from optional Judge success, failure, inconsistency, and semantic-quality fields. The CLI command
 `summarize-evaluations` reads JSONL locally and writes one JSON summary. The complete local command
 sequence and live-test safety boundary are recorded in `docs/runbook.md`.
+
+## 14. Runnable Agent Workflow, Explicit Adapters, and Spark Handoff
+
+`spacers_agent.workflow` adds atomic JSON artifacts, automatic structured target parsing, a sequential dataset runner, and reusable Qwen visual primitives for change, grounding, spatial, and general-VQA routes. Counting continues to derive `final_count` only from accepted global points; confidence gating sets low-confidence points to `accepted=False`, and seam merging occurs only after a `SeamDecision` explicitly returns `same_instance` for a local seam crop.
+
+`spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. Its LEVIR-CC, VRSBench, MME-RealWorld, and XLRS-Bench-lite registry entries require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. `probe()` validates those mappings and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
+
+The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, and `evaluate-run`. `evaluate-run --deepseek` reads persisted counting results and can invoke the existing text-only judge without issuing Qwen inference. Spark-facing, environment-driven examples are in `scripts/server/`, including vLLM lifecycle, health, dataset/resume, and systemd files. They are not executed by local tests.

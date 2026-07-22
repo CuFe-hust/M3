@@ -23,4 +23,5 @@ pythonpath = ["."]
 markers = [
   "live_qwen: requires an explicitly authorized live Qwen service",
   "live_deepseek: requires an explicitly authorized live DeepSeek API",
+  "live_dataset: requires an explicitly authorized local server dataset",
 ]

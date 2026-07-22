@@ -138,7 +138,9 @@ def _write_json(path: Path, value: object) -> None:
     使用稳定布局写入一份 UTF-8 JSON 产物。
     """
 
-    path.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def _git_value(project_root: Path, *arguments: str) -> str | None:

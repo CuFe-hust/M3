@@ -37,6 +37,17 @@
   Judge constraints are tested. Four real dataset adapters, live endpoints, end-to-end samples, and
   benchmark/ablation outcomes remain unvalidated and must not be claimed as complete.
 
+## Runnable workflow and Spark handoff status
+
+- Completed locally: CLI contracts for health, Qwen smoke, one-image counting, dataset runs, resume and persisted-result evaluation; automatic target parsing; confidence-gated points; explicit Qwen seam decisions; read-only manifest adapters for LEVIR-CC, VRSBench, MME-RealWorld and XLRS-Bench-lite; per-sample atomic statuses; generic change/grounding/spatial/VQA visual primitives; and server/systemd examples.
+- Safety boundary: the new adapters require `spacers_adapter.json` version `1` because no real dataset layout was observed. They do not silently infer fields, download data, or change source files.
+- Validation: offline tests cover parser contracts, explicit adapter probing, and confidence gating. No live Qwen, DeepSeek, server, Spark, dataset, tunnel, start/stop, or three-real-sample end-to-end validation was performed.
+
+## Counting workflow split
+
+- Completed locally: `CountingDraft`, structured `IssueRecord`, pure owner-core/confidence acceptance policy, `PointCountingOrchestrator.collect_points()`, and `spacers_agent.workflows.counting_workflow.CountingWorkflow`.
+- Compatibility: `count_image()` remains available and finalizes the collected draft for older callers. The new workflow persists input, target, draft, result, optional evaluation, and overlay under the sample directory.
+
 # Historical Phase 0 audit status
 
 ## 审计范围

@@ -86,7 +86,9 @@ class JsonResponseCache:
 
         path = self._path(request_hash)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(entry.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(entry.model_dump_json(indent=2) + "\n", encoding="utf-8")
+        temporary.replace(path)
 
     def _path(self, request_hash: str) -> Path:
         if not request_hash or any(character not in "0123456789abcdef" for character in request_hash.lower()):

@@ -25,6 +25,57 @@ TaskName = Literal[
 ]
 
 
+class TargetParseResult(BaseModel):
+    """Structured target extraction used before a counting run. / 计数运行前使用的结构化目标提取结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target: CountTargetSpec
+    short_rationale: str = Field(max_length=240)
+
+
+class SampleRunStatus(BaseModel):
+    """Durable machine-readable state for one dataset sample. / 单个数据集样本的可持久化机器可读状态。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str
+    task: TaskName
+    state: Literal["pending", "running", "succeeded", "partial", "failed", "skipped"]
+    error_code: str | None = None
+    error_message: str | None = None
+    result_path: Path | None = None
+    updated_at: str
+
+
+class DatasetRunSummary(BaseModel):
+    """Aggregate visible outcomes without hiding failed samples. / 不隐藏失败样本的汇总结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    dataset: str
+    split: str
+    task: str
+    total: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    partial: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    skipped: int = Field(ge=0)
+
+
+class ExpertResult(BaseModel):
+    """Uniform non-counting expert result with verifiable evidence. / 含可验证证据的统一非计数专家结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expert: str
+    answer: str
+    boxes: list[list[float]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list, max_length=12)
+    status: Literal["completed", "partial", "failed"] = "completed"
+
+
 class ImageRef(BaseModel):
     """One immutable image reference in a unified sample.
     统一样本中一条不可变的图像引用。
@@ -256,6 +307,36 @@ class GlobalPointObservation(BaseModel):
     short_evidence: str = Field(max_length=120)
 
 
+class IssueRecord(BaseModel):
+    """Machine-readable counting warning or failure evidence. / 机器可读的计数告警或失败证据。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    code: str
+    message: str
+    tile_ids: list[str] = Field(default_factory=list)
+    point_ids: list[str] = Field(default_factory=list)
+
+
+class CountingDraft(BaseModel):
+    """Collected tile evidence before seam and review finalization. / seam 与复核最终化前收集的 tile 证据。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str
+    target: str
+    question: str
+    source_width: int = Field(gt=0)
+    source_height: int = Field(gt=0)
+    initial_tile_count: int = Field(ge=0)
+    succeeded_tiles: list[str] = Field(default_factory=list)
+    failed_tiles: list[str] = Field(default_factory=list)
+    raw_global_points: list[GlobalPointObservation] = Field(default_factory=list)
+    processed_tiles: list[TileSpec] = Field(default_factory=list)
+    boundary_conflicts: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[IssueRecord] = Field(default_factory=list)
+
+
 class CountingResult(BaseModel):
     """Final point-derived count with explicit partial and failure state.
     具有明确部分与失败状态的最终点导出计数。
@@ -269,11 +350,14 @@ class CountingResult(BaseModel):
     source_width: int = Field(gt=0)
     source_height: int = Field(gt=0)
     tile_count: int = Field(ge=0)
+    initial_tile_count: int | None = Field(default=None, ge=0)
+    leaf_tile_count: int | None = Field(default=None, ge=0)
     succeeded_tiles: list[str] = Field(default_factory=list)
     failed_tiles: list[str] = Field(default_factory=list)
     global_points: list[GlobalPointObservation] = Field(default_factory=list)
     merged_groups: list[list[str]] = Field(default_factory=list)
     unresolved_conflicts: list[str] = Field(default_factory=list)
+    warnings: list[IssueRecord] = Field(default_factory=list)
     final_count: int = Field(ge=0)
     status: Literal["completed", "completed_with_warnings", "partial", "failed"]
 
