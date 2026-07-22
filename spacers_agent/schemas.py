@@ -133,7 +133,7 @@ class ExpertResult(BaseModel):
                 item = dict(raw_item)
                 box, point = item.get("box"), item.get("point")
                 if _is_coordinate_pair(box) and _is_coordinate_pair(point):
-                    item["box"] = _clamp_box([*box, *point], normalizations)
+                    item["box"] = _normalize_box_geometry([*box, *point], normalizations)
                     item["point"] = None
                     normalizations.append("evidence_box_and_point_combined_as_corners")
                 elif _is_coordinate_pair(box):
@@ -145,7 +145,13 @@ class ExpertResult(BaseModel):
                         item["point"] = [int(box[0]), int(box[1])]
                         normalizations.append("two_value_evidence_box_reclassified_as_point")
                 elif isinstance(box, list) and len(box) == 4:
-                    item["box"] = _clamp_box(box, normalizations)
+                    item["box"] = _normalize_box_geometry(box, normalizations)
+                    if point is not None:
+                        item["point"] = None
+                        normalizations.append("evidence_point_dropped_in_favor_of_box")
+                elif _is_coordinate_pair(point) and box is not None:
+                    item["box"] = None
+                    normalizations.append("invalid_evidence_box_dropped_in_favor_of_point")
                 normalized_items.append(item)
             data["evidence_items"] = normalized_items
         data["boxes"] = normalized_boxes
@@ -176,17 +182,17 @@ def _normalize_model_boxes(value: Any) -> tuple[list[list[int]], list[str]]:
     if not isinstance(value, list):
         return [], normalizations
     if all(isinstance(item, list) and len(item) == 4 for item in value):
-        return [_clamp_box(item, normalizations) for item in value], normalizations
+        return [_normalize_box_geometry(item, normalizations) for item in value], normalizations
     if value and len(value) % 2 == 0 and all(_is_coordinate_pair(item) for item in value):
         boxes = [
-            _clamp_box([*value[index], *value[index + 1]], normalizations)
+            _normalize_box_geometry([*value[index], *value[index + 1]], normalizations)
             for index in range(0, len(value), 2)
         ]
         normalizations.append("top_level_corner_pairs_combined_as_boxes")
         return boxes, normalizations
     if len(value) == 4 and all(isinstance(item, (int, float)) for item in value):
         normalizations.append("flat_top_level_box_wrapped")
-        return [_clamp_box(value, normalizations)], normalizations
+        return [_normalize_box_geometry(value, normalizations)], normalizations
     return [], normalizations
 
 
@@ -194,12 +200,32 @@ def _is_coordinate_pair(value: Any) -> bool:
     return isinstance(value, list) and len(value) == 2 and all(isinstance(item, (int, float)) for item in value)
 
 
-def _clamp_box(value: list[Any], normalizations: list[str]) -> list[int]:
+def _normalize_box_geometry(value: list[Any], normalizations: list[str]) -> list[int]:
+    """Canonicalize model box order and minimally expand zero-area axes.
+    规范化模型框的角点顺序，并以最小幅度扩展零面积坐标轴。
+    """
+
     converted = [int(item) for item in value]
     clamped = [max(0, min(999, item)) for item in converted]
     if clamped != converted:
         normalizations.append("box_coordinates_clamped_to_0_999")
-    return clamped
+    x1, y1, x2, y2 = clamped
+    ordered = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
+    if ordered != clamped:
+        normalizations.append("box_corners_reordered")
+    if ordered[0] == ordered[2]:
+        if ordered[2] < 999:
+            ordered[2] += 1
+        else:
+            ordered[0] -= 1
+        normalizations.append("degenerate_box_x_expanded_by_one")
+    if ordered[1] == ordered[3]:
+        if ordered[3] < 999:
+            ordered[3] += 1
+        else:
+            ordered[1] -= 1
+        normalizations.append("degenerate_box_y_expanded_by_one")
+    return ordered
 
 
 class ImageRef(BaseModel):

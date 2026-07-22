@@ -128,3 +128,30 @@ def test_expert_result_normalizes_corner_pair_boxes_and_single_points() -> None:
     assert "top_level_corner_pairs_combined_as_boxes" in boxed.geometry["input_normalizations"]
     assert pointed.boxes == []
     assert pointed.evidence_items[0].point == [220, 100]
+
+
+def test_expert_result_repairs_degenerate_boxes_and_resolves_point_conflicts() -> None:
+    result = ExpertResult.model_validate(
+        {
+            "expert": "spatial_expert",
+            "answer": "yes",
+            "boxes": [[999, 249], [0, 249]],
+            "evidence_items": [
+                {
+                    "label": "small-vehicle",
+                    "box": [127, 407, 127, 407],
+                    "point": [127, 407],
+                    "confidence": 0.95,
+                }
+            ],
+        }
+    )
+
+    assert result.evidence_items[0].box == [127, 407, 128, 408]
+    assert result.evidence_items[0].point is None
+    assert result.boxes == [[127, 407, 128, 408]]
+    normalizations = result.geometry["input_normalizations"]
+    assert "box_corners_reordered" in normalizations
+    assert "degenerate_box_y_expanded_by_one" in normalizations
+    assert "degenerate_box_x_expanded_by_one" in normalizations
+    assert "evidence_point_dropped_in_favor_of_box" in normalizations

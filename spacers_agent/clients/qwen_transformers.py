@@ -185,6 +185,7 @@ class QwenTransformersClient(VisionLanguageClient):
                 "token_usage": token_usage,
                 "attempt_errors": attempt_errors,
                 "repair_used": len(raw_responses) > 1,
+                "local_recoveries": _result_local_recoveries(result),
             },
         )
         return result
@@ -313,10 +314,120 @@ def _validate_response(raw_response: str, response_model: type[ModelT]) -> Model
     stripped = raw_response.strip()
     if stripped.startswith("```"):
         lines = stripped.splitlines()
-        if len(lines) < 3 or not lines[-1].strip().startswith("```"):
+        if len(lines) < 2:
             raise ValueError("Unterminated JSON fence")
-        stripped = "\n".join(lines[1:-1]).strip()
-    return response_model.model_validate(json.loads(stripped))
+        stripped = "\n".join(lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]).strip()
+    recovery: str | None = None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as error:
+        recovered = _recover_truncated_json(stripped, error)
+        if recovered is None:
+            raise
+        payload, recovery = recovered
+    if recovery is not None and isinstance(payload, dict) and "geometry" in response_model.model_fields:
+        geometry = dict(payload.get("geometry") or {})
+        normalizations = list(geometry.get("input_normalizations") or [])
+        normalizations.append(recovery)
+        geometry["input_normalizations"] = list(dict.fromkeys(normalizations))
+        payload["geometry"] = geometry
+    return response_model.model_validate(payload)
+
+
+def _recover_truncated_json(
+    value: str,
+    error: json.JSONDecodeError,
+) -> tuple[Any, str] | None:
+    """Close or prune only an incomplete JSON tail at end-of-output.
+    仅闭合或裁剪输出末尾不完整的 JSON 尾部。
+    """
+
+    stripped = value.rstrip()
+    if not stripped.startswith(("{", "[")):
+        return None
+    near_end = error.pos >= max(0, len(stripped) - 2)
+    if not near_end and not error.msg.startswith("Unterminated string"):
+        return None
+    frames, in_string, dangling_escape = _scan_json_frames(stripped)
+    if not frames:
+        return None
+
+    closed = stripped
+    if in_string:
+        if dangling_escape and closed.endswith("\\"):
+            closed = closed[:-1]
+        closed += '"'
+    closed = closed.rstrip()
+    if closed.endswith(","):
+        closed = closed[:-1].rstrip()
+    direct = _load_with_closed_frames(closed, frames)
+    if direct is not None:
+        return direct, "truncated_json_closed_locally"
+
+    deepest = frames[-1]
+    parent = frames[-2] if len(frames) > 1 else None
+    if deepest["kind"] == "{" and parent is not None and parent["kind"] == "[":
+        cut = int(deepest["open"])
+    else:
+        comma = deepest.get("last_comma")
+        if comma is None:
+            return None
+        cut = int(comma)
+    pruned = stripped[:cut].rstrip()
+    if pruned.endswith(","):
+        pruned = pruned[:-1].rstrip()
+    remaining, remaining_in_string, _ = _scan_json_frames(pruned)
+    if remaining_in_string or not remaining:
+        return None
+    recovered = _load_with_closed_frames(pruned, remaining)
+    if recovered is None:
+        return None
+    return recovered, "truncated_json_incomplete_tail_pruned"
+
+
+def _scan_json_frames(value: str) -> tuple[list[dict[str, int | str | None]], bool, bool]:
+    """Track open JSON containers and their last top-level commas.
+    跟踪未闭合 JSON 容器及各自最后一个顶层逗号。
+    """
+
+    frames: list[dict[str, int | str | None]] = []
+    in_string = False
+    escaped = False
+    for index, character in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            frames.append({"kind": character, "open": index, "last_comma": None})
+        elif character in "}]":
+            if not frames:
+                return [], in_string, escaped
+            expected = "{" if character == "}" else "["
+            if frames[-1]["kind"] != expected:
+                return [], in_string, escaped
+            frames.pop()
+        elif character == "," and frames:
+            frames[-1]["last_comma"] = index
+    return frames, in_string, escaped
+
+
+def _load_with_closed_frames(value: str, frames: list[dict[str, int | str | None]]) -> Any | None:
+    """Close known containers and return decoded JSON when it is valid.
+    闭合已知容器，并在结果有效时返回解码后的 JSON。
+    """
+
+    suffix = "".join("}" if frame["kind"] == "{" else "]" for frame in reversed(frames))
+    try:
+        return json.loads(value + suffix)
+    except json.JSONDecodeError:
+        return None
 
 
 def _repair_messages(repair_prompt: str, raw_response: str, validation_error: str) -> list[dict[str, Any]]:
@@ -340,6 +451,21 @@ def _render_raw_responses(values: list[str]) -> str:
     return "\n\n".join(
         f"[response_attempt={index}]\n{value}" for index, value in enumerate(values, start=1)
     )
+
+
+def _result_local_recoveries(result: BaseModel) -> list[str]:
+    """Expose local truncation recovery markers in call metadata.
+    在调用元数据中公开本地截断恢复标记。
+    """
+
+    geometry = getattr(result, "geometry", None)
+    if not isinstance(geometry, dict):
+        return []
+    return [
+        str(value)
+        for value in geometry.get("input_normalizations", [])
+        if str(value).startswith("truncated_json_")
+    ]
 
 
 def _validation_attempt_error(attempt: int, error: Exception) -> dict[str, Any]:

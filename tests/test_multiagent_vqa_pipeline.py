@@ -218,6 +218,45 @@ async def test_transformers_client_repairs_invalid_json_without_resending_image(
     assert len(validation["response_metadata"]["attempt_errors"]) == 1
 
 
+@pytest.mark.asyncio
+async def test_transformers_client_prunes_only_incomplete_truncated_evidence_tail(tmp_path: Path) -> None:
+    raw = (
+        '{"expert":"spatial_expert","answer":"yes","boxes":[[10,10,20,20]],'
+        '"evidence_items":['
+        '{"label":"small-vehicle","box":[10,10,20,20],"confidence":0.9},'
+        '{"label":"small-vehicle","box":[30,30,40,40],"confidence'
+    )
+    processor = _FakeProcessor(raw)
+    client = QwenTransformersClient(
+        QwenSettings(backend="transformers", model="local", max_tokens=32),
+        repair_prompt="Repair JSON without adding evidence.",
+        model=_FakeModel(),
+        processor=processor,
+    )
+    artifact_dir = tmp_path / "truncated"
+
+    result = await client.complete_json(
+        messages=[{"role": "system", "content": "answer"}],
+        response_model=ExpertResult,
+        request_meta=RequestMeta(
+            request_id="truncated",
+            request_hash="c" * 64,
+            prompt_version="spatial-v3",
+            artifact_dir=artifact_dir,
+        ),
+    )
+
+    assert len(processor.message_history) == 1
+    assert len(result.evidence_items) == 1
+    assert result.evidence_items[0].box == [10, 10, 20, 20]
+    assert "truncated_json_incomplete_tail_pruned" in result.geometry["input_normalizations"]
+    validation = json.loads((artifact_dir / "validation.json").read_text(encoding="utf-8"))
+    assert validation["response_metadata"]["repair_used"] is False
+    assert validation["response_metadata"]["local_recoveries"] == [
+        "truncated_json_incomplete_tail_pruned"
+    ]
+
+
 def test_official_vrsbench_adapter_is_read_only_and_preserves_answer(tmp_path: Path) -> None:
     _official_vrsbench(tmp_path)
     adapter = get_adapter("VRSBench")
