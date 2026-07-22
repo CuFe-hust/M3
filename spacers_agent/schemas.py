@@ -74,7 +74,7 @@ class VisualEvidence(BaseModel):
     label: str = Field(min_length=1)
     box: list[int] | None = None
     point: list[int] | None = None
-    confidence: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     image_id: str | None = None
     coordinate_frame: Literal["normalized_0_999_top_left"] = "normalized_0_999_top_left"
 
@@ -111,6 +111,50 @@ class ExpertResult(BaseModel):
     geometry: dict[str, Any] = Field(default_factory=dict)
     status: Literal["completed", "partial", "failed"] = "completed"
 
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_corner_pair_geometry(cls, value: Any) -> Any:
+        """Normalize common two-corner model output before strict evidence validation.
+        在严格证据校验前归一化模型常见的双角点输出。
+        """
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        raw_boxes = data.get("boxes")
+        normalized_boxes, normalizations = _normalize_model_boxes(raw_boxes)
+        items = data.get("evidence_items")
+        if isinstance(items, list):
+            normalized_items: list[Any] = []
+            for index, raw_item in enumerate(items):
+                if not isinstance(raw_item, dict):
+                    normalized_items.append(raw_item)
+                    continue
+                item = dict(raw_item)
+                box, point = item.get("box"), item.get("point")
+                if _is_coordinate_pair(box) and _is_coordinate_pair(point):
+                    item["box"] = _clamp_box([*box, *point], normalizations)
+                    item["point"] = None
+                    normalizations.append("evidence_box_and_point_combined_as_corners")
+                elif _is_coordinate_pair(box):
+                    if index < len(normalized_boxes):
+                        item["box"] = normalized_boxes[index]
+                        normalizations.append("evidence_box_completed_from_top_level_corners")
+                    else:
+                        item["box"] = None
+                        item["point"] = [int(box[0]), int(box[1])]
+                        normalizations.append("two_value_evidence_box_reclassified_as_point")
+                elif isinstance(box, list) and len(box) == 4:
+                    item["box"] = _clamp_box(box, normalizations)
+                normalized_items.append(item)
+            data["evidence_items"] = normalized_items
+        data["boxes"] = normalized_boxes
+        if normalizations:
+            geometry = dict(data.get("geometry") or {})
+            geometry["input_normalizations"] = list(dict.fromkeys(normalizations))
+            data["geometry"] = geometry
+        return data
+
     @model_validator(mode="after")
     def retain_evidence_boxes(self) -> "ExpertResult":
         """Retain labeled evidence boxes in the legacy canonical box list.
@@ -121,6 +165,41 @@ class ExpertResult(BaseModel):
         if labeled_boxes:
             self.boxes = labeled_boxes
         return self
+
+
+def _normalize_model_boxes(value: Any) -> tuple[list[list[int]], list[str]]:
+    """Convert flat boxes or adjacent corner pairs to normalized box arrays.
+    将扁平框或相邻角点对转换为规范框数组。
+    """
+
+    normalizations: list[str] = []
+    if not isinstance(value, list):
+        return [], normalizations
+    if all(isinstance(item, list) and len(item) == 4 for item in value):
+        return [_clamp_box(item, normalizations) for item in value], normalizations
+    if value and len(value) % 2 == 0 and all(_is_coordinate_pair(item) for item in value):
+        boxes = [
+            _clamp_box([*value[index], *value[index + 1]], normalizations)
+            for index in range(0, len(value), 2)
+        ]
+        normalizations.append("top_level_corner_pairs_combined_as_boxes")
+        return boxes, normalizations
+    if len(value) == 4 and all(isinstance(item, (int, float)) for item in value):
+        normalizations.append("flat_top_level_box_wrapped")
+        return [_clamp_box(value, normalizations)], normalizations
+    return [], normalizations
+
+
+def _is_coordinate_pair(value: Any) -> bool:
+    return isinstance(value, list) and len(value) == 2 and all(isinstance(item, (int, float)) for item in value)
+
+
+def _clamp_box(value: list[Any], normalizations: list[str]) -> list[int]:
+    converted = [int(item) for item in value]
+    clamped = [max(0, min(999, item)) for item in converted]
+    if clamped != converted:
+        normalizations.append("box_coordinates_clamped_to_0_999")
+    return clamped
 
 
 class ImageRef(BaseModel):

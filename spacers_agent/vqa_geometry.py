@@ -50,6 +50,8 @@ def apply_vrsbench_geometry(
         "answer_source": "qwen_visual_answer",
         "rule": "no_deterministic_override",
     }
+    if result.geometry.get("input_normalizations"):
+        audit["input_normalizations"] = result.geometry["input_normalizations"]
     boxed = [item for item in result.evidence_items if item.box is not None]
     lowered = question.casefold()
 

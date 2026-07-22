@@ -258,3 +258,5 @@ HTML report records the actual Agent route and prompt version, overlays labeled 
 points on a report-only image copy, and includes the deterministic geometry audit.
 
 Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
+
+The local Transformers client normalizes Qwen's common two-corner box representation before strict validation. A malformed JSON response receives at most one versioned text-only format-repair call; the repair call does not receive the source image, and both attempts remain in the sample artifacts.

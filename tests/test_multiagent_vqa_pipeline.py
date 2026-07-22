@@ -41,19 +41,21 @@ class _FakeInputs(dict[str, Any]):
 
 
 class _FakeProcessor:
-    def __init__(self, raw: str) -> None:
-        self.raw = raw
+    def __init__(self, raw: str | list[str]) -> None:
+        self.raw = [raw] if isinstance(raw, str) else list(raw)
         self.messages: list[dict[str, Any]] = []
+        self.message_history: list[list[dict[str, Any]]] = []
 
     def apply_chat_template(self, messages: list[dict[str, Any]], **_: object) -> str:
         self.messages = messages
+        self.message_history.append(messages)
         return "rendered"
 
     def __call__(self, **_: object) -> _FakeInputs:
         return _FakeInputs()
 
     def batch_decode(self, *_: object, **__: object) -> list[str]:
-        return [self.raw]
+        return [self.raw.pop(0)]
 
 
 class _FakeModel:
@@ -164,6 +166,56 @@ async def test_transformers_client_runs_local_model_and_persists_trace(tmp_path:
     assert validation["backend"] == "transformers"
     assert validation["response_metadata"]["token_usage"]["total_tokens"] == 7
     assert "base64" not in (artifact_dir / "request.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_transformers_client_repairs_invalid_json_without_resending_image(tmp_path: Path) -> None:
+    repaired = json.dumps(
+        {
+            "expert": "spatial_expert",
+            "answer": "small-vehicle",
+            "boxes": [[100, 100, 200, 200]],
+            "evidence": [],
+            "evidence_items": [
+                {"label": "small-vehicle", "box": [100, 100, 200, 200], "confidence": 0.9}
+            ],
+            "status": "completed",
+        }
+    )
+    processor = _FakeProcessor(['{"expert":"spatial_expert",', repaired])
+    client = QwenTransformersClient(
+        QwenSettings(backend="transformers", model="local", max_tokens=32),
+        repair_prompt="Repair JSON without adding evidence.",
+        model=_FakeModel(),
+        processor=processor,
+    )
+    image_url = image_to_data_url(_png_bytes(tmp_path))
+    artifact_dir = tmp_path / "repair"
+
+    result = await client.complete_json(
+        messages=[
+            {"role": "system", "content": "answer"},
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url}}]},
+        ],
+        response_model=ExpertResult,
+        request_meta=RequestMeta(
+            request_id="repair",
+            request_hash="b" * 64,
+            prompt_version="spatial-v2",
+            artifact_dir=artifact_dir,
+        ),
+    )
+
+    assert result.answer == "small-vehicle"
+    assert len(processor.message_history) == 2
+    assert not any(
+        item.get("type") == "image"
+        for message in processor.message_history[1]
+        for item in (message.get("content") if isinstance(message.get("content"), list) else [])
+    )
+    validation = json.loads((artifact_dir / "validation.json").read_text(encoding="utf-8"))
+    assert validation["response_metadata"]["repair_used"] is True
+    assert len(validation["response_metadata"]["attempt_errors"]) == 1
 
 
 def test_official_vrsbench_adapter_is_read_only_and_preserves_answer(tmp_path: Path) -> None:

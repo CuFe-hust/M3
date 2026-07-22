@@ -223,7 +223,11 @@ def _client(settings: object, run_dir: Path) -> VisionLanguageClient:
 
     cache = JsonResponseCache(run_dir / "cache")
     if settings.models.qwen.backend == "transformers":
-        return QwenTransformersClient(settings.models.qwen, cache=cache)
+        return QwenTransformersClient(
+            settings.models.qwen,
+            repair_prompt=DEFAULT_JSON_REPAIR_PROMPT.read_text(encoding="utf-8"),
+            cache=cache,
+        )
     return QwenVLLMClient(
         settings.models.qwen,
         repair_prompt=DEFAULT_JSON_REPAIR_PROMPT.read_text(encoding="utf-8"),

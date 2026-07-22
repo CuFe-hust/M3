@@ -41,11 +41,13 @@ class QwenTransformersClient(VisionLanguageClient):
         self,
         settings: QwenSettings,
         *,
+        repair_prompt: str | None = None,
         cache: JsonResponseCache | None = None,
         model: Any | None = None,
         processor: Any | None = None,
     ) -> None:
         self.settings = settings
+        self.repair_prompt = repair_prompt
         self.cache = cache
         started = time.perf_counter()
         if (model is None) != (processor is None):
@@ -114,47 +116,75 @@ class QwenTransformersClient(VisionLanguageClient):
             )
             return result
         started = time.perf_counter()
-        raw_response = ""
+        raw_responses: list[str] = []
+        attempt_errors: list[dict[str, Any]] = []
+        token_usage: dict[str, int] | None = None
         try:
             raw_response, token_usage = await asyncio.to_thread(self._generate, messages, response_model)
-            result = _validate_response(raw_response, response_model)
+            raw_responses.append(raw_response)
+            try:
+                result = _validate_response(raw_response, response_model)
+            except (json.JSONDecodeError, ValidationError, ValueError) as error:
+                attempt_errors.append(_validation_attempt_error(1, error))
+                if self.repair_prompt is None:
+                    raise
+                repair_messages = _repair_messages(self.repair_prompt, raw_response, str(error))
+                repaired, repair_usage = await asyncio.to_thread(self._generate, repair_messages, response_model)
+                raw_responses.append(repaired)
+                token_usage = _sum_token_usage(token_usage, repair_usage)
+                result = _validate_response(repaired, response_model)
         except (json.JSONDecodeError, ValidationError, ValueError) as error:
+            if not attempt_errors or attempt_errors[-1]["error"] != str(error):
+                attempt_errors.append(_validation_attempt_error(len(raw_responses), error))
             self._write_artifacts(
                 request_meta,
                 messages,
-                raw_response,
+                _render_raw_responses(raw_responses),
                 None,
                 cache_hit=False,
                 validation_error=f"{type(error).__name__}: {error}",
-                metadata={"latency_seconds": round(time.perf_counter() - started, 6), "token_usage": None},
+                metadata={
+                    "latency_seconds": round(time.perf_counter() - started, 6),
+                    "token_usage": token_usage,
+                    "attempt_errors": attempt_errors,
+                    "repair_used": len(raw_responses) > 1,
+                },
             )
-            raise QwenTransformersError(f"Local Qwen JSON validation failed: {error}") from error
+            raise QwenTransformersError(f"Local Qwen JSON validation failed after repair: {error}") from error
         except Exception as error:
             self._write_artifacts(
                 request_meta,
                 messages,
-                raw_response,
+                _render_raw_responses(raw_responses),
                 None,
                 cache_hit=False,
                 validation_error=f"{type(error).__name__}: {error}",
-                metadata={"latency_seconds": round(time.perf_counter() - started, 6), "token_usage": None},
+                metadata={
+                    "latency_seconds": round(time.perf_counter() - started, 6),
+                    "token_usage": token_usage,
+                    "attempt_errors": attempt_errors,
+                    "repair_used": len(raw_responses) > 1,
+                },
             )
             raise QwenTransformersError(f"Local Qwen generation failed: {error}") from error
+        rendered_raw = _render_raw_responses(raw_responses)
         if self.cache:
             self.cache.save(
                 request_meta.request_hash,
-                CacheEntry(raw_response=raw_response, parsed=result.model_dump(mode="json")),
+                CacheEntry(raw_response=rendered_raw, parsed=result.model_dump(mode="json")),
             )
         self._write_artifacts(
             request_meta,
             messages,
-            raw_response,
+            rendered_raw,
             result,
             cache_hit=False,
             validation_error=None,
             metadata={
                 "latency_seconds": round(time.perf_counter() - started, 6),
                 "token_usage": token_usage,
+                "attempt_errors": attempt_errors,
+                "repair_used": len(raw_responses) > 1,
             },
         )
         return result
@@ -287,6 +317,49 @@ def _validate_response(raw_response: str, response_model: type[ModelT]) -> Model
             raise ValueError("Unterminated JSON fence")
         stripped = "\n".join(lines[1:-1]).strip()
     return response_model.model_validate(json.loads(stripped))
+
+
+def _repair_messages(repair_prompt: str, raw_response: str, validation_error: str) -> list[dict[str, Any]]:
+    """Build a text-only format repair request that cannot inspect the image.
+    构建无法查看图像的纯文本格式修复请求。
+    """
+
+    return [
+        {"role": "system", "content": repair_prompt},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {"validation_error": validation_error, "raw_output": raw_response},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+
+def _render_raw_responses(values: list[str]) -> str:
+    return "\n\n".join(
+        f"[response_attempt={index}]\n{value}" for index, value in enumerate(values, start=1)
+    )
+
+
+def _validation_attempt_error(attempt: int, error: Exception) -> dict[str, Any]:
+    return {
+        "attempt": attempt,
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "retryable": False,
+    }
+
+
+def _sum_token_usage(
+    first: dict[str, int] | None,
+    second: dict[str, int] | None,
+) -> dict[str, int] | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return {key: int(first.get(key, 0)) + int(second.get(key, 0)) for key in set(first) | set(second)}
 
 
 def _write_json(path: Path, value: Any) -> None:

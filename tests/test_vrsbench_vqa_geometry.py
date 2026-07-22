@@ -65,3 +65,28 @@ def test_direction_without_north_metadata_is_not_overridden(question_type: str) 
 def test_unknown_official_question_type_fails_visibly() -> None:
     with pytest.raises(ValueError, match="Unsupported VRSBench VQA type"):
         execution_task_for_vrsbench("unregistered type")
+
+
+def test_expert_result_normalizes_corner_pair_boxes_and_single_points() -> None:
+    boxed = ExpertResult.model_validate(
+        {
+            "expert": "spatial_expert",
+            "answer": "middle-left",
+            "boxes": [[0, 427], [100, 599]],
+            "evidence_items": [{"label": "large vehicle", "box": [0, 427], "confidence": 0.9}],
+        }
+    )
+    pointed = ExpertResult.model_validate(
+        {
+            "expert": "spatial_expert",
+            "answer": "yes",
+            "boxes": [[220, 100]],
+            "evidence_items": [{"label": "vehicle", "box": [220, 100], "confidence": 0.9}],
+        }
+    )
+
+    assert boxed.boxes == [[0, 427, 100, 599]]
+    assert boxed.evidence_items[0].box == [0, 427, 100, 599]
+    assert "top_level_corner_pairs_combined_as_boxes" in boxed.geometry["input_normalizations"]
+    assert pointed.boxes == []
+    assert pointed.evidence_items[0].point == [220, 100]
