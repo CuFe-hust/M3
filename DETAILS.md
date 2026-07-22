@@ -565,7 +565,8 @@ DeepSeek, and any future judge must receive only text and structured evidence ra
 
 The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v4.md`,
 `count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
-`missing_point_review_v3.md`, `spatial_v4.md`, `spatial_candidate_review_v2.md`, and
+`missing_point_review_v3.md`, `spatial_v4.md`, `spatial_v5.md`,
+`spatial_candidate_review_v2.md`, `spatial_candidate_review_v3.md`, and
 `general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
 snapshots each active asset. Prompts are not changed
 in place when their behavior changes; a new versioned file must be added and selected explicitly.
@@ -625,11 +626,15 @@ truncated proposal geometry may recover only a syntactically complete integer an
 which localization is mandatory. `final_count` always equals the final accepted point count, while
 retained supporting boxes remain available in the result and HTML overlay. The tiled owner-core and
 halo `PointCountingOrchestrator` remains unchanged for native counting tasks outside this VRSBench
-VQA route. Spatial extreme, grid-position, arrangement, and
-proximity questions perform an independent candidate-enumeration pass without first-pass evidence.
-Question text is classified into a semantic subtype independently from the coarse official type,
-and only reference-independent answer vocabularies are sent to Qwen. Raw answers remain in the
-geometry audit, and partial VQA artifacts remain visible in the HTML report.
+VQA route. Spatial extreme, arrangement, and proximity questions perform an independent
+candidate-enumeration pass without first-pass evidence. Grid-position questions first request one
+tight physical target box without sending the closed grid-label vocabulary; a valid single target
+box is used directly, while missing, ambiguous, or corner-region placeholder evidence triggers an
+independent localization review. Review boxes that omit `evidence_items` retain their model-provided
+geometry and receive only the explicit target class named by the question. The final grid label is
+derived from the retained box centre. Question text is classified into a semantic subtype
+independently from the coarse official type. Raw answers remain in the geometry audit, and partial
+VQA artifacts remain visible in the HTML report.
 
 Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. With `--evaluate`, VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--judge-policy none` remains the explicit offline opt-out. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
 

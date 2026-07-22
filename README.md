@@ -281,11 +281,15 @@ VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-awa
 The default configuration scans a fitting image as one overview, enlarges small transmitted crops
 to a maximum side of 768 pixels, and independently rechecks empty results. A review that reports
 `zero_unconfirmed` triggers finer owner-core crops with a smaller halo; a zero answer remains solely
-point-derived. Spatial extreme, grid-position, arrangement, and proximity questions receive an
-independent candidate-enumeration pass that is not shown first-pass evidence. Question semantics
-are classified separately from the coarse official type and Qwen receives a reference-independent
-closed answer vocabulary when one exists. Program geometry requires at least two candidates before
-claiming an extreme comparison, and every local decision remains in the geometry audit.
+point-derived. Spatial extreme, arrangement, and proximity questions receive an independent
+candidate-enumeration pass that is not shown first-pass evidence. Grid-position questions instead
+localize the singular physical target before the program derives its three-by-three label from the
+box centre. Their visual localization call does not receive the grid-label vocabulary, and an
+independent review is used only for missing, ambiguous, or corner-region placeholder evidence. A
+review may attach the explicit question target class to model-provided top-level boxes, but it never
+fabricates coordinates. Question semantics remain separate from the coarse official type. Program
+geometry requires at least two candidates before claiming an extreme comparison, and every local
+decision remains in the geometry audit.
 
 Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
 
