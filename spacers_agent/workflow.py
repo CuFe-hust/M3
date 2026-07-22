@@ -89,6 +89,11 @@ class VisualExpert:
             + f"\n\nReturn valid JSON only. Set expert to {self.name!r}; put the concise final answer in answer, "
             "use empty boxes/evidence when they are not needed, and set status to 'completed'."
         )
+        if self.name == "general_vqa_expert":
+            structured_prompt += (
+                " For general VQA, boxes must always be []. Return exactly one object shaped as "
+                f'{{"expert":"{self.name}","answer":"...","boxes":[],"evidence":["..."],"status":"completed"}}.'
+            )
         messages: list[dict[str, Any]] = [{"role": "system", "content": structured_prompt}, {"role": "user", "content": content}]
         request_hash = build_request_hash(model=self.model, generation={"temperature": 0.0}, prompt_version=f"{self.name}-v1", messages=messages, image_sha256="|".join(image_hashes))
         return await self.client.complete_json(

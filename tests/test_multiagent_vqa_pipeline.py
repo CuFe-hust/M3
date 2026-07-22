@@ -81,6 +81,31 @@ class _Judge:
         )
 
 
+class _CapturingClient:
+    """Capture the General VQA system contract while returning a valid result.
+    捕获 General VQA 系统契约并返回合法结果。
+    """
+
+    def __init__(self) -> None:
+        self.messages: list[dict[str, Any]] = []
+
+    async def complete_json(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        response_model: type[ExpertResult],
+        request_meta: RequestMeta,
+    ) -> ExpertResult:
+        self.messages = messages
+        return response_model(
+            expert="general_vqa_expert",
+            answer="Yes",
+            boxes=[],
+            evidence=[],
+            status="completed",
+        )
+
+
 def _official_vrsbench(root: Path) -> None:
     Image.new("RGB", (8, 8)).save(root / "P0003_0002.png")
     (root / "VRSBench_EVAL_vqa.json").write_text(
@@ -201,6 +226,23 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     html = report.read_text(encoding="utf-8")
     assert "spacers_agent.workflow.GeneralVQAExpert" in html
     assert "TaskRouter.route_known" in html
+
+
+@pytest.mark.asyncio
+async def test_general_vqa_contract_requires_empty_boxes(tmp_path: Path) -> None:
+    dataset_root = tmp_path / "dataset"
+    dataset_root.mkdir()
+    _official_vrsbench(dataset_root)
+    sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
+    client = _CapturingClient()
+
+    from spacers_agent.workflow import GeneralVQAExpert
+
+    await GeneralVQAExpert(client, "answer", "local-qwen").run(sample, artifact_dir=tmp_path / "artifacts")
+
+    system_prompt = str(client.messages[0]["content"])
+    assert "boxes must always be []" in system_prompt
+    assert '"boxes":[]' in system_prompt
 
 
 def _png_bytes(root: Path) -> bytes:
