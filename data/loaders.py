@@ -68,11 +68,25 @@ def load_samples(dataset_name: str, data_root: Path) -> Iterator[CanonicalSample
     elif dataset_name == "mme_real_rs":
         yield from _load_mme_real_rs(data_root / "mme_real_rs")
     elif dataset_name in DATASET_SPLITS:
-        yield from _load_hf_dataset(dataset_name, data_root / dataset_name)
+        yield from _load_hf_dataset(dataset_name, _local_dataset_root(data_root, dataset_name))
     elif dataset_name == "levir_cc":
         yield from _load_levir_cc(data_root / "levir_cc")
     else:
         raise ValueError(f"Unsupported dataset evaluation target: {dataset_name}")
+
+
+def _local_dataset_root(data_root: Path, dataset_name: str) -> Path:
+    """Resolve official XLRS releases downloaded under their published names."""
+
+    candidates = {
+        "xlrs_vqa_lite": (data_root / "xlrs_bench" / "XLRS-Bench-lite",),
+        "xlrs_caption_en": (data_root / "xlrs_bench" / "XLRS-Bench_caption_en",),
+        "xlrs_grounding_en": (data_root / "xlrs_bench" / "XLRS-Bench_visual_grounding_en",),
+    }.get(dataset_name, ())
+    for candidate in (*candidates, data_root / dataset_name):
+        if candidate.exists():
+            return candidate
+    return data_root / dataset_name
 
 
 def _extract_archives(root: Path) -> None:
@@ -89,10 +103,15 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
     records = _read_json_records(annotation)
     image_index = _image_index(root)
     for record_number, record in enumerate(records):
-        image = _resolve_image(record, root, image_index)
+        image = _resolve_named_image(
+            record,
+            root,
+            image_index,
+            ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename", "image_id"),
+        )
         base_id = _record_id(record, f"vrs-{task_type}-{record_number}")
         if task_type == "caption":
-            caption = _first_text(record, ("caption", "text", "answer", "description"))
+            caption = _first_text(record, ("caption", "text", "answer", "description", "ground_truth"))
             if caption:
                 yield CanonicalSample(
                     id=base_id,
@@ -107,7 +126,7 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
             pairs = record.get("qa_pairs") or record.get("qas") or [record]
             for pair_number, pair in enumerate(pairs):
                 question = _first_text(pair, ("question", "ques", "text"))
-                answer = _first_text(pair, ("answer", "ans", "label"))
+                answer = _first_text(pair, ("answer", "ans", "label", "ground_truth"))
                 if question and answer:
                     yield CanonicalSample(
                         id=_record_id(pair, f"{base_id}-qa-{pair_number}"),
@@ -121,7 +140,7 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
         objects = record.get("objects") or record.get("refs") or [record]
         for object_number, obj in enumerate(objects):
             referring = _first_text(obj, ("ref", "referring", "question", "text"))
-            box = _first_value(obj, ("bbox", "box", "boxes", "polygon"))
+            box = _first_value(obj, ("bbox", "box", "boxes", "polygon", "ground_truth", "obj_corner"))
             if referring and box is not None:
                 yield CanonicalSample(
                     id=_record_id(obj, f"{base_id}-ref-{object_number}"),
@@ -170,41 +189,45 @@ def _load_hf_dataset(dataset_name: str, local_root: Path) -> Iterator[CanonicalS
 
     if local_root.exists() and (local_root / "dataset_dict.json").exists():
         dataset = load_from_disk(local_root)[DATASET_SPLITS[dataset_name]]
+    elif (local_root / DATASET_SPLITS[dataset_name] / "state.json").exists():
+        dataset = load_from_disk(local_root / DATASET_SPLITS[dataset_name])
     else:
         dataset = load_dataset(DATASET_REPOS[dataset_name], split=DATASET_SPLITS[dataset_name])
     for row_number, row in enumerate(dataset):
         images = _hf_images(row)
         sample_id = _record_id(row, f"{dataset_name}-{row_number}")
         if dataset_name == "xlrs_caption_en":
+            question = _first_text(row, ("question",))
             answer_value = _first_value(row, ("caption", "text", "answer", "description"))
             answers = [str(answer) for answer in answer_value] if isinstance(answer_value, list) else [str(answer_value or "")]
-            if not answers[0]:
+            if not question or not answers[0]:
                 raise ValueError(f"XLRS caption row {row_number} has no caption field: {row.keys()}")
             yield CanonicalSample(
                 id=sample_id,
                 task_type="caption",
                 images=images,
-                prompt=_xlrs_caption_prompt(),
+                prompt=question,
                 answers=answers,
                 meta={"source": "XLRS-Bench full English caption release", "release_split": "train"},
             )
             continue
         if dataset_name == "xlrs_grounding_en":
-            referring = _first_text(row, ("ref", "referring_expression", "question", "text"))
+            question = _first_text(row, ("question",))
             box = _first_value(row, ("bbox", "box", "boxes", "polygon", "answer"))
-            if not referring or box is None:
+            if not question or box is None:
                 raise ValueError(f"XLRS grounding row {row_number} is missing text or box: {row.keys()}")
             yield CanonicalSample(
                 id=sample_id,
                 task_type="grounding",
                 images=images,
-                prompt=(
-                    "Locate the referred object. Return only its bounding box as "
-                    "[x1, y1, x2, y2] with coordinates normalized from 0 to 100. "
-                    f"Referring expression: {referring}"
-                ),
+                prompt=question,
                 boxes=[_normalize_box(box)],
-                meta={"source": "XLRS-Bench full English grounding release", "release_split": "test"},
+                meta={
+                    "source": "XLRS-Bench full English grounding release",
+                    "release_split": "test",
+                    "image_width": float(row["image_width"]),
+                    "image_height": float(row["image_height"]),
+                },
             )
             continue
         question = _first_text(row, ("question", "text", "query"))
@@ -336,7 +359,7 @@ def _hf_images(row: dict[str, Any]) -> list[Any]:
 
 
 def _choices(row: dict[str, Any]) -> list[Any] | None:
-    value = _first_value(row, ("choices", "options", "answer_choices"))
+    value = _first_value(row, ("choices", "options", "answer_choices", "multi-choice options"))
     if isinstance(value, list):
         return value
     option_values = [row[key] for key in ("A", "B", "C", "D", "E") if row.get(key) not in (None, "")]
@@ -380,7 +403,7 @@ def _caption_texts(value: Any) -> list[str]:
 
 
 def _record_id(record: dict[str, Any], fallback: str) -> str:
-    value = _first_value(record, ("id", "ID", "image_id", "imgid", "Question_id", "question_id", "ques_id", "uid"))
+    value = _first_value(record, ("id", "ID", "Question_id", "question_id", "ques_id", "uid", "image_id", "imgid"))
     return str(value) if value is not None else fallback
 
 
@@ -401,12 +424,16 @@ def _normalize_box(value: Any) -> list[float]:
         value = value[0]
     numbers = [float(number) for number in re.findall(r"-?\d+(?:\.\d+)?", str(value))]
     if len(numbers) == 4:
-        return numbers
-    if len(numbers) == 8:
+        box = numbers
+    elif len(numbers) == 8:
         xs = numbers[0::2]
         ys = numbers[1::2]
-        return [min(xs), min(ys), max(xs), max(ys)]
-    raise ValueError(f"Expected 4 or 8 bounding-box values, got {value!r}")
+        box = [min(xs), min(ys), max(xs), max(ys)]
+    else:
+        raise ValueError(f"Expected 4 or 8 bounding-box values, got {value!r}")
+    if max(abs(number) for number in box) <= 1:
+        return [number * 100 for number in box]
+    return box
 
 
 def _multiple_choice_prompt(question: str, choices: list[Any], allow_multiple: bool, option_count: int) -> str:
@@ -418,12 +445,3 @@ def _multiple_choice_prompt(question: str, choices: list[Any], allow_multiple: b
         else f"Respond only with one letter ({', '.join(letters)})."
     )
     return f"{question}\nThe choices are listed below:\n{rendered_choices}\n{suffix}"
-
-
-def _xlrs_caption_prompt() -> str:
-    return (
-        "You are a remote sensing image analysis assistant. Provide a detailed description in three parts: "
-        "overall description, a nine-region description from top-left to bottom-right, and comprehensive "
-        "inference about functional zones, transportation, ecology, human activities, and common-object counts. "
-        "Do not use Markdown emphasis or special symbols."
-    )
