@@ -5,11 +5,16 @@
     "device_map": "auto",
     "max_new_tokens": 256,
     "min_pixels": null,
-    "max_pixels": null
+    "max_pixels": null,
+    "local_files_only": false
   },
   "paths": {
     "data_root": "datasets/baseline",
     "output_root": "outputs/baseline"
+  },
+  "report": {
+    "enabled": true,
+    "max_samples": 200
   },
   "deepseek": {
     "base_url": "https://api.deepseek.com/v1",
