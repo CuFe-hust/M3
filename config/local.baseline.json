@@ -1,0 +1,12 @@
+{
+  "model": {
+    "id": "D:\\M3_models\\models\\Qwen--Qwen3-VL-4B-Instruct\\snapshots\\master",
+    "dtype": "auto",
+    "device_map": "auto",
+    "max_new_tokens": 256
+  },
+  "paths": {
+    "data_root": "C:\\Users\\bb\\Desktop\\M3-main\\datasets",
+    "output_root": "C:\\Users\\bb\\Desktop\\M3-main\\outputs\\baseline"
+  }
+}

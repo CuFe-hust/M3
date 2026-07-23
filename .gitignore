@@ -1,15 +1,14 @@
-.DS_Store
-
-# Downloaded datasets and Hugging Face artifacts
+# 数据集
 datasets/
-model_cache/
-hf_cache/
-
-# Baseline outputs and local experiment settings
+# 模型权重
+models/qwen_model/*.safetensors
+models/qwen_model/*.bin
+# 输出
 outputs/
-config/local*.json
-.firecrawl/
-
-# Python bytecode
+*.jsonl
+*.log
+# Python
 __pycache__/
-*.py[cod]
+*.pyc
+# 系统
+.cache/
