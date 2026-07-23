@@ -12,6 +12,7 @@ from data.schema import CanonicalPrediction, CanonicalSample
 
 
 TASK_MAX_NEW_TOKENS = {
+    "caption": 512,
     "change_caption": 512,
     "vqa": 64,
     "grounding": 128,
