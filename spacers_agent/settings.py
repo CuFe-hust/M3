@@ -13,6 +13,8 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from spacers_agent.schemas import BackendConfig
+
 
 class QwenSettings(BaseModel):
     """Settings for a future OpenAI-compatible Qwen endpoint.
@@ -146,6 +148,21 @@ class AppSettings(BaseModel):
     runs: RunSettings = Field(default_factory=RunSettings)
     router: RouterSettings = Field(default_factory=RouterSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
+    backend: BackendConfig = Field(default_factory=BackendConfig)
+    agents: "AgentsSettings" = Field(default_factory=lambda: AgentsSettings())
+
+
+class AgentsSettings(BaseModel):
+    """Per-agent configuration group. / Agent 级配置组。"""
+    model_config = ConfigDict(extra="forbid")
+    # Future: individual agent enable flags / 未来：各 Agent 启用标志
+    counting: "AgentCountingSettings" = Field(default_factory=lambda: AgentCountingSettings())
+
+
+class AgentCountingSettings(BaseModel):
+    """Counting agent configuration. / 计数 Agent 配置。"""
+    model_config = ConfigDict(extra="forbid")
+    default_backend: Literal["auto", "qwen_point", "yolo_obb"] = "auto"
 
 
 class EnvironmentOverrides(BaseSettings):

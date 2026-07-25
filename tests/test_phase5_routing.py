@@ -62,10 +62,12 @@ def test_known_tasks_route_without_model_calls() -> None:
     router = TaskRouter()
     decision = router.route_known("fine_grained_counting", high_resolution=True)
 
-    assert [expert.name for expert in decision.experts] == ["counting_expert", "spatial_expert"]
-    assert [expert.weight for expert in decision.experts] == [0.5, 0.5]
+    assert decision.primary_agent == "counting_agent"
+    assert decision.fallback_agents == []  # fine_grained_counting is now single
+    assert decision.execution_mode == "single"
     assert decision.requires_tiling
-    assert decision.reason_codes == ["task_fine_grained_counting", "high_resolution"]
+    assert "task_fine_grained_counting" in decision.reason_codes
+    assert "high_resolution" in decision.reason_codes
 
 
 def test_vrsbench_question_semantics_select_conservative_execution_tasks() -> None:
@@ -88,10 +90,10 @@ def test_vrsbench_question_semantics_select_conservative_execution_tasks() -> No
         question="What kind of scene is visible?",
     )
 
-    assert quantity.task == "counting" and quantity.experts[0].name == "counting_expert"
-    assert position.task == "spatial_relation" and position.experts[0].name == "spatial_expert"
-    assert scene.task == "general_vqa" and scene.experts[0].name == "general_vqa_expert"
-    assert unknown.task == "general_vqa" and unknown.experts[0].name == "general_vqa_expert"
+    assert quantity.task == "counting" and quantity.primary_agent == "counting_agent"
+    assert position.task == "spatial_relation" and position.primary_agent == "spatial_agent"
+    assert scene.task == "general_vqa" and scene.primary_agent == "general_vqa_agent"
+    assert unknown.task == "general_vqa" and unknown.primary_agent == "general_vqa_agent"
 
 
 @pytest.mark.asyncio

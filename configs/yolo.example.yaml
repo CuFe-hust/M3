@@ -1,0 +1,36 @@
+# YOLO Counting Example — DO NOT COMMIT REAL WEIGHTS
+# YOLO 计数示例 — 不得提交真实权重
+#
+# Copy to configs/local.spark.yaml and replace paths with your local weights.
+# 复制到 configs/local.spark.yaml 并替换为本地权重路径。
+
+agents:
+  counting:
+    default_backend: auto
+    yolo:
+      enabled: true
+      fallback_to_qwen_on_unavailable: true
+      fallback_to_qwen_on_error: true
+      verify_empty_with_qwen: false
+      detectors:
+        - name: dota_obb
+          enabled: true
+          weights: weights/yolo11s-obb.pt
+          task: obb
+          priority: 100
+          classes: [plane, ship, storage tank, large vehicle, small vehicle, helicopter, bridge]
+          aliases:
+            airplane: plane
+            aircraft: plane
+            vessel: ship
+            car: small vehicle
+            automobile: small vehicle
+            truck: large vehicle
+            bus: large vehicle
+          composite_targets:
+            vehicle: [small vehicle, large vehicle]
+          confidence: 0.20
+          iou: 0.50
+          image_size: 1024
+          device: "0"
+          max_detections: 1000

@@ -12,6 +12,17 @@ config/local*.json
 configs/local*.yaml
 .firecrawl/
 
+# Model weights (local only, never commit)
+weights/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.bin
+*.onnx
+*.om
+*.engine
+
 # Python bytecode
 __pycache__/
 *.py[cod]

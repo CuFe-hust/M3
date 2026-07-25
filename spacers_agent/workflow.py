@@ -519,7 +519,10 @@ class DatasetRunner:
                 state = "succeeded" if result.status in {"completed", "completed_with_warnings"} else "partial"
                 final = _status(sample, state, result_path=sample_dir / "counting_result.json")
             else:
-                expert_name = decision.experts[0].name
+                # Map from new agent name to legacy expert name for internal dispatch
+                # 从新 Agent 名映射到旧 expert 名用于内部分派
+                from spacers_agent.routing.schemas import AGENT_TO_EXPERT
+                expert_name = AGENT_TO_EXPERT.get(decision.primary_agent, decision.primary_agent)
                 inference_started = time.perf_counter()
                 if expert_name == "counting_expert":
                     expert_class_name = "CountingExpert"
@@ -1326,3 +1329,21 @@ def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8", newline="\n") as file:
         file.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+# ── New-agent re-exports / 新 Agent re-export ────────────────────────────
+# These aliases keep old import paths working while real implementations
+# have moved to spacers_agent.agents.<name>.
+# 这些别名使旧导入路径保持可用，实际实现已移至 spacers_agent.agents.<name>。
+
+
+def _lazy_import_visual_base():
+    """Lazy import to avoid circular dependencies. / 延迟导入以避免循环依赖。"""
+    from spacers_agent.agents.visual_base import VisualAgentBase  # noqa: PLC0415
+    return VisualAgentBase
+
+
+# Old expert classes re-exported via their new agent locations
+# 旧专家类通过其新 Agent 位置重新导出
+# These are thin wrappers — no duplicated implementations.
+# 这些是轻量包装 — 不复制实现。

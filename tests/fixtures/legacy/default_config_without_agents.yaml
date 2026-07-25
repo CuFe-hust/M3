@@ -1,3 +1,9 @@
+# Baseline default configuration without agent-specific settings.
+# 不包含 Agent 特定设置的基线默认配置。
+#
+# This fixture represents the minimal config that the CLI can parse.
+# 此 fixture 表示 CLI 可解析的最简配置。
+
 models:
   qwen:
     backend: vllm
@@ -37,8 +43,8 @@ counting:
   unresolved_conflict_policy: flag_for_review
   prompt_version: count-point-v4
   vrsbench_min_scan_depth: 0
-  vrsbench_zero_review: true
-  vrsbench_tile_upscale_max_side: 768
+  vrsbench_zero_review: false
+  vrsbench_tile_upscale_max_side: null
 runs:
   root: outputs/runs
   save_tiles: false
@@ -50,22 +56,8 @@ router:
   enabled: true
   trust_dataset_task_type: true
   use_router_agent_when_task_missing: true
-  high_confidence_threshold: 0.80
-  medium_confidence_threshold: 0.60
+  high_confidence_threshold: 0.8
+  medium_confidence_threshold: 0.6
   max_total_experts: 3
   repair_attempts: 1
   enable_rule_fallback: true
-# Optional: YOLO OBB counting backend. / 可选：YOLO OBB 计数后端。
-# Disabled by default. Requires local weight files and optional dependency 'ultralytics'.
-# 默认关闭。需要本地权重文件与可选依赖 'ultralytics'。
-# backend:
-#   yolo:
-#     enabled: false
-#     weights:
-#       - name: "vehicle-obb-v1"
-#         path: "./weights/vehicle_obb.pt"
-#         categories: ["small-vehicle", "large-vehicle", "car", "truck", "bus"]
-#         priority: 10
-#     confidence_threshold: 0.25
-#     iou_threshold: 0.45
-#   trust_empty_detection: false

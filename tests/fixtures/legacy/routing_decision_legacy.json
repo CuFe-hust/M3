@@ -1,0 +1,15 @@
+{
+  "task": "general_vqa",
+  "experts": [
+    {
+      "name": "general_vqa_expert",
+      "weight": 1.0
+    }
+  ],
+  "requires_tiling": false,
+  "reason_codes": [
+    "task_general_vqa",
+    "vrsbench_type_general",
+    "vrsbench_semantic_general_vqa"
+  ]
+}

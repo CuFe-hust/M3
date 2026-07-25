@@ -526,6 +526,7 @@ class GlobalPointObservation(BaseModel):
     accepted: bool
     rejection_reason: str | None = None
     short_evidence: str = Field(max_length=120)
+    provenance: PointProvenance | None = Field(default=None)  # backward-compat: None for old data / 向后兼容：旧数据为 None
 
 
 class IssueRecord(BaseModel):
@@ -594,6 +595,73 @@ class CountingResult(BaseModel):
         if self.failed_tiles and self.status not in {"partial", "failed"}:
             raise ValueError("failed tiles require partial or failed status")
         return self
+
+
+# -- backend configuration models / 后端配置模型 ------------------------------------------------
+
+class YoloDetectorSettings(BaseModel):
+    """One YOLO detector with its class mapping and priority.
+    一个 YOLO 检测器及其类别映射与优先级。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    enabled: bool = False
+    weights: Path
+    task: Literal["obb"] = "obb"
+    priority: int = Field(default=100, ge=0)
+    classes: list[str] = Field(min_length=1)
+    aliases: dict[str, str] = Field(default_factory=dict)
+    composite_targets: dict[str, list[str]] = Field(default_factory=dict)
+    confidence: float = Field(default=0.20, ge=0.0, le=1.0)
+    iou: float = Field(default=0.50, ge=0.0, le=1.0)
+    image_size: int = Field(default=1024, gt=0)
+    device: str = "0"
+    max_detections: int = Field(default=1000, gt=0)
+
+
+class YoloCountingSettings(BaseModel):
+    """YOLO counting backend configuration. / YOLO 计数后端配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    fallback_to_qwen_on_unavailable: bool = True
+    fallback_to_qwen_on_error: bool = True
+    verify_empty_with_qwen: bool = False
+    detectors: list[YoloDetectorSettings] = Field(default_factory=list)
+
+
+class BackendConfig(BaseModel):
+    """Optional backend overrides for the multi-Agent counting pipeline.
+    多 Agent 计数管线的可选后端覆盖配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    yolo: YoloCountingSettings = Field(default_factory=YoloCountingSettings)
+    trust_empty_detection: bool = False
+
+
+# -- point provenance / 点来源追踪 ----------------------------------------------------
+
+class PointProvenance(BaseModel):
+    """Traceable source of a detected point (backward-compatible).
+    可追踪的检测点来源（向后兼容）。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: Literal["qwen_point", "yolo_obb_center", "fused"] = "qwen_point"
+    backend_name: str | None = None
+    model_id: str | None = None
+    source_class: str | None = None
+    detector_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    obb_polygon_local_px: list[list[float]] | None = None
+
+
+# ------------------------------------------------------------------------------------------------
 
 
 def stable_sample_id(source_id: str | None, relative_image_path: Path, question: str, source_index: int) -> str:
