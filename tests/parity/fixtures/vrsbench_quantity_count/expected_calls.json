@@ -1,0 +1,41 @@
+{
+  "deepseek": [],
+  "qwen": [
+    {
+      "artifact_dir": "samples/vrsbench_quantity_count/counting_expert/count_proposal",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+      "match_key": "vrsbench_quantity_count|_CountProposalResult|vrsbench_quantity_count:count-proposal",
+      "messages_sha256": "fbf3e7de323a3de6c1510ce9bddc1c5c8da63940708ab0dfafe3ef1ca85bd875",
+      "prompt_version": "general-vqa-v1-count-proposal",
+      "request_hash": "432c0f10a946a8da745aabe62e05633e0c4ca1e59f3f031b484b3f57a0693765",
+      "request_id": "vrsbench_quantity_count:count-proposal",
+      "response_model": "_CountProposalResult",
+      "sample_id": "vrsbench_quantity_count"
+    },
+    {
+      "artifact_dir": "samples/vrsbench_quantity_count/counting_expert/count_localizer",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+      "match_key": "vrsbench_quantity_count|ExpertResult|vrsbench_quantity_count:count-localizer",
+      "messages_sha256": "a7fdba1fdb06a2e328302e55fca25f0162bcdf82977508da4f58f31ca7f6107c",
+      "prompt_version": "count-localize-v1",
+      "request_hash": "1186cdfa94283e70d62d2ed1f3f20506f7b33f72ef5a6ce37a1c1c604c624008",
+      "request_id": "vrsbench_quantity_count:count-localizer",
+      "response_model": "ExpertResult",
+      "sample_id": "vrsbench_quantity_count"
+    }
+  ]
+}

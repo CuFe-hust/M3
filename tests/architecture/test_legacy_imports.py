@@ -35,6 +35,17 @@ def test_workflow_vrsbench_helper_symbols():
     )
 
 
+def test_workflow_spatial_helper_is_a_compatibility_alias():
+    """The old helper name must resolve to the standalone pure implementation.
+    旧 helper 名称必须解析到独立纯函数实现。
+    """
+
+    from spacers_agent.agents.spatial.evidence_merge import merge_visual_evidence
+    from spacers_agent.workflow import _merge_visual_evidence
+
+    assert _merge_visual_evidence is merge_visual_evidence
+
+
 def test_workflow_visual_expert_importable():
     """VisualExpert base class importable."""
     from spacers_agent.workflow import VisualExpert  # noqa: F401

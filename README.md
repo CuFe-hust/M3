@@ -231,6 +231,13 @@ python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
 python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 ```
 
+`run-dataset`, `resume-run`, and `count-image` all enter the same composed runtime:
+`assemble_runtime` → `build_dataset_runner` (dataset commands) or `SampleRunner` (one image) →
+`TaskRouter` → `AgentRegistry` → concrete Agent → counting/VRSBench backend →
+`ArtifactWriter` and optional `JudgeService`. `workflow.py`, `counting.py`, and `experts.py` remain
+only as import-compatible shims; they do not provide a second business path. YOLO is not registered
+or loaded by this runtime.
+
 The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
 
 To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL checkpoint, create an ignored `configs/local.spark.yaml` from `configs/default.yaml` and set only local runtime values such as:

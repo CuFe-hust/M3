@@ -1,0 +1,17 @@
+{
+  "deterministic_metrics": {
+    "absolute_error": 21,
+    "exact_match": 0,
+    "gold_count": 4,
+    "predicted_count": 25,
+    "relative_error": 4.2,
+    "smooth_error_score": 3.3720152341391845e-06
+  },
+  "judge_error": null,
+  "judge_inconsistency": false,
+  "judge_parsed": null,
+  "judge_raw": null,
+  "judge_status": "not_requested",
+  "sample_id": "native_counting",
+  "task": "counting"
+}

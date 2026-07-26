@@ -1,0 +1,11 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "general_vqa_agent",
+  "reason_codes": [
+    "task_multiple_choice_vqa"
+  ],
+  "requires_tiling": false,
+  "router_source": "dataset_task",
+  "task": "multiple_choice_vqa"
+}

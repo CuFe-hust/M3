@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from spacers_agent.agents.base import Agent, AgentContext, AgentExecution
@@ -229,10 +231,13 @@ class TestYoloDisabledConstruction:
         client = _FakeClient()
 
         from spacers_agent.bootstrap import build_agent_registry
-        prompts = {"count": "count", "seam": "seam", "target": "target", "change": "change",
-                    "spatial": "spatial", "spatial_review": "", "spatial_grid": "",
-                    "spatial_grid_review": "", "general": "general", "count_zero_review": ""}
+        from spacers_agent.prompt_catalog import PromptCatalog
 
-        registry = build_agent_registry(settings=settings, qwen_client=client, prompts=prompts)
+        prompt_catalog = PromptCatalog(Path(__file__).resolve().parents[2] / "prompts")
+        registry = build_agent_registry(
+            settings=settings,
+            qwen_client=client,
+            prompt_catalog=prompt_catalog,
+        )
         assert len(registry) == 6
         assert not ultralytics_before or "ultralytics" in sys.modules

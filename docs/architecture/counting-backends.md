@@ -8,7 +8,7 @@ CountingAgent
   → BackendSelector
      → VRSBenchQwenCountBackend (VRSBench vehicle quantity, proposal+localizer)
      → QwenPointCountingBackend (tile-based owner-core point counting)
-     → YoloOBBCountingBackend (OBB centre → point, per-detector)
+     → YoloOBBCountingBackend draft (not registered during cutover)
   → CountingResult (final_count == accepted points)
 ```
 
@@ -39,7 +39,10 @@ Preserves 200-sample-comparable VRSBench vehicle pipeline:
 4. Box evidence → accepted centres → dedup → border fragment rejection
 5. `final_count == accepted points`
 
-## YoloOBBCountingBackend
+## YoloOBBCountingBackend Draft
+
+This backend is intentionally outside the active runtime cutover. The files remain as drafts, but
+`bootstrap.assemble_runtime()` rejects YOLO enablement and never imports or registers this backend.
 
 Per-detector backend:
 - `YoloDetectorSettings` defines classes, aliases, composites
@@ -50,6 +53,9 @@ Per-detector backend:
 - Provenance: `PointProvenance(source="yolo_obb_center", ...)`
 
 ## Configuration
+
+The following draft configuration is not accepted by the cutover Composition Root. The active
+default remains disabled, and enabling it raises a visible `RuntimeError`.
 
 ```yaml
 backend:
@@ -71,6 +77,7 @@ backend:
 ## Safety
 
 - YOLO disabled → no `ultralytics` import
+- YOLO enabled → Composition Root rejects startup before backend registration
 - Weight file missing → `DetectorWeightsMissingError` before import
 - No auto-download, no network access
 - `ultralytics` is an optional dependency (`[yolo]` extra)

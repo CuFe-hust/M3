@@ -48,3 +48,26 @@ def test_vrsbench_routing_also_works():
     assert decision.primary_agent == "counting_agent"
     expert_name = AGENT_TO_EXPERT.get(decision.primary_agent, decision.primary_agent)
     assert expert_name == "counting_expert"
+
+
+def test_workflow_service_uses_registry_without_legacy_expert_dictionary():
+    """The compatibility facade must not retain the former expert dictionary.
+    兼容门面不得保留原专家字典。
+    """
+
+    from spacers_agent.workflow import WorkflowService
+
+    prompts = {
+        "change": "change",
+        "general": "general",
+        "spatial": "spatial",
+        "spatial_grid": "grid",
+        "spatial_review": "review",
+        "spatial_grid_review": "grid review",
+        "caption": "caption",
+    }
+    service = WorkflowService(None, prompts, "model")
+
+    assert not hasattr(service, "experts")
+    assert type(service.get_agent("change_expert")).__name__ == "ChangeAgent"
+    assert type(service.get_agent("caption_expert")).__name__ == "CaptionAgent"

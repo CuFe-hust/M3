@@ -8,9 +8,15 @@ import asyncio
 import base64
 import io
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
+
+# Prevent HuggingFace Hub network access — this module is for local models only.
+# 阻止 HuggingFace Hub 网络访问 — 此模块仅用于本地模型。
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
 from PIL import Image
 from pydantic import BaseModel, ValidationError
@@ -82,10 +88,12 @@ class QwenTransformersClient(VisionLanguageClient):
             dtype=dtype,
             device_map=self.settings.device_map,
             local_files_only=self.settings.local_files_only,
+            trust_remote_code=True,
         )
         processor = AutoProcessor.from_pretrained(
             self.settings.model,
             local_files_only=self.settings.local_files_only,
+            trust_remote_code=True,
             **processor_kwargs,
         )
         model.eval()

@@ -6,7 +6,10 @@ from __future__ import annotations
 
 from spacers_agent.agents.base import Agent, AgentContext, AgentExecution, AgentName
 from spacers_agent.agents.visual_base import VisualAgentBase
+from spacers_agent.clients.base import VisionLanguageClient
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import UnifiedSample
+from spacers_agent.vqa_geometry import apply_vrsbench_geometry
 
 
 class GeneralVQAAgent(VisualAgentBase):
@@ -17,21 +20,25 @@ class GeneralVQAAgent(VisualAgentBase):
         "general_vqa",
         "scene_classification",
         "multiple_choice_vqa",
-        "caption",  # fallback for caption path / caption 兜底路径
     })
 
-    def __init__(self, client, prompts: dict[str, str], model: str) -> None:
+    def __init__(self, client: VisionLanguageClient, prompt: PromptAsset, model: str) -> None:
         super().__init__(
             client,
             model,
             agent_name="general_vqa_expert",
-            default_prompt=prompts["general"],
-            default_prompt_version="general-vqa-v2",
+            default_prompt=prompt,
         )
         self._client_ref = client
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
         result = await super().run(sample, artifact_dir=context.artifact_dir)
+        if sample.dataset == "VRSBench" and sample.task == "general_vqa":
+            result = apply_vrsbench_geometry(
+                sample.question,
+                str(sample.metadata.get("question_type", "")),
+                result,
+            )
         return AgentExecution(
             agent_name=self.name,
             payload=result,
@@ -39,6 +46,6 @@ class GeneralVQAAgent(VisualAgentBase):
             trace={
                 "agent_class": "spacers_agent.agents.general_vqa.agent.GeneralVQAAgent",
                 "route": f"GeneralVQAAgent.run -> VisualAgentBase.run -> {type(self._client_ref).__name__}.complete_json",
-                "prompt_version": "general-vqa-v2",
+                "prompt_version": self.select_prompt(sample).version,
             },
         )

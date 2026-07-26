@@ -18,7 +18,19 @@ class BackendRegistry:
 
     def register(self, backend: CountingBackend) -> None:
         """Register a backend. / 注册后端。"""
+        if any(existing.name == backend.name for existing in self._backends):
+            raise ValueError(f"Duplicate counting backend: {backend.name}")
         self._backends.append(backend)
+
+    def get(self, name: str) -> CountingBackend:
+        """Return one backend by its stable name.
+        按稳定名称返回一个后端。
+        """
+
+        for backend in self._backends:
+            if backend.name == name:
+                return backend
+        raise KeyError(f"Unknown counting backend {name!r}; available={self.all_names()}")
 
     def list_available(self, target: CountTargetSpec) -> list[CountingBackend]:
         """Return backends that can handle the target. / 返回能处理目标的后端。"""

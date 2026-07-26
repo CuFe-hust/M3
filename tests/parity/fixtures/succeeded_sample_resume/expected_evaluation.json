@@ -1,0 +1,13 @@
+{
+  "candidate_answer": "yes",
+  "exact_match": true,
+  "judge_error": null,
+  "judge_parsed": null,
+  "judge_score": null,
+  "judge_status": "not_requested",
+  "question": "Is the statement correct?",
+  "reference_answers": [
+    "yes"
+  ],
+  "sample_id": "succeeded_sample_resume"
+}

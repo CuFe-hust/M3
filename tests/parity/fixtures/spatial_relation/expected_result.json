@@ -1,0 +1,38 @@
+{
+  "answer": "top-left",
+  "boxes": [
+    [
+      100.0,
+      100.0,
+      240.0,
+      240.0
+    ]
+  ],
+  "evidence": [
+    "deterministic evidence"
+  ],
+  "evidence_items": [
+    {
+      "box": [
+        100,
+        100,
+        240,
+        240
+      ],
+      "confidence": 0.9,
+      "coordinate_frame": "normalized_0_999_top_left",
+      "image_id": "legacy-image",
+      "label": "position-target",
+      "point": null
+    }
+  ],
+  "expert": "spatial_expert",
+  "geometry": {
+    "evidence_quality": [
+      "trusted_box"
+    ],
+    "repair_severity": "none",
+    "source": "deterministic spatial evidence"
+  },
+  "status": "completed"
+}

@@ -11,7 +11,7 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash
-from spacers_agent.counting import PointCountingOrchestrator
+from spacers_agent.agents.counting.point_pipeline import PointCountingOrchestrator
 from spacers_agent.routing.budget import CallBudget
 from spacers_agent.routing.policies import ROUTES, needs_tiling
 from spacers_agent.routing.schemas import (
@@ -68,8 +68,11 @@ class TaskRouter:
                     sample_id=getattr(sample, "sample_id", "unknown"),
                     artifact_dir=artifact_dir,
                 )
-            except Exception:
-                pass  # fall through to rule fallback
+            except Exception as error:
+                return self._rule_fallback(
+                    high_resolution=high_resolution,
+                    reason_code=f"router_agent_failed_{type(error).__name__}",
+                )
 
         # 4. Rule fallback — conservative general_vqa / 规则兜底 — 保守 general_vqa
         return self._rule_fallback(high_resolution=high_resolution)
@@ -138,12 +141,19 @@ class TaskRouter:
 
     # ── rule fallback / 规则兜底 ────────────────────────────────────────
 
-    def _rule_fallback(self, *, high_resolution: bool = False) -> RoutingDecision:
+    def _rule_fallback(
+        self,
+        *,
+        high_resolution: bool = False,
+        reason_code: str | None = None,
+    ) -> RoutingDecision:
         """Conservative fallback when no route is available. / 无可用路由时的保守兜底。"""
         return RoutingDecision(
             task="general_vqa", primary_agent="general_vqa_agent",
             execution_mode="single", requires_tiling=False,
-            reason_codes=["rule_fallback"] + (["high_resolution"] if high_resolution else []),
+            reason_codes=["rule_fallback"]
+            + ([reason_code] if reason_code else [])
+            + (["high_resolution"] if high_resolution else []),
             router_source="rule_fallback",
         )
 

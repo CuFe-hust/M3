@@ -2,7 +2,7 @@
 规则优先的稀疏路由、受限调用预算和面向专家的结果封装。
 """
 
-from spacers_agent.routing.budget import CallBudget, CallBudgetExceeded, make_budget_guard
+from spacers_agent.routing.budget import CallBudget, CallBudgetExceeded, CallBudgetFactory, make_budget_guard
 from spacers_agent.routing.router import CountingExpert, CountingExpertAnswer, TaskRouter, attach_qwen_budget
 from spacers_agent.routing.routes import (
     AGENT_TO_EXPERT,
@@ -25,6 +25,7 @@ __all__ = [
     "AgentName",
     "CallBudget",
     "CallBudgetExceeded",
+    "CallBudgetFactory",
     "CountingExpert",
     "CountingExpertAnswer",
     "ExecutionMode",

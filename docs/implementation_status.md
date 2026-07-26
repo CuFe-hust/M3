@@ -45,8 +45,8 @@
 
 ## Counting workflow split
 
-- Completed locally: `CountingDraft`, structured `IssueRecord`, pure owner-core/confidence acceptance policy, `PointCountingOrchestrator.collect_points()`, and `spacers_agent.workflows.counting_workflow.CountingWorkflow`.
-- Compatibility: `count_image()` remains available and finalizes the collected draft for older callers. The new workflow persists input, target, draft, result, optional evaluation, and overlay under the sample directory.
+- Completed locally: `CountingDraft`, structured `IssueRecord`, pure owner-core/confidence acceptance policy, and `PointCountingOrchestrator.collect_points()` behind the registered `qwen_point` backend.
+- Runtime status: the duplicate `CountingWorkflow` implementation has been removed. `count-image` creates a canonical `UnifiedSample` and runs `CountingAgent` through the same composed Runtime as dataset execution. `workflow.py`, `counting.py`, and `experts.py` are import-compatible shims only.
 
 # Historical Phase 0 audit status
 

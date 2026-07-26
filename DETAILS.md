@@ -606,9 +606,13 @@ from optional Judge success, failure, inconsistency, and semantic-quality fields
 `summarize-evaluations` reads JSONL locally and writes one JSON summary. The complete local command
 sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 
+`.github/workflows/offline-tests.yml` executes the same offline gate on Python 3.11 for pushes
+and pull requests: it installs only `.[dev]`, compiles `spacers_agent`, runs pytest, and invokes
+CLI help. It does not install the optional YOLO extra or access a model service or dataset.
+
 ## 14. Runnable Agent Workflow, Explicit Adapters, and Spark Handoff
 
-`spacers_agent.workflow` adds atomic JSON artifacts, automatic structured target parsing, a sequential dataset runner, and reusable Qwen visual primitives for change, grounding, spatial, and general-VQA routes. Counting continues to derive `final_count` only from accepted global points; confidence gating sets low-confidence points to `accepted=False`, and seam merging occurs only after a `SeamDecision` explicitly returns `same_instance` for a local seam crop.
+`spacers_agent.workflow` is now import compatibility only. Atomic JSON publication is implemented by `workflows.artifact_writer`, dataset execution by `workflows.DatasetRunner`, and all Qwen visual execution by concrete Agents. Counting continues to derive `final_count` only from accepted global points; confidence gating sets low-confidence points to `accepted=False`, and seam merging occurs only after a `SeamDecision` explicitly returns `same_instance` for a local seam crop.
 
 `spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
 
@@ -646,3 +650,60 @@ Before strict `VisualEvidence` validation, the structured result normalizes a mo
 The Transformers client permits one versioned, text-only JSON-format repair after a parse or schema failure; the repair receives the failed raw output and validation error but no image. If either model response is truncated only at the end, the client first closes the known JSON containers. When the final array/object member is itself incomplete, it discards only that incomplete tail member and validates the remaining response. It does not synthesize missing visual evidence. Local truncation recovery is recorded in both `geometry.input_normalizations` and call validation metadata; both model attempts, validation errors, timing, and cumulative token usage remain persisted.
 
 After a VRSBench general-VQA run, `spacers_agent.vqa_report` converts the persisted multi-Agent results to the unchanged canonical VQA sample/prediction format and invokes the default audit report component. The run directory receives `vrsbench_vqa.jsonl`, metrics, DeepSeek audit JSONL, and `vrsbench_vqa.report/report.html`. The HTML displays the actual subtype route, prompt version, labeled evidence, program-geometry audit, and a report-only image copy with boxes or accepted points overlaid. Original dataset images are never modified.
+
+## 15. New-Agent Runtime Composition Contract
+
+`spacers_agent.bootstrap.assemble_runtime()` is the Composition Root for the active CLI runtime.
+It constructs a frozen `RuntimeComponents` graph containing the injected Qwen client, optional
+DeepSeek client, `PromptCatalog`, one `TaskRouter`, one `AgentRegistry`, one `JudgeService`, one
+stateless `ArtifactWriter`, one `CallBudgetFactory`, and one `SampleRunner`.
+`build_dataset_runner()` reuses the exact `SampleRunner` and therefore the exact Router, Registry,
+Judge, Writer, and budget factory. `cli.py` uses this composition for all dataset runs and resumes.
+
+`run-dataset` constructs this graph through `assemble_runtime()` and `build_dataset_runner()`.
+`resume-run` reconstructs the same graph through `_run_dataset()`. `count-image` also calls
+`assemble_runtime()` and executes its canonical one-image `UnifiedSample` via the injected
+`SampleRunner`. There is no runtime branch to the former DatasetRunner or CountingWorkflow.
+
+`AgentContext` contains the canonical `PromptCatalog` rather than a second mutable Prompt mapping.
+Each logical Prompt key resolves to a frozen `PromptAsset` containing its source path, request
+version, and unchanged UTF-8 text. Active count, target, seam, zero-review, VRSBench proposal and
+localizer, change, spatial/grid/review, general, grounding, caption, count-Judge, and VQA-Judge
+bindings are tested against their versioned files.
+
+`CallBudgetFactory.create_for_sample()` creates a fresh `CallBudget` from centralized legacy limits
+instead of hard-coding limits inside `SampleRunner`. `SampleRunOutcome.status` is authoritative for
+`workflows.DatasetRunner`: completed payloads map to `succeeded`, partial payloads remain `partial`,
+and failed payloads remain `failed`. `ArtifactWriter` performs only declared serialization for
+sample, status, routing, execution, evaluation, trace, prediction-index, and summary artifacts.
+Judge errors remain visible in `vqa_evaluation.json` while the Agent result and its payload-derived
+sample status are retained.
+
+During this cutover, the Composition Root registers only `qwen_point` and
+`vrsbench_qwen_count`. YOLO draft files remain present but are not imported or registered;
+`backend.yolo.enabled: true` raises a visible `RuntimeError` before runtime construction.
+
+## 16. Non-Counting Agent Cutover Contract
+
+Caption, change, grounding, general-VQA, and spatial execution are implemented only by the
+standalone modules under `spacers_agent/agents/`. The transitional `workflow.WorkflowService`
+contains no expert dictionary and delegates legacy expert names through the same `AgentRegistry`
+name normalization used by the new runtime. The former `VisualExpert`, `ChangeExpert`,
+`GroundingExpert`, `GeneralVQAExpert`, and `SpatialExpert` symbols remain import-compatible
+adapters. `workflow.py` defines no DatasetRunner or count flow, and `counting.py`/`experts.py`
+only re-export public compatibility symbols.
+
+Non-counting Agents receive frozen `PromptAsset` values resolved from `PromptCatalog`, rather than
+maintaining a second mutable Prompt dictionary. Observable request contracts remain unchanged:
+change uses request version `change-expert-v1`, grounding and general VQA use `general-vqa-v2`,
+spatial uses `spatial-v4` or grid `spatial-v5`, review uses v2/v3, and caption uses its dedicated
+`caption-v1` asset. Caption was a frozen unsupported gap in the legacy multi-Agent DatasetRunner;
+the standalone CaptionAgent now closes that gap with one `ExpertResult` request and the unchanged
+`expert_result.json` artifact contract.
+
+Spatial candidate review is issued at most once. Pure review predicates, target matching, evidence
+recovery, duplicate suppression, repair-severity selection, box IoU, and point distance live in
+`agents/spatial/evidence_merge.py`; former workflow-private helper names are aliases to these
+functions. Candidate-review failure preserves the primary result, records the visible error, and
+marks it partial. Successful review performs placeholder replacement and evidence merging before a
+single VRSBench geometry postprocess.

@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/native_counting/counting_result.json",
+  "sample_id": "native_counting",
+  "state": "succeeded",
+  "task": "counting"
+}

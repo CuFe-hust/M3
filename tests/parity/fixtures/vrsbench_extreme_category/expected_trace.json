@@ -1,0 +1,43 @@
+{
+  "entrypoint": "run",
+  "execution_task": "spatial_relation",
+  "geometry": {
+    "answer_normalization_version": "vrsbench-answer-v2",
+    "answer_source": "deterministic_geometry",
+    "candidate_count": 2,
+    "candidate_review_added": 2,
+    "candidate_review_labeled_boxes": 0,
+    "candidate_review_replaced": 0,
+    "candidate_review_used": true,
+    "coordinate_frame": "normalized_0_999_top_left",
+    "evidence_complete": true,
+    "evidence_quality": [
+      "trusted_box",
+      "trusted_box"
+    ],
+    "evidence_valid": true,
+    "normalized_answer": "small-vehicle",
+    "question_type": "object",
+    "raw_answer": "small vehicle",
+    "repair_severity": "none",
+    "rule": "top_most_box_center_y",
+    "selected_box": [
+      100,
+      100,
+      220,
+      220
+    ],
+    "selected_center_y": 160.0,
+    "selected_label": "small-vehicle",
+    "semantic_subtype": "extreme_category",
+    "status_answer_placeholder_removed": false,
+    "version": "vrsbench-evidence-geometry-v4",
+    "workflow_status": "completed"
+  },
+  "judge_status": "not_requested",
+  "official_question_type": "object",
+  "prompt_version": "spatial-v4",
+  "route": "SingleSampleAdapter -> TaskRouter.route_vrsbench_vqa -> SpatialExpert.run -> RecordingFakeQwen.complete_json -> SpatialExpert.candidate_review",
+  "router_used": true,
+  "task_type": "general_vqa"
+}

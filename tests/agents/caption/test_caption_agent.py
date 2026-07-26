@@ -8,10 +8,12 @@ import pytest
 
 from spacers_agent.agents.caption.agent import CaptionAgent
 from spacers_agent.agents.base import AgentContext
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
+CAPTION_PROMPT = PromptAsset("caption", Path("caption_v1.md"), "caption-v1", "caption prompt")
 
 
 class _FakeClient:
@@ -33,14 +35,14 @@ def _sample() -> UnifiedSample:
 
 @pytest.mark.asyncio
 async def test_caption_supported_tasks():
-    agent = CaptionAgent(None, {"caption": "caption prompt"}, "model")
+    agent = CaptionAgent(None, CAPTION_PROMPT, "model")
     assert "caption" in agent.supported_tasks
 
 
 @pytest.mark.asyncio
 async def test_caption_result_filename():
     client = _FakeClient()
-    agent = CaptionAgent(client, {"caption": "caption prompt"}, "model")
+    agent = CaptionAgent(client, CAPTION_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
     assert exec_result.result_filename == "expert_result.json"
@@ -49,7 +51,7 @@ async def test_caption_result_filename():
 @pytest.mark.asyncio
 async def test_caption_prompt_version():
     client = _FakeClient()
-    agent = CaptionAgent(client, {"caption": "caption prompt"}, "model")
+    agent = CaptionAgent(client, CAPTION_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
     assert exec_result.trace["prompt_version"] == "caption-v1"

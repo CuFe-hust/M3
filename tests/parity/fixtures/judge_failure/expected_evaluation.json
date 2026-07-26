@@ -1,0 +1,13 @@
+{
+  "candidate_answer": "yes",
+  "exact_match": true,
+  "judge_error": "RuntimeError: deterministic Judge failure",
+  "judge_parsed": null,
+  "judge_score": null,
+  "judge_status": "failed",
+  "question": "Is the statement correct?",
+  "reference_answers": [
+    "yes"
+  ],
+  "sample_id": "judge_failure"
+}

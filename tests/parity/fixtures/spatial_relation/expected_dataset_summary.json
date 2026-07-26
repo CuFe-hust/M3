@@ -1,0 +1,11 @@
+{
+  "dataset": "legacy-parity",
+  "failed": 0,
+  "partial": 0,
+  "run_id": "spatial_relation",
+  "skipped": 0,
+  "split": "validation",
+  "succeeded": 1,
+  "task": "spatial_relation",
+  "total": 1
+}

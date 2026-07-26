@@ -61,7 +61,7 @@ def test_registry_selects_highest_priority():
     reg.register(_FakeBackendHighPri())
     selector = BackendSelector(reg)
     sel = selector.select(_target("building"))
-    assert sel.backend_name == "fake"  # first registered, same priority ordering / 先注册的优先
+    assert sel.backend_name == "high_pri"  # highest priority wins, not registration order / 最高优先级胜出，非注册顺序
 
 
 def test_registry_skips_non_matching():

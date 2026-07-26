@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/succeeded_sample_resume/expert_result.json",
+  "sample_id": "succeeded_sample_resume",
+  "state": "succeeded",
+  "task": "general_vqa"
+}

@@ -15,8 +15,9 @@ from typing import Any
 
 from spacers_agent.dataset_adapters import DatasetAdapter
 from spacers_agent.schemas import DatasetRunSummary, SampleRunStatus
-from spacers_agent.workflows.sample_runner import SampleRunner
-from spacers_agent.workflow import atomic_write_json
+from spacers_agent.settings import AppSettings
+from spacers_agent.workflows.sample_runner import SampleRunner, failed_sample_status
+from spacers_agent.workflows.artifact_writer import atomic_write_json
 
 
 class DatasetRunner:
@@ -30,12 +31,15 @@ class DatasetRunner:
         sample_runner: SampleRunner,
         *,
         run_dir: Path,
-        settings: Any,
+        settings: AppSettings,
+        judge_policy: str = "none",
     ) -> None:
         self.adapter = adapter
         self.sample_runner = sample_runner
         self.run_dir = run_dir
         self.settings = settings
+        self.judge_policy = judge_policy
+        self.artifact_writer = sample_runner.artifact_writer
 
     async def run(
         self, *, split: str, task: str,
@@ -65,10 +69,12 @@ class DatasetRunner:
                 sample = pending.pop(future)
                 status = await future
                 statuses.append(status)
-                _append_jsonl(self.run_dir / "predictions.jsonl", {
-                    "sample_id": sample.sample_id, "task": sample.task,
-                    "state": status.state, "result_path": str(status.result_path) if status.result_path else None,
-                })
+                self.artifact_writer.append_prediction(
+                    self.run_dir,
+                    sample_id=sample.sample_id,
+                    task=sample.task,
+                    status=status,
+                )
                 stop = stop or (fail_fast and status.state == "failed")
             return stop
 
@@ -114,48 +120,91 @@ class DatasetRunner:
             failed=sum(s.state == "failed" for s in statuses),
             skipped=sum(s.state == "skipped" for s in statuses),
         )
-        atomic_write_json(self.run_dir / "dataset_summary.json", summary.model_dump(mode="json"))
+        self.artifact_writer.write_summary(self.run_dir, summary)
         return summary
 
     async def _run_sample(self, sample: Any, sample_dir: Path) -> SampleRunStatus:
         """Execute one sample via SampleRunner; translate exceptions to status.
         通过 SampleRunner 执行一条样本；将异常转换为状态。
         """
-        from datetime import datetime, timezone
         try:
-            await self.sample_runner.run_one(sample, sample_dir)
-            status = SampleRunStatus(
-                sample_id=sample.sample_id, task=sample.task,
-                state="succeeded", updated_at=datetime.now(timezone.utc).isoformat(),
+            outcome = await self.sample_runner.run_one(
+                sample,
+                sample_dir,
+                judge_policy=self.judge_policy,
             )
+            status = outcome.status
         except Exception as error:
-            status = SampleRunStatus(
-                sample_id=sample.sample_id, task=sample.task,
-                state="failed", error_code=type(error).__name__,
-                error_message=str(error),
-                updated_at=datetime.now(timezone.utc).isoformat(),
-            )
-        atomic_write_json(sample_dir / "status.json", status.model_dump(mode="json"))
+            status = failed_sample_status(sample, error)
+            self.artifact_writer.write_final_status(sample_dir, status)
         return status
 
     async def _resume_judge(self, sample: Any, sample_dir: Path) -> bool:
-        """Retry missing/failed VQA judge on resume. / resume 时重试缺失/失败的 VQA 审核。"""
-        if getattr(sample, "task", "") != "general_vqa" or not self.sample_runner.judge_service:
+        """Retry missing/failed VQA judge on resume via JudgeService.
+        通过 JudgeService 在 resume 时重试缺失/失败的 VQA 审核。
+        """
+
+        if (
+            getattr(sample, "task", "") != "general_vqa"
+            or self.judge_policy == "none"
+            or self.sample_runner.judge_service.judge_client is None
+        ):
             return False
-        evaluation_path = sample_dir / "vqa_evaluation.json"
-        evaluation = json.loads(evaluation_path.read_text(encoding="utf-8")) if evaluation_path.is_file() else {}
-        if evaluation.get("judge_status") == "succeeded":
-            return False
-        result_path = sample_dir / "expert_result.json"
-        if not result_path.is_file():
-            return False
-        from spacers_agent.schemas import ExpertResult
-        result = ExpertResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         try:
-            await self.sample_runner._judge_vqa(sample, type("Exec", (), {"payload": result})(), sample_dir)
-        except Exception:
-            pass
-        return True
+            evaluation = await self.sample_runner.judge_service.judge_vqa_resume(
+                sample=sample,
+                candidate_answer="",
+                sample_dir=sample_dir,
+                judge_policy=self.judge_policy,
+                call_budget=self.sample_runner.call_budget_factory.create_for_sample(
+                    getattr(sample, "task", "general_vqa")
+                ),
+            )
+            evaluation_payload = (
+                evaluation.model_dump(mode="json")
+                if hasattr(evaluation, "model_dump")
+                else evaluation
+            )
+            self.artifact_writer.write_evaluation(
+                sample_dir,
+                evaluation_payload,
+                filename="vqa_evaluation.json",
+            )
+            trace_path = sample_dir / "agent_trace.json"
+            trace = json.loads(trace_path.read_text(encoding="utf-8")) if trace_path.is_file() else {}
+            judge_status = getattr(evaluation, "judge_status", None)
+            if isinstance(evaluation, dict):
+                judge_status = evaluation.get("judge_status")
+            trace["judge_status"] = judge_status or "failed"
+            self.artifact_writer.write_trace(sample_dir, trace)
+            return True
+        except FileNotFoundError as error:
+            self._persist_resume_judge_error(sample, sample_dir, error)
+            return False
+        except Exception as error:
+            self._persist_resume_judge_error(sample, sample_dir, error)
+            return False
+
+    def _persist_resume_judge_error(self, sample: Any, sample_dir: Path, error: Exception) -> None:
+        """Persist a failed resume Judge attempt instead of silently discarding it.
+        持久化失败的 resume Judge 尝试，绝不静默丢弃。
+        """
+
+        evaluation = {
+            "sample_id": sample.sample_id,
+            "judge_status": "failed",
+            "judge_error": f"{type(error).__name__}: {error}",
+        }
+        self.artifact_writer.write_evaluation(
+            sample_dir,
+            evaluation,
+            filename="vqa_evaluation.json",
+        )
+        trace_path = sample_dir / "agent_trace.json"
+        trace = json.loads(trace_path.read_text(encoding="utf-8")) if trace_path.is_file() else {}
+        trace["judge_status"] = "failed"
+        trace["judge_error"] = evaluation["judge_error"]
+        self.artifact_writer.write_trace(sample_dir, trace)
 
 
 def _update_manifest_probe(run_dir: Path, probe: Any) -> None:
@@ -175,9 +224,3 @@ def _update_manifest_probe(run_dir: Path, probe: Any) -> None:
 
 def _shard_for_sample(sample_id: str, shard_count: int) -> int:
     return int(hashlib.sha256(sample_id.encode("utf-8")).hexdigest(), 16) % shard_count
-
-
-def _append_jsonl(path: Path, value: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8", newline="\n") as file:
-        file.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")

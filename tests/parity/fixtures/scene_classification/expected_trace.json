@@ -1,0 +1,11 @@
+{
+  "entrypoint": "run",
+  "execution_task": "scene_classification",
+  "geometry": {},
+  "judge_status": "not_requested",
+  "official_question_type": null,
+  "prompt_version": "general-vqa-v2",
+  "route": "SingleSampleAdapter -> TaskRouter.route_known -> GeneralVQAExpert.run -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "task_type": "scene_classification"
+}

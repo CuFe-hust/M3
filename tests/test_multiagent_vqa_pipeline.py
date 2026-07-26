@@ -10,12 +10,27 @@ from PIL import Image
 from spacers_agent.clients.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
 from spacers_agent.clients.qwen_transformers import QwenTransformersClient
+from spacers_agent.bootstrap import assemble_runtime, build_dataset_runner
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import VQAAnswerJudgeResult
 from spacers_agent.schemas import ExpertResult
 from spacers_agent.settings import AppSettings, PathSettings, QwenSettings, RunSettings
 from spacers_agent.vqa_report import _successful_vqa_sample_dirs, build_multiagent_vqa_report
-from spacers_agent.workflow import DatasetRunner
+
+
+def _dataset_runner(settings, adapter, run_dir: Path, client, judge_client, judge_policy: str):
+    """Build the dataset runner through the production Runtime composition.
+    通过生产 Runtime 组合构建数据集运行器。
+    """
+
+    runtime = assemble_runtime(settings, qwen_client=client, judge_client=judge_client)
+    return build_dataset_runner(
+        runtime,
+        adapter=adapter,
+        run_dir=run_dir,
+        settings=settings,
+        judge_policy=judge_policy,
+    )
 
 
 class _FakeTensor:
@@ -75,7 +90,9 @@ class _Judge:
         response_model: type[VQAAnswerJudgeResult],
         request_meta: RequestMeta,
     ) -> VQAAnswerJudgeResult:
-        assert set(payload) == {"task", "question", "prediction", "ground_truth", "deterministic_metrics"}
+        assert payload["task"] == "general_vqa_answer_validation"
+        assert set(payload["prediction"]) == {"answer"}
+        assert set(payload["ground_truth"]) == {"answers"}
         assert "image" not in json.dumps(payload).lower()
         return response_model(
             score=1,
@@ -322,24 +339,17 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
         runs=RunSettings(root=tmp_path),
         models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
     )
-    prompts = {"count": "count", "target": "target", "change": "change", "spatial": "spatial", "general": "vqa", "seam": "seam"}
-    summary = await DatasetRunner(
-        settings,
-        get_adapter("VRSBench"),
-        run_dir=run_dir,
-        client=client,
-        prompts=prompts,
-        judge_client=_Judge(),  # type: ignore[arg-type]
-        judge_policy="all",
+    summary = await _dataset_runner(
+        settings, get_adapter("VRSBench"), run_dir, client, _Judge(), "all"
     ).run(split="validation", task="general_vqa", limit=1)
 
     assert summary.succeeded == 1
     route = json.loads((run_dir / "samples" / "7" / "routing_decision.json").read_text(encoding="utf-8"))
-    assert route["experts"][0]["name"] == "general_vqa_expert"
+    assert route["primary_agent"] == "general_vqa_agent"
     assert "vrsbench_type_object_existence" in route["reason_codes"]
     trace = json.loads((run_dir / "samples" / "7" / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["router_used"] is True
-    assert "TaskRouter.route_vrsbench_vqa" in trace["route"]
+    assert trace["routing_source"] == "vrsbench_semantic_rule"
     assert trace["prompt_version"] == "general-vqa-v2"
     evaluation = json.loads((run_dir / "samples" / "7" / "vqa_evaluation.json").read_text(encoding="utf-8"))
     assert evaluation["judge_score"] == 1
@@ -347,8 +357,7 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     report = build_multiagent_vqa_report(run_dir, qwen=settings.models.qwen)
     assert report is not None and report.is_file()
     html = report.read_text(encoding="utf-8")
-    assert "spacers_agent.workflow.GeneralVQAExpert" in html
-    assert "TaskRouter.route_vrsbench_vqa" in html
+    assert "spacers_agent.agents.general_vqa.agent.GeneralVQAAgent" in html
     assert "结构化视觉证据" in html
 
 
@@ -390,25 +399,8 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
         runs=RunSettings(root=tmp_path),
         models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
     )
-    prompts = {
-        "count": "count",
-        "count_proposal": "count proposal",
-        "count_localize": "count localize",
-        "target": "target",
-        "change": "change",
-        "spatial": "spatial",
-        "general": "vqa",
-        "seam": "seam",
-    }
-
-    summary = await DatasetRunner(
-        settings,
-        get_adapter("VRSBench"),
-        run_dir=run_dir,
-        client=client,
-        prompts=prompts,
-        judge_client=_Judge(),  # type: ignore[arg-type]
-        judge_policy="all",
+    summary = await _dataset_runner(
+        settings, get_adapter("VRSBench"), run_dir, client, _Judge(), "all"
     ).run(split="validation", task="general_vqa", limit=1)
 
     assert summary.succeeded == 1
@@ -475,25 +467,8 @@ async def test_vrsbench_quantity_localizes_missing_boxes_and_drops_border_fragme
         runs=RunSettings(root=tmp_path),
         models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
     )
-    prompts = {
-        "count": "count",
-        "count_proposal": "count proposal",
-        "count_localize": "count localize",
-        "target": "target",
-        "change": "change",
-        "spatial": "spatial",
-        "general": "vqa",
-        "seam": "seam",
-    }
-
-    summary = await DatasetRunner(
-        settings,
-        get_adapter("VRSBench"),
-        run_dir=run_dir,
-        client=client,
-        prompts=prompts,
-        judge_client=_Judge(),  # type: ignore[arg-type]
-        judge_policy="all",
+    summary = await _dataset_runner(
+        settings, get_adapter("VRSBench"), run_dir, client, _Judge(), "all"
     ).run(split="validation", task="general_vqa", limit=1)
 
     assert summary.succeeded == 1
@@ -842,22 +817,14 @@ async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path
         runs=RunSettings(root=tmp_path),
         models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
     )
-    prompts = {"count": "count", "target": "target", "change": "change", "spatial": "spatial", "general": "vqa", "seam": "seam"}
-
-    summary = await DatasetRunner(
-        settings,
-        get_adapter("VRSBench"),
-        run_dir=run_dir,
-        client=qwen,
-        prompts=prompts,
-        judge_client=_Judge(),  # type: ignore[arg-type]
-        judge_policy="all",
+    summary = await _dataset_runner(
+        settings, get_adapter("VRSBench"), run_dir, qwen, _Judge(), "all"
     ).run(split="validation", task="general_vqa", resume=True, limit=1)
 
     assert summary.succeeded == 1
     assert qwen.calls == []
     evaluation = json.loads((sample_dir / "vqa_evaluation.json").read_text(encoding="utf-8"))
-    assert evaluation["judge_status"] == "succeeded" and evaluation["judge_score"] == 1
+    assert evaluation["judge_status"] == "succeeded" and evaluation["judge_score"] == 1, evaluation
 
 
 @pytest.mark.asyncio

@@ -31,36 +31,20 @@ def test_resume_run_argparse_args_complete():
 
 
 def test_resume_run_manifest_fields_complete():
-    """resume_run reads manifest fields required by _run_dataset."""
-    from spacers_agent.cli import main as _cli_main_module
+    """resume-run supplies every DatasetRunner option required by the new Runtime.
+    resume-run 必须提供新 Runtime 所需的全部 DatasetRunner 选项。
+    """
+    import inspect
 
-    # The _resume_run function reads: manifest["dataset"], manifest["split"],
-    # manifest.get("sample_filter")
-    # It constructs Args with: root, run_id, dataset, split, task, resume, limit,
-    # shard_index, shard_count, evaluate
-    # Then calls _run_dataset which accesses: args.root, args.run_id, args.dataset,
-    # args.split, args.task, args.resume, args.limit, args.shard_index,
-    # args.shard_count, args.evaluate, args.sample_concurrency (NOT set in resume!),
-    # args.sample_ids, args.fail_fast, args.judge_policy
+    from spacers_agent.cli import _resume_run
 
-    # Document the current state:
-    required_manifest_keys = {"dataset", "split"}
-    optional_manifest_keys = {"sample_filter"}
-
-    # These Args attributes are used by _run_dataset:
-    used_args_attrs = {
-        "root", "run_id", "dataset", "split", "task",
-        "resume", "limit", "shard_index", "shard_count", "evaluate",
-        "sample_concurrency", "sample_ids", "fail_fast", "judge_policy",
-    }
-
-    # KNOWN DEFECT: resume-run does NOT set sample_concurrency, sample_ids,
-    # fail_fast, or judge_policy. These default to 1/None/False/"none" in _run_dataset.
-    missing_in_resume = {"sample_concurrency", "sample_ids", "fail_fast", "judge_policy"}
-    # These are missing but currently have safe defaults.
-    # Document rather than fail.
-
-    assert required_manifest_keys <= set(required_manifest_keys)  # sanity
+    source = inspect.getsource(_resume_run)
+    for attribute in (
+        "root", "run_id", "dataset", "split", "task", "resume", "limit",
+        "shard_index", "shard_count", "evaluate", "sample_concurrency", "sample_ids",
+        "fail_fast", "judge_policy", "start_index",
+    ):
+        assert f"args.{attribute} =" in source
 
 
 def test_resume_run_skips_succeeded_samples():

@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/general_vqa/expert_result.json",
+  "sample_id": "general_vqa",
+  "state": "succeeded",
+  "task": "general_vqa"
+}

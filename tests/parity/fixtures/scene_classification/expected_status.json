@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/scene_classification/expert_result.json",
+  "sample_id": "scene_classification",
+  "state": "succeeded",
+  "task": "scene_classification"
+}

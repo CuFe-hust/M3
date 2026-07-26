@@ -67,6 +67,58 @@ def test_agent_modules_do_not_import_cli():
     )
 
 
+def test_non_counting_agent_modules_do_not_import_legacy_workflow():
+    """Cut-over non-counting Agents must not depend on transitional workflow.
+    已切换的非计数 Agent 不得依赖过渡期 workflow。
+    """
+
+    import ast
+    from pathlib import Path
+
+    agents_root = Path(__file__).resolve().parents[2] / "spacers_agent" / "agents"
+    violations: list[str] = []
+    for py_file in agents_root.rglob("*.py"):
+        if "counting" in py_file.parts:
+            continue
+        tree = ast.parse(py_file.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "spacers_agent.workflow":
+                violations.append(py_file.as_posix())
+            elif isinstance(node, ast.Import):
+                if any(alias.name == "spacers_agent.workflow" for alias in node.names):
+                    violations.append(py_file.as_posix())
+
+    assert not violations, "Agent modules import legacy workflow:\n" + "\n".join(violations)
+
+
+def test_count_image_enters_the_composed_runtime():
+    """The direct counting CLI must use the production composition root.
+    直接计数 CLI 必须使用生产组合根。
+    """
+
+    from pathlib import Path
+
+    command_path = Path(__file__).resolve().parents[2] / "spacers_agent" / "commands" / "count_image.py"
+    source = command_path.read_text(encoding="utf-8")
+    assert "assemble_runtime" in source
+    assert "CountingWorkflow" not in source
+    assert "PointCountingOrchestrator" not in source
+
+
+def test_workflow_module_is_a_thin_compatibility_layer():
+    """The old workflow import module must not define a DatasetRunner implementation.
+    旧 workflow 导入模块不得定义 DatasetRunner 实现。
+    """
+
+    import ast
+    from pathlib import Path
+
+    workflow_path = Path(__file__).resolve().parents[2] / "spacers_agent" / "workflow.py"
+    tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
+    defined_classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
+    assert "DatasetRunner" not in defined_classes
+
+
 def test_router_does_not_import_yolo_classes():
     """TaskRouter and its submodules must not import YOLO classes."""
     import ast

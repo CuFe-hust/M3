@@ -1,0 +1,74 @@
+{
+  "failed_tiles": [],
+  "final_count": 2,
+  "global_points": [
+    {
+      "accepted": true,
+      "confidence": 0.9,
+      "global_id": "vrsbench_quantity_count:whole_image_overview:p001",
+      "global_x_norm": 160,
+      "global_x_px": 1,
+      "global_x_was_clamped": false,
+      "global_y_norm": 160,
+      "global_y_px": 1,
+      "global_y_was_clamped": false,
+      "local_id": "p001",
+      "local_radius_norm": 0,
+      "local_x_norm": 160,
+      "local_y_norm": 160,
+      "near_core_boundary": false,
+      "ownership_valid": true,
+      "provenance": null,
+      "radius_px": 0.0,
+      "rejection_reason": null,
+      "short_evidence": "whole-image localized instance centre",
+      "source_tile_id": "whole_image_overview",
+      "target": "large-vehicle"
+    },
+    {
+      "accepted": true,
+      "confidence": 0.9,
+      "global_id": "vrsbench_quantity_count:whole_image_overview:p002",
+      "global_x_norm": 560,
+      "global_x_px": 5,
+      "global_x_was_clamped": false,
+      "global_y_norm": 560,
+      "global_y_px": 5,
+      "global_y_was_clamped": false,
+      "local_id": "p002",
+      "local_radius_norm": 0,
+      "local_x_norm": 560,
+      "local_y_norm": 560,
+      "near_core_boundary": false,
+      "ownership_valid": true,
+      "provenance": null,
+      "radius_px": 0.0,
+      "rejection_reason": null,
+      "short_evidence": "whole-image localized instance centre",
+      "source_tile_id": "whole_image_overview",
+      "target": "large-vehicle"
+    }
+  ],
+  "initial_tile_count": 1,
+  "leaf_tile_count": 1,
+  "merged_groups": [],
+  "question": "How many large vehicles are visible in the image?",
+  "sample_id": "vrsbench_quantity_count",
+  "source_height": 10,
+  "source_width": 10,
+  "status": "completed_with_warnings",
+  "succeeded_tiles": [
+    "whole_image_overview"
+  ],
+  "target": "large-vehicle",
+  "tile_count": 1,
+  "unresolved_conflicts": [],
+  "warnings": [
+    {
+      "code": "COUNT_PROPOSAL_EVIDENCE_MISMATCH",
+      "message": "proposal=2, proposal_boxes=1",
+      "point_ids": [],
+      "tile_ids": []
+    }
+  ]
+}

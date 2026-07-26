@@ -1,0 +1,28 @@
+{
+  "deepseek": [],
+  "qwen": [
+    {
+      "artifact_dir": "samples/change_caption/change_expert",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        },
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": null,
+      "match_key": "change_caption|ExpertResult|change_caption:change_expert",
+      "messages_sha256": "4092cd8eae9f9fc893be9614cd4199dc7433c1dd2da310f9315f2cba03d077de",
+      "prompt_version": "change-expert-v1",
+      "request_hash": "2fc9a80f147838439bface3bf332f264c150b85709b0c9536a7e58da5fd3db57",
+      "request_id": "change_caption:change_expert",
+      "response_model": "ExpertResult",
+      "sample_id": "change_caption"
+    }
+  ]
+}

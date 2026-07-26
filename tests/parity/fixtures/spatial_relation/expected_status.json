@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/spatial_relation/expert_result.json",
+  "sample_id": "spatial_relation",
+  "state": "succeeded",
+  "task": "spatial_relation"
+}

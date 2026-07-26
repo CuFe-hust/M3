@@ -1,0 +1,13 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "spatial_agent",
+  "reason_codes": [
+    "task_spatial_relation",
+    "vrsbench_type_position",
+    "vrsbench_semantic_spatial_relation"
+  ],
+  "requires_tiling": false,
+  "router_source": "vrsbench_semantic_rule",
+  "task": "spatial_relation"
+}

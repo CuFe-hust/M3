@@ -15,9 +15,16 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Protocol, Union, runtime_checkable
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Union, runtime_checkable
 
+from spacers_agent.clients.base import VisionLanguageClient
+from spacers_agent.prompt_catalog import PromptCatalog
+from spacers_agent.routing.budget import CallBudget
 from spacers_agent.schemas import CountingResult, ExpertResult
+from spacers_agent.settings import AppSettings
+
+if TYPE_CHECKING:
+    from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 
 # ── type aliases / 类型别名 ──────────────────────────────────────────────
 
@@ -73,11 +80,11 @@ class AgentContext:
     """
 
     artifact_dir: Path
-    settings: Any  # AppSettings — avoid import coupling from settings module
-    qwen_client: object  # VisionLanguageClient (Protocol — no isinstance)
-    call_budget: object  # CallBudget
-    prompts: dict[str, str] = field(default_factory=dict)
-    judge_client: Any | None = None  # DeepSeekJudgeClient | None
+    settings: AppSettings
+    qwen_client: VisionLanguageClient
+    call_budget: CallBudget
+    prompt_catalog: PromptCatalog | None = None
+    judge_client: DeepSeekJudgeClient | None = None
 
     def __post_init__(self) -> None:
         # Path("") evaluates to True in Python 3.11+ / Path("") 在 Python 3.11+ 中为 True
@@ -100,6 +107,7 @@ class AgentExecution:
     payload: AgentPayload
     result_filename: str
     trace: dict[str, Any] = field(default_factory=dict)
+    additional_results: dict[str, AgentPayload] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         validate_agent_execution(self)
@@ -162,6 +170,9 @@ def validate_agent_execution(execution: AgentExecution) -> None:
     # Trace sanitization check / trace 脱敏检查
     _check_trace_no_sensitive_keys(execution.trace)
 
+    for filename in execution.additional_results:
+        _validate_result_filename(filename)
+
     # Enforce trace is JSON-serializable (no binary / non-serializable objects)
     # 强制 trace 可 JSON 序列化
     try:
@@ -190,3 +201,14 @@ def _check_trace_no_sensitive_keys(trace: dict[str, Any]) -> None:
                 _check(item, f"{path}[{idx}]")
 
     _check(trace, "trace")
+
+
+def _validate_result_filename(filename: str) -> None:
+    """Validate a supplemental result filename with the primary rules.
+    使用主结果相同的规则校验补充结果文件名。
+    """
+
+    if not isinstance(filename, str) or not filename:
+        raise ValueError("result filename must be a non-empty string")
+    if filename.startswith("/") or "\\" in filename or ".." in filename:
+        raise ValueError(f"result filename must be a safe plain basename, got {filename!r}")

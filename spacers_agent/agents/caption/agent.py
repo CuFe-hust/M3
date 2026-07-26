@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from spacers_agent.agents.base import Agent, AgentContext, AgentExecution, AgentName
 from spacers_agent.agents.visual_base import VisualAgentBase
+from spacers_agent.clients.base import VisionLanguageClient
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import UnifiedSample
 
 
@@ -15,13 +17,12 @@ class CaptionAgent(VisualAgentBase):
     name: AgentName = "caption_agent"
     supported_tasks: frozenset[str] = frozenset({"caption"})
 
-    def __init__(self, client, prompts: dict[str, str], model: str) -> None:
+    def __init__(self, client: VisionLanguageClient, prompt: PromptAsset, model: str) -> None:
         super().__init__(
             client,
             model,
             agent_name="caption_expert",
-            default_prompt=prompts.get("caption", prompts.get("general", "")),
-            default_prompt_version="caption-v1",
+            default_prompt=prompt,
         )
         self._client_ref = client
 
@@ -34,6 +35,6 @@ class CaptionAgent(VisualAgentBase):
             trace={
                 "agent_class": "spacers_agent.agents.caption.agent.CaptionAgent",
                 "route": f"CaptionAgent.run -> VisualAgentBase.run -> {type(self._client_ref).__name__}.complete_json",
-                "prompt_version": "caption-v1",
+                "prompt_version": self.select_prompt(sample).version,
             },
         )

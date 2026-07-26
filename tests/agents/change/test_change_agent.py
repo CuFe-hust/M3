@@ -9,10 +9,12 @@ import pytest
 
 from spacers_agent.agents.change.agent import ChangeAgent
 from spacers_agent.agents.base import AgentContext
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
+CHANGE_PROMPT = PromptAsset("change", Path("change_v1.md"), "change-expert-v1", "prompt")
 
 
 class _FakeClient:
@@ -37,7 +39,7 @@ def _sample() -> UnifiedSample:
 
 @pytest.mark.asyncio
 async def test_change_agent_supported_tasks():
-    agent = ChangeAgent(None, {"change": "prompt"}, "model")
+    agent = ChangeAgent(None, CHANGE_PROMPT, "model")
     assert "change_caption" in agent.supported_tasks
     assert "change_qa" in agent.supported_tasks
 
@@ -45,7 +47,7 @@ async def test_change_agent_supported_tasks():
 @pytest.mark.asyncio
 async def test_change_agent_result_filename():
     client = _FakeClient()
-    agent = ChangeAgent(client, {"change": "prompt"}, "model")
+    agent = ChangeAgent(client, CHANGE_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
     assert exec_result.result_filename == "expert_result.json"
@@ -54,16 +56,16 @@ async def test_change_agent_result_filename():
 @pytest.mark.asyncio
 async def test_change_agent_prompt_version_in_trace():
     client = _FakeClient()
-    agent = ChangeAgent(client, {"change": "prompt"}, "model")
+    agent = ChangeAgent(client, CHANGE_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
-    assert exec_result.trace["prompt_version"] == "change-v1"
+    assert exec_result.trace["prompt_version"] == "change-expert-v1"
 
 
 @pytest.mark.asyncio
 async def test_change_agent_coordinate_frame():
     client = _FakeClient()
-    agent = ChangeAgent(client, {"change": "prompt"}, "model")
+    agent = ChangeAgent(client, CHANGE_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     await agent.run(_sample(), ctx)
     user_content = json.loads(client.calls[0]["messages"][1]["content"][2]["text"])

@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/vrsbench_extreme_category/expert_result.json",
+  "sample_id": "vrsbench_extreme_category",
+  "state": "succeeded",
+  "task": "general_vqa"
+}

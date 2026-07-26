@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import ExpertResult, UnifiedSample
 from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype
 
@@ -42,14 +43,12 @@ class VisualAgentBase:
         model: str,
         *,
         agent_name: str,
-        default_prompt: str,
-        default_prompt_version: str,
+        default_prompt: PromptAsset,
     ) -> None:
         self._client = client
         self._model = model
         self._agent_name = agent_name
         self._default_prompt = default_prompt
-        self._default_prompt_version = default_prompt_version
 
     # ── hooks / hook ─────────────────────────────────────────────────────
 
@@ -57,7 +56,7 @@ class VisualAgentBase:
         """Return the prompt for this sample. Override for subtype selection.
         返回此样本的 Prompt。子类可覆盖以实现子类型选择。
         """
-        return PromptSelection(text=self._default_prompt, version=self._default_prompt_version)
+        return PromptSelection(text=self._default_prompt.text, version=self._default_prompt.version)
 
     def build_user_payload(self, sample: UnifiedSample) -> dict[str, Any]:
         """Build the JSON user payload sent alongside images. / 构造与图像一同发送的 JSON 用户载荷。"""

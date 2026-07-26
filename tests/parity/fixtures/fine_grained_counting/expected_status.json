@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/fine_grained_counting/counting_result.json",
+  "sample_id": "fine_grained_counting",
+  "state": "succeeded",
+  "task": "fine_grained_counting"
+}

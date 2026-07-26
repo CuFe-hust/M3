@@ -1,0 +1,11 @@
+{
+  "dataset": "legacy-parity",
+  "failed": 0,
+  "partial": 0,
+  "run_id": "fine_grained_counting",
+  "skipped": 0,
+  "split": "validation",
+  "succeeded": 1,
+  "task": "fine_grained_counting",
+  "total": 1
+}

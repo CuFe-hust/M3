@@ -8,7 +8,7 @@ from typing import Protocol
 
 from PIL import Image
 
-from spacers_agent.schemas import CountTargetSpec, CountingResult, UnifiedSample
+from spacers_agent.schemas import CountTargetSpec, CountingResult, ExpertResult, UnifiedSample
 
 
 @dataclass(frozen=True)
@@ -28,6 +28,17 @@ class BackendSelection:
     target_classes: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class CountingBackendOutcome:
+    """Validated backend result plus optional legacy VQA compatibility data.
+    已校验的后端结果，以及可选的旧 VQA 兼容数据。
+    """
+
+    counting: CountingResult
+    expert_result: ExpertResult | None = None
+    trace: dict[str, object] | None = None
+
+
 class CountingBackend(Protocol):
     """Execution contract for a pluggable counting backend. / 可插拔计数后端的执行契约。"""
 
@@ -41,6 +52,8 @@ class CountingBackend(Protocol):
         """Return whether this backend can handle the target. / 返回后端能否处理目标。"""
         ...
 
-    async def count(self, request: CountingRequest, context: object) -> CountingResult:
-        """Execute counting and return validated CountingResult. / 执行计数并返回已验证的 CountingResult。"""
+    async def count(self, request: CountingRequest, context: object) -> CountingBackendOutcome:
+        """Execute counting and return one validated backend outcome.
+        执行计数并返回一个已校验的后端结果。
+        """
         ...

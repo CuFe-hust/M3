@@ -6,14 +6,15 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from spacers_agent.commands.common import EXIT_DATA, EXIT_INVARIANT, EXIT_OK, EXIT_PARTIAL, EXIT_QWEN_FAILED, emit_summary, prompts, qwen_client
-from spacers_agent.counting import PointCountingOrchestrator
-from spacers_agent.imaging import read_normalized_image
+from spacers_agent.bootstrap import assemble_runtime
+from spacers_agent.commands.common import EXIT_DATA, EXIT_INVARIANT, EXIT_OK, EXIT_PARTIAL, EXIT_QWEN_FAILED, emit_summary, qwen_client
+from spacers_agent.imaging import build_core_halo_tiles, read_normalized_image
+from spacers_agent.routing import CallBudgetFactory
 from spacers_agent.run_store import RunStore
-from spacers_agent.schemas import CountTargetSpec, ImageRef, UnifiedSample, stable_sample_id
+from spacers_agent.schemas import CountTargetSpec, CountingResult, ImageRef, UnifiedSample, stable_sample_id
 from spacers_agent.settings import AppSettings
-from spacers_agent.targeting import CountTargetParser
-from spacers_agent.workflows.counting_workflow import CountingWorkflow, EvidenceReviewer, EvaluationService, SeamVerifier
+from spacers_agent.visualization import render_counting_overlay
+from spacers_agent.workflows.artifact_writer import atomic_write_json
 
 
 def add_parser(commands: Any) -> None:
@@ -73,14 +74,58 @@ async def _run(settings: AppSettings, args: Any) -> int:
             run_id=run_id,
         )
     image = read_normalized_image(args.image)
-    counting = settings.counting.model_copy(update={"seam_verify": not args.no_seam_verify})
     client = qwen_client(settings, run_dir)
-    store = RunStore(settings.runs.root, Path(__file__).resolve().parents[2])
-    sample = UnifiedSample(sample_id=sample_id, dataset="single-image", split="adhoc", task="counting", images=[ImageRef(image_id=sample_id, path=args.image, role="image", width=image.width, height=image.height)], question=args.question)
-    workflow = CountingWorkflow(target_parser=CountTargetParser(client, prompts()["target"], settings.models.qwen.model), orchestrator_factory=lambda directory: PointCountingOrchestrator(client, counting=counting, qwen=settings.models.qwen, system_prompt=prompts()["count"], seam_prompt=prompts()["seam"], run_dir=directory), seam_verifier=SeamVerifier(), evidence_reviewer=EvidenceReviewer(), evaluation_service=EvaluationService(), run_store=store)
-    target = CountTargetSpec.model_validate_json(args.target_spec.read_text(encoding="utf-8")) if args.target_spec else None
-    execution = await workflow.run(sample, run_dir=run_dir, target_override=target, evaluate=args.evaluate, render=args.render, resume=args.resume and not args.force)
-    result = execution.result
+    metadata = {}
+    if args.target_spec:
+        metadata["count_target_spec"] = CountTargetSpec.model_validate_json(
+            args.target_spec.read_text(encoding="utf-8")
+        ).model_dump(mode="json")
+    sample = UnifiedSample(
+        sample_id=sample_id,
+        dataset="single-image",
+        split="adhoc",
+        task="counting",
+        images=[ImageRef(image_id=sample_id, path=args.image, role="image", width=image.width, height=image.height)],
+        question=args.question,
+        metadata=metadata,
+    )
+    runtime_settings = settings
+    if args.no_seam_verify:
+        runtime_settings = settings.model_copy(
+            update={"counting": settings.counting.model_copy(update={"seam_verify": False})}
+        )
+    runtime = assemble_runtime(runtime_settings, qwen_client=client)
+    if args.max_qwen_calls is not None or args.max_deepseek_calls is not None:
+        runtime.sample_runner.call_budget_factory = CallBudgetFactory(
+            default_qwen_calls=args.max_qwen_calls or runtime.call_budget_factory.default_qwen_calls,
+            default_deepseek_calls=(
+                args.max_deepseek_calls
+                if args.max_deepseek_calls is not None
+                else runtime.call_budget_factory.default_deepseek_calls
+            ),
+        )
+    outcome = await runtime.sample_runner.run_one(sample, sample_dir, judge_policy="none")
+    if outcome.execution is None or not isinstance(outcome.execution.payload, CountingResult):
+        raise TypeError("count-image requires the native CountingAgent result")
+    result = outcome.execution.payload
+    if args.evaluate:
+        from spacers_agent.evaluation import merge_count_evaluation
+
+        record = merge_count_evaluation(sample_id=sample_id, counting=result, ground_truth=None)
+        atomic_write_json(sample_dir / "evaluation.json", record.model_dump(mode="json"))
+    if args.render:
+        render_counting_overlay(
+            image,
+            result=result,
+            tiles=build_core_halo_tiles(
+                image.width,
+                image.height,
+                core_size=runtime_settings.counting.tile_core_size,
+                halo_size=runtime_settings.counting.halo_size,
+                model_max_side=runtime_settings.counting.model_max_side,
+            ),
+            output_path=sample_dir / "overlay.png",
+        )
     status = "completed" if result.status in {"completed", "completed_with_warnings"} else "partial"
     emit_summary({"run_id": run_id, "sample_id": sample_id, "status": status, "final_count": result.final_count, "result_path": str(result_path)})
     return EXIT_OK if status == "completed" else EXIT_PARTIAL

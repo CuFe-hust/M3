@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/partial_expert/expert_result.json",
+  "sample_id": "partial_expert",
+  "state": "partial",
+  "task": "general_vqa"
+}

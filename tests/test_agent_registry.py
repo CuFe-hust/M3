@@ -159,10 +159,10 @@ def test_agent_context_create():
         settings=None,
         qwen_client=None,
         call_budget=None,
-        prompts={"general": "describe this image"},
+        prompt_catalog=None,
     )
     assert ctx.artifact_dir == Path("/tmp/test_run")
-    assert ctx.prompts["general"] == "describe this image"
+    assert ctx.prompt_catalog is None
     assert ctx.judge_client is None
 
 

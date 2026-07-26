@@ -8,10 +8,12 @@ import pytest
 
 from spacers_agent.agents.grounding.agent import GroundingAgent
 from spacers_agent.agents.base import AgentContext
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
+GROUNDING_PROMPT = PromptAsset("grounding", Path("general_vqa_v2.md"), "general-vqa-v2", "prompt")
 
 
 class _FakeClient:
@@ -33,14 +35,14 @@ def _sample() -> UnifiedSample:
 
 @pytest.mark.asyncio
 async def test_grounding_supported_tasks():
-    agent = GroundingAgent(None, {"general": "prompt"}, "model")
+    agent = GroundingAgent(None, GROUNDING_PROMPT, "model")
     assert "grounding" in agent.supported_tasks
 
 
 @pytest.mark.asyncio
 async def test_grounding_result_filename():
     client = _FakeClient()
-    agent = GroundingAgent(client, {"general": "prompt"}, "model")
+    agent = GroundingAgent(client, GROUNDING_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
     assert exec_result.result_filename == "expert_result.json"

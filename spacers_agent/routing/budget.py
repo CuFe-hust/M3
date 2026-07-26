@@ -4,7 +4,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -49,6 +50,28 @@ class CallBudget(BaseModel):
         if self.deepseek_calls_used >= self.max_deepseek_calls:
             raise CallBudgetExceeded("DeepSeek call budget exhausted")
         self.deepseek_calls_used += 1
+
+
+@dataclass(frozen=True)
+class CallBudgetFactory:
+    """Create per-sample budgets from centralized legacy-compatible limits.
+    使用集中且兼容旧行为的限制创建单样本预算。
+    """
+
+    default_qwen_calls: int = 50
+    default_deepseek_calls: int = 10
+    task_limits: Mapping[str, tuple[int, int]] = field(default_factory=dict)
+
+    def create_for_sample(self, task: str) -> CallBudget:
+        """Return a fresh mutable budget for one task.
+        为一个任务返回全新的可变预算。
+        """
+
+        qwen_calls, deepseek_calls = self.task_limits.get(
+            task,
+            (self.default_qwen_calls, self.default_deepseek_calls),
+        )
+        return CallBudget(max_qwen_calls=qwen_calls, max_deepseek_calls=deepseek_calls)
 
 
 def make_budget_guard(budget: CallBudget, service: Literal["qwen", "deepseek"]) -> Callable[[], None]:

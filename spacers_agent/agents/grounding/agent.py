@@ -6,6 +6,8 @@ from __future__ import annotations
 
 from spacers_agent.agents.base import Agent, AgentContext, AgentExecution, AgentName
 from spacers_agent.agents.visual_base import VisualAgentBase
+from spacers_agent.clients.base import VisionLanguageClient
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import UnifiedSample
 
 
@@ -15,13 +17,12 @@ class GroundingAgent(VisualAgentBase):
     name: AgentName = "grounding_agent"
     supported_tasks: frozenset[str] = frozenset({"grounding"})
 
-    def __init__(self, client, prompts: dict[str, str], model: str) -> None:
+    def __init__(self, client: VisionLanguageClient, prompt: PromptAsset, model: str) -> None:
         super().__init__(
             client,
             model,
             agent_name="grounding_expert",  # persisted external name / 持久化外部名称
-            default_prompt=prompts["general"],
-            default_prompt_version="general-vqa-v2",  # TECH DEBT: uses general_vqa prompt / 技术债：使用 general_vqa prompt
+            default_prompt=prompt,
         )
         self._client_ref = client
 
@@ -34,7 +35,6 @@ class GroundingAgent(VisualAgentBase):
             trace={
                 "agent_class": "spacers_agent.agents.grounding.agent.GroundingAgent",
                 "route": f"GroundingAgent.run -> VisualAgentBase.run -> {type(self._client_ref).__name__}.complete_json",
-                "prompt_version": "general-vqa-v2",
-                "tech_debt": "grounding uses general_vqa prompt — separate grounding prompt pending",
+                "prompt_version": self.select_prompt(sample).version,
             },
         )

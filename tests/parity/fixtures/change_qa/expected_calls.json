@@ -1,0 +1,28 @@
+{
+  "deepseek": [],
+  "qwen": [
+    {
+      "artifact_dir": "samples/change_qa/change_expert",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        },
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": null,
+      "match_key": "change_qa|ExpertResult|change_qa:change_expert",
+      "messages_sha256": "fb77ce59461eb1d4feafdfa740b298fa0fb7cde788234d49b846551f35fdbb95",
+      "prompt_version": "change-expert-v1",
+      "request_hash": "cd2dc769c03959c46431bfa56993f8cb82bc71e424daf772496ba9a5c30360b8",
+      "request_id": "change_qa:change_expert",
+      "response_model": "ExpertResult",
+      "sample_id": "change_qa"
+    }
+  ]
+}

@@ -26,9 +26,15 @@ from spacers_agent.agents.general_vqa.agent import GeneralVQAAgent
 from spacers_agent.agents.grounding.agent import GroundingAgent
 from spacers_agent.agents.spatial.agent import SpatialAgent
 from spacers_agent.clients.base import VisionLanguageClient
+from spacers_agent.clients.deepseek import DeepSeekJudgeClient
+from spacers_agent.dataset_adapters import DatasetAdapter
 from spacers_agent.prompt_catalog import PromptCatalog
-from spacers_agent.routing import ROUTES, TaskRouter
+from spacers_agent.routing import ROUTES, CallBudgetFactory, TaskRouter
 from spacers_agent.settings import AppSettings
+from spacers_agent.workflows.artifact_writer import ArtifactWriter
+from spacers_agent.workflows.dataset_runner import DatasetRunner
+from spacers_agent.workflows.judge_service import JudgeService
+from spacers_agent.workflows.sample_runner import SampleRunner
 
 logger = logging.getLogger(__name__)
 
@@ -39,18 +45,22 @@ class RuntimeComponents:
     CLI 运行数据集所需的全部已组装组件。
     """
 
-    agent_registry: AgentRegistry
-    router: TaskRouter
     qwen_client: VisionLanguageClient
-    judge_client: object | None  # DeepSeekJudgeClient | None
+    judge_client: DeepSeekJudgeClient | None
     prompt_catalog: PromptCatalog
+    router: TaskRouter
+    agent_registry: AgentRegistry
+    judge_service: JudgeService
+    artifact_writer: ArtifactWriter
+    call_budget_factory: CallBudgetFactory
+    sample_runner: SampleRunner
 
 
 def build_agent_registry(
     *,
     settings: AppSettings,
     qwen_client: VisionLanguageClient,
-    prompts: dict[str, str],
+    prompt_catalog: PromptCatalog,
 ) -> AgentRegistry:
     """Build and populate the agent registry in the prescribed order.
     按指定顺序构建并填充 Agent 注册表。
@@ -67,7 +77,12 @@ def build_agent_registry(
     9. Validate router-referenced agents all exist
     """
 
+    if settings.backend.yolo.enabled:
+        raise RuntimeError(
+            "YOLO is intentionally disabled during the new-agent runtime cutover."
+        )
     model = settings.models.qwen.model
+    prompts = _load_prompts(prompt_catalog)
     registry = AgentRegistry()
 
     # 1. Counting backend registry / 计数后端注册表
@@ -75,11 +90,20 @@ def build_agent_registry(
 
     # 2-7. Register agents in order / 按顺序注册 Agent
     registry.register(CountingAgent(qwen_client, prompts, model, backend_registry))
-    registry.register(ChangeAgent(qwen_client, prompts, model))
-    registry.register(GroundingAgent(qwen_client, prompts, model))
-    registry.register(SpatialAgent(qwen_client, prompts, model))
-    registry.register(GeneralVQAAgent(qwen_client, prompts, model))
-    registry.register(CaptionAgent(qwen_client, prompts, model))
+    registry.register(ChangeAgent(qwen_client, prompt_catalog.asset("change"), model))
+    registry.register(GroundingAgent(qwen_client, prompt_catalog.asset("grounding"), model))
+    registry.register(
+        SpatialAgent(
+            qwen_client,
+            prompt_catalog.asset("spatial"),
+            model,
+            grid_prompt=prompt_catalog.asset("spatial_grid"),
+            review_prompt=prompt_catalog.asset("spatial_review"),
+            grid_review_prompt=prompt_catalog.asset("spatial_grid_review"),
+        )
+    )
+    registry.register(GeneralVQAAgent(qwen_client, prompt_catalog.asset("general"), model))
+    registry.register(CaptionAgent(qwen_client, prompt_catalog.asset("caption"), model))
 
     # 9. Validate that all agents referenced by ROUTES exist / 校验 ROUTES 引用的全部 Agent 存在
     _validate_router_coverage(registry)
@@ -92,7 +116,7 @@ def assemble_runtime(
     settings: AppSettings,
     *,
     qwen_client: VisionLanguageClient,
-    judge_client: object | None = None,
+    judge_client: DeepSeekJudgeClient | None = None,
     prompt_root: Path | None = None,
     router_prompt: str = "",
 ) -> RuntimeComponents:
@@ -100,29 +124,79 @@ def assemble_runtime(
     创建并组装全部 Agent 运行时组件，不加载模型。
     """
 
+    if settings.backend.yolo.enabled:
+        raise RuntimeError(
+            "YOLO is intentionally disabled during the new-agent runtime cutover."
+        )
     if prompt_root is None:
         prompt_root = Path(__file__).resolve().parents[1] / "prompts"
 
     catalog = PromptCatalog(prompt_root)
-    prompts = _load_prompts(catalog)
 
     # Build agent registry (includes counting backend registry)
     # 构建 Agent 注册表（包含计数后端注册表）
     agent_registry = build_agent_registry(
         settings=settings,
         qwen_client=qwen_client,
-        prompts=prompts,
+        prompt_catalog=catalog,
     )
 
     # Router / 路由器
-    router = TaskRouter(router_client=qwen_client, router_prompt=router_prompt)
+    router = TaskRouter(
+        router_client=qwen_client,
+        router_prompt=router_prompt or catalog["router"],
+    )
+    judge_service = JudgeService(
+        settings,
+        judge_prompt=catalog["count_judge"],
+        vqa_judge_prompt=catalog["vqa_judge"],
+        repair_prompt=catalog["json_repair"],
+        judge_client=judge_client,
+    )
+    artifact_writer = ArtifactWriter()
+    call_budget_factory = CallBudgetFactory()
+    sample_runner = SampleRunner(
+        settings,
+        agent_registry,
+        qwen_client,
+        catalog,
+        router=router,
+        judge_service=judge_service,
+        artifact_writer=artifact_writer,
+        call_budget_factory=call_budget_factory,
+    )
 
     return RuntimeComponents(
-        agent_registry=agent_registry,
-        router=router,
         qwen_client=qwen_client,
         judge_client=judge_client,
         prompt_catalog=catalog,
+        router=router,
+        agent_registry=agent_registry,
+        judge_service=judge_service,
+        artifact_writer=artifact_writer,
+        call_budget_factory=call_budget_factory,
+        sample_runner=sample_runner,
+    )
+
+
+def build_dataset_runner(
+    runtime: RuntimeComponents,
+    *,
+    adapter: DatasetAdapter,
+    run_dir: Path,
+    settings: AppSettings,
+    judge_policy: str,
+) -> DatasetRunner:
+    """Build a dataset runner around the exact injected runtime graph.
+    围绕完全相同的注入运行时对象图构建数据集运行器。
+    """
+
+    return DatasetRunner(
+        adapter,
+        runtime.sample_runner,
+        run_dir=run_dir,
+        settings=settings,
+        judge_policy=judge_policy,
     )
 
 
@@ -153,19 +227,20 @@ def _validate_router_coverage(registry: AgentRegistry) -> None:
 def _load_prompts(catalog: PromptCatalog) -> dict[str, str]:
     """Load all prompt texts via the catalog. / 通过 catalog 加载全部 Prompt 文本。"""
     return {
-        "count": catalog["count_tile"],
-        "count_zero_review": catalog["count_zero_review"],
-        "count_proposal": catalog["count_proposal"],
-        "count_localize": catalog["count_localize"],
-        "target": catalog["target_parse"],
+        "count": catalog["count"],
+        "count_zero_review": catalog["zero_review"],
+        "count_proposal": catalog["vrsbench_proposal"],
+        "count_localize": catalog["vrsbench_localizer"],
+        "target": catalog["target"],
         "change": catalog["change"],
         "spatial": catalog["spatial"],
         "spatial_grid": catalog["spatial_grid"],
         "spatial_review": catalog["spatial_review"],
         "spatial_grid_review": catalog["spatial_grid_review"],
-        "general": catalog["general_vqa"],
+        "general": catalog["general"],
+        "grounding": catalog["grounding"],
         "caption": catalog["caption"],
-        "seam": catalog["seam_verify"],
+        "seam": catalog["seam"],
     }
 
 
@@ -193,26 +268,5 @@ def _create_counting_backend_registry(
         registry.register(VRSBenchQwenCountBackend(
             client, settings=settings, prompts=prompts,
         ))
-
-    # YOLO backends — only when enabled + weight file exists
-    # YOLO 后端 — 仅在启用且权重文件存在时
-    yolo_config = settings.backend.yolo
-    if yolo_config.enabled and yolo_config.detectors:
-        try:
-            from spacers_agent.agents.counting.backends.yolo_obb import YoloOBBCountingBackend  # noqa: PLC0415
-        except ImportError:
-            logger.warning("YOLO enabled but ultralytics not installed; skipping YOLO backends")
-            return registry
-
-        for detector in yolo_config.detectors:
-            if not detector.enabled:
-                continue
-            weight_path = Path(detector.weights)
-            if not weight_path.is_file():
-                logger.warning("YOLO weight '%s' missing at %s — skipping", detector.name, weight_path)
-                continue
-            backend = YoloOBBCountingBackend(detector)
-            registry.register(backend)
-            logger.info("Registered YOLO backend '%s' (pri=%d, classes=%s)", detector.name, detector.priority, detector.classes)
 
     return registry

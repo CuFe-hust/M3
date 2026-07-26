@@ -1,0 +1,23 @@
+{
+  "deepseek": [],
+  "qwen": [
+    {
+      "artifact_dir": "samples/grounding/grounding_expert",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": null,
+      "match_key": "grounding|ExpertResult|grounding:grounding_expert",
+      "messages_sha256": "46ebd6fd52ed6c56793d039681df38c911db9c127ab7c7563d377d9690578a3a",
+      "prompt_version": "general-vqa-v2",
+      "request_hash": "4f9ae9db84e2d797e3ed0c43d3e1af3517eaefee095085105188d8d53813e019",
+      "request_id": "grounding:grounding_expert",
+      "response_model": "ExpertResult",
+      "sample_id": "grounding"
+    }
+  ]
+}

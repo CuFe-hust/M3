@@ -1,0 +1,23 @@
+{
+  "deepseek": [],
+  "qwen": [
+    {
+      "artifact_dir": "samples/partial_expert/general_vqa_expert",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": null,
+      "match_key": "partial_expert|ExpertResult|partial_expert:general_vqa_expert",
+      "messages_sha256": "8156458c94c2ad3676af39987cdf91942a8b1a8b6a7d4d9ad464163bf2c5dda1",
+      "prompt_version": "general-vqa-v2",
+      "request_hash": "db0e4adc5d7139d30edf278bca20c01d43bbfccb0b0d56ec6766731e9255b8d2",
+      "request_id": "partial_expert:general_vqa_expert",
+      "response_model": "ExpertResult",
+      "sample_id": "partial_expert"
+    }
+  ]
+}

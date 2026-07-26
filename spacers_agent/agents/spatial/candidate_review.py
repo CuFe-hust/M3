@@ -15,16 +15,16 @@ from pathlib import Path
 from typing import Any
 
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
-from spacers_agent.schemas import ExpertResult, UnifiedSample, VisualEvidence
-from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype, vrsbench_vehicle_class
-from spacers_agent.workflow import (
-    _is_corner_anchored_box,
-    _is_status_answer_placeholder,
-    _matches_position_target,
-    _maximum_repair_severity,
-    _merge_visual_evidence,
-    _needs_spatial_candidate_review,
-    _position_review_evidence,
+from spacers_agent.schemas import ExpertResult, UnifiedSample
+from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype
+from spacers_agent.agents.spatial.evidence_merge import (
+    is_corner_anchored_box,
+    is_status_answer_placeholder,
+    matches_position_target,
+    maximum_repair_severity,
+    merge_visual_evidence,
+    needs_candidate_review,
+    position_review_evidence,
 )
 
 
@@ -54,7 +54,7 @@ class SpatialCandidateReviewer:
         """Return whether a spatial result requires candidate review.
         返回空间结果是否需要候选复查。
         """
-        return _needs_spatial_candidate_review(sample, result)
+        return needs_candidate_review(sample, result)
 
     async def review(
         self, sample: UnifiedSample, first_result: ExpertResult, artifact_dir: Path
@@ -95,12 +95,12 @@ class SpatialCandidateReviewer:
         if is_grid:
             first_evidence = [
                 item for item in first_result.evidence_items
-                if not (_matches_position_target(sample.question, item) and _is_corner_anchored_box(item))
+                if not (matches_position_target(sample.question, item) and is_corner_anchored_box(item))
             ]
             replaced_evidence = len(first_result.evidence_items) - len(first_evidence)
 
-        review_evidence, labeled_review_boxes = _position_review_evidence(sample.question, subtype, review_result)
-        merged = _merge_visual_evidence(first_evidence, review_evidence)
+        review_evidence, labeled_review_boxes = position_review_evidence(sample.question, subtype, review_result)
+        merged = merge_visual_evidence(first_evidence, review_evidence)
 
         # -- geometry audit / 几何审计 --
         geometry = dict(first_result.geometry)
@@ -112,7 +112,7 @@ class SpatialCandidateReviewer:
             "candidate_review_labeled_boxes": labeled_review_boxes,
             "candidate_review_geometry": review_result.geometry,
             "evidence_quality": merged_quality,
-            "repair_severity": _maximum_repair_severity(
+            "repair_severity": maximum_repair_severity(
                 str(first_result.geometry.get("repair_severity", "none")),
                 str(review_result.geometry.get("repair_severity", "none")),
             ),
@@ -120,17 +120,17 @@ class SpatialCandidateReviewer:
 
         # -- finalise answer / 最终化答案 --
         reviewed_answer = first_result.answer
-        if _is_status_answer_placeholder(reviewed_answer) and not _is_status_answer_placeholder(review_result.answer):
+        if is_status_answer_placeholder(reviewed_answer) and not is_status_answer_placeholder(review_result.answer):
             reviewed_answer = review_result.answer
 
-        status = "partial" if _needs_spatial_candidate_review(sample, first_result) else "completed"
-        return first_result.model_copy(update={
+        reviewed_result = first_result.model_copy(update={
             "answer": reviewed_answer,
             "boxes": [list(item.box) for item in merged if item.box is not None],
             "evidence_items": merged,
             "geometry": geometry,
-            "status": status,
         })
+        status = "partial" if needs_candidate_review(sample, reviewed_result) else "completed"
+        return reviewed_result.model_copy(update={"status": status})
 
     async def _request_review(
         self, sample: UnifiedSample, prompt: str, version: str, subtype: str, artifact_dir: Path

@@ -25,7 +25,6 @@ from spacers_agent.clients.base import JsonResponseCache, RequestMeta, VisionLan
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.clients.qwen_vllm import QwenVLLMClient
 from spacers_agent.clients.qwen_transformers import QwenTransformersClient
-from spacers_agent.counting import PointCountingOrchestrator
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import (
     VQAAnswerJudgeResult,
@@ -36,7 +35,12 @@ from spacers_agent.evaluation import (
     merge_count_evaluation,
     merge_vqa_evaluation,
 )
-from spacers_agent.workflow import DatasetRunner, TargetParser, atomic_write_json
+from spacers_agent.bootstrap import assemble_runtime, build_dataset_runner
+from spacers_agent.prompt_catalog import PromptCatalog
+from spacers_agent.routing import CallBudgetFactory
+from spacers_agent.workflows.artifact_writer import atomic_write_json
+from spacers_agent.workflows.judge_service import JudgeService
+from spacers_agent.workflows.sample_runner import DatasetRunOptions
 from spacers_agent.vqa_report import build_multiagent_vqa_report
 from spacers_agent.commands import count_image as count_image_command
 
@@ -274,6 +278,7 @@ def _prompts() -> dict[str, str]:
         "spatial_review": (PROJECT_ROOT / "prompts" / "spatial_candidate_review_v2.md").read_text(encoding="utf-8"),
         "spatial_grid_review": (PROJECT_ROOT / "prompts" / "spatial_candidate_review_v3.md").read_text(encoding="utf-8"),
         "general": (PROJECT_ROOT / "prompts" / "general_vqa_v2.md").read_text(encoding="utf-8"),
+        "caption": (PROJECT_ROOT / "prompts" / "caption_v1.md").read_text(encoding="utf-8"),
         "seam": (PROJECT_ROOT / "prompts" / "seam_verify_v1.md").read_text(encoding="utf-8"),
     }
 
@@ -291,15 +296,43 @@ async def _smoke_qwen(settings: object, image_path: Path, question: str) -> int:
 
 
 async def _count_image(settings: object, image_path: Path, question: str, run_id: str, evaluate: bool, render: bool) -> int:
-    """Run target parsing and point-derived single-image counting. / 运行目标解析和点导出的单图计数。"""
+    """Run target parsing and point-derived single-image counting via CountingAgent.
+    通过 CountingAgent 运行目标解析和点导出的单图计数。
+    """
 
     store = RunStore(settings.runs.root, PROJECT_ROOT)
     manifest = store.create_run(settings, prompt_paths=DEFAULT_PROMPT_PATHS, run_id=run_id)
     run_dir = settings.runs.root / manifest.run_id
     client = _client(settings, run_dir)
-    target = await TargetParser(client, _prompts()["target"], settings.models.qwen.model).parse(question, sample_id=run_id, artifact_dir=run_dir)
-    image = read_normalized_image(image_path)
-    result = await PointCountingOrchestrator(client, counting=settings.counting, qwen=settings.models.qwen, system_prompt=_prompts()["count"], run_dir=run_dir, seam_prompt=_prompts()["seam"]).count_image(image, sample_id=run_id, question=question, target=target)
+    from spacers_agent.agents.base import AgentContext
+    from spacers_agent.bootstrap import build_agent_registry
+    from spacers_agent.schemas import GroundTruth, ImageRef, UnifiedSample
+    registry = build_agent_registry(
+        settings=settings,
+        qwen_client=client,
+        prompt_catalog=PromptCatalog(PROJECT_ROOT / "prompts"),
+    )
+    sample = UnifiedSample(
+        sample_id=run_id, dataset="count-image", split="user",
+        task="counting",  # type: ignore[arg-type]
+        images=[ImageRef(image_id="img", path=image_path, role="image")],
+        question=question,
+        ground_truth=GroundTruth(),
+        metadata={},
+    )
+    context = AgentContext(
+        artifact_dir=run_dir,
+        settings=settings,
+        qwen_client=client,
+        call_budget=CallBudgetFactory().create_for_sample("counting"),
+        prompt_catalog=PromptCatalog(PROJECT_ROOT / "prompts"),
+    )
+    execution = await registry.get("counting_agent").run(sample, context)
+    from spacers_agent.schemas import CountingResult
+    if isinstance(execution.payload, CountingResult):
+        result = execution.payload
+    else:
+        raise TypeError(f"count-image expected CountingResult, got {type(execution.payload).__name__}")
     result_path = run_dir / "counting_result.json"
     atomic_write_json(result_path, result.model_dump(mode="json"))
     if evaluate:
@@ -328,9 +361,11 @@ async def _run_dataset(settings: object, args: object) -> int:
     judge_client = None
     if args.evaluate and args.judge_policy != "none" and "general_vqa" in requested:
         judge_client = _vqa_judge_client(settings, run_dir)
-    summaries = []
+    runtime = assemble_runtime(settings, qwen_client=qwen_client, judge_client=judge_client, prompt_root=PROJECT_ROOT / "prompts")
+    summaries: list = []
     for task in requested:
-        summaries.append(await DatasetRunner(settings, adapter, run_dir=run_dir, client=qwen_client, prompts=_prompts(), judge_client=judge_client, judge_policy=args.judge_policy if args.evaluate else "none").run(split=args.split, task=task, resume=args.resume, limit=None if args.limit == 0 else args.limit, shard_index=args.shard_index, shard_count=args.shard_count, start_index=args.start_index, sample_ids=selected_ids, fail_fast=args.fail_fast, sample_concurrency=args.sample_concurrency))
+        runner = build_dataset_runner(runtime, adapter=adapter, run_dir=run_dir, settings=settings, judge_policy=args.judge_policy if args.evaluate else "none")
+        summaries.append(await runner.run(split=args.split, task=task, resume=args.resume, limit=None if args.limit == 0 else args.limit, shard_index=args.shard_index, shard_count=args.shard_count, start_index=args.start_index, sample_ids=selected_ids, fail_fast=args.fail_fast, sample_concurrency=args.sample_concurrency))
     if args.evaluate and any(task in {"counting", "fine_grained_counting"} for task in requested):
         # A missing key still produces deterministic records; it never silently skips evaluation.
         # 缺少密钥时仍生成确定性记录，绝不静默跳过评估。
@@ -348,14 +383,34 @@ async def _run_dataset(settings: object, args: object) -> int:
 
 
 async def _resume_run(settings: object, run_id: str) -> int:
-    """Resume a saved dataset run using its manifest fields. / 使用其清单字段恢复已保存的数据集运行。"""
+    """Resume a saved dataset run via full DatasetRunOptions.
+    通过完整的 DatasetRunOptions 恢复已保存的数据集运行。
+    """
 
     manifest_path = settings.runs.root / run_id / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not manifest.get("dataset") or not manifest.get("split"):
         raise ValueError("run manifest is not a dataset run")
-    class Args: pass
-    args = Args(); args.root = settings.paths.dataset_root; args.run_id = run_id; args.dataset = manifest["dataset"]; args.split = manifest["split"]; args.task = manifest.get("sample_filter") or "counting"; args.resume = True; args.limit = None; args.shard_index = 0; args.shard_count = 1; args.evaluate = False
+    task = manifest.get("sample_filter") or "counting"
+    tasks: tuple[str, ...] = tuple(task.split(",")) if task else ("counting",)
+    class Args:
+        pass
+    args = Args()
+    args.root = settings.paths.dataset_root
+    args.run_id = run_id
+    args.dataset = manifest["dataset"]
+    args.split = manifest["split"]
+    args.task = task
+    args.resume = True
+    args.limit = 0
+    args.shard_index = 0
+    args.shard_count = 1
+    args.evaluate = False
+    args.sample_concurrency = 1
+    args.sample_ids = None
+    args.fail_fast = False
+    args.judge_policy = "none"
+    args.start_index = 0
     return await _run_dataset(settings, args)
 
 

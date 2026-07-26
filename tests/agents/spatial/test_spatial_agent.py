@@ -8,10 +8,13 @@ import pytest
 
 from spacers_agent.agents.spatial.agent import SpatialAgent
 from spacers_agent.agents.base import AgentContext
+from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
+SPATIAL_PROMPT = PromptAsset("spatial", Path("spatial_v4.md"), "spatial-v4", "p")
+GRID_PROMPT = PromptAsset("spatial_grid", Path("spatial_v5.md"), "spatial-v5", "gp")
 
 
 class _FakeClient:
@@ -34,14 +37,14 @@ def _sample(question: str = "Where is the car?") -> UnifiedSample:
 
 @pytest.mark.asyncio
 async def test_spatial_supported_tasks():
-    agent = SpatialAgent(None, {"spatial": "p", "spatial_grid": "gp"}, "model")
+    agent = SpatialAgent(None, SPATIAL_PROMPT, "model", grid_prompt=GRID_PROMPT)
     assert "spatial_relation" in agent.supported_tasks
 
 
 @pytest.mark.asyncio
 async def test_spatial_result_filename():
     client = _FakeClient()
-    agent = SpatialAgent(client, {"spatial": "p", "spatial_grid": "gp"}, "model")
+    agent = SpatialAgent(client, SPATIAL_PROMPT, "model", grid_prompt=GRID_PROMPT)
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
     assert exec_result.result_filename == "expert_result.json"
@@ -53,8 +56,9 @@ async def test_spatial_no_review_when_not_needed():
     client = _FakeClient()
     agent = SpatialAgent(
         client,
-        {"spatial": "p", "spatial_grid": "gp", "spatial_review": "", "spatial_grid_review": ""},
+        SPATIAL_PROMPT,
         "model",
+        grid_prompt=GRID_PROMPT,
     )
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample("Where is the car?"), ctx)

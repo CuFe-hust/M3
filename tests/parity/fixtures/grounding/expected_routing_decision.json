@@ -1,0 +1,11 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "grounding_agent",
+  "reason_codes": [
+    "task_grounding"
+  ],
+  "requires_tiling": true,
+  "router_source": "dataset_task",
+  "task": "grounding"
+}
