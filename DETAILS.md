@@ -608,7 +608,9 @@ sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 
 `.github/workflows/offline-tests.yml` executes the same offline gate on Python 3.11 for pushes
 and pull requests: it installs only `.[dev]`, compiles `spacers_agent`, runs pytest, and invokes
-CLI help. It does not install the optional YOLO extra or access a model service or dataset.
+CLI help. `pyproject.toml` explicitly packages only `spacers_agent*`, so editable installation
+does not treat repository data, model, or evaluation directories as distributable packages. The
+gate does not install the optional YOLO extra or access a model service or dataset.
 
 ## 14. Runnable Agent Workflow, Explicit Adapters, and Spark Handoff
 
