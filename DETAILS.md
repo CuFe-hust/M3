@@ -607,10 +607,12 @@ from optional Judge success, failure, inconsistency, and semantic-quality fields
 sequence and live-test safety boundary are recorded in `docs/runbook.md`.
 
 `.github/workflows/offline-tests.yml` executes the same offline gate on Python 3.11 for pushes
-and pull requests: it installs only `.[dev]`, compiles `spacers_agent`, runs pytest, and invokes
-CLI help. `pyproject.toml` explicitly packages only `spacers_agent*`, so editable installation
-does not treat repository data, model, or evaluation directories as distributable packages. The
-gate does not install the optional YOLO extra or access a model service or dataset.
+and pull requests: it installs the project runtime dependencies and `dev` extra, compiles
+`spacers_agent`, runs pytest, and invokes CLI help. `pyproject.toml` explicitly packages only
+`spacers_agent*`, so editable installation does not treat repository data, model, or evaluation
+directories as distributable packages; Pillow is declared there because the offline tests import
+image operations. The gate does not install the optional YOLO extra or access a model service or
+dataset.
 
 ## 14. Runnable Agent Workflow, Explicit Adapters, and Spark Handoff
 

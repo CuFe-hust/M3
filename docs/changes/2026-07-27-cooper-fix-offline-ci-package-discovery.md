@@ -23,8 +23,11 @@ from treating non-package repository directories as distributable top-level pack
 ## Core Changes
 
 - Configured setuptools package discovery to include only `spacers_agent*`.
-- Added an offline pytest assertion that protects the package-discovery contract.
-- Documented the editable-installation boundary used by the offline workflow.
+- Declared the existing `Pillow>=10.0.0` runtime dependency in `pyproject.toml`, matching
+  `requirements.txt` and the imports exercised by the offline suite.
+- Added offline pytest assertions that protect the package-discovery and Pillow-dependency
+  contracts.
+- Documented the editable-installation and offline-dependency boundary used by the workflow.
 
 ## Whether the Canonical Sample Format Was Changed
 
@@ -36,7 +39,8 @@ No.
 
 ## Whether the Configuration Was Changed
 
-Yes. Packaging discovery is now explicit; runtime configuration keys and defaults are unchanged.
+Yes. Packaging discovery is now explicit and the existing Pillow runtime dependency is declared;
+runtime configuration keys and defaults are unchanged.
 
 ## Whether Evaluation Was Affected
 
@@ -58,11 +62,12 @@ Yes. Added `*.egg-info/` so editable-install build metadata is not committed.
 
 - Reproduced the original editable-install failure in a clean Python 3.11 virtual environment.
 - `python -m pip install --isolated -e ".[dev]"` succeeded in that clean environment after the
-  patch.
+  final metadata updates.
 - Python 3.11 `compileall`, CLI help, and `pytest -q --basetemp <writable-temp> -p
-  no:cacheprovider` passed: 365 tests.
+  no:cacheprovider` passed in the clean environment: 365 tests.
 - `git diff --check` passed.
-- GitHub Actions rerun is pending push of this patch.
+- GitHub Actions run 3 exposed the missing `PIL` import dependency; the final rerun after the
+  Pillow metadata update is pending push.
 
 ## Risks and Follow-up TODOs
 

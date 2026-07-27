@@ -12,6 +12,7 @@ dependencies = [
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "PyYAML>=6.0",
+  "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
