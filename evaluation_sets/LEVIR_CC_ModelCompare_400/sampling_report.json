@@ -1,0 +1,51 @@
+{
+  "seed": 42,
+  "source_split_counts": {
+    "train": 6815,
+    "val": 1333,
+    "test": 1929
+  },
+  "val_candidate_count": 1333,
+  "val_change_candidate_count": 667,
+  "val_no_change_candidate_count": 666,
+  "sampling_group_candidate_counts": {
+    "change_short": 200,
+    "change_medium": 267,
+    "change_long": 200,
+    "no_change": 666
+  },
+  "change_length_boundaries": {
+    "change_candidate_count": 667,
+    "edge_count": 200,
+    "change_short": {
+      "count": 200,
+      "min": 4,
+      "max": 9
+    },
+    "change_medium": {
+      "count": 267,
+      "min": 9,
+      "max": 12
+    },
+    "change_long": {
+      "count": 200,
+      "min": 12,
+      "max": 20
+    }
+  },
+  "selected_record_count": 400,
+  "selected_change_count": 200,
+  "selected_no_change_count": 200,
+  "selected_group_counts": {
+    "change_short": 60,
+    "change_medium": 80,
+    "change_long": 60,
+    "no_change": 200
+  },
+  "records_with_exactly_five_sentences": 400,
+  "reference_sentence_count": 2000,
+  "image_a_count": 400,
+  "image_b_count": 400,
+  "filtered_records": 0,
+  "failure_reasons": {}
+}

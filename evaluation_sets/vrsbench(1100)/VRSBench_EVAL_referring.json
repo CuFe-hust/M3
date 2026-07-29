@@ -1,0 +1,6002 @@
+[
+  {
+    "image_id": "P0060_0010.png",
+    "question": "The larger swimming pool is located towards the bottom-right corner, surrounded by houses.",
+    "ground_truth": "{<85><79><93><91>}",
+    "dataset": "RSBench",
+    "question_id": 209,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.87109375,
+      0.798828125,
+      0.853515625,
+      0.91015625,
+      0.935546875,
+      0.908203125,
+      0.9375,
+      0.828125
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0081_0000.png",
+    "question": "The roundabout in the image is circular shape and centred landscaping, containing patches of grass and bushes.",
+    "ground_truth": "{<40><45><90><95>}",
+    "dataset": "RSBench",
+    "question_id": 239,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.40234375,
+      0.45703125,
+      0.904296875,
+      0.45703125,
+      0.904296875,
+      0.958984375,
+      0.40234375,
+      0.958984375
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0131_0004.png",
+    "question": "The small baseball diamond located at the bottom part of the image has a brown color.",
+    "ground_truth": "{<32><72><63><97>}",
+    "dataset": "RSBench",
+    "question_id": 263,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.326171875,
+      0.978515625,
+      0.322265625,
+      0.720703125,
+      0.623046875,
+      0.72265625,
+      0.6328125,
+      0.96875
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0175_0002.png",
+    "question": "The small vehicle is parked to the left of the image on a parking lot.",
+    "ground_truth": "{<5><64><14><72>}",
+    "dataset": "RSBench",
+    "question_id": 355,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.12109375,
+      0.642578125,
+      0.142578125,
+      0.67578125,
+      0.078125,
+      0.720703125,
+      0.056640625,
+      0.6875
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "P0179_0003.png",
+    "question": "The plane situated at the bottom edge of the image, near the center.",
+    "ground_truth": "{<41><55><61><76>}",
+    "dataset": "RSBench",
+    "question_id": 367,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.6171875,
+      0.650390625,
+      0.49609375,
+      0.763671875,
+      0.412109375,
+      0.67578125,
+      0.5390625,
+      0.556640625
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0348_0000.png",
+    "question": "The small ship is isolated in the water, placed towards the middle-right section of the image.",
+    "ground_truth": "{<73><35><86><43>}",
+    "dataset": "RSBench",
+    "question_id": 718,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.869140625,
+      0.39453125,
+      0.853515625,
+      0.439453125,
+      0.736328125,
+      0.392578125,
+      0.748046875,
+      0.35546875
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0432_0001.png",
+    "question": "The bottom-most harbor in the middle-right part of the image.",
+    "ground_truth": "{<87><40><96><46>}",
+    "dataset": "RSBench",
+    "question_id": 905,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.95703125,
+      0.40625,
+      0.966796875,
+      0.423828125,
+      0.890625,
+      0.46484375,
+      0.87890625,
+      0.4453125
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0466_0004.png",
+    "question": "The tennis court situated at the top left corner of the image and is partially cut off.",
+    "ground_truth": "{<0><20><17><58>}",
+    "dataset": "RSBench",
+    "question_id": 932,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.01171875,
+      0.208984375,
+      0.177734375,
+      0.224609375,
+      0.146484375,
+      0.580078125,
+      -0.01953125,
+      0.564453125
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0683_0014.png",
+    "question": "The small ship moored at the dock towards the bottom-middle part of the image.",
+    "ground_truth": "{<52><69><58><73>}",
+    "dataset": "RSBench",
+    "question_id": 1357,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.58203125,
+      0.69140625,
+      0.587890625,
+      0.712890625,
+      0.53515625,
+      0.732421875,
+      0.52734375,
+      0.7109375
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0715_0004.png",
+    "question": "The smaller of the two swimming pools is located towards the bottom-middle of the image.",
+    "ground_truth": "{<45><93><56><100>}",
+    "dataset": "RSBench",
+    "question_id": 1382,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.458984375,
+      0.966796875,
+      0.482421875,
+      0.93359375,
+      0.5625,
+      0.982421875,
+      0.5390625,
+      1.01953125
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0841_0001.png",
+    "question": "The bottom-most plane which has the largest size relative to the other planes.",
+    "ground_truth": "{<3><66><41><100>}",
+    "dataset": "RSBench",
+    "question_id": 1563,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.419921875,
+      0.9765625,
+      0.16015625,
+      1.064453125,
+      0.033203125,
+      0.76953125,
+      0.298828125,
+      0.669921875
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0882_0001.png",
+    "question": "The left-most tennis court positioned along the top-center section of the image.",
+    "ground_truth": "{<33><0><53><24>}",
+    "dataset": "RSBench",
+    "question_id": 1613,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.380859375,
+      -0.10546875,
+      0.537109375,
+      -0.080078125,
+      0.490234375,
+      0.2421875,
+      0.3359375,
+      0.216796875
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0904_0004.png",
+    "question": "The tennis court is visible in the bottom-left side of the image.",
+    "ground_truth": "{<14><69><36><100>}",
+    "dataset": "RSBench",
+    "question_id": 1677,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.1640625,
+      0.69140625,
+      0.36328125,
+      0.69921875,
+      0.337890625,
+      1.109375,
+      0.1484375,
+      1.1015625
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0949_0006.png",
+    "question": "The ship located in the bottom-right quadrant of the image.",
+    "ground_truth": "{<91><79><95><85>}",
+    "dataset": "RSBench",
+    "question_id": 1856,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.939453125,
+      0.796875,
+      0.95703125,
+      0.806640625,
+      0.939453125,
+      0.857421875,
+      0.91796875,
+      0.849609375
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0953_0000.png",
+    "question": "THarbor located at the bottom right quadrant of the image.",
+    "ground_truth": "{<82><64><89><100>}",
+    "dataset": "RSBench",
+    "question_id": 1874,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.8984375,
+      1.35546875,
+      0.845703125,
+      1.357421875,
+      0.82421875,
+      0.64453125,
+      0.876953125,
+      0.640625
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0964_0018.png",
+    "question": "The harbor located in the left part of the image.",
+    "ground_truth": "{<23><23><42><100>}",
+    "dataset": "RSBench",
+    "question_id": 1987,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.232421875,
+      0.244140625,
+      0.349609375,
+      0.23046875,
+      0.4296875,
+      1.15234375,
+      0.330078125,
+      1.162109375
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P0990_0021.png",
+    "question": "Located in the top-left area amidst green terrain, the second harbor hugs the coastline.",
+    "ground_truth": "{<20><25><25><32>}",
+    "dataset": "RSBench",
+    "question_id": 2170,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.232421875,
+      0.255859375,
+      0.259765625,
+      0.27734375,
+      0.23046875,
+      0.3203125,
+      0.205078125,
+      0.30078125
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1030_0004.png",
+    "question": "The harbor with docks closest to the bottom-left corner of the image.",
+    "ground_truth": "{<8><86><17><100>}",
+    "dataset": "RSBench",
+    "question_id": 2447,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.08984375,
+      0.876953125,
+      0.13671875,
+      0.865234375,
+      0.171875,
+      1.013671875,
+      0.125,
+      1.0234375
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1065_0029.png",
+    "question": "The swimming pool is distinguished by its small, rectangular shape with rounded corners.",
+    "ground_truth": "{<41><27><52><38>}",
+    "dataset": "RSBench",
+    "question_id": 2528,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.41796875,
+      0.302734375,
+      0.45703125,
+      0.2734375,
+      0.5234375,
+      0.359375,
+      0.48046875,
+      0.38671875
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1149_0037.png",
+    "question": "The smaller helicopter is visible towards the bottom of the image.",
+    "ground_truth": "{<14><50><53><90>}",
+    "dataset": "RSBench",
+    "question_id": 2828,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.5390625,
+      0.7265625,
+      0.35546875,
+      0.908203125,
+      0.1484375,
+      0.677734375,
+      0.34375,
+      0.505859375
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1149_0055.png",
+    "question": "The helicopter is located in the top-left area of the image.",
+    "ground_truth": "{<0><0><29><26>}",
+    "dataset": "RSBench",
+    "question_id": 2831,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.291015625,
+      0.080078125,
+      0.08984375,
+      0.26953125,
+      -0.142578125,
+      0.025390625,
+      0.072265625,
+      -0.17578125
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1178_0014.png",
+    "question": "The small aircraft is located in the bottom right corner of the tarmac area.",
+    "ground_truth": "{<84><83><100><96>}",
+    "dataset": "RSBench",
+    "question_id": 2865,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.865234375,
+      0.833984375,
+      1.02734375,
+      0.873046875,
+      1.0078125,
+      0.962890625,
+      0.841796875,
+      0.921875
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1179_0030.png",
+    "question": "The helicopter positioned on the right side of the image, away from the main grouping of planes.",
+    "ground_truth": "{<71><44><76><48>}",
+    "dataset": "RSBench",
+    "question_id": 2902,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.765625,
+      0.44921875,
+      0.765625,
+      0.48046875,
+      0.7109375,
+      0.484375,
+      0.7109375,
+      0.453125
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1184_0034.png",
+    "question": "The helicopter parked on the tarmac towards the top-middle region of the image.",
+    "ground_truth": "{<59><11><65><18>}",
+    "dataset": "RSBench",
+    "question_id": 2946,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.63671875,
+      0.185546875,
+      0.591796875,
+      0.171875,
+      0.60546875,
+      0.115234375,
+      0.650390625,
+      0.12890625
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1240_0011.png",
+    "question": "The bridge located in the bottom-left area of the image.",
+    "ground_truth": "{<19><91><23><96>}",
+    "dataset": "RSBench",
+    "question_id": 3039,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.203125,
+      0.91796875,
+      0.236328125,
+      0.955078125,
+      0.23046875,
+      0.962890625,
+      0.193359375,
+      0.9296875
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1240_0035.png",
+    "question": "The ground track field positioned towards the lower portion of the image.",
+    "ground_truth": "{<11><46><33><73>}",
+    "dataset": "RSBench",
+    "question_id": 3049,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.21484375,
+      0.462890625,
+      0.330078125,
+      0.509765625,
+      0.228515625,
+      0.73828125,
+      0.11328125,
+      0.6796875
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1257_0030.png",
+    "question": "The small harbor is located towards the bottom of the image.",
+    "ground_truth": "{<63><84><68><89>}",
+    "dataset": "RSBench",
+    "question_id": 3101,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.630859375,
+      0.84765625,
+      0.6875,
+      0.84765625,
+      0.6875,
+      0.896484375,
+      0.630859375,
+      0.896484375
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1268_0038.png",
+    "question": "The basketball court located towards the bottom middle of the image.",
+    "ground_truth": "{<56><71><61><79>}",
+    "dataset": "RSBench",
+    "question_id": 3135,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.5625,
+      0.7265625,
+      0.59765625,
+      0.716796875,
+      0.615234375,
+      0.787109375,
+      0.580078125,
+      0.794921875
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1268_0039.png",
+    "question": "The basketball court, which is uniquely present in the image, is located towards the upper right area.",
+    "ground_truth": "{<56><64><61><72>}",
+    "dataset": "RSBench",
+    "question_id": 3139,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.5625,
+      0.65625,
+      0.59765625,
+      0.646484375,
+      0.615234375,
+      0.716796875,
+      0.580078125,
+      0.724609375
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1269_0004.png",
+    "question": "The bridge located on the right side of the image extends across a water body, connecting areas with varying field patterns.",
+    "ground_truth": "{<91><61><97><67>}",
+    "dataset": "RSBench",
+    "question_id": 3145,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.94140625,
+      0.619140625,
+      0.97265625,
+      0.634765625,
+      0.9453125,
+      0.6796875,
+      0.9140625,
+      0.662109375
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1273_0054.png",
+    "question": "The ship situated towards the middle-left of the image.",
+    "ground_truth": "{<11><49><15><53>}",
+    "dataset": "RSBench",
+    "question_id": 3178,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.11328125,
+      0.505859375,
+      0.12109375,
+      0.4921875,
+      0.154296875,
+      0.51171875,
+      0.146484375,
+      0.53125
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1275_0028.png",
+    "question": "The harbor is located at the bottom of the image.",
+    "ground_truth": "{<52><91><69><96>}",
+    "dataset": "RSBench",
+    "question_id": 3184,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.697265625,
+      0.921875,
+      0.697265625,
+      0.96484375,
+      0.52734375,
+      0.95703125,
+      0.533203125,
+      0.9140625
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1323_0050.png",
+    "question": "The bridge is positioned to the right of another bridge.",
+    "ground_truth": "{<61><50><69><59>}",
+    "dataset": "RSBench",
+    "question_id": 3290,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.615234375,
+      0.505859375,
+      0.66796875,
+      0.5,
+      0.697265625,
+      0.58203125,
+      0.634765625,
+      0.59765625
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1356_0054.png",
+    "question": "The bridge located at the lower part of the image.",
+    "ground_truth": "{<62><54><66><57>}",
+    "dataset": "RSBench",
+    "question_id": 3455,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.625,
+      0.560546875,
+      0.65234375,
+      0.546875,
+      0.66015625,
+      0.5625,
+      0.630859375,
+      0.57421875
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1370_0042.png",
+    "question": "The roundabout located towards the bottom center of the image.",
+    "ground_truth": "{<30><55><35><59>}",
+    "dataset": "RSBench",
+    "question_id": 3470,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.30859375,
+      0.5546875,
+      0.35546875,
+      0.5546875,
+      0.35546875,
+      0.599609375,
+      0.30859375,
+      0.599609375
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1380_0006.png",
+    "question": "The swimming pool is located at the bottom right corner of the image.",
+    "ground_truth": "{<91><95><97><100>}",
+    "dataset": "RSBench",
+    "question_id": 3624,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.91796875,
+      0.974609375,
+      0.966796875,
+      0.955078125,
+      0.978515625,
+      0.9921875,
+      0.9296875,
+      1.015625
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1380_0073.png",
+    "question": "The swimming pool with an irregular corner that occupies the bottom-right part of the image.",
+    "ground_truth": "{<65><71><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 3659,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.65625,
+      0.8125,
+      0.818359375,
+      0.716796875,
+      1.009765625,
+      1.029296875,
+      0.8515625,
+      1.125
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1380_0083.png",
+    "question": "The small swimming pool located at the bottom of the image.",
+    "ground_truth": "{<6><71><42><100>}",
+    "dataset": "RSBench",
+    "question_id": 3664,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.068359375,
+      0.8125,
+      0.23046875,
+      0.716796875,
+      0.421875,
+      1.029296875,
+      0.263671875,
+      1.125
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0007.png",
+    "question": "The tennis court located at the bottom-middle of the image.",
+    "ground_truth": "{<54><97><64><100>}",
+    "dataset": "RSBench",
+    "question_id": 3681,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.546875,
+      1.01171875,
+      0.5546875,
+      0.970703125,
+      0.640625,
+      0.986328125,
+      0.63671875,
+      1.025390625
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0049.png",
+    "question": "The soccer ball field positioned in the bottom left corner of the image.",
+    "ground_truth": "{<0><54><24><98>}",
+    "dataset": "RSBench",
+    "question_id": 3739,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.021484375,
+      0.541015625,
+      0.2421875,
+      0.5859375,
+      0.177734375,
+      0.98828125,
+      -0.083984375,
+      0.9453125
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0054.png",
+    "question": "The plane located at the top-right corner of the airstrip.",
+    "ground_truth": "{<76><15><82><21>}",
+    "dataset": "RSBench",
+    "question_id": 3742,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.787109375,
+      0.150390625,
+      0.82421875,
+      0.177734375,
+      0.80078125,
+      0.212890625,
+      0.76171875,
+      0.185546875
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0070.png",
+    "question": "The swimming pool situated at the top section of the image.",
+    "ground_truth": "{<62><5><66><9>}",
+    "dataset": "RSBench",
+    "question_id": 3753,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.625,
+      0.07421875,
+      0.6484375,
+      0.052734375,
+      0.6640625,
+      0.072265625,
+      0.634765625,
+      0.095703125
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0080.png",
+    "question": "The small plane is located towards the top-middle part of the image.",
+    "ground_truth": "{<59><0><62><5>}",
+    "dataset": "RSBench",
+    "question_id": 3756,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.626953125,
+      0.005859375,
+      0.626953125,
+      0.048828125,
+      0.59375,
+      0.0546875,
+      0.595703125,
+      0.00390625
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0096.png",
+    "question": "The tennis court adjacent to the first one is features a similar green playing surface surrounded by a beige-colored border.",
+    "ground_truth": "{<8><93><14><100>}",
+    "dataset": "RSBench",
+    "question_id": 3763,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.1015625,
+      0.9375,
+      0.142578125,
+      0.94140625,
+      0.126953125,
+      1.03125,
+      0.08984375,
+      1.0234375
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1384_0137.png",
+    "question": "The roundabout is located in the middle-left of the image.",
+    "ground_truth": "{<19><59><26><65>}",
+    "dataset": "RSBench",
+    "question_id": 3779,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.19921875,
+      0.59765625,
+      0.265625,
+      0.59765625,
+      0.265625,
+      0.658203125,
+      0.19921875,
+      0.658203125
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1397_0067.png",
+    "question": "The plane situated at the upper edge of the image.",
+    "ground_truth": "{<41><0><69><33>}",
+    "dataset": "RSBench",
+    "question_id": 4040,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.4140625,
+      0.337890625,
+      0.416015625,
+      0.0,
+      0.69140625,
+      0.0,
+      0.69140625,
+      0.3359375
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1410_0070.png",
+    "question": "The small helicopter is located toward the upper right corner.",
+    "ground_truth": "{<94><18><100><21>}",
+    "dataset": "RSBench",
+    "question_id": 4232,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      1.021484375,
+      0.185546875,
+      1.015625,
+      0.21484375,
+      0.94140625,
+      0.212890625,
+      0.943359375,
+      0.185546875
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1440_0002.png",
+    "question": "The largest basketball court located at the top-right corner of the image.",
+    "ground_truth": "{<80><0><100><40>}",
+    "dataset": "RSBench",
+    "question_id": 4325,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.806640625,
+      0.05859375,
+      1.009765625,
+      -0.03125,
+      1.171875,
+      0.328125,
+      0.990234375,
+      0.408203125
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1483_0007.png",
+    "question": "The helicopter located on the top-middle part of the image.",
+    "ground_truth": "{<31><2><58><35>}",
+    "dataset": "RSBench",
+    "question_id": 4603,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.314453125,
+      0.025390625,
+      0.5859375,
+      0.025390625,
+      0.5859375,
+      0.357421875,
+      0.314453125,
+      0.357421875
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1508_0003.png",
+    "question": "The helicopter positioned in the bottom right corner of the image.",
+    "ground_truth": "{<80><74><87><93>}",
+    "dataset": "RSBench",
+    "question_id": 4616,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.80078125,
+      0.75,
+      0.861328125,
+      0.74609375,
+      0.87109375,
+      0.931640625,
+      0.80859375,
+      0.935546875
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1508_0010.png",
+    "question": "The small helicopter is located at the bottom-left area of the image.",
+    "ground_truth": "{<25><71><44><95>}",
+    "dataset": "RSBench",
+    "question_id": 4622,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.44140625,
+      0.955078125,
+      0.259765625,
+      0.958984375,
+      0.255859375,
+      0.716796875,
+      0.435546875,
+      0.71484375
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1508_0021.png",
+    "question": "The helicopter is located towards the middle-left area of the image.",
+    "ground_truth": "{<0><35><13><58>}",
+    "dataset": "RSBench",
+    "question_id": 4635,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.025390625,
+      0.36328125,
+      0.126953125,
+      0.359375,
+      0.138671875,
+      0.58203125,
+      -0.01171875,
+      0.587890625
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1508_0027.png",
+    "question": "The helicopter positioned on the left side of the image.",
+    "ground_truth": "{<0><69><17><93>}",
+    "dataset": "RSBench",
+    "question_id": 4642,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.001953125,
+      0.69921875,
+      0.1796875,
+      0.705078125,
+      0.169921875,
+      0.93359375,
+      -0.013671875,
+      0.92578125
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1518_0011.png",
+    "question": "The storage tank is a circular structure located at the bottom middle of the image.",
+    "ground_truth": "{<55><68><60><75>}",
+    "dataset": "RSBench",
+    "question_id": 4704,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.55078125,
+      0.6875,
+      0.609375,
+      0.6875,
+      0.609375,
+      0.75390625,
+      0.55078125,
+      0.75390625
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1529_0035.png",
+    "question": "The small plane located on the tarmac towards the top-left of the image.",
+    "ground_truth": "{<9><16><15><25>}",
+    "dataset": "RSBench",
+    "question_id": 4711,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.15625,
+      0.2421875,
+      0.107421875,
+      0.25390625,
+      0.09375,
+      0.17578125,
+      0.138671875,
+      0.1640625
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1529_0038.png",
+    "question": "The small plane is situated toward the middle-right side of the image.",
+    "ground_truth": "{<92><41><100><52>}",
+    "dataset": "RSBench",
+    "question_id": 4712,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      1.001953125,
+      0.505859375,
+      0.9453125,
+      0.521484375,
+      0.921875,
+      0.4296875,
+      0.98046875,
+      0.4140625
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1601_0006.png",
+    "question": "The plane located towards the middle-right of the image.",
+    "ground_truth": "{<69><50><74><54>}",
+    "dataset": "RSBench",
+    "question_id": 4870,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.716796875,
+      0.501953125,
+      0.69921875,
+      0.53515625,
+      0.73046875,
+      0.548828125,
+      0.744140625,
+      0.521484375
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1672_0034.png",
+    "question": "The harbor located from the top left edge to the center of the image.",
+    "ground_truth": "{<0><0><59><47>}",
+    "dataset": "RSBench",
+    "question_id": 4973,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.595703125,
+      0.34765625,
+      0.517578125,
+      0.4765625,
+      -0.189453125,
+      0.04296875,
+      -0.09765625,
+      -0.06640625
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1751_0000.png",
+    "question": "The roundabout in the bottom-left section of the image is surrounded by roads converging from various directions.",
+    "ground_truth": "{<17><78><22><83>}",
+    "dataset": "RSBench",
+    "question_id": 5099,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.171875,
+      0.78515625,
+      0.220703125,
+      0.78515625,
+      0.220703125,
+      0.837890625,
+      0.171875,
+      0.837890625
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1770_0024.png",
+    "question": "The roundabout located more centrally in the image, distinguishable by its circular shape and large size.",
+    "ground_truth": "{<65><14><81><30>}",
+    "dataset": "RSBench",
+    "question_id": 5155,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.650390625,
+      0.14453125,
+      0.818359375,
+      0.14453125,
+      0.818359375,
+      0.302734375,
+      0.650390625,
+      0.302734375
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1770_0033.png",
+    "question": "The roundabout in the image is situated at the top edge of the image.",
+    "ground_truth": "{<29><0><47><14>}",
+    "dataset": "RSBench",
+    "question_id": 5158,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.291015625,
+      -0.03125,
+      0.4765625,
+      -0.03125,
+      0.4765625,
+      0.140625,
+      0.291015625,
+      0.140625
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1809_0075.png",
+    "question": "The small vehicle is positioned in the top-middle of the image.",
+    "ground_truth": "{<45><15><50><17>}",
+    "dataset": "RSBench",
+    "question_id": 5232,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.453125,
+      0.177734375,
+      0.453125,
+      0.150390625,
+      0.5,
+      0.16015625,
+      0.49609375,
+      0.1796875
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "P1809_0158.png",
+    "question": "The helicopter is in the top-middle area, adjacent to the green field.",
+    "ground_truth": "{<0><0><18><26>}",
+    "dataset": "RSBench",
+    "question_id": 5277,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.087890625,
+      0.0546875,
+      0.123046875,
+      -0.01953125,
+      0.18359375,
+      0.201171875,
+      -0.021484375,
+      0.26953125
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1854_0016.png",
+    "question": "The airplane positioned vertically, occupying a large area across the tarmac.",
+    "ground_truth": "{<24><35><61><71>}",
+    "dataset": "RSBench",
+    "question_id": 5324,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.61328125,
+      0.71484375,
+      0.24609375,
+      0.712890625,
+      0.25,
+      0.357421875,
+      0.615234375,
+      0.357421875
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1854_0025.png",
+    "question": "The large vehicle present near the center of the image.",
+    "ground_truth": "{<57><48><62><61>}",
+    "dataset": "RSBench",
+    "question_id": 5340,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.611328125,
+      0.615234375,
+      0.572265625,
+      0.615234375,
+      0.587890625,
+      0.484375,
+      0.625,
+      0.490234375
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "P1854_0048.png",
+    "question": "The unique plane parked on the tarmac occupies a large portion of the image and is white with red details on its wingtips.",
+    "ground_truth": "{<15><22><87><86>}",
+    "dataset": "RSBench",
+    "question_id": 5361,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.875,
+      0.2265625,
+      0.861328125,
+      0.86328125,
+      0.158203125,
+      0.853515625,
+      0.150390625,
+      0.220703125
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P1854_0109.png",
+    "question": "The storage tank located at the bottom part of the image.",
+    "ground_truth": "{<65><54><100><86>}",
+    "dataset": "RSBench",
+    "question_id": 5437,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.650390625,
+      0.548828125,
+      1.013671875,
+      0.548828125,
+      1.013671875,
+      0.86328125,
+      0.650390625,
+      0.86328125
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2169_0003.png",
+    "question": "The swimming pool is located at the bottom left of the image.",
+    "ground_truth": "{<17><80><19><83>}",
+    "dataset": "RSBench",
+    "question_id": 5869,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.173828125,
+      0.806640625,
+      0.19140625,
+      0.806640625,
+      0.19140625,
+      0.833984375,
+      0.173828125,
+      0.833984375
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2231_0019.png",
+    "question": "The plane located at the top-left edge of the tarmac.",
+    "ground_truth": "{<0><9><9><25>}",
+    "dataset": "RSBench",
+    "question_id": 5945,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.015625,
+      0.09375,
+      0.091796875,
+      0.162109375,
+      0.03125,
+      0.25390625,
+      -0.0703125,
+      0.181640625
+    ],
+    "obj_cls": "airplane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2271_0023.png",
+    "question": "The top-most helicopter is located towards the central area of the image.",
+    "ground_truth": "{<28><57><36><65>}",
+    "dataset": "RSBench",
+    "question_id": 6002,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.32421875,
+      0.572265625,
+      0.369140625,
+      0.611328125,
+      0.32421875,
+      0.658203125,
+      0.28125,
+      0.62109375
+    ],
+    "obj_cls": "helicopter",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2330_0059.png",
+    "question": "The ship positioned closer to the center of the image and aligned horizontally.",
+    "ground_truth": "{<62><46><68><48>}",
+    "dataset": "RSBench",
+    "question_id": 6151,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.625,
+      0.486328125,
+      0.62890625,
+      0.4609375,
+      0.68359375,
+      0.46484375,
+      0.6796875,
+      0.484375
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2337_0015.png",
+    "question": "The storage tank, circular in shape, is situated amidst a green landscape.",
+    "ground_truth": "{<31><54><57><82>}",
+    "dataset": "RSBench",
+    "question_id": 6238,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.314453125,
+      0.541015625,
+      0.5703125,
+      0.541015625,
+      0.5703125,
+      0.8203125,
+      0.314453125,
+      0.8203125
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2351_0005.png",
+    "question": "The object resembling a rectangle is a soccer-ball-field.",
+    "ground_truth": "{<43><18><82><58>}",
+    "dataset": "RSBench",
+    "question_id": 6263,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.43359375,
+      0.328125,
+      0.615234375,
+      0.181640625,
+      0.826171875,
+      0.447265625,
+      0.646484375,
+      0.5859375
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2429_0005.png",
+    "question": "The swimming pool located in the top-left quadrant of the image.",
+    "ground_truth": "{<13><21><16><24>}",
+    "dataset": "RSBench",
+    "question_id": 6312,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.134765625,
+      0.224609375,
+      0.146484375,
+      0.212890625,
+      0.16015625,
+      0.234375,
+      0.1484375,
+      0.2421875
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2488_0008.png",
+    "question": "The swimming pool situated close to the bottom-right edge of the image.",
+    "ground_truth": "{<90><93><91><94>}",
+    "dataset": "RSBench",
+    "question_id": 6397,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.904296875,
+      0.935546875,
+      0.9140625,
+      0.935546875,
+      0.9140625,
+      0.9453125,
+      0.904296875,
+      0.9453125
+    ],
+    "obj_cls": "swimming-pool",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2504_0016.png",
+    "question": "The soccer ball field located in the top-left quadrant of the image.",
+    "ground_truth": "{<4><0><21><15>}",
+    "dataset": "RSBench",
+    "question_id": 6440,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.044921875,
+      -0.052734375,
+      0.185546875,
+      -0.076171875,
+      0.21484375,
+      0.13671875,
+      0.080078125,
+      0.158203125
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2541_0032.png",
+    "question": "The soccer ball field in the middle-left of the image.",
+    "ground_truth": "{<0><54><14><72>}",
+    "dataset": "RSBench",
+    "question_id": 6459,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.095703125,
+      0.6875,
+      -0.078125,
+      0.54296875,
+      0.140625,
+      0.580078125,
+      0.126953125,
+      0.724609375
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2547_0008.png",
+    "question": "There is a soccer ball field located at the bottom of the image.",
+    "ground_truth": "{<57><78><85><99>}",
+    "dataset": "RSBench",
+    "question_id": 6467,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.5703125,
+      0.8203125,
+      0.82421875,
+      0.78125,
+      0.859375,
+      0.9453125,
+      0.599609375,
+      0.994140625
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2570_0007.png",
+    "question": "The soccer ball field is located at the bottom edge of the image.",
+    "ground_truth": "{<31><73><57><100>}",
+    "dataset": "RSBench",
+    "question_id": 6486,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.3125,
+      0.748046875,
+      0.5546875,
+      0.734375,
+      0.5703125,
+      1.080078125,
+      0.33203125,
+      1.10546875
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2582_0009.png",
+    "question": "The soccer ball field located at the left part of the image.",
+    "ground_truth": "{<0><0><62><50>}",
+    "dataset": "RSBench",
+    "question_id": 6533,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.14453125,
+      -0.3984375,
+      0.625,
+      -0.203125,
+      0.33203125,
+      0.501953125,
+      -0.140625,
+      0.310546875
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2595_0005.png",
+    "question": "The soccer-ball-field located centrally within the larger track field.",
+    "ground_truth": "{<31><0><91><63>}",
+    "dataset": "RSBench",
+    "question_id": 6595,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.310546875,
+      -0.2109375,
+      0.86328125,
+      -0.23828125,
+      0.919921875,
+      0.591796875,
+      0.3671875,
+      0.634765625
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2625_0020.png",
+    "question": "The smaller large vehicle is positioned closer to the edge of the building's roof, towards the bottom-left corner of the image.",
+    "ground_truth": "{<0><82><8><94>}",
+    "dataset": "RSBench",
+    "question_id": 6725,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.05078125,
+      0.947265625,
+      -0.080078125,
+      0.90234375,
+      0.0546875,
+      0.822265625,
+      0.08203125,
+      0.865234375
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "P2645_0016.png",
+    "question": "The ship in the image is toward the middle-right of the image frame.",
+    "ground_truth": "{<66><40><100><58>}",
+    "dataset": "RSBench",
+    "question_id": 6789,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      1.28515625,
+      0.521484375,
+      1.2734375,
+      0.580078125,
+      0.662109375,
+      0.4609375,
+      0.66796875,
+      0.400390625
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2678_0031.png",
+    "question": "The storage tank positioned at the top-most in the middle-right region",
+    "ground_truth": "{<85><37><90><42>}",
+    "dataset": "RSBench",
+    "question_id": 6861,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.853515625,
+      0.376953125,
+      0.904296875,
+      0.376953125,
+      0.904296875,
+      0.4296875,
+      0.853515625,
+      0.4296875
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2714_0014.png",
+    "question": "The soccer ball field situated at the top middle of the image.",
+    "ground_truth": "{<58><7><61><11>}",
+    "dataset": "RSBench",
+    "question_id": 6975,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.583984375,
+      0.07421875,
+      0.6015625,
+      0.0703125,
+      0.615234375,
+      0.111328125,
+      0.595703125,
+      0.115234375
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2714_0031.png",
+    "question": "The bridge in the top section of the image crosses over a body of water.",
+    "ground_truth": "{<59><15><68><28>}",
+    "dataset": "RSBench",
+    "question_id": 6989,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.6640625,
+      0.158203125,
+      0.689453125,
+      0.169921875,
+      0.625,
+      0.283203125,
+      0.599609375,
+      0.267578125
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2721_0009.png",
+    "question": "The soccer-ball field positioned closer to the middle-right edge of the image.",
+    "ground_truth": "{<83><55><87><61>}",
+    "dataset": "RSBench",
+    "question_id": 7026,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.833984375,
+      0.556640625,
+      0.87109375,
+      0.556640625,
+      0.87109375,
+      0.619140625,
+      0.833984375,
+      0.619140625
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2721_0018.png",
+    "question": "The ground track field with green turf surrounded by a running track is located towards the center of the image.",
+    "ground_truth": "{<48><27><55><35>}",
+    "dataset": "RSBench",
+    "question_id": 7029,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.48046875,
+      0.3046875,
+      0.5078125,
+      0.279296875,
+      0.552734375,
+      0.32421875,
+      0.5234375,
+      0.3515625
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2721_0037.png",
+    "question": "The ground track field can be identified by its oval shape with a noticeably green inner field, bordered by a grayish track.",
+    "ground_truth": "{<35><63><41><72>}",
+    "dataset": "RSBench",
+    "question_id": 7047,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.373046875,
+      0.63671875,
+      0.412109375,
+      0.64453125,
+      0.3984375,
+      0.7265625,
+      0.357421875,
+      0.716796875
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2722_0004.png",
+    "question": "The soccer ball field is situated just to the northeast of the ground track field.",
+    "ground_truth": "{<79><81><81><85>}",
+    "dataset": "RSBench",
+    "question_id": 7054,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.79296875,
+      0.8125,
+      0.81640625,
+      0.8125,
+      0.81640625,
+      0.85546875,
+      0.79296875,
+      0.85546875
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2722_0025.png",
+    "question": "The soccer-ball-field located at the middle-left of the image.",
+    "ground_truth": "{<6><46><10><50>}",
+    "dataset": "RSBench",
+    "question_id": 7067,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.060546875,
+      0.47265625,
+      0.07421875,
+      0.4609375,
+      0.103515625,
+      0.490234375,
+      0.08984375,
+      0.505859375
+    ],
+    "obj_cls": "soccer-ball-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2733_0021.png",
+    "question": "The container crane located at the middle-bottom area of the image.",
+    "ground_truth": "{<22><64><51><70>}",
+    "dataset": "RSBench",
+    "question_id": 7128,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.228515625,
+      0.693359375,
+      0.224609375,
+      0.64453125,
+      0.517578125,
+      0.658203125,
+      0.51953125,
+      0.705078125
+    ],
+    "obj_cls": "container-crane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2733_0027.png",
+    "question": "The container crane towards the bottom right corner of the image.",
+    "ground_truth": "{<88><84><100><91>}",
+    "dataset": "RSBench",
+    "question_id": 7132,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.880859375,
+      0.896484375,
+      0.89453125,
+      0.84375,
+      1.09375,
+      0.876953125,
+      1.0859375,
+      0.919921875
+    ],
+    "obj_cls": "container-crane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2733_0028.png",
+    "question": "The largest container crane, occupying the bottom-left corner of the image.",
+    "ground_truth": "{<10><90><28><100>}",
+    "dataset": "RSBench",
+    "question_id": 7135,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.109375,
+      0.94140625,
+      0.140625,
+      0.904296875,
+      0.283203125,
+      1.01171875,
+      0.259765625,
+      1.044921875
+    ],
+    "obj_cls": "container-crane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2733_0029.png",
+    "question": "The top-most container crane in the top-right area of the image.",
+    "ground_truth": "{<72><0><90><8>}",
+    "dataset": "RSBench",
+    "question_id": 7136,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.728515625,
+      -0.0234375,
+      0.759765625,
+      -0.060546875,
+      0.908203125,
+      0.03125,
+      0.888671875,
+      0.080078125
+    ],
+    "obj_cls": "container-crane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2733_0033.png",
+    "question": "The container crane located at the top-right position on the dock.",
+    "ground_truth": "{<56><53><76><58>}",
+    "dataset": "RSBench",
+    "question_id": 7139,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.576171875,
+      0.57421875,
+      0.56640625,
+      0.537109375,
+      0.763671875,
+      0.548828125,
+      0.767578125,
+      0.5859375
+    ],
+    "obj_cls": "container-crane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2733_0034.png",
+    "question": "The small container crane situated near the upper left of the image.",
+    "ground_truth": "{<30><0><45><8>}",
+    "dataset": "RSBench",
+    "question_id": 7142,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.306640625,
+      -0.029296875,
+      0.33984375,
+      -0.06640625,
+      0.453125,
+      0.052734375,
+      0.431640625,
+      0.08203125
+    ],
+    "obj_cls": "container-crane",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2745_0014.png",
+    "question": "The left-most storage tank is located in the top-left area of the image.",
+    "ground_truth": "{<8><0><14><6>}",
+    "dataset": "RSBench",
+    "question_id": 7151,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.08984375,
+      0.0078125,
+      0.146484375,
+      0.0078125,
+      0.146484375,
+      0.0625,
+      0.08984375,
+      0.0625
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2794_0061.png",
+    "question": "The ship adjacent to the building in the top left quadrant.",
+    "ground_truth": "{<0><0><14><47>}",
+    "dataset": "RSBench",
+    "question_id": 7492,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      -0.05859375,
+      -0.0390625,
+      0.041015625,
+      -0.046875,
+      0.1484375,
+      0.44921875,
+      0.04296875,
+      0.470703125
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P2802_0067.png",
+    "question": "The roundabout is located at the center with various vehicles moving around its circumference.",
+    "ground_truth": "{<8><50><59><100>}",
+    "dataset": "RSBench",
+    "question_id": 7541,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.080078125,
+      0.5078125,
+      0.59765625,
+      0.5078125,
+      0.59765625,
+      1.03125,
+      0.080078125,
+      1.03125
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P3810_0000.png",
+    "question": "The roundabout positioned in the top central part of the image.",
+    "ground_truth": "{<32><19><33><20>}",
+    "dataset": "RSBench",
+    "question_id": 7668,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.32421875,
+      0.19921875,
+      0.3359375,
+      0.19921875,
+      0.3359375,
+      0.208984375,
+      0.32421875,
+      0.208984375
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P5070_0094.png",
+    "question": "The long tram occupying a centre position across the image.",
+    "ground_truth": "{<1><29><95><62>}",
+    "dataset": "RSBench",
+    "question_id": 7888,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.93359375,
+      0.296875,
+      0.958984375,
+      0.408203125,
+      0.048828125,
+      0.625,
+      0.01953125,
+      0.509765625
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "P5171_0027.png",
+    "question": "The helipad situated in the middle-right of the image is characterized by its geometric marking, with a visible central circle and surrounding square.",
+    "ground_truth": "{<74><34><92><50>}",
+    "dataset": "RSBench",
+    "question_id": 7947,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.748046875,
+      0.412109375,
+      0.837890625,
+      0.345703125,
+      0.923828125,
+      0.435546875,
+      0.8359375,
+      0.5
+    ],
+    "obj_cls": "helipad",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P5789_1135.png",
+    "question": "The small harbor in the image is distinguishable due to its centralized position with dock-like structures surrounded by water.",
+    "ground_truth": "{<27><56><33><62>}",
+    "dataset": "RSBench",
+    "question_id": 7994,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.318359375,
+      0.568359375,
+      0.3359375,
+      0.58984375,
+      0.2890625,
+      0.626953125,
+      0.271484375,
+      0.60546875
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P5789_1855.png",
+    "question": "The ground track field is located in the middle-left section of the image.",
+    "ground_truth": "{<7><34><52><61>}",
+    "dataset": "RSBench",
+    "question_id": 8072,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.109375,
+      0.619140625,
+      0.078125,
+      0.4375,
+      0.48046875,
+      0.345703125,
+      0.5234375,
+      0.51171875
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P5789_2161.png",
+    "question": "The harbor situated in the middle-left of the image.",
+    "ground_truth": "{<14><58><23><65>}",
+    "dataset": "RSBench",
+    "question_id": 8139,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.16015625,
+      0.65234375,
+      0.1484375,
+      0.609375,
+      0.22265625,
+      0.587890625,
+      0.234375,
+      0.630859375
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P7799_0002.png",
+    "question": "The ground track field is located at the bottom left corner of the image.",
+    "ground_truth": "{<12><85><24><94>}",
+    "dataset": "RSBench",
+    "question_id": 8431,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.181640625,
+      0.859375,
+      0.240234375,
+      0.892578125,
+      0.1796875,
+      0.94921875,
+      0.12109375,
+      0.91796875
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P8392_0003.png",
+    "question": "The small vehicle positioned at the bottom-most part of the image is near a building.",
+    "ground_truth": "{<31><73><34><77>}",
+    "dataset": "RSBench",
+    "question_id": 8582,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.33203125,
+      0.779296875,
+      0.3125,
+      0.76953125,
+      0.33203125,
+      0.73046875,
+      0.349609375,
+      0.736328125
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "P9170_0002.png",
+    "question": "The small airport is situated towards the bottom-left of the image, surrounded by green fields.",
+    "ground_truth": "{<2><77><4><100>}",
+    "dataset": "RSBench",
+    "question_id": 8761,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.029296875,
+      0.771484375,
+      0.04296875,
+      0.771484375,
+      0.04296875,
+      1.14453125,
+      0.029296875,
+      1.14453125
+    ],
+    "obj_cls": "airport",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "P9397_0000.png",
+    "question": "The roundabout in the image is positioned towards the middle-right side, amidst the network of roads.",
+    "ground_truth": "{<75><39><76><41>}",
+    "dataset": "RSBench",
+    "question_id": 8762,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.755859375,
+      0.39453125,
+      0.767578125,
+      0.39453125,
+      0.767578125,
+      0.4140625,
+      0.755859375,
+      0.4140625
+    ],
+    "obj_cls": "roundabout",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "05909_0000.png",
+    "question": "The bridge in the image is situated at the bottom of the frame.",
+    "ground_truth": "{<25><88><43><100>}",
+    "dataset": "RSBench",
+    "question_id": 8834,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.251953125,
+      0.88671875,
+      0.439453125,
+      0.88671875,
+      0.439453125,
+      1.09375,
+      0.251953125,
+      1.09375
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "05929_0000.png",
+    "question": "The bottom-most expressway service area of the image.",
+    "ground_truth": "{<32><21><43><36>}",
+    "dataset": "RSBench",
+    "question_id": 8855,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.326171875,
+      0.21484375,
+      0.439453125,
+      0.21484375,
+      0.439453125,
+      0.3671875,
+      0.326171875,
+      0.3671875
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "05952_0000.png",
+    "question": "The basketball court is found in the top-left of the image.",
+    "ground_truth": "{<0><19><8><31>}",
+    "dataset": "RSBench",
+    "question_id": 8885,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.001953125,
+      0.193359375,
+      0.0859375,
+      0.193359375,
+      0.0859375,
+      0.310546875,
+      0.001953125,
+      0.310546875
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "05966_0000.png",
+    "question": "The truck with a white container is located on the road.",
+    "ground_truth": "{<15><62><50><88>}",
+    "dataset": "RSBench",
+    "question_id": 8899,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.150390625,
+      0.626953125,
+      0.501953125,
+      0.626953125,
+      0.501953125,
+      0.884765625,
+      0.150390625,
+      0.884765625
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06026_0000.png",
+    "question": "The oval stadium located in the lower right portion of the image.",
+    "ground_truth": "{<65><66><89><95>}",
+    "dataset": "RSBench",
+    "question_id": 8972,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.650390625,
+      0.66796875,
+      0.89453125,
+      0.66796875,
+      0.89453125,
+      0.951171875,
+      0.650390625,
+      0.951171875
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06069_0000.png",
+    "question": "The golf field is situated in the lower right quadrant.",
+    "ground_truth": "{<32><26><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 9022,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.322265625,
+      0.263671875,
+      1.142578125,
+      0.263671875,
+      1.142578125,
+      1.318359375,
+      0.322265625,
+      1.318359375
+    ],
+    "obj_cls": "golffield",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06168_0000.png",
+    "question": "The expressway service area is identified by its wide, white structure surrounded by smaller buildings with red roofs.",
+    "ground_truth": "{<32><27><87><100>}",
+    "dataset": "RSBench",
+    "question_id": 9142,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.32421875,
+      0.275390625,
+      0.87890625,
+      0.275390625,
+      0.87890625,
+      1.1484375,
+      0.32421875,
+      1.1484375
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06181_0000.png",
+    "question": "The windmill with three blades is positioned at the center of the image.",
+    "ground_truth": "{<36><40><49><54>}",
+    "dataset": "RSBench",
+    "question_id": 9160,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.369140625,
+      0.408203125,
+      0.498046875,
+      0.408203125,
+      0.498046875,
+      0.54296875,
+      0.369140625,
+      0.54296875
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06276_0000.png",
+    "question": "The smaller stadium situated in the top-left corner of the image.",
+    "ground_truth": "{<7><4><27><28>}",
+    "dataset": "RSBench",
+    "question_id": 9268,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.072265625,
+      0.048828125,
+      0.275390625,
+      0.048828125,
+      0.275390625,
+      0.283203125,
+      0.072265625,
+      0.283203125
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06278_0000.png",
+    "question": "The overpass with a straight shape, extending across most of the image, is a unique structure.",
+    "ground_truth": "{<65><28><97><100>}",
+    "dataset": "RSBench",
+    "question_id": 9272,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.650390625,
+      0.287109375,
+      0.974609375,
+      0.287109375,
+      0.974609375,
+      1.279296875,
+      0.650390625,
+      1.279296875
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06300_0000.png",
+    "question": "The train station is seen as the vertically oriented structure in the middle section of the image.",
+    "ground_truth": "{<66><33><74><87>}",
+    "dataset": "RSBench",
+    "question_id": 9301,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.66015625,
+      0.33203125,
+      0.744140625,
+      0.33203125,
+      0.744140625,
+      0.87109375,
+      0.66015625,
+      0.87109375
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06360_0000.png",
+    "question": "The windmill positioned closer to the top edge of the image.",
+    "ground_truth": "{<11><24><16><32>}",
+    "dataset": "RSBench",
+    "question_id": 9376,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.115234375,
+      0.244140625,
+      0.169921875,
+      0.244140625,
+      0.169921875,
+      0.3203125,
+      0.115234375,
+      0.3203125
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06376_0000.png",
+    "question": "The expressway service area is located at the bottom of the image.",
+    "ground_truth": "{<31><88><44><100>}",
+    "dataset": "RSBench",
+    "question_id": 9395,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.318359375,
+      0.880859375,
+      0.44140625,
+      0.880859375,
+      0.44140625,
+      1.09375,
+      0.318359375,
+      1.09375
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06389_0000.png",
+    "question": "The baseball field is located in the middle right of the image.",
+    "ground_truth": "{<68><26><88><48>}",
+    "dataset": "RSBench",
+    "question_id": 9412,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.68359375,
+      0.26953125,
+      0.880859375,
+      0.26953125,
+      0.880859375,
+      0.482421875,
+      0.68359375,
+      0.482421875
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06428_0000.png",
+    "question": "The ground track field located towards the left of the center of the image.",
+    "ground_truth": "{<38><40><43><47>}",
+    "dataset": "RSBench",
+    "question_id": 9453,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.38671875,
+      0.400390625,
+      0.43359375,
+      0.400390625,
+      0.43359375,
+      0.474609375,
+      0.38671875,
+      0.474609375
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06488_0000.png",
+    "question": "The storage tank in the bottom-right corner.",
+    "ground_truth": "{<72><66><100><96>}",
+    "dataset": "RSBench",
+    "question_id": 9520,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.7265625,
+      0.669921875,
+      1.08203125,
+      0.669921875,
+      1.08203125,
+      0.966796875,
+      0.7265625,
+      0.966796875
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06496_0000.png",
+    "question": "The other baseball field, located towards the bottom of the image.",
+    "ground_truth": "{<41><82><66><100>}",
+    "dataset": "RSBench",
+    "question_id": 9531,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.41796875,
+      0.8203125,
+      0.669921875,
+      0.8203125,
+      0.669921875,
+      1.08984375,
+      0.41796875,
+      1.08984375
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06522_0000.png",
+    "question": "The ship extending from the top left to the bottom edge of the image is one of the noticeable objects.",
+    "ground_truth": "{<4><20><21><100>}",
+    "dataset": "RSBench",
+    "question_id": 9561,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.048828125,
+      0.205078125,
+      0.21875,
+      0.205078125,
+      0.21875,
+      1.345703125,
+      0.048828125,
+      1.345703125
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "large"
+  },
+  {
+    "image_id": "06526_0000.png",
+    "question": "The windmill located at the top-middle of the image stands out against the barren landscape.",
+    "ground_truth": "{<43><21><51><28>}",
+    "dataset": "RSBench",
+    "question_id": 9568,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.43359375,
+      0.21484375,
+      0.513671875,
+      0.21484375,
+      0.513671875,
+      0.2890625,
+      0.43359375,
+      0.2890625
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06540_0000.png",
+    "question": "The windmill towards the right edge of the image.",
+    "ground_truth": "{<94><32><100><37>}",
+    "dataset": "RSBench",
+    "question_id": 9589,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.94140625,
+      0.326171875,
+      1.01171875,
+      0.326171875,
+      1.01171875,
+      0.376953125,
+      0.94140625,
+      0.376953125
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06543_0000.png",
+    "question": "The overpass situated at the bottom right of the image.",
+    "ground_truth": "{<91><38><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 9593,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.9140625,
+      0.384765625,
+      1.044921875,
+      0.384765625,
+      1.044921875,
+      1.19140625,
+      0.9140625,
+      1.19140625
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06698_0000.png",
+    "question": "The bridge on the left edge of the image crosses over a body of water.",
+    "ground_truth": "{<0><81><4><86>}",
+    "dataset": "RSBench",
+    "question_id": 9766,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.001953125,
+      0.8125,
+      0.048828125,
+      0.8125,
+      0.048828125,
+      0.8671875,
+      0.001953125,
+      0.8671875
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06747_0000.png",
+    "question": "The stadium can be identified by its distinct red track and infield, setting it apart from the surrounding grey and brown rooftops of buildings.",
+    "ground_truth": "{<41><32><56><45>}",
+    "dataset": "RSBench",
+    "question_id": 9837,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.4140625,
+      0.32421875,
+      0.564453125,
+      0.32421875,
+      0.564453125,
+      0.45703125,
+      0.4140625,
+      0.45703125
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06818_0000.png",
+    "question": "The baseball field located in the lower half of the image near the bottom edge.",
+    "ground_truth": "{<22><53><59><99>}",
+    "dataset": "RSBench",
+    "question_id": 9925,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.220703125,
+      0.5390625,
+      0.59375,
+      0.5390625,
+      0.59375,
+      0.99609375,
+      0.220703125,
+      0.99609375
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06862_0000.png",
+    "question": "The larger vehicle is positioned in the top lane of the highway.",
+    "ground_truth": "{<50><25><87><51>}",
+    "dataset": "RSBench",
+    "question_id": 9987,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.505859375,
+      0.259765625,
+      0.876953125,
+      0.259765625,
+      0.876953125,
+      0.513671875,
+      0.505859375,
+      0.513671875
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06882_0000.png",
+    "question": "The baseball field is distinguishable by its diamond shape in the bottom-left corner of the image.",
+    "ground_truth": "{<2><70><6><75>}",
+    "dataset": "RSBench",
+    "question_id": 10013,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.021484375,
+      0.703125,
+      0.06640625,
+      0.703125,
+      0.06640625,
+      0.751953125,
+      0.021484375,
+      0.751953125
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06923_0000.png",
+    "question": "The small dam is noticeable at the bottom left of the image.",
+    "ground_truth": "{<16><69><28><81>}",
+    "dataset": "RSBench",
+    "question_id": 10066,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.162109375,
+      0.69140625,
+      0.28515625,
+      0.69140625,
+      0.28515625,
+      0.814453125,
+      0.162109375,
+      0.814453125
+    ],
+    "obj_cls": "dam",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06925_0000.png",
+    "question": "The baseball field is situated in the bottom-right section.",
+    "ground_truth": "{<66><76><69><79>}",
+    "dataset": "RSBench",
+    "question_id": 10073,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.666015625,
+      0.763671875,
+      0.693359375,
+      0.763671875,
+      0.693359375,
+      0.79296875,
+      0.666015625,
+      0.79296875
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06926_0000.png",
+    "question": "The overpass positioned towards the middle-right of the image.",
+    "ground_truth": "{<87><36><91><41>}",
+    "dataset": "RSBench",
+    "question_id": 10077,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.87109375,
+      0.36328125,
+      0.91015625,
+      0.36328125,
+      0.91015625,
+      0.41015625,
+      0.87109375,
+      0.41015625
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "06957_0000.png",
+    "question": "The baseball field is characterized by its large brown infield and clear diamond shape with bases.",
+    "ground_truth": "{<37><12><65><38>}",
+    "dataset": "RSBench",
+    "question_id": 10108,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.37890625,
+      0.12109375,
+      0.65234375,
+      0.12109375,
+      0.65234375,
+      0.3828125,
+      0.37890625,
+      0.3828125
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "07133_0000.png",
+    "question": "The chimney situated towards the bottom of the image.",
+    "ground_truth": "{<59><60><95><100>}",
+    "dataset": "RSBench",
+    "question_id": 10322,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.595703125,
+      0.6015625,
+      0.95703125,
+      0.6015625,
+      0.95703125,
+      1.005859375,
+      0.595703125,
+      1.005859375
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07172_0000.png",
+    "question": "The windmill located towards the middle-left part of the image.",
+    "ground_truth": "{<16><43><25><52>}",
+    "dataset": "RSBench",
+    "question_id": 10375,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.162109375,
+      0.43359375,
+      0.259765625,
+      0.43359375,
+      0.259765625,
+      0.529296875,
+      0.162109375,
+      0.529296875
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07217_0000.png",
+    "question": "The largest overpass in the image is located at the very bottom.",
+    "ground_truth": "{<57><95><67><100>}",
+    "dataset": "RSBench",
+    "question_id": 10439,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.57421875,
+      0.958984375,
+      0.6796875,
+      0.958984375,
+      0.6796875,
+      1.03515625,
+      0.57421875,
+      1.03515625
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07261_0000.png",
+    "question": "The basketball court with colorful painted areas is located at the lower half of the image.",
+    "ground_truth": "{<50><45><81><99>}",
+    "dataset": "RSBench",
+    "question_id": 10492,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.5,
+      0.455078125,
+      0.81640625,
+      0.455078125,
+      0.81640625,
+      0.994140625,
+      0.5,
+      0.994140625
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07263_0000.png",
+    "question": "The expressway toll station with a bright red roof is located at the intersection of two roads.",
+    "ground_truth": "{<60><48><66><55>}",
+    "dataset": "RSBench",
+    "question_id": 10493,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.603515625,
+      0.486328125,
+      0.6640625,
+      0.486328125,
+      0.6640625,
+      0.556640625,
+      0.603515625,
+      0.556640625
+    ],
+    "obj_cls": "expressway-toll-station",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07290_0000.png",
+    "question": "The left-most tennis court is located at the bottom of the image.",
+    "ground_truth": "{<58><71><79><100>}",
+    "dataset": "RSBench",
+    "question_id": 10538,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.580078125,
+      0.712890625,
+      0.791015625,
+      0.712890625,
+      0.791015625,
+      1.1015625,
+      0.580078125,
+      1.1015625
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07294_0000.png",
+    "question": "The smaller ground track field can be found in the top-middle section.",
+    "ground_truth": "{<51><5><55><14>}",
+    "dataset": "RSBench",
+    "question_id": 10547,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.51171875,
+      0.0546875,
+      0.5546875,
+      0.0546875,
+      0.5546875,
+      0.142578125,
+      0.51171875,
+      0.142578125
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07303_0000.png",
+    "question": "The golf course positioned towards the upper section of the image.",
+    "ground_truth": "{<7><21><37><50>}",
+    "dataset": "RSBench",
+    "question_id": 10556,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.0703125,
+      0.21484375,
+      0.375,
+      0.21484375,
+      0.375,
+      0.5078125,
+      0.0703125,
+      0.5078125
+    ],
+    "obj_cls": "golffield",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07318_0000.png",
+    "question": "The train station located in the center of the image.",
+    "ground_truth": "{<52><19><89><100>}",
+    "dataset": "RSBench",
+    "question_id": 10571,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.525390625,
+      0.193359375,
+      0.8984375,
+      0.193359375,
+      0.8984375,
+      1.28515625,
+      0.525390625,
+      1.28515625
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "large"
+  },
+  {
+    "image_id": "07320_0000.png",
+    "question": "The smaller storage tank can be found on the right side of the image.",
+    "ground_truth": "{<80><50><100><75>}",
+    "dataset": "RSBench",
+    "question_id": 10574,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.802734375,
+      0.5,
+      1.11328125,
+      0.5,
+      1.11328125,
+      0.759765625,
+      0.802734375,
+      0.759765625
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "07406_0000.png",
+    "question": "The dam with a distinctive geometric shape is located at the bottom-right section of the satellite image.",
+    "ground_truth": "{<73><83><85><100>}",
+    "dataset": "RSBench",
+    "question_id": 10676,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.73046875,
+      0.830078125,
+      0.857421875,
+      0.830078125,
+      0.857421875,
+      1.05078125,
+      0.73046875,
+      1.05078125
+    ],
+    "obj_cls": "dam",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07430_0000.png",
+    "question": "The airport runway is visible as a long, narrow strip extending horizontally across the lower third of the image.",
+    "ground_truth": "{<16><65><100><71>}",
+    "dataset": "RSBench",
+    "question_id": 10705,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.16796875,
+      0.654296875,
+      1.431640625,
+      0.654296875,
+      1.431640625,
+      0.7109375,
+      0.16796875,
+      0.7109375
+    ],
+    "obj_cls": "airport",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07440_0000.png",
+    "question": "The white domed storage tank casting a shadow is located centrally in the image.",
+    "ground_truth": "{<57><51><96><88>}",
+    "dataset": "RSBench",
+    "question_id": 10719,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.578125,
+      0.51171875,
+      0.966796875,
+      0.51171875,
+      0.966796875,
+      0.884765625,
+      0.578125,
+      0.884765625
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07451_0000.png",
+    "question": "The train station is located at the central part of the image.",
+    "ground_truth": "{<46><32><80><100>}",
+    "dataset": "RSBench",
+    "question_id": 10738,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.46484375,
+      0.322265625,
+      0.802734375,
+      0.322265625,
+      0.802734375,
+      1.236328125,
+      0.46484375,
+      1.236328125
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07463_0000.png",
+    "question": "The stadium is located towards the bottom center and extends to the right edge of the image.",
+    "ground_truth": "{<49><48><96><100>}",
+    "dataset": "RSBench",
+    "question_id": 10759,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.4921875,
+      0.482421875,
+      0.962890625,
+      0.482421875,
+      0.962890625,
+      1.0390625,
+      0.4921875,
+      1.0390625
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07531_0000.png",
+    "question": "The basketball court is located at the bottom-right of the image.",
+    "ground_truth": "{<69><51><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 10838,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.693359375,
+      0.513671875,
+      1.03125,
+      0.513671875,
+      1.03125,
+      1.080078125,
+      0.693359375,
+      1.080078125
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07546_0000.png",
+    "question": "The expressway toll station is situated in the bottom-right corner of the image.",
+    "ground_truth": "{<89><74><100><85>}",
+    "dataset": "RSBench",
+    "question_id": 10862,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.896484375,
+      0.748046875,
+      1.060546875,
+      0.748046875,
+      1.060546875,
+      0.85546875,
+      0.896484375,
+      0.85546875
+    ],
+    "obj_cls": "expressway-toll-station",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07558_0000.png",
+    "question": "The chimney is located on the middle-left of the image.",
+    "ground_truth": "{<0><33><21><66>}",
+    "dataset": "RSBench",
+    "question_id": 10876,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.001953125,
+      0.33203125,
+      0.21875,
+      0.33203125,
+      0.21875,
+      0.6640625,
+      0.001953125,
+      0.6640625
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07562_0000.png",
+    "question": "The basketball court is located towards the middle-left of the image.",
+    "ground_truth": "{<29><24><44><37>}",
+    "dataset": "RSBench",
+    "question_id": 10885,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.296875,
+      0.248046875,
+      0.44140625,
+      0.248046875,
+      0.44140625,
+      0.37890625,
+      0.296875,
+      0.37890625
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07599_0000.png",
+    "question": "The golf course is located on the lower left side of the image.",
+    "ground_truth": "{<4><64><21><99>}",
+    "dataset": "RSBench",
+    "question_id": 10920,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.04296875,
+      0.642578125,
+      0.2109375,
+      0.642578125,
+      0.2109375,
+      0.998046875,
+      0.04296875,
+      0.998046875
+    ],
+    "obj_cls": "golffield",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07608_0000.png",
+    "question": "The tennis court situated in the top-left corner of the image.",
+    "ground_truth": "{<7><18><11><27>}",
+    "dataset": "RSBench",
+    "question_id": 10928,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.076171875,
+      0.1875,
+      0.1171875,
+      0.1875,
+      0.1171875,
+      0.275390625,
+      0.076171875,
+      0.275390625
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07609_0000.png",
+    "question": "The bridge is located at the middle of the image.",
+    "ground_truth": "{<21><55><100><71>}",
+    "dataset": "RSBench",
+    "question_id": 10930,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.216796875,
+      0.5546875,
+      1.3203125,
+      0.5546875,
+      1.3203125,
+      0.716796875,
+      0.216796875,
+      0.716796875
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07650_0000.png",
+    "question": "The larger baseball field can be found towards the bottom edge of the image.",
+    "ground_truth": "{<50><75><75><100>}",
+    "dataset": "RSBench",
+    "question_id": 10976,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.509765625,
+      0.759765625,
+      0.751953125,
+      0.759765625,
+      0.751953125,
+      1.0,
+      0.509765625,
+      1.0
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07792_0000.png",
+    "question": "The larger vehicle is positioned close to the bottom edge of the image.",
+    "ground_truth": "{<54><78><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 11173,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.54296875,
+      0.783203125,
+      1.046875,
+      0.783203125,
+      1.046875,
+      1.11328125,
+      0.54296875,
+      1.11328125
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07902_0000.png",
+    "question": "The expressway service area is located amidst the agricultural fields and can be identified by its rectangular layout with a lighter surface color than the surrounding terrain.",
+    "ground_truth": "{<6><24><34><33>}",
+    "dataset": "RSBench",
+    "question_id": 11291,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.0625,
+      0.24609375,
+      0.349609375,
+      0.24609375,
+      0.349609375,
+      0.33984375,
+      0.0625,
+      0.33984375
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "07938_0000.png",
+    "question": "The bridge located at the top portion of the image spans across the image and is surrounded by dense trees on its lower side.",
+    "ground_truth": "{<42><23><100><42>}",
+    "dataset": "RSBench",
+    "question_id": 11342,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.423828125,
+      0.232421875,
+      1.326171875,
+      0.232421875,
+      1.326171875,
+      0.421875,
+      0.423828125,
+      0.421875
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "08006_0000.png",
+    "question": "The golf field is visible as a large green expanse with water features, stretching on the left edge of the image.",
+    "ground_truth": "{<0><20><6><85>}",
+    "dataset": "RSBench",
+    "question_id": 11425,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.001953125,
+      0.201171875,
+      0.060546875,
+      0.201171875,
+      0.060546875,
+      0.857421875,
+      0.001953125,
+      0.857421875
+    ],
+    "obj_cls": "golffield",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08041_0000.png",
+    "question": "The bottom-most chimney in the center.",
+    "ground_truth": "{<33><23><50><40>}",
+    "dataset": "RSBench",
+    "question_id": 11469,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.3359375,
+      0.23828125,
+      0.5,
+      0.23828125,
+      0.5,
+      0.400390625,
+      0.3359375,
+      0.400390625
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08050_0000.png",
+    "question": "The tennis court is located at the upper right corner of the image.",
+    "ground_truth": "{<92><26><96><34>}",
+    "dataset": "RSBench",
+    "question_id": 11478,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.9296875,
+      0.263671875,
+      0.96875,
+      0.263671875,
+      0.96875,
+      0.345703125,
+      0.9296875,
+      0.345703125
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08092_0000.png",
+    "question": "The train station towards the top of the image.",
+    "ground_truth": "{<20><30><55><39>}",
+    "dataset": "RSBench",
+    "question_id": 11526,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.205078125,
+      0.302734375,
+      0.55078125,
+      0.302734375,
+      0.55078125,
+      0.3984375,
+      0.205078125,
+      0.3984375
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08202_0000.png",
+    "question": "The top-most storage tank situated on the bottom-right quadrant of the image.",
+    "ground_truth": "{<78><56><96><75>}",
+    "dataset": "RSBench",
+    "question_id": 11671,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.78125,
+      0.564453125,
+      0.96875,
+      0.564453125,
+      0.96875,
+      0.7578125,
+      0.78125,
+      0.7578125
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08219_0000.png",
+    "question": "The small chimney emitting smoke is positioned in the top-right portion of the image.",
+    "ground_truth": "{<20><0><37><33>}",
+    "dataset": "RSBench",
+    "question_id": 11701,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.203125,
+      0.001953125,
+      0.37890625,
+      0.001953125,
+      0.37890625,
+      0.3359375,
+      0.203125,
+      0.3359375
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08223_0000.png",
+    "question": "The smaller stadium with a brown roof is situated toward the top edge of the image .",
+    "ground_truth": "{<11><4><43><28>}",
+    "dataset": "RSBench",
+    "question_id": 11706,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.119140625,
+      0.044921875,
+      0.4375,
+      0.044921875,
+      0.4375,
+      0.283203125,
+      0.119140625,
+      0.283203125
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08230_0000.png",
+    "question": "The right-most positioned storage tank at the bottom of the image.",
+    "ground_truth": "{<70><82><90><100>}",
+    "dataset": "RSBench",
+    "question_id": 11718,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.708984375,
+      0.82421875,
+      0.908203125,
+      0.82421875,
+      0.908203125,
+      1.03125,
+      0.708984375,
+      1.03125
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08298_0000.png",
+    "question": "The basketball court at the top of the image.",
+    "ground_truth": "{<63><30><79><52>}",
+    "dataset": "RSBench",
+    "question_id": 11802,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.6328125,
+      0.306640625,
+      0.79296875,
+      0.306640625,
+      0.79296875,
+      0.5234375,
+      0.6328125,
+      0.5234375
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08309_0000.png",
+    "question": "The small dam is located at the bottom-left corner of the image.",
+    "ground_truth": "{<3><90><6><99>}",
+    "dataset": "RSBench",
+    "question_id": 11825,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.033203125,
+      0.90234375,
+      0.068359375,
+      0.90234375,
+      0.068359375,
+      0.990234375,
+      0.033203125,
+      0.990234375
+    ],
+    "obj_cls": "dam",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08351_0000.png",
+    "question": "The expressway service area located parallel to the road in the center of the image.",
+    "ground_truth": "{<14><61><100><68>}",
+    "dataset": "RSBench",
+    "question_id": 11874,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.140625,
+      0.615234375,
+      1.2421875,
+      0.615234375,
+      1.2421875,
+      0.685546875,
+      0.140625,
+      0.685546875
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08360_0000.png",
+    "question": "The small ship is positioned in the northern part of the water body.",
+    "ground_truth": "{<75><27><78><33>}",
+    "dataset": "RSBench",
+    "question_id": 11892,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.751953125,
+      0.271484375,
+      0.783203125,
+      0.271484375,
+      0.783203125,
+      0.333984375,
+      0.751953125,
+      0.333984375
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08443_0000.png",
+    "question": "The stadium in the image features a green playing field surrounded by gray seating areas and is topped with a white roof.",
+    "ground_truth": "{<51><50><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 11987,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.515625,
+      0.509765625,
+      1.02734375,
+      0.509765625,
+      1.02734375,
+      1.068359375,
+      0.515625,
+      1.068359375
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "08457_0000.png",
+    "question": "The windmill located at the top-middle of the image stands alone, surrounded by the earthen tones of the terrain.",
+    "ground_truth": "{<51><8><56><14>}",
+    "dataset": "RSBench",
+    "question_id": 12001,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.51953125,
+      0.080078125,
+      0.560546875,
+      0.080078125,
+      0.560546875,
+      0.14453125,
+      0.51953125,
+      0.14453125
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08509_0000.png",
+    "question": "The ship positioned towards the bottom of the image has a distinctive helicopter landing pad marked with a green 'H' on its deck.",
+    "ground_truth": "{<18><71><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 12065,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.1875,
+      0.716796875,
+      1.36328125,
+      0.716796875,
+      1.36328125,
+      1.046875,
+      0.1875,
+      1.046875
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08597_0000.png",
+    "question": "The small expressway-toll-station is located near the longitudinal center of the image.",
+    "ground_truth": "{<54><59><85><88>}",
+    "dataset": "RSBench",
+    "question_id": 12170,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.546875,
+      0.595703125,
+      0.853515625,
+      0.595703125,
+      0.853515625,
+      0.884765625,
+      0.546875,
+      0.884765625
+    ],
+    "obj_cls": "expressway-toll-station",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08633_0000.png",
+    "question": "The baseball field is situated to the right of the road and has a clear view of the diamond-shaped infield.",
+    "ground_truth": "{<60><43><100><94>}",
+    "dataset": "RSBench",
+    "question_id": 12224,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.603515625,
+      0.43359375,
+      1.12109375,
+      0.43359375,
+      1.12109375,
+      0.9453125,
+      0.603515625,
+      0.9453125
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08646_0000.png",
+    "question": "The overpass captured in the image is made of concrete and has double yellow lines marking its lanes.",
+    "ground_truth": "{<36><51><100><95>}",
+    "dataset": "RSBench",
+    "question_id": 12242,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.369140625,
+      0.515625,
+      1.00390625,
+      0.515625,
+      1.00390625,
+      0.95703125,
+      0.369140625,
+      0.95703125
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08700_0000.png",
+    "question": "The chimney structure is situated towards the right side of the image.",
+    "ground_truth": "{<74><44><95><73>}",
+    "dataset": "RSBench",
+    "question_id": 12319,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.740234375,
+      0.44140625,
+      0.95703125,
+      0.44140625,
+      0.95703125,
+      0.734375,
+      0.740234375,
+      0.734375
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08710_0000.png",
+    "question": "The overpass can be found towards the bottom-middle part of the image.",
+    "ground_truth": "{<39><82><43><90>}",
+    "dataset": "RSBench",
+    "question_id": 12337,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.390625,
+      0.828125,
+      0.4375,
+      0.828125,
+      0.4375,
+      0.90625,
+      0.390625,
+      0.90625
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08721_0000.png",
+    "question": "The expressway service area positioned on the left side of the image.",
+    "ground_truth": "{<2><11><18><27>}",
+    "dataset": "RSBench",
+    "question_id": 12352,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.021484375,
+      0.111328125,
+      0.185546875,
+      0.111328125,
+      0.185546875,
+      0.279296875,
+      0.021484375,
+      0.279296875
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08777_0000.png",
+    "question": "The basketball court closer to the lower edge of the image.",
+    "ground_truth": "{<59><62><81><85>}",
+    "dataset": "RSBench",
+    "question_id": 12424,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.591796875,
+      0.625,
+      0.8125,
+      0.625,
+      0.8125,
+      0.859375,
+      0.591796875,
+      0.859375
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08804_0000.png",
+    "question": "The ground track field visible in the bottom-middle of the image.",
+    "ground_truth": "{<33><87><36><93>}",
+    "dataset": "RSBench",
+    "question_id": 12456,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.333984375,
+      0.876953125,
+      0.36328125,
+      0.876953125,
+      0.36328125,
+      0.9375,
+      0.333984375,
+      0.9375
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08892_0000.png",
+    "question": "The dam stretches from the middle to the right edge of the image.",
+    "ground_truth": "{<68><45><87><100>}",
+    "dataset": "RSBench",
+    "question_id": 12569,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.68359375,
+      0.458984375,
+      0.876953125,
+      0.458984375,
+      0.876953125,
+      1.05078125,
+      0.68359375,
+      1.05078125
+    ],
+    "obj_cls": "dam",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08909_0000.png",
+    "question": "The top-most bridge in the image spans from left to right with a longer structure.",
+    "ground_truth": "{<65><65><80><72>}",
+    "dataset": "RSBench",
+    "question_id": 12592,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.65625,
+      0.654296875,
+      0.802734375,
+      0.654296875,
+      0.802734375,
+      0.720703125,
+      0.65625,
+      0.720703125
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08944_0000.png",
+    "question": "The bottom-most ground track field is located towards the centre of the image.",
+    "ground_truth": "{<25><35><91><100>}",
+    "dataset": "RSBench",
+    "question_id": 12632,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.25,
+      0.357421875,
+      0.919921875,
+      0.357421875,
+      0.919921875,
+      1.185546875,
+      0.25,
+      1.185546875
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "08996_0000.png",
+    "question": "The expressway toll station is situated to the left of the highway.",
+    "ground_truth": "{<22><31><26><36>}",
+    "dataset": "RSBench",
+    "question_id": 12696,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.224609375,
+      0.314453125,
+      0.265625,
+      0.314453125,
+      0.265625,
+      0.361328125,
+      0.224609375,
+      0.361328125
+    ],
+    "obj_cls": "expressway-toll-station",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09085_0000.png",
+    "question": "The lower overpass ia situated near the bottom edge of the image similarly intersects the multilane roadway.",
+    "ground_truth": "{<48><50><100><99>}",
+    "dataset": "RSBench",
+    "question_id": 12807,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.484375,
+      0.5078125,
+      1.048828125,
+      0.5078125,
+      1.048828125,
+      0.998046875,
+      0.484375,
+      0.998046875
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09106_0000.png",
+    "question": "The expressway-toll-station is positioned on the right side of the image.",
+    "ground_truth": "{<74><62><95><83>}",
+    "dataset": "RSBench",
+    "question_id": 12839,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.7421875,
+      0.626953125,
+      0.955078125,
+      0.626953125,
+      0.955078125,
+      0.837890625,
+      0.7421875,
+      0.837890625
+    ],
+    "obj_cls": "expressway-toll-station",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09116_0000.png",
+    "question": "The expressway service area closer to the top of the image features parking lots and buildings alongside the highway.",
+    "ground_truth": "{<16><17><52><41>}",
+    "dataset": "RSBench",
+    "question_id": 12853,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.162109375,
+      0.1796875,
+      0.521484375,
+      0.1796875,
+      0.521484375,
+      0.41796875,
+      0.162109375,
+      0.41796875
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09131_0000.png",
+    "question": "The overpass located at the left edge of the image stretches vertically from the top to the bottom.",
+    "ground_truth": "{<14><0><25><100>}",
+    "dataset": "RSBench",
+    "question_id": 12870,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.140625,
+      0.001953125,
+      0.25390625,
+      0.001953125,
+      0.25390625,
+      1.1171875,
+      0.140625,
+      1.1171875
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09229_0000.png",
+    "question": "The track field located towards the top-most sections of the image, with a distinct oval shape and reddish-brown track.",
+    "ground_truth": "{<28><29><53><56>}",
+    "dataset": "RSBench",
+    "question_id": 12985,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.287109375,
+      0.29296875,
+      0.5390625,
+      0.29296875,
+      0.5390625,
+      0.564453125,
+      0.287109375,
+      0.564453125
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09241_0000.png",
+    "question": "The right-most situated overpass positioned near the center of the image.",
+    "ground_truth": "{<47><57><54><60>}",
+    "dataset": "RSBench",
+    "question_id": 13003,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.470703125,
+      0.5703125,
+      0.548828125,
+      0.5703125,
+      0.548828125,
+      0.60546875,
+      0.470703125,
+      0.60546875
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09296_0000.png",
+    "question": "The basketball court visible in the image positioned in the middle-right regions of the frame.",
+    "ground_truth": "{<45><29><100><67>}",
+    "dataset": "RSBench",
+    "question_id": 13077,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.458984375,
+      0.294921875,
+      1.01171875,
+      0.294921875,
+      1.01171875,
+      0.671875,
+      0.458984375,
+      0.671875
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09363_0000.png",
+    "question": "The tennis court situated at the bottom-right of the image.",
+    "ground_truth": "{<54><73><89><100>}",
+    "dataset": "RSBench",
+    "question_id": 13166,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.546875,
+      0.732421875,
+      0.89453125,
+      0.732421875,
+      0.89453125,
+      1.013671875,
+      0.546875,
+      1.013671875
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09384_0000.png",
+    "question": "The larger baseball field is positioned at the bottom-middle of the image.",
+    "ground_truth": "{<52><69><89><100>}",
+    "dataset": "RSBench",
+    "question_id": 13189,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.529296875,
+      0.6953125,
+      0.892578125,
+      0.6953125,
+      0.892578125,
+      1.06640625,
+      0.529296875,
+      1.06640625
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09390_0000.png",
+    "question": "The chimney located at the top of the image is smaller.",
+    "ground_truth": "{<57><0><67><16>}",
+    "dataset": "RSBench",
+    "question_id": 13192,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.576171875,
+      0.001953125,
+      0.67578125,
+      0.001953125,
+      0.67578125,
+      0.16015625,
+      0.576171875,
+      0.16015625
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09581_0000.png",
+    "question": "The tennis court located in the bottom-middle part of the image.",
+    "ground_truth": "{<39><48><77><100>}",
+    "dataset": "RSBench",
+    "question_id": 13438,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.392578125,
+      0.486328125,
+      0.771484375,
+      0.486328125,
+      0.771484375,
+      1.076171875,
+      0.392578125,
+      1.076171875
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09662_0000.png",
+    "question": "The service area located towards the left side of the road on the top.",
+    "ground_truth": "{<40><21><48><33>}",
+    "dataset": "RSBench",
+    "question_id": 13532,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.404296875,
+      0.216796875,
+      0.48046875,
+      0.216796875,
+      0.48046875,
+      0.3359375,
+      0.404296875,
+      0.3359375
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09693_0000.png",
+    "question": "The storage tank located in the top-left part of the image.",
+    "ground_truth": "{<19><15><51><47>}",
+    "dataset": "RSBench",
+    "question_id": 13572,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.197265625,
+      0.15234375,
+      0.513671875,
+      0.15234375,
+      0.513671875,
+      0.47265625,
+      0.197265625,
+      0.47265625
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09725_0000.png",
+    "question": "The storage tank towards the bottom middle of the image is surrounded by greenery.",
+    "ground_truth": "{<57><91><62><97>}",
+    "dataset": "RSBench",
+    "question_id": 13623,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.572265625,
+      0.916015625,
+      0.623046875,
+      0.916015625,
+      0.623046875,
+      0.97265625,
+      0.572265625,
+      0.97265625
+    ],
+    "obj_cls": "storage-tank",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09730_0000.png",
+    "question": "The small harbor located at the top of the image is positioned closer to the left side of the bridge.",
+    "ground_truth": "{<62><1><73><9>}",
+    "dataset": "RSBench",
+    "question_id": 13629,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.623046875,
+      0.01171875,
+      0.736328125,
+      0.01171875,
+      0.736328125,
+      0.09375,
+      0.623046875,
+      0.09375
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09732_0000.png",
+    "question": "The expressway-service area located at the lower part of the image is adjacent to cultivated fields.",
+    "ground_truth": "{<39><46><93><100>}",
+    "dataset": "RSBench",
+    "question_id": 13633,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.392578125,
+      0.4609375,
+      0.935546875,
+      0.4609375,
+      0.935546875,
+      1.083984375,
+      0.392578125,
+      1.083984375
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09753_0000.png",
+    "question": "The expressway service area at the bottom of the image is smaller and closer to the bottom edge.",
+    "ground_truth": "{<25><29><42><39>}",
+    "dataset": "RSBench",
+    "question_id": 13660,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.251953125,
+      0.296875,
+      0.4296875,
+      0.296875,
+      0.4296875,
+      0.396484375,
+      0.251953125,
+      0.396484375
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "09764_0000.png",
+    "question": "The solitary vehicle is located near the top-left corner of the image.",
+    "ground_truth": "{<15><3><21><6>}",
+    "dataset": "RSBench",
+    "question_id": 13676,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.158203125,
+      0.03515625,
+      0.2109375,
+      0.03515625,
+      0.2109375,
+      0.06640625,
+      0.158203125,
+      0.06640625
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "09856_0000.png",
+    "question": "The chimney located at the bottom-left corner of the image.",
+    "ground_truth": "{<0><81><12><100>}",
+    "dataset": "RSBench",
+    "question_id": 13782,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.001953125,
+      0.81640625,
+      0.12109375,
+      0.81640625,
+      0.12109375,
+      1.12109375,
+      0.001953125,
+      1.12109375
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10029_0000.png",
+    "question": "The top-most ground track field with a prominent red running track distinguishes it from the others.",
+    "ground_truth": "{<34><1><66><26>}",
+    "dataset": "RSBench",
+    "question_id": 13985,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.349609375,
+      0.017578125,
+      0.66796875,
+      0.017578125,
+      0.66796875,
+      0.26953125,
+      0.349609375,
+      0.26953125
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10042_0000.png",
+    "question": "The baseball field can be identified by its diamond-shaped dirt infield located at the bottom-right of the image.",
+    "ground_truth": "{<68><85><73><90>}",
+    "dataset": "RSBench",
+    "question_id": 14001,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.689453125,
+      0.859375,
+      0.732421875,
+      0.859375,
+      0.732421875,
+      0.90234375,
+      0.689453125,
+      0.90234375
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10074_0000.png",
+    "question": "The expressway service area can be distinguished in the bottom-left corner of the image, contrasting with the surrounding agricultural fields due to its more organized layout.",
+    "ground_truth": "{<13><87><32><100>}",
+    "dataset": "RSBench",
+    "question_id": 14043,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.138671875,
+      0.873046875,
+      0.3203125,
+      0.873046875,
+      0.3203125,
+      1.00390625,
+      0.138671875,
+      1.00390625
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10079_0000.png",
+    "question": "The baseball field located towards the top-middle of the image.",
+    "ground_truth": "{<49><9><52><12>}",
+    "dataset": "RSBench",
+    "question_id": 14049,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.4921875,
+      0.09375,
+      0.52734375,
+      0.09375,
+      0.52734375,
+      0.126953125,
+      0.4921875,
+      0.126953125
+    ],
+    "obj_cls": "baseball-diamond",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10097_0000.png",
+    "question": "The smaller ship located at the bottom-right corner of the image.",
+    "ground_truth": "{<66><77><74><95>}",
+    "dataset": "RSBench",
+    "question_id": 14077,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.66796875,
+      0.771484375,
+      0.748046875,
+      0.771484375,
+      0.748046875,
+      0.953125,
+      0.66796875,
+      0.953125
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "large"
+  },
+  {
+    "image_id": "10139_0000.png",
+    "question": "The basketball court immediately to the right of the left-most court has similar boundary lines and is also located in the upper left quadrant of the image.",
+    "ground_truth": "{<25><31><34><36>}",
+    "dataset": "RSBench",
+    "question_id": 14129,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.255859375,
+      0.3125,
+      0.345703125,
+      0.3125,
+      0.345703125,
+      0.369140625,
+      0.255859375,
+      0.369140625
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10151_0000.png",
+    "question": "The stadium is easily recognizable by its unique rectangular shape and is situated towards the bottom right corner of the image.",
+    "ground_truth": "{<65><65><88><96>}",
+    "dataset": "RSBench",
+    "question_id": 14147,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.65625,
+      0.65625,
+      0.888671875,
+      0.65625,
+      0.888671875,
+      0.9609375,
+      0.65625,
+      0.9609375
+    ],
+    "obj_cls": "stadium",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10176_0000.png",
+    "question": "The train station is distinguished by its elongated structure with a large roof extending towards the bottom-right of the image.",
+    "ground_truth": "{<68><66><83><97>}",
+    "dataset": "RSBench",
+    "question_id": 14186,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.68359375,
+      0.666015625,
+      0.837890625,
+      0.666015625,
+      0.837890625,
+      0.97265625,
+      0.68359375,
+      0.97265625
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10201_0000.png",
+    "question": "The golf course is located in the top-right corner of the image.",
+    "ground_truth": "{<81><2><96><21>}",
+    "dataset": "RSBench",
+    "question_id": 14220,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.814453125,
+      0.029296875,
+      0.9609375,
+      0.029296875,
+      0.9609375,
+      0.216796875,
+      0.814453125,
+      0.216796875
+    ],
+    "obj_cls": "golffield",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10376_0000.png",
+    "question": "The overpass located towards the bottom-middle portion of the image.",
+    "ground_truth": "{<45><67><47><72>}",
+    "dataset": "RSBench",
+    "question_id": 14437,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.451171875,
+      0.6796875,
+      0.470703125,
+      0.6796875,
+      0.470703125,
+      0.728515625,
+      0.451171875,
+      0.728515625
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10388_0000.png",
+    "question": "The chimney, located towards the bottom-right of the frame.",
+    "ground_truth": "{<64><77><85><100>}",
+    "dataset": "RSBench",
+    "question_id": 14451,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.642578125,
+      0.771484375,
+      0.859375,
+      0.771484375,
+      0.859375,
+      1.033203125,
+      0.642578125,
+      1.033203125
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10401_0000.png",
+    "question": "The windmill stands alone in the bottom-right area of the image.",
+    "ground_truth": "{<76><68><100><91>}",
+    "dataset": "RSBench",
+    "question_id": 14471,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.76953125,
+      0.689453125,
+      1.181640625,
+      0.689453125,
+      1.181640625,
+      0.916015625,
+      0.76953125,
+      0.916015625
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10494_0000.png",
+    "question": "The basketball court located on the centre of the image.",
+    "ground_truth": "{<49><41><60><57>}",
+    "dataset": "RSBench",
+    "question_id": 14602,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.49609375,
+      0.412109375,
+      0.6015625,
+      0.412109375,
+      0.6015625,
+      0.578125,
+      0.49609375,
+      0.578125
+    ],
+    "obj_cls": "basketball-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10498_0000.png",
+    "question": "The train station is visible at the bottom middle of the image.",
+    "ground_truth": "{<31><72><81><87>}",
+    "dataset": "RSBench",
+    "question_id": 14612,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.3125,
+      0.7265625,
+      0.818359375,
+      0.7265625,
+      0.818359375,
+      0.876953125,
+      0.3125,
+      0.876953125
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "10505_0000.png",
+    "question": "The windmill located on the middle-right of the image.",
+    "ground_truth": "{<81><51><100><88>}",
+    "dataset": "RSBench",
+    "question_id": 14621,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.8125,
+      0.513671875,
+      1.103515625,
+      0.513671875,
+      1.103515625,
+      0.884765625,
+      0.8125,
+      0.884765625
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "large"
+  },
+  {
+    "image_id": "10602_0000.png",
+    "question": "The chimney located in the upper-right portion of the image.",
+    "ground_truth": "{<65><23><95><58>}",
+    "dataset": "RSBench",
+    "question_id": 14742,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.65625,
+      0.232421875,
+      0.955078125,
+      0.232421875,
+      0.955078125,
+      0.5859375,
+      0.65625,
+      0.5859375
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10691_0000.png",
+    "question": "An overpass is located closer to the top-middle at the top-right of the image.",
+    "ground_truth": "{<71><0><76><7>}",
+    "dataset": "RSBench",
+    "question_id": 14853,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.71484375,
+      0.001953125,
+      0.76953125,
+      0.001953125,
+      0.76953125,
+      0.076171875,
+      0.71484375,
+      0.076171875
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10693_0000.png",
+    "question": "The expressway service area is located at the right side of the top-left quadrant.",
+    "ground_truth": "{<22><34><35><48>}",
+    "dataset": "RSBench",
+    "question_id": 14857,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.224609375,
+      0.34765625,
+      0.353515625,
+      0.34765625,
+      0.353515625,
+      0.486328125,
+      0.224609375,
+      0.486328125
+    ],
+    "obj_cls": "expressway-service-area",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10740_0000.png",
+    "question": "The smaller train station positioned at the bottom-right of the image.",
+    "ground_truth": "{<78><77><89><92>}",
+    "dataset": "RSBench",
+    "question_id": 14912,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.78515625,
+      0.775390625,
+      0.896484375,
+      0.775390625,
+      0.896484375,
+      0.921875,
+      0.78515625,
+      0.921875
+    ],
+    "obj_cls": "trainstation",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10796_0000.png",
+    "question": "The golf field is located centrally within the image.",
+    "ground_truth": "{<41><20><67><50>}",
+    "dataset": "RSBench",
+    "question_id": 14974,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.419921875,
+      0.208984375,
+      0.673828125,
+      0.208984375,
+      0.673828125,
+      0.50390625,
+      0.419921875,
+      0.50390625
+    ],
+    "obj_cls": "golffield",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10849_0000.png",
+    "question": "The ground track field, which includes a track and an interior field area, can be found to the right of the stadium.",
+    "ground_truth": "{<68><66><87><98>}",
+    "dataset": "RSBench",
+    "question_id": 15051,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.6875,
+      0.666015625,
+      0.873046875,
+      0.666015625,
+      0.873046875,
+      0.984375,
+      0.6875,
+      0.984375
+    ],
+    "obj_cls": "ground-track-field",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10885_0000.png",
+    "question": "The curved overpass in the upper left of the image crosses over another road.",
+    "ground_truth": "{<22><50><34><57>}",
+    "dataset": "RSBench",
+    "question_id": 15099,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.224609375,
+      0.5078125,
+      0.341796875,
+      0.5078125,
+      0.341796875,
+      0.5703125,
+      0.224609375,
+      0.5703125
+    ],
+    "obj_cls": "overpass",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10932_0000.png",
+    "question": "The chimney is visible in the upper right section of the image.",
+    "ground_truth": "{<69><42><100><92>}",
+    "dataset": "RSBench",
+    "question_id": 15152,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.69140625,
+      0.421875,
+      1.095703125,
+      0.421875,
+      1.095703125,
+      0.92578125,
+      0.69140625,
+      0.92578125
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10940_0000.png",
+    "question": "The bridge in the image is positioned towards the top-middle area.",
+    "ground_truth": "{<42><13><45><26>}",
+    "dataset": "RSBench",
+    "question_id": 15159,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.427734375,
+      0.138671875,
+      0.458984375,
+      0.138671875,
+      0.458984375,
+      0.26953125,
+      0.427734375,
+      0.26953125
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10949_0000.png",
+    "question": "The chimney with a circular top located on the right side of the image.",
+    "ground_truth": "{<79><46><100><75>}",
+    "dataset": "RSBench",
+    "question_id": 15170,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.796875,
+      0.46875,
+      1.05859375,
+      0.46875,
+      1.05859375,
+      0.75390625,
+      0.796875,
+      0.75390625
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "10951_0000.png",
+    "question": "The harbor in the image is distinguishable by the wooden pier extending into the water, surrounded by treelines.",
+    "ground_truth": "{<45><50><88><100>}",
+    "dataset": "RSBench",
+    "question_id": 15172,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.455078125,
+      0.501953125,
+      0.880859375,
+      0.501953125,
+      0.880859375,
+      1.115234375,
+      0.455078125,
+      1.115234375
+    ],
+    "obj_cls": "harbor",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "11069_0000.png",
+    "question": "The dam is located towards the top middle section of the image and is characterized by its straight-edged structure.",
+    "ground_truth": "{<39><10><42><18>}",
+    "dataset": "RSBench",
+    "question_id": 15335,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.39453125,
+      0.10546875,
+      0.42578125,
+      0.10546875,
+      0.42578125,
+      0.185546875,
+      0.39453125,
+      0.185546875
+    ],
+    "obj_cls": "dam",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11198_0000.png",
+    "question": "The vehicle on the road is positioned at the bottom-middle of the image.",
+    "ground_truth": "{<57><85><65><91>}",
+    "dataset": "RSBench",
+    "question_id": 15486,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.57421875,
+      0.857421875,
+      0.650390625,
+      0.857421875,
+      0.650390625,
+      0.916015625,
+      0.57421875,
+      0.916015625
+    ],
+    "obj_cls": "vehicle",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11265_0000.png",
+    "question": "The small airport with an adjacent runway is situated on the right side of the image.",
+    "ground_truth": "{<81><45><84><100>}",
+    "dataset": "RSBench",
+    "question_id": 15578,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.8125,
+      0.451171875,
+      0.84765625,
+      0.451171875,
+      0.84765625,
+      1.328125,
+      0.8125,
+      1.328125
+    ],
+    "obj_cls": "airport",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11288_0000.png",
+    "question": "The bridge is located at the bottom-right part of the image.",
+    "ground_truth": "{<24><67><100><92>}",
+    "dataset": "RSBench",
+    "question_id": 15603,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.244140625,
+      0.673828125,
+      1.560546875,
+      0.673828125,
+      1.560546875,
+      0.9296875,
+      0.244140625,
+      0.9296875
+    ],
+    "obj_cls": "bridge",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11342_0000.png",
+    "question": "The chimney positioned towards the top-middle of the image.",
+    "ground_truth": "{<57><11><62><20>}",
+    "dataset": "RSBench",
+    "question_id": 15672,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.576171875,
+      0.11328125,
+      0.62890625,
+      0.11328125,
+      0.62890625,
+      0.203125,
+      0.576171875,
+      0.203125
+    ],
+    "obj_cls": "chimney",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11343_0000.png",
+    "question": "The tennis court is located in the bottom section of the image.",
+    "ground_truth": "{<22><76><57><100>}",
+    "dataset": "RSBench",
+    "question_id": 15673,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.22265625,
+      0.763671875,
+      0.576171875,
+      0.763671875,
+      0.576171875,
+      1.197265625,
+      0.22265625,
+      1.197265625
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "11389_0000.png",
+    "question": "The airport with a horizontally oriented runway centered in the image is surrounded by dense clusters of buildings.",
+    "ground_truth": "{<8><22><77><32>}",
+    "dataset": "RSBench",
+    "question_id": 15739,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.083984375,
+      0.224609375,
+      0.775390625,
+      0.224609375,
+      0.775390625,
+      0.326171875,
+      0.083984375,
+      0.326171875
+    ],
+    "obj_cls": "airport",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11519_0000.png",
+    "question": "The tennis court is enclosed within a fence and can be found in the bottom-right corner of the image.",
+    "ground_truth": "{<84><80><99><100>}",
+    "dataset": "RSBench",
+    "question_id": 15910,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.849609375,
+      0.80859375,
+      0.994140625,
+      0.80859375,
+      0.994140625,
+      1.109375,
+      0.849609375,
+      1.109375
+    ],
+    "obj_cls": "tennis-court",
+    "obj_ids": [
+      0
+    ],
+    "size_group": ""
+  },
+  {
+    "image_id": "11570_0000.png",
+    "question": "The larger ship partially cut off at the bottom edge of the image is visible despite extending beyond the frame.",
+    "ground_truth": "{<47><44><100><100>}",
+    "dataset": "RSBench",
+    "question_id": 15969,
+    "type": "ref",
+    "unique": false,
+    "obj_corner": [
+      0.474609375,
+      0.44140625,
+      1.25,
+      0.44140625,
+      1.25,
+      1.134765625,
+      0.474609375,
+      1.134765625
+    ],
+    "obj_cls": "ship",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11707_0000.png",
+    "question": "The windmill located towards the bottom-right of the image.",
+    "ground_truth": "{<76><75><80><81>}",
+    "dataset": "RSBench",
+    "question_id": 16132,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.765625,
+      0.751953125,
+      0.802734375,
+      0.751953125,
+      0.802734375,
+      0.81640625,
+      0.765625,
+      0.81640625
+    ],
+    "obj_cls": "windmill",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11708_0000.png",
+    "question": "The airport with a distinct runway can be seen at the bottom of the image, surrounded by open land with no other airports in sight.",
+    "ground_truth": "{<33><73><100><82>}",
+    "dataset": "RSBench",
+    "question_id": 16133,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.330078125,
+      0.73828125,
+      1.35546875,
+      0.73828125,
+      1.35546875,
+      0.8203125,
+      0.330078125,
+      0.8203125
+    ],
+    "obj_cls": "airport",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  },
+  {
+    "image_id": "11714_0000.png",
+    "question": "The airport in the image is distinguished by its long runway extending horizontally across the frame and is positioned between green and brown agricultural fields.",
+    "ground_truth": "{<20><28><86><59>}",
+    "dataset": "RSBench",
+    "question_id": 16148,
+    "type": "ref",
+    "unique": true,
+    "obj_corner": [
+      0.203125,
+      0.287109375,
+      0.869140625,
+      0.287109375,
+      0.869140625,
+      0.595703125,
+      0.203125,
+      0.595703125
+    ],
+    "obj_cls": "airport",
+    "obj_ids": [
+      0
+    ],
+    "size_group": "small"
+  }
+]
