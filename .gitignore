@@ -8,6 +8,8 @@ hf_cache/
 # Baseline outputs and local experiment settings
 outputs/
 config/local*.json
+.env
+configs/local*.yaml
 .firecrawl/
 
 # Python bytecode

@@ -422,6 +422,9 @@ located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct`
 It accepts a JSON configuration file
 with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
 not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
+The optional `model.local_files_only` setting is `false` by default. Set it to `true` together
+with an external local `model.id` path to prohibit network fallback during server inference;
+the model, processor, tokenizer, checkpoint contents, and prediction contract remain unchanged.
 `config/baseline.example.json` uses project-relative `datasets/baseline` and `outputs/baseline`
 paths. Users copy it to the ignored `config/local.baseline.json` before running Colab commands.
 
@@ -434,9 +437,212 @@ placing dataset-specific logic in `eval/`.
 Supported evaluation targets are `vrsbench_caption`, `vrsbench_vqa`,
 `vrsbench_grounding`, `mme_real_rs`, `xlrs_caption_en`, `xlrs_grounding_en`,
 `xlrs_vqa_lite`, and `levir_cc`. The MME target filters to the Remote Sensing subdomain.
+The VRSBench VQA adapter accepts the official evaluation release fields `image_id`,
+`question`, `ground_truth`, and `question_id` in addition to its existing nested QA-pair form;
+the question identifier remains the canonical sample ID when several questions share one image.
 XLRS-Bench full English captioning and grounding releases are reported separately from the
 official Lite VQA release; these scores must not be labelled as a single full-XLRS score.
 
 The `evaluate --deepseek-proxy` command reads `DEEPSEEK_API_KEY` only from the runtime
 environment and produces a non-official `deepseek_semantic_match_proxy` for VRSBench VQA.
 It must not be described as the benchmark's official GPT-based evaluation metric.
+
+`eval/audit_report.py` is the baseline visual-report component. Baseline inference enables it by
+default and writes `<result-stem>.report/report.html` plus `samples.csv`, a bounded visual
+`samples.jsonl`, and content-addressed PNG files without changing the canonical prediction file.
+`report.enabled` defaults to `true`; `report.max_samples` defaults to `200` and limits only the
+number of displayed visual records, not inference or metric scope. Each inference and evaluation
+command prints the absolute report path.
+
+Each captured sample has a separate `agent_trace` in the report artifact with `agent_class`,
+`entrypoint`, `route`, `router_used`, and `task_type`. Baseline inference records
+`models.qwen3vl.Qwen3VLBaseline`, `predict`, `direct_baseline`, and `false`. This is report-only
+debug metadata and does not alter canonical predictions. If `prediction.meta.agent_trace` exists,
+the report uses that explicit workflow-provided trace instead of the baseline fallback.
+
+When `evaluate --deepseek-proxy` runs, `eval.metrics.evaluate_records` retains its existing metric
+return format and may additionally receive a caller-owned audit list. The baseline CLI writes that
+list to `<result-stem>.report/deepseek_audit.jsonl` with request payload, raw response, parsed
+result, duration, attempts, token usage, and errors. It never stores the API key. The report is
+then regenerated with per-sample Qwen/reference comparison and DeepSeek judgment. DeepSeek remains
+text-only and never claims visual verification.
+
+## 7. Phase 1 Local Multi-Agent Foundation
+
+`spacers_agent/` is an additive local package that does not replace the existing `main.py`
+baseline. `python -m spacers_agent.cli run-init` loads `configs/default.yaml`, applies
+non-secret environment overrides from `.env` or the process environment, and creates a run
+directory with `manifest.json`, `config.snapshot.yaml`, `prompts.snapshot/`, and
+`events.jsonl`. API-key values are intentionally not read into the settings model or written
+to these artifacts.
+
+`spacers_agent.settings.AppSettings` validates the phase-one Qwen, DeepSeek, counting, run,
+and path settings. `EnvironmentOverrides` uses `pydantic-settings` to read only non-secret
+endpoint and path overrides from `.env` or the process environment. API-key values remain
+environment-only and are not placed in the settings model or run artifacts.
+
+The Phase 1 `health` command only prints configured endpoint metadata and explicitly performs
+no network check. Live endpoint health checks begin no earlier than Phase 2 and still require
+explicit user authorization.
+
+## 8. Phase 2 Structured Client Interfaces
+
+`spacers_agent.clients.VisionLanguageClient` defines async `complete_json` requests shared by
+the future Qwen client and the offline `MockVisionClient`. `QwenVLLMClient` is an
+OpenAI-compatible implementation that is inert until a caller invokes it with a key supplied
+through `QWEN_API_KEY` (or the configured environment-variable name). It supports bounded
+429/5xx/timeout retries, JSON fence normalization, one JSON repair request, Pydantic
+validation, a request-hash cache, and artifact persistence for raw responses, parsed JSON,
+validation errors, latency, and available token counters.
+
+`RequestMeta` and persisted request metadata exclude API keys and Base64 image data. Data URLs
+may be sent only by a live caller; `sanitize_messages` replaces them with a hash and encoded
+byte count before logging or hashing. No live client call has been made locally.
+
+## 9. Phase 3 Unified Schema, Geometry, and Dataset Audit
+
+`spacers_agent.schemas` adds Pydantic contracts for `UnifiedSample`, `ImageRef`,
+`GroundTruth`, half-open `PixelRect`, `TileSpec`, local/global point observations, and
+`CountingResult`. This is additive: the existing baseline `CanonicalSample` and
+`CanonicalPrediction` remain unchanged. Change samples require `t1` before `t2`; count results
+enforce `final_count == accepted point count` and cannot report completion if tiles failed.
+
+`spacers_agent.imaging` contains model-independent EXIF/RGB normalization, row-major owner-core
+plus halo planning, no-upscale resizing, `0..999` coordinate conversion, strict owner-core
+acceptance, boundary-candidate detection, and clamp provenance. Tile crops are transient in
+memory; no adapter writes permanent tiles to datasets.
+
+`python -m spacers_agent.cli inspect-data --root <dataset-root> --output <report.json>` performs
+a read-only generic layout audit and writes a separate JSON report. It reports file extensions,
+candidate manifests, image samples/damage, discovered JSON fields, split hints, duplicate IDs,
+encoding failures, and missing referenced images. It does not infer a dataset-specific Adapter
+mapping; that remains blocked until the named local datasets are available for audit.
+
+## 10. Phase 4 Point Counting Orchestration
+
+`spacers_agent.counting` is an additive module; it does not alter the baseline `main.py`, the
+existing canonical sample/prediction format, dataset splits, or evaluation metrics. Its
+`PointCountingOrchestrator` accepts a normalized image, a stable `CountTargetSpec`, and an
+injected `VisionLanguageClient`. It processes tiles row-major and sequentially, with one image per
+request. `TileCheckpointStore` writes `spec.json`, `parsed.json`, conversion validation, and a
+status checkpoint under `tiles/<tile_id>/`; a matching successful request hash is reused during
+resume, while a failed tile remains explicitly visible.
+
+`CountTargetSpec` is shared by all tiles of a sample and is included in request-cache inputs.
+`count_tile_v4.md` defines the active owner-core-only point protocol. It preserves point-only final
+counting while adding explicit VRSBench vehicle aliases and requiring a systematic overview scan
+before an empty response. `missing_point_review_v3.md` supports an independent second pass for an
+empty tile; an empty review is trusted only when it explicitly records `confirmed_absent`. A
+`zero_unconfirmed` review triggers finer crops when geometry permits. Otherwise the count remains
+zero because no point exists, but the result is partial with `ZERO_COUNT_UNCONFIRMED`.
+`TileCountResponse` is additionally
+checked against both the requested tile ID and the target label before coordinate conversion.
+Parents that request a split are stored as `superseded_by_children`; their four child owner cores
+are processed sequentially and replace the parent points. The final count is calculated only from
+accepted representatives. Boundary conflict discovery considers only matching-label points near
+neighbouring owner-core seams; it records candidates rather than applying a global clustering
+algorithm. Explicit same-instance decisions may be supplied to `finalize_representatives`; absent
+such a decision, the fixed current policy is to retain and flag the conflict for review.
+
+No live seam-verifier call, target-spec LLM parsing call, or missing-point review call is wired into
+the default path. These require a separately authorized live client and must preserve the same
+point/owner validation rules.
+
+## 11. Phase 5 Sparse Multi-Agent Routing and Prompt Assets
+
+`spacers_agent.routing.ROUTES` defines fixed expert routes for all declared multi-Agent tasks.
+`TaskRouter.route_known` is deterministic and makes no model call. `route_unknown` is explicitly
+separate, accepts only an injected client, uses a text-only request, records discrete reason codes,
+and consumes a Qwen entry from `CallBudget` before it can call the router. The budget is mutable,
+validated against its configured limits, and may be attached to `PointCountingOrchestrator` so tile,
+recursive, seam, or review calls cannot exceed the same Qwen limit.
+
+`CountingExpert` delegates to the existing `PointCountingOrchestrator`; it contains no duplicate
+geometry or counting logic. Its completed answer is derived from the accepted global-point set. If
+any tile failed, it reports the completed-tile fraction and confirmed points and marks the answer
+non-final. `CallBudget` also exposes a separate DeepSeek reservation method. No default route calls
+DeepSeek, and any future judge must receive only text and structured evidence rather than image data.
+
+The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v4.md`,
+`count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
+`missing_point_review_v3.md`, `spatial_v4.md`, `spatial_v5.md`,
+`spatial_candidate_review_v2.md`, `spatial_candidate_review_v3.md`, and
+`general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
+snapshots each active asset. Prompts are not changed
+in place when their behavior changes; a new versioned file must be added and selected explicitly.
+
+## 12. Phase 6 DeepSeek Structured Evaluator
+
+`spacers_agent.evaluation` computes deterministic counting metrics before and independently from
+LLM evaluation. With known count truth, it records exact match, absolute error, relative error, and
+the explicitly named `smooth_error_score` (which is not an accuracy metric). Its compact judge
+payload contains question text, target rules, display answer, count consistency, tile/conflict
+statistics, ground truth, and deterministic metrics; it deliberately excludes source images, image
+paths, Base64 values, and the full point list.
+
+`DeepSeekJudgeResult` hard-codes `judge_scope="text_and_structured_evidence_only"` and
+`can_verify_visual_truth=false`. `merge_count_evaluation` preserves the raw judge response and flags
+`judge_inconsistency` when a `correct` verdict conflicts with a known count mismatch. It does not
+rewrite the judge result. Samples without ground truth retain judge feedback only as internal quality
+evidence, separate from benchmark metrics.
+
+`spacers_agent.clients.DeepSeekJudgeClient` uses OpenAI Chat Completions JSON mode, reads its key
+only from the configured `DEEPSEEK_API_KEY` environment variable, retries transient and empty-content
+responses within `max_retries`, permits one JSON-format repair, and persists raw/parsed/validation,
+latency, retry, and token records. Its request hash includes the model, judge-prompt hash, sample ID,
+prediction hash, ground-truth hash, and deterministic-metrics hash. No live call is automatic.
+
+## 13. Phase 7 Offline Acceptance and Runbook
+
+`spacers_agent.visualization.render_counting_overlay` creates an explicit local artifact from a
+normalized source image, `CountingResult`, and rebuilt tile geometry. It renders blue owner-core
+grids, green accepted points, and red rejected points. It is a rendering tool only: it neither
+changes counting results nor calls a model. `spacers_agent.cli render-count` validates source/result
+dimensions before generating this artifact.
+
+`spacers_agent.reporting.summarize_evaluations` aggregates persisted `EvaluationRecord` values into
+an `EvaluationSummary`. It reports deterministic exact-match/MAE/relative-error fields separately
+from optional Judge success, failure, inconsistency, and semantic-quality fields. The CLI command
+`summarize-evaluations` reads JSONL locally and writes one JSON summary. The complete local command
+sequence and live-test safety boundary are recorded in `docs/runbook.md`.
+
+## 14. Runnable Agent Workflow, Explicit Adapters, and Spark Handoff
+
+`spacers_agent.workflow` adds atomic JSON artifacts, automatic structured target parsing, a sequential dataset runner, and reusable Qwen visual primitives for change, grounding, spatial, and general-VQA routes. Counting continues to derive `final_count` only from accepted global points; confidence gating sets low-confidence points to `accepted=False`, and seam merging occurs only after a `SeamDecision` explicitly returns `same_instance` for a local seam crop.
+
+`spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
+
+The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `Qwen3VLForConditionalGeneration` and `AutoProcessor`; it does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingExpert`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialExpert`; every other or unknown form falls back to `GeneralVQAExpert` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
+
+Known VRSBench quantity questions use a fixed, reference-independent vehicle ontology rather than
+an LLM target parse. Their dedicated route first obtains a compact whole-image count proposal using
+the proven GeneralVQA v1 contract. Proposal boxes are normalized and converted to accepted centre
+points; when boxes are missing or disagree with the proposed integer, an independent localization
+pass enumerates tight boxes without treating that integer as ground truth. Duplicate evidence and
+tiny border fragments whose visible centre remains at the image edge are rejected. Count-specific
+deduplication merges only near-identical boxes so adjacent vehicles with coarse overlapping boxes
+remain distinct; the broader spatial-evidence merge threshold is unchanged. Malformed or
+truncated proposal geometry may recover only a syntactically complete integer answer header, after
+which localization is mandatory. `final_count` always equals the final accepted point count, while
+retained supporting boxes remain available in the result and HTML overlay. The tiled owner-core and
+halo `PointCountingOrchestrator` remains unchanged for native counting tasks outside this VRSBench
+VQA route. Spatial extreme and arrangement questions perform an independent
+candidate-enumeration pass without first-pass evidence. Grid-position questions first request one
+tight physical target box without sending the closed grid-label vocabulary; a valid single target
+box is used directly, while missing, ambiguous, or corner-region placeholder evidence triggers an
+independent localization review. Review boxes that omit `evidence_items` retain their model-provided
+geometry; explicit small/large vehicle targets retain that class, while other singular targets use
+a neutral `position-target` evidence label instead of discarding valid coordinates. The final grid
+label is derived from the retained box centre. Question text is classified into a semantic subtype
+independently from the coarse official type. Raw answers remain in the geometry audit. Workflow
+status tokens such as `partial` are removed from the semantic answer field, and global/open VQA
+answers are not downgraded solely because they have no localizable box. Partial VQA artifacts remain
+visible in the HTML report.
+
+Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. With `--evaluate`, VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--judge-policy none` remains the explicit offline opt-out. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
+
+Before strict `VisualEvidence` validation, the structured result normalizes a model-emitted pair of corner points into one flat box and reclassifies a single two-value box as a point. Reversed corners are ordered. A zero-width or zero-height observation is never expanded into a fabricated one-pixel box: labeled evidence is retained as a point and unlabeled legacy boxes are dropped. A simultaneous valid box and point retains the box, while a degenerate box with an explicit point retains the point. Normalization names, per-item evidence quality, and aggregate repair severity are retained in the geometry audit. Deterministic box geometry never consumes a repaired point.
+
+The Transformers client permits one versioned, text-only JSON-format repair after a parse or schema failure; the repair receives the failed raw output and validation error but no image. If either model response is truncated only at the end, the client first closes the known JSON containers. When the final array/object member is itself incomplete, it discards only that incomplete tail member and validates the remaining response. It does not synthesize missing visual evidence. Local truncation recovery is recorded in both `geometry.input_normalizations` and call validation metadata; both model attempts, validation errors, timing, and cumulative token usage remain persisted.
+
+After a VRSBench general-VQA run, `spacers_agent.vqa_report` converts the persisted multi-Agent results to the unchanged canonical VQA sample/prediction format and invokes the default audit report component. The run directory receives `vrsbench_vqa.jsonl`, metrics, DeepSeek audit JSONL, and `vrsbench_vqa.report/report.html`. The HTML displays the actual subtype route, prompt version, labeled evidence, program-geometry audit, and a report-only image copy with boxes or accepted points overlaid. Original dataset images are never modified.

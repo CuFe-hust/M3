@@ -17,7 +17,10 @@ from data.schema import CanonicalPrediction, CanonicalSample
 
 
 def evaluate_records(
-    records: Iterable[dict[str, Any]], use_deepseek: bool = False, deepseek_config: dict[str, Any] | None = None
+    records: Iterable[dict[str, Any]],
+    use_deepseek: bool = False,
+    deepseek_config: dict[str, Any] | None = None,
+    deepseek_audit: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Evaluate serialized canonical records without changing official references.
     在不修改官方参考答案的前提下评测序列化统一记录。
@@ -34,7 +37,7 @@ def evaluate_records(
         return _caption_metrics(loaded)
     metrics = _exact_match_metrics(loaded)
     if use_deepseek:
-        metrics["deepseek_proxy"] = _deepseek_semantic_metrics(loaded, deepseek_config or {})
+        metrics["deepseek_proxy"] = _deepseek_semantic_metrics(loaded, deepseek_config or {}, deepseek_audit)
     return metrics
 
 
@@ -87,17 +90,36 @@ def _grounding_metrics(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _deepseek_semantic_metrics(records: list[dict[str, Any]], config: dict[str, Any]) -> dict[str, Any]:
+def _deepseek_semantic_metrics(
+    records: list[dict[str, Any]],
+    config: dict[str, Any],
+    audit_records: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         raise RuntimeError("Set DEEPSEEK_API_KEY before requesting the DeepSeek proxy metric.")
     scores = []
     failures = []
     for record in records:
+        sample = record["sample"]
+        prediction = record["prediction"]
+        audit = {
+            "sample_id": sample["id"],
+            "question": sample.get("meta", {}).get("question", sample["prompt"]),
+            "reference_answers": sample.get("answers", []),
+            "candidate_answer": prediction.get("answer") or prediction["text"],
+        }
         try:
-            scores.append(_deepseek_score(record, api_key, config))
+            score = _deepseek_score(record, api_key, config, audit if audit_records is not None else None)
+            scores.append(score)
+            audit["score"] = score
         except (HTTPError, URLError, ValueError) as error:
-            failures.append({"id": record["sample"]["id"], "error": str(error)})
+            failures.append({"id": sample["id"], "error": str(error)})
+            audit["score"] = None
+            audit["error"] = str(error)
+        finally:
+            if audit_records is not None:
+                audit_records.append(audit)
     return {
         "metric": "deepseek_semantic_match_proxy",
         "score": sum(scores) / len(scores) if scores else 0.0,
@@ -107,7 +129,12 @@ def _deepseek_semantic_metrics(records: list[dict[str, Any]], config: dict[str, 
     }
 
 
-def _deepseek_score(record: dict[str, Any], api_key: str, config: dict[str, Any]) -> float:
+def _deepseek_score(
+    record: dict[str, Any],
+    api_key: str,
+    config: dict[str, Any],
+    audit: dict[str, Any] | None = None,
+) -> float:
     sample = record["sample"]
     prediction = record["prediction"]
     payload = {
@@ -138,17 +165,36 @@ def _deepseek_score(record: dict[str, Any], api_key: str, config: dict[str, Any]
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
         method="POST",
     )
-    for attempt in range(3):
-        try:
-            with urlopen(request, timeout=60) as response:
-                body = json.loads(response.read().decode("utf-8"))
-            content = body["choices"][0]["message"]["content"]
-            result = json.loads(content)
-            return float(result["score"])
-        except HTTPError as error:
-            if error.code < 500 or attempt == 2:
-                raise
-            time.sleep(2**attempt)
+    started = time.perf_counter()
+    if audit is not None:
+        audit["request_payload"] = payload
+    try:
+        for attempt in range(3):
+            if audit is not None:
+                audit["attempts"] = attempt + 1
+            try:
+                with urlopen(request, timeout=60) as response:
+                    body = json.loads(response.read().decode("utf-8"))
+                content = body["choices"][0]["message"]["content"]
+                result = json.loads(content)
+                if audit is not None:
+                    audit.update(
+                        {
+                            "raw_api_response": body,
+                            "raw_content": content,
+                            "parsed_result": result,
+                            "token_usage": body.get("usage"),
+                            "error": None,
+                        }
+                    )
+                return float(result["score"])
+            except HTTPError as error:
+                if error.code < 500 or attempt == 2:
+                    raise
+                time.sleep(2**attempt)
+    finally:
+        if audit is not None:
+            audit["duration_seconds"] = round(time.perf_counter() - started, 6)
     raise RuntimeError("DeepSeek request retry loop ended unexpectedly.")
 
 

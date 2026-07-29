@@ -709,3 +709,37 @@ When conflicts occur, make decisions according to the following default priority
 9. **Code style and formal cleanliness**
 
 Any “more elegant” solution should not be used as the default if it expands the modification scope, breaks format stability, affects evaluation comparability, or increases regression risk.
+
+---
+
+## 18. Remote-Sensing Multi-Agent Module Rules
+
+The following rules apply when implementing or modifying the remote-sensing multi-Agent system. They supplement, rather than replace, the preceding repository rules. If a conflict cannot be resolved by an explicit user requirement or the priority rules above, stop and request human confirmation; do not silently choose one rule over another.
+
+### 18.1 Mandatory Requirements
+
+1. Before modification, read `DETAILS.md`, `README.md`, and all relevant code.
+2. Do not introduce YOLO, detectors, segmenters, or additional vision models.
+3. Treat the accepted point set as the sole source of truth for counting.
+4. Process large images using non-overlapping owner cores with halo context.
+5. Model points use tile-local `0..999` coordinates; program logic must convert them to global coordinates.
+6. `final_count` must equal the number of final accepted points.
+7. DeepSeek may evaluate text and structured evidence only; it must never claim visual verification.
+8. Geometry algorithms require unit tests.
+9. API keys must come only from environment variables.
+10. Prompts must be versioned.
+11. Test sets must not be used for Prompt development.
+12. Model-call records must persist raw responses, parsed results, duration, retries, and token usage.
+13. Tile calls must be sequential by default; do not change concurrency without authorization.
+14. Do not store hidden chain-of-thought. Persist only verifiable points, boxes, and short factual evidence.
+15. Do not swallow exceptions or silently discard tiles.
+16. Support resume behavior; completed successful tiles must not be called again.
+17. Do not modify original dataset files.
+18. When actual data layout differs from documentation, treat the completed audit as authoritative and update documentation.
+
+### 18.2 Engineering Style and Validation Flow
+
+- Use Python 3.11+, Pydantic v2, `pathlib`, async network clients, complete type annotations, and independent Prompt files.
+- Geometry logic must not depend on a model.
+- Follow this order: implementation → unit tests → Mock integration → live smoke when necessary and explicitly authorized → documentation update → issue report.
+- The user’s local-only and no-cloud restriction remains in force. A live smoke test, server connection, or cloud API call requires explicit user authorization after the code is complete.

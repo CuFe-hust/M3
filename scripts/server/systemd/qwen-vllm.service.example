@@ -1,0 +1,12 @@
+[Unit]
+Description=Local Qwen vLLM service
+After=network.target
+[Service]
+Type=simple
+EnvironmentFile=%h/.config/spacers-agent/server.env
+WorkingDirectory=${PROJECT_ROOT}
+ExecStart=${PROJECT_ROOT}/scripts/server/start_qwen_vllm.sh
+ExecStop=${PROJECT_ROOT}/scripts/server/stop_qwen_vllm.sh
+Restart=on-failure
+[Install]
+WantedBy=multi-user.target

@@ -34,6 +34,15 @@ Edit `config/local.baseline.json` only to choose storage paths or supported mode
 The default paths keep downloaded data in `datasets/` and outputs in `outputs/`, both ignored by Git.
 Do not put API keys in this file.
 
+The default `report` settings generate a visual audit report for up to 200 samples per result.
+Increase `report.max_samples` only when the additional image and HTML size is acceptable, or set
+`report.enabled` to `false` to disable report artifacts for a particular local run.
+
+For a checkpoint that is already present on a local server, set `model.id` to that external
+directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
+network fallback while preserving the original Qwen3-VL loading and prediction interfaces.
+Keep the server-specific absolute path only in the ignored `config/local.baseline.json` file.
+
 Download the official data releases:
 
 ```bash
@@ -58,6 +67,16 @@ python main.py --config config/local.baseline.json infer --dataset all --limit 2
 python main.py --config config/local.baseline.json infer --dataset all --overwrite
 ```
 
+Each inference command prints the absolute path of its default HTML report. For a result named
+`outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
+`outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
+questions/prompts, Qwen raw and final answers, references, exact-match comparison, and per-sample
+inference duration. Each sample also records the actual Agent class, call entrypoint, route name,
+task type, and whether a Router was used. The direct baseline is reported truthfully as
+`models.qwen3vl.Qwen3VLBaseline` with `route=direct_baseline` and `router_used=false`; a future
+workflow may provide `prediction.meta.agent_trace` to replace that fallback with its actual trace.
+Images are content-addressed so repeated source images are stored only once.
+
 Compute deterministic metrics for one saved result file:
 
 ```bash
@@ -79,6 +98,11 @@ report it as a separate proxy metric. For official oriented-box grounding metric
 upstream VRSBench or XLRS-Bench evaluator on the canonical prediction file after converting
 its documented output fields.
 
+When `--deepseek-proxy` is used, the same report is regenerated with per-sample DeepSeek scores,
+raw API responses, parsed results, duration, attempts, and token usage. The key is read only from
+`DEEPSEEK_API_KEY` and is never written to the report. DeepSeek receives text and reference
+answers only; it does not inspect the source image.
+
 ### Output Format
 
 Each `outputs/*.jsonl` line contains:
@@ -91,8 +115,186 @@ Each `outputs/*.jsonl` line contains:
 ```
 
 `*.metadata.json` records the model settings, timestamp, completed sample count, and any
-dataset-scope qualification needed for a report.
+dataset-scope qualification needed for a report. It also records model-load and inference timing.
+The sibling `*.report/` directory contains `report.html`, `samples.csv`, a bounded `samples.jsonl`
+visual subset, deduplicated images, and optional `deepseek_audit.jsonl`. These report artifacts do
+not change the canonical prediction JSONL or the metric JSON format.
 
 For MME Real RS, inference also writes `mme_real_rs.official.json`, preserving each official
 record and replacing only its `Output` field. It can be passed directly to the upstream
 MME-RealWorld evaluator.
+
+## Local Multi-Agent Foundation (Phase 1)
+
+The existing baseline remains unchanged. The additive local foundation creates reproducible
+run artifacts without contacting Qwen or DeepSeek:
+
+```bash
+python -m spacers_agent.cli --help
+python -m spacers_agent.cli health qwen
+python -m spacers_agent.cli run-init --run-id local-foundation-smoke
+```
+
+Copy `.env.example` to the ignored `.env` file only when local endpoint metadata needs an
+override. API keys are never included in run manifests, configuration snapshots, or events.
+The `health` command in this phase only displays configured metadata; it does not make a
+network request.
+
+## Structured Client Development (Phase 2)
+
+The project now includes an async OpenAI-compatible Qwen client and an offline Mock client.
+The default test suite injects local fake completions; it does not contact an endpoint. A live
+Qwen call remains a separately authorized action and requires `QWEN_API_KEY` only in the
+process environment or ignored `.env` file.
+
+## Read-Only Dataset Audit (Phase 3)
+
+Inspect a local dataset layout before implementing an Adapter. The command never changes source
+dataset files and writes its result to a separate report path:
+
+```bash
+C:\Users\TZDEZACR\miniconda3\envs\m3\python.exe -m spacers_agent.cli inspect-data \
+  --root ./dataset \
+  --output outputs/dataset_audit.json
+```
+
+## Point Counting Orchestration (Phase 4)
+
+`spacers_agent.counting.PointCountingOrchestrator` is an additive, async workflow for one
+normalized image and a caller-supplied `CountTargetSpec`. It sends one crop at a time through
+an injected structured client, uses non-overlapping owner cores with halo context, converts only
+validated `0..999` local points to global pixels, and derives `final_count` solely from accepted
+global points. It writes each tile's geometry, parsed response, conversion report, and checkpoint
+below the selected run directory; a matching successful request hash is reused on resume.
+
+The active counting prompt is versioned in `prompts/count_tile_v4.md`; superseded prompts remain
+available for experiment reproducibility. The v4 contract requires a systematic overview scan,
+explicit uncertainty for small candidates, and an independent versioned empty-tile review. An
+unconfirmed zero triggers finer crops with depth-reduced halo. Point-counting tests use local Mock
+clients only. No Qwen, DeepSeek, SSH tunnel,
+server, or cloud request is made by this module unless a caller explicitly constructs and invokes
+a live client after authorization.
+
+## Sparse Multi-Agent Routing (Phase 5)
+
+`spacers_agent.routing.TaskRouter` uses fixed rule routes for declared tasks and does not make a
+model call in that case. Only `route_unknown` uses an injected, text-only client; it requires and
+consumes a `CallBudget` entry before the call. `CountingExpert` is a thin display wrapper around
+the existing point pipeline: complete answers are derived from accepted global points, while partial
+results explicitly report completed tiles and remain non-final.
+
+Every prompt is an independent versioned file in `prompts/` and `run-init` snapshots all of them.
+The included Phase 5 tests use Mock clients only; no live routing, visual critic, or DeepSeek judge
+call is part of the default path.
+
+## DeepSeek Structured Judge (Phase 6)
+
+`spacers_agent.evaluation` calculates deterministic counting metrics first, then builds a compact
+text-and-structured-evidence payload for `spacers_agent.clients.DeepSeekJudgeClient`. The judge
+never receives imagery, Base64, file paths, or complete point lists. It explicitly declares that it
+cannot verify visual truth. A Judge verdict of `correct` that conflicts with a known count mismatch
+is preserved as raw output and flagged as `judge_inconsistency`; it never overrides the deterministic
+metric.
+
+When you are ready for an explicitly authorized live smoke test, create the ignored `.env` from the
+template and replace only this placeholder with your key:
+
+```dotenv
+DEEPSEEK_API_KEY=replace-with-deepseek-key
+```
+
+Use [`.env.example`](C:\Users\TZDEZACR\Desktop\spacers-agent\code\.env.example) as the template; do not place the key in `configs/default.yaml`, source code, tests, run manifests, or documentation. No live DeepSeek call is performed by default.
+
+## Offline Acceptance Tools (Phase 7)
+
+Two local-only CLI commands help make point counting auditable after a result exists:
+
+```powershell
+python -m spacers_agent.cli render-count --image .\image.png --result .\counting_result.json --output .\counting_overlay.png
+python -m spacers_agent.cli summarize-evaluations --input .\evaluation_records.jsonl --output .\evaluation_summary.json
+```
+
+The overlay renders owner cores, accepted points, and rejected points; the summary keeps deterministic benchmark metrics separate from optional DeepSeek quality metrics. See [the local runbook](C:\Users\TZDEZACR\Desktop\spacers-agent\code\docs\runbook.md) for required interpreter paths, safeguards, and commands.
+
+## Runnable Qwen Agent and Dataset Commands
+
+The baseline `main.py` remains unchanged. New operations use `python -m spacers_agent.cli` and make network calls only for commands explicitly marked `--live` or requiring inference:
+
+```powershell
+python -m spacers_agent.cli health qwen --live
+python -m spacers_agent.cli list-datasets
+python -m spacers_agent.cli smoke-qwen --image tests/fixtures/smoke.png --question "Describe this image"
+python -m spacers_agent.cli count-image --image .\demo.png --question "How many buildings?" --run-id demo-count --evaluate --render
+python -m spacers_agent.cli run-dataset --dataset XLRS-Bench-lite --root D:\data\XLRS-Bench-lite --split test --task counting --run-id xlrs-count-v1 --resume
+python -m spacers_agent.cli resume-run --run-id xlrs-count-v1
+python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
+python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
+```
+
+The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
+
+To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL checkpoint, create an ignored `configs/local.spark.yaml` from `configs/default.yaml` and set only local runtime values such as:
+
+```yaml
+models:
+  qwen:
+    backend: transformers
+    model: /path/to/Qwen3_vl_4b_instruct
+    dtype: bfloat16
+    device_map: auto
+    local_files_only: true
+    max_tokens: 512
+```
+
+Then run sequentially; this path does not require or contact vLLM:
+
+If an existing ignored `configs/local.spark.yaml` copied older counting keys, set
+`counting.prompt_version: count-point-v4` and `counting.vrsbench_min_scan_depth: 0` before creating
+a new run. This prevents a v4 prompt from being mislabeled as an older inference configuration.
+
+```bash
+set -a
+source .env
+set +a
+
+python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
+  --dataset VRSBench --root /path/to/vrsbench --split validation \
+  --task general_vqa --run-id vrsbench-qwen3vl-router-20 \
+  --max-samples 20 --sample-concurrency 1 \
+  --evaluate --judge-policy all
+```
+
+For VQA, `--evaluate` now defaults to `--judge-policy all`. If `DEEPSEEK_API_KEY` is not present
+in the process environment, the command fails visibly instead of silently marking Judge as
+`not_requested`; use `--judge-policy none` only when DeepSeek evaluation is intentionally disabled.
+To add or retry DeepSeek results for an existing run without loading or calling Qwen, export the
+same environment key and run `judge-vqa-run --run-id <run-id>`. Successful existing Judge records
+are reused unless `--force` is supplied, and the HTML report is rebuilt from persisted Qwen results.
+
+VRSBench routing is conservative and question-driven. The official `type` is retained for audit but
+does not force an Agent or answer vocabulary. Explicit numerical questions use accepted-point
+counting; direct single-target grid location, vehicle extreme-category, orientation, and arrangement
+questions use the spatial expert; open categories, scenes, existence/relation questions, and unknown
+types fall back to general VQA. A closed vocabulary is included only when the question text itself
+entails it. The canonical evaluation task and reference answers remain unchanged. The HTML report
+records the actual Agent route and prompt version, overlays labeled boxes or accepted points on a
+report-only image copy, and includes the deterministic geometry audit.
+
+VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-aware target parse.
+The default configuration scans a fitting image as one overview, enlarges small transmitted crops
+to a maximum side of 768 pixels, and independently rechecks empty results. A review that reports
+`zero_unconfirmed` triggers finer owner-core crops with a smaller halo; a zero answer remains solely
+point-derived. Spatial extreme and arrangement questions receive an independent
+candidate-enumeration pass that is not shown first-pass evidence. Grid-position questions instead
+localize the singular physical target before the program derives its three-by-three label from the
+box centre. Their visual localization call does not receive the grid-label vocabulary, and an
+independent review is used only for missing, ambiguous, or corner-region placeholder evidence. A
+review may attach the explicit small/large vehicle class to model-provided top-level boxes; otherwise
+it uses a neutral target label while preserving the returned coordinates. It never fabricates
+coordinates. Question semantics remain separate from the coarse official type. Program geometry
+requires at least two candidates before claiming an extreme comparison, workflow status tokens are
+never retained as semantic answers, and every local decision remains in the geometry audit.
+
+Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
+
+The local Transformers client normalizes Qwen's common two-corner box representation before strict validation. It orders reversed corners but never expands a zero-area line or point into a fabricated box. Labeled degenerate observations are retained as points, unlabeled legacy boxes are dropped, and a valid box/point conflict retains the box. The geometry audit records normalization names, evidence quality, and repair severity. A malformed JSON response receives at most one versioned text-only format-repair call; the repair call does not receive the source image, and both attempts remain in the sample artifacts. A response truncated only at its final JSON member may be closed locally or have only that incomplete tail member removed; this recovery is explicitly recorded and never invents missing visual evidence.
