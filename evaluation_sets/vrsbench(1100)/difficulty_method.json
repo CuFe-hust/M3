@@ -1,0 +1,299 @@
+{
+  "official_difficulty": false,
+  "seed": 42,
+  "random_generator": "Python random.Random(42)",
+  "word_pattern": "[A-Za-z0-9]+(?:['’-][A-Za-z0-9]+)*",
+  "rank_group_rule": "sort by metric then source_index; first floor(30%) is short/small; last floor(30%) is long/large; remainder is medium",
+  "caption_boundaries": {
+    "candidate_count": 9350,
+    "edge_count": 2805,
+    "short": {
+      "count": 2805,
+      "min": 9,
+      "max": 39
+    },
+    "medium": {
+      "count": 3740,
+      "min": 39,
+      "max": 56
+    },
+    "long": {
+      "count": 2805,
+      "min": 56,
+      "max": 130
+    }
+  },
+  "referring_boundaries": {
+    "candidate_count": 16159,
+    "edge_count": 4847,
+    "small": {
+      "count": 4847,
+      "min": 5.340576171875e-05,
+      "max": 0.005870819091796875
+    },
+    "medium": {
+      "count": 6465,
+      "min": 0.005870819091796875,
+      "max": 0.078826904296875
+    },
+    "large": {
+      "count": 4847,
+      "min": 0.078826904296875,
+      "max": 2.6180343627929688
+    }
+  },
+  "vqa_boundaries_by_type": {
+    "object category": {
+      "candidate_count": 5434,
+      "edge_count": 1630,
+      "short": {
+        "count": 1630,
+        "min": 4,
+        "max": 9
+      },
+      "medium": {
+        "count": 2174,
+        "min": 9,
+        "max": 11
+      },
+      "long": {
+        "count": 1630,
+        "min": 11,
+        "max": 21
+      }
+    },
+    "object existence": {
+      "candidate_count": 7409,
+      "edge_count": 2222,
+      "short": {
+        "count": 2222,
+        "min": 3,
+        "max": 8
+      },
+      "medium": {
+        "count": 2965,
+        "min": 8,
+        "max": 9
+      },
+      "long": {
+        "count": 2222,
+        "min": 9,
+        "max": 21
+      }
+    },
+    "object quantity": {
+      "candidate_count": 6028,
+      "edge_count": 1808,
+      "short": {
+        "count": 1808,
+        "min": 5,
+        "max": 8
+      },
+      "medium": {
+        "count": 2412,
+        "min": 8,
+        "max": 9
+      },
+      "long": {
+        "count": 1808,
+        "min": 9,
+        "max": 17
+      }
+    },
+    "object color": {
+      "candidate_count": 3550,
+      "edge_count": 1065,
+      "short": {
+        "count": 1065,
+        "min": 4,
+        "max": 8
+      },
+      "medium": {
+        "count": 1420,
+        "min": 8,
+        "max": 10
+      },
+      "long": {
+        "count": 1065,
+        "min": 10,
+        "max": 19
+      }
+    },
+    "object shape": {
+      "candidate_count": 1423,
+      "edge_count": 426,
+      "short": {
+        "count": 426,
+        "min": 4,
+        "max": 7
+      },
+      "medium": {
+        "count": 571,
+        "min": 7,
+        "max": 9
+      },
+      "long": {
+        "count": 426,
+        "min": 9,
+        "max": 17
+      }
+    },
+    "object size": {
+      "candidate_count": 1011,
+      "edge_count": 303,
+      "short": {
+        "count": 303,
+        "min": 4,
+        "max": 8
+      },
+      "medium": {
+        "count": 405,
+        "min": 8,
+        "max": 11
+      },
+      "long": {
+        "count": 303,
+        "min": 11,
+        "max": 21
+      }
+    },
+    "object position": {
+      "candidate_count": 5828,
+      "edge_count": 1748,
+      "short": {
+        "count": 1748,
+        "min": 4,
+        "max": 8
+      },
+      "medium": {
+        "count": 2332,
+        "min": 8,
+        "max": 11
+      },
+      "long": {
+        "count": 1748,
+        "min": 11,
+        "max": 22
+      }
+    },
+    "object direction": {
+      "candidate_count": 477,
+      "edge_count": 143,
+      "short": {
+        "count": 143,
+        "min": 5,
+        "max": 7
+      },
+      "medium": {
+        "count": 191,
+        "min": 7,
+        "max": 10
+      },
+      "long": {
+        "count": 143,
+        "min": 10,
+        "max": 23
+      }
+    },
+    "scene type": {
+      "candidate_count": 3197,
+      "edge_count": 959,
+      "short": {
+        "count": 959,
+        "min": 4,
+        "max": 8
+      },
+      "medium": {
+        "count": 1279,
+        "min": 8,
+        "max": 10
+      },
+      "long": {
+        "count": 959,
+        "min": 10,
+        "max": 19
+      }
+    },
+    "reasoning": {
+      "candidate_count": 902,
+      "edge_count": 270,
+      "short": {
+        "count": 270,
+        "min": 4,
+        "max": 8
+      },
+      "medium": {
+        "count": 362,
+        "min": 8,
+        "max": 10
+      },
+      "long": {
+        "count": 270,
+        "min": 10,
+        "max": 20
+      }
+    },
+    "rural or urban": {
+      "candidate_count": 295,
+      "edge_count": 88,
+      "short": {
+        "count": 88,
+        "min": 5,
+        "max": 9
+      },
+      "medium": {
+        "count": 119,
+        "min": 9,
+        "max": 10
+      },
+      "long": {
+        "count": 88,
+        "min": 10,
+        "max": 14
+      }
+    },
+    "image": {
+      "candidate_count": 1129,
+      "edge_count": 338,
+      "short": {
+        "count": 338,
+        "min": 4,
+        "max": 6
+      },
+      "medium": {
+        "count": 453,
+        "min": 6,
+        "max": 7
+      },
+      "long": {
+        "count": 338,
+        "min": 7,
+        "max": 13
+      }
+    }
+  },
+  "obj_corner_rule": "flatten four polygon points (8 numbers), then use min/max x/y to compute enclosing axis-aligned box area",
+  "quantity_rule": "accept a full nonnegative decimal integer or an English number word from zero through ninety-nine",
+  "relation_phrases": [
+    "relative to",
+    "between",
+    "closest",
+    "farthest",
+    "nearest",
+    "left-most",
+    "right-most",
+    "top-most",
+    "bottom-most",
+    "larger",
+    "smaller",
+    "largest",
+    "smallest",
+    "compared",
+    "adjacent",
+    "surrounding",
+    "above",
+    "below",
+    "next to"
+  ],
+  "selection_rule": "fixed task/type order; seeded candidate order; prefer unused image_id; allow reuse when needed"
+}
