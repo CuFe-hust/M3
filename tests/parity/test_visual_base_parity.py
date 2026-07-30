@@ -77,7 +77,12 @@ async def test_new_visual_agent_matches_frozen_request_and_result(
     assert execution.result_filename == "expert_result.json"
     assert result_path == sample_dir / "expert_result.json"
     assert json.loads(result_path.read_text(encoding="utf-8")) == execution.payload.model_dump(mode="json")
-    assert execution.trace["prompt_version"] == expected_calls[0]["prompt_version"]
+    expected_prompt_call = (
+        expected_calls[-1]
+        if case_name == "change_caption"
+        else expected_calls[0]
+    )
+    assert execution.trace["prompt_version"] == expected_prompt_call["prompt_version"]
 
 
 @pytest.mark.asyncio

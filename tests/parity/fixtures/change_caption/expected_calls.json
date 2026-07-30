@@ -2,6 +2,29 @@
   "deepseek": [],
   "qwen": [
     {
+      "artifact_dir": "samples/change_caption/change_expert/analysis",
+      "image_inputs": [
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        },
+        {
+          "byte_length": 78,
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": null,
+      "match_key": "change_caption|ExpertResult|change_caption:change_expert:analysis",
+      "messages_sha256": "7470da02f78310c347b7d54d3b053f655c28dc9ebb867c8737205b3e422a9255",
+      "prompt_version": "change-analysis-v2",
+      "request_hash": "f3efdbef625517eca746a656549d31daa1e4203997bc2f30909bfcafccfa00dc",
+      "request_id": "change_caption:change_expert:analysis",
+      "response_model": "ExpertResult",
+      "sample_id": "change_caption"
+    },
+    {
       "artifact_dir": "samples/change_caption/change_expert",
       "image_inputs": [
         {
@@ -16,11 +39,11 @@
         }
       ],
       "image_sha256": null,
-      "match_key": "change_caption|ExpertResult|change_caption:change_expert",
-      "messages_sha256": "4092cd8eae9f9fc893be9614cd4199dc7433c1dd2da310f9315f2cba03d077de",
-      "prompt_version": "change-expert-v1",
-      "request_hash": "2fc9a80f147838439bface3bf332f264c150b85709b0c9536a7e58da5fd3db57",
-      "request_id": "change_caption:change_expert",
+      "match_key": "change_caption|ExpertResult|change_caption:change_expert:verification",
+      "messages_sha256": "dc74ff9fef9c8384f2347527d645ed41526eb6879a94329c85deaa9392e2f5a0",
+      "prompt_version": "change-verification-v4",
+      "request_hash": "dac32e37d3ae76d2ad95f686ba5f24835286ebd96c856eecfe5f9fe2f52976d9",
+      "request_id": "change_caption:change_expert:verification",
       "response_model": "ExpertResult",
       "sample_id": "change_caption"
     }

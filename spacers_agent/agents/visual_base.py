@@ -84,8 +84,23 @@ class VisualAgentBase:
 
     # ── core execution / 核心执行 ────────────────────────────────────────
 
-    async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
-        """Execute the visual agent pipeline. / 执行视觉 Agent 管线。"""
+    async def run(
+        self,
+        sample: UnifiedSample,
+        *,
+        artifact_dir: Path,
+        prompt_selection: PromptSelection | None = None,
+        user_payload_updates: dict[str, Any] | None = None,
+        artifact_subdir: str | None = None,
+        request_id_suffix: str | None = None,
+    ) -> ExpertResult:
+        """Execute one auditable visual-agent request.
+        执行一次可审计的视觉 Agent 请求。
+
+        Optional overrides support bounded multi-stage agents without duplicating
+        image loading, hashing, or request metadata.
+        可选参数支持有界的多阶段 Agent，且无需重复图像读取、哈希或请求元数据逻辑。
+        """
 
         # Read images and build content / 读取图像并构建内容
         content: list[dict[str, Any]] = []
@@ -96,10 +111,12 @@ class VisualAgentBase:
             image_hashes.append(hashlib.sha256(data).hexdigest())
 
         user_payload = self.build_user_payload(sample)
+        if user_payload_updates:
+            user_payload.update(user_payload_updates)
         content.append({"type": "text", "text": json.dumps(user_payload, ensure_ascii=False)})
 
         # Select prompt / 选择 Prompt
-        prompt_sel = self.select_prompt(sample)
+        prompt_sel = prompt_selection or self.select_prompt(sample)
         structured_prompt = (
             prompt_sel.text
             + f"\n\nReturn valid JSON only. Set expert to {self._agent_name!r}; "
@@ -120,15 +137,19 @@ class VisualAgentBase:
             image_sha256="|".join(image_hashes),
         )
 
+        request_id = f"{sample.sample_id}:{self._agent_name}"
+        if request_id_suffix:
+            request_id = f"{request_id}:{request_id_suffix}"
+        request_artifact_dir = artifact_dir / (artifact_subdir or self._agent_name)
         result = await self._client.complete_json(
             messages=messages,
             response_model=ExpertResult,
             request_meta=RequestMeta(
-                request_id=f"{sample.sample_id}:{self._agent_name}",
+                request_id=request_id,
                 request_hash=request_hash,
                 prompt_version=prompt_sel.version,
                 sample_id=sample.sample_id,
-                artifact_dir=artifact_dir / self._agent_name,
+                artifact_dir=request_artifact_dir,
             ),
         )
 

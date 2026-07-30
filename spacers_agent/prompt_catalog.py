@@ -52,6 +52,8 @@ class PromptCatalog:
         "target": ("target_parse_v1.md", "target-parse-v1"),
         "target_parse": ("target_parse_v1.md", "target-parse-v1"),
         "change": ("change_v1.md", "change-expert-v1"),
+        "change_analysis": ("change_analysis_v2.md", "change-analysis-v2"),
+        "change_verification": ("change_verification_v4.md", "change-verification-v4"),
         "spatial": ("spatial_v4.md", "spatial-v4"),
         "spatial_grid": ("spatial_v5.md", "spatial-v5"),
         "spatial_review": ("spatial_candidate_review_v2.md", "spatial-candidate-review-v2"),

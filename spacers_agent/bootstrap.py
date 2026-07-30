@@ -90,7 +90,15 @@ def build_agent_registry(
 
     # 2-7. Register agents in order / 按顺序注册 Agent
     registry.register(CountingAgent(qwen_client, prompts, model, backend_registry))
-    registry.register(ChangeAgent(qwen_client, prompt_catalog.asset("change"), model))
+    registry.register(
+        ChangeAgent(
+            qwen_client,
+            prompt_catalog.asset("change"),
+            model,
+            analysis_prompt=prompt_catalog.asset("change_analysis"),
+            verification_prompt=prompt_catalog.asset("change_verification"),
+        )
+    )
     registry.register(GroundingAgent(qwen_client, prompt_catalog.asset("grounding"), model))
     registry.register(
         SpatialAgent(

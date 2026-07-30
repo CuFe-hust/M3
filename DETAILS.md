@@ -565,6 +565,7 @@ DeepSeek, and any future judge must receive only text and structured evidence ra
 
 The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v4.md`,
 `count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
+`change_analysis_v2.md`, `change_verification_v4.md`,
 `missing_point_review_v3.md`, `spatial_v4.md`, `spatial_v5.md`,
 `spatial_candidate_review_v2.md`, `spatial_candidate_review_v3.md`, and
 `general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
@@ -579,6 +580,18 @@ the explicitly named `smooth_error_score` (which is not an accuracy metric). Its
 payload contains question text, target rules, display answer, count consistency, tile/conflict
 statistics, ground truth, and deterministic metrics; it deliberately excludes source images, image
 paths, Base64 values, and the full point list.
+
+Caption and change-caption text is folded to one line and stripped of METEOR's reserved `|||`
+separator only in temporary pycocoevalcap input. Persisted predictions, references, splits, and
+metric implementations remain unchanged.
+
+`eval/change_comparison_report.py` builds a report-only LEVIR-CC comparison from persisted
+baseline and two-stage Change Agent artifacts. It copies the displayed T1/T2 images beside the
+HTML, shows analysis, verification, final selection, guard, and duration, and writes a sibling
+JSON summary. The caller supplies the read-only derived sample manifest so the auxiliary label
+uses its preserved official `changeflag` instead of inferring truth from reference wording.
+Official caption metrics remain separate from the explicitly labeled auxiliary
+`changeflag` changed/no-change diagnostic; strict full-text equality is not reported as accuracy.
 
 `DeepSeekJudgeResult` hard-codes `judge_scope="text_and_structured_evidence_only"` and
 `can_verify_visual_truth=false`. `merge_count_evaluation` preserves the raw judge response and flags
@@ -699,7 +712,13 @@ only re-export public compatibility symbols.
 
 Non-counting Agents receive frozen `PromptAsset` values resolved from `PromptCatalog`, rather than
 maintaining a second mutable Prompt dictionary. Observable request contracts remain unchanged:
-change uses request version `change-expert-v1`, grounding and general VQA use `general-vqa-v2`,
+change captions always run `change-analysis-v2` and conditionally run `change-verification-v4`
+only when the first pass is incomplete, uncertain, or makes a positive claim without geometry or
+a localized T1/T2 textual comparison. The trace records the trigger decision and reasons. When
+verification runs, a positive override of a first-pass no-change result is rejected unless it
+supplies contrastive evidence,
+while compatibility and change QA retain `change-expert-v1`; grounding and general VQA use
+`general-vqa-v2`,
 spatial uses `spatial-v4` or grid `spatial-v5`, review uses v2/v3, and caption uses its dedicated
 `caption-v1` asset. Caption was a frozen unsupported gap in the legacy multi-Agent DatasetRunner;
 the standalone CaptionAgent now closes that gap with one `ExpertResult` request and the unchanged
