@@ -731,4 +731,8 @@ recovery, duplicate suppression, repair-severity selection, box IoU, and point d
 `agents/spatial/evidence_merge.py`; former workflow-private helper names are aliases to these
 functions. Candidate-review failure preserves the primary result, records the visible error, and
 marks it partial. Successful review performs placeholder replacement and evidence merging before a
-single VRSBench geometry postprocess.
+single VRSBench geometry postprocess. During evidence merging, positional vehicle-role labels such
+as `top-most vehicle` and `bottom-most vehicle` may spatially match an explicit small/large vehicle
+class, while conflicting explicit classes remain distinct. Small shifted boxes are duplicates only
+when either IoU is at least 0.7 or the smaller-box coverage and normalized centre-distance guards
+both pass; an explicit vehicle-class label is retained instead of a positional role label.

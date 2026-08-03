@@ -7,14 +7,18 @@ from __future__ import annotations
 from pathlib import Path
 
 from spacers_agent.agents.spatial.evidence_merge import (
+    box_intersection_over_smaller,
     box_iou,
+    compatible_evidence_labels,
     is_corner_anchored_box,
     matches_position_target,
     maximum_repair_severity,
     merge_visual_evidence,
     needs_candidate_review,
+    normalized_box_center_distance,
     point_distance,
     position_review_evidence,
+    same_box_observation,
 )
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample, VisualEvidence
 
@@ -90,6 +94,38 @@ def test_merge_visual_evidence_prefers_box_and_removes_duplicates() -> None:
     merged = merge_visual_evidence([point], [box, distinct])
 
     assert merged == [box, distinct]
+
+
+def test_merge_visual_evidence_deduplicates_positional_vehicle_roles() -> None:
+    first = [
+        VisualEvidence(label="bottom-most vehicle", box=[592, 812, 638, 888], confidence=0.95),
+        VisualEvidence(label="top-most vehicle", box=[632, 292, 678, 368], confidence=0.95),
+    ]
+    review = [
+        VisualEvidence(label="small-vehicle", box=[596, 812, 642, 888], confidence=0.95),
+        VisualEvidence(label="small-vehicle", box=[626, 296, 672, 362], confidence=0.95),
+        VisualEvidence(label="small-vehicle", box=[696, 972, 742, 999], confidence=0.8),
+        VisualEvidence(label="large-vehicle", box=[16, 396, 86, 592], confidence=0.95),
+    ]
+
+    merged = merge_visual_evidence(first, review)
+
+    assert merged == review
+    assert compatible_evidence_labels("bottom-most vehicle", "small-vehicle") is True
+    assert compatible_evidence_labels("bottom-most vehicle", "large-vehicle") is True
+    assert compatible_evidence_labels("small-vehicle", "large-vehicle") is False
+
+
+def test_shifted_small_boxes_use_overlap_and_center_guard() -> None:
+    first = [632, 292, 678, 368]
+    shifted = [626, 296, 672, 362]
+    adjacent = [675, 296, 721, 362]
+
+    assert box_iou(first, shifted) < 0.7
+    assert box_intersection_over_smaller(first, shifted) >= 0.8
+    assert normalized_box_center_distance(first, shifted) <= 0.25
+    assert same_box_observation(first, shifted) is True
+    assert same_box_observation(first, adjacent) is False
 
 
 def test_geometry_helpers_preserve_threshold_inputs() -> None:

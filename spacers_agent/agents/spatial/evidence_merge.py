@@ -167,15 +167,88 @@ def box_iou(first: list[int], second: list[int]) -> float:
     return intersection / union if union else 0.0
 
 
+def box_intersection_over_smaller(first: list[int], second: list[int]) -> float:
+    """Return intersection area divided by the smaller box area.
+    返回交集面积与较小框面积之比。
+    """
+
+    intersection_width = max(0, min(first[2], second[2]) - max(first[0], second[0]))
+    intersection_height = max(0, min(first[3], second[3]) - max(first[1], second[1]))
+    intersection = intersection_width * intersection_height
+    first_area = (first[2] - first[0]) * (first[3] - first[1])
+    second_area = (second[2] - second[0]) * (second[3] - second[1])
+    smaller_area = min(first_area, second_area)
+    return intersection / smaller_area if smaller_area else 0.0
+
+
+def normalized_box_center_distance(first: list[int], second: list[int]) -> float:
+    """Return center distance normalized by the smaller box diagonal.
+    返回以较小框对角线归一化的中心距离。
+    """
+
+    first_center = ((first[0] + first[2]) / 2, (first[1] + first[3]) / 2)
+    second_center = ((second[0] + second[2]) / 2, (second[1] + second[3]) / 2)
+    center_distance = (
+        (first_center[0] - second_center[0]) ** 2
+        + (first_center[1] - second_center[1]) ** 2
+    ) ** 0.5
+    first_diagonal = ((first[2] - first[0]) ** 2 + (first[3] - first[1]) ** 2) ** 0.5
+    second_diagonal = ((second[2] - second[0]) ** 2 + (second[3] - second[1]) ** 2) ** 0.5
+    smaller_diagonal = min(first_diagonal, second_diagonal)
+    return center_distance / smaller_diagonal if smaller_diagonal else float("inf")
+
+
+def vehicle_label_kind(label: str) -> str | None:
+    """Return a canonical class or a generic positional vehicle role.
+    返回标准车辆类别或泛化的位置车辆角色。
+    """
+
+    canonical = vrsbench_vehicle_class(label)
+    if canonical in {"small-vehicle", "large-vehicle"}:
+        return canonical
+    if re.search(r"\b(?:top|bottom|left|right)[\s-]*most[\s-]+vehicles?\b", label.casefold()):
+        return "vehicle"
+    return None
+
+
+def compatible_evidence_labels(first: str, second: str) -> bool:
+    """Allow positional vehicle roles to match an explicit vehicle class.
+    允许位置车辆角色与明确的车辆类别匹配。
+    """
+
+    first_vehicle = vehicle_label_kind(first)
+    second_vehicle = vehicle_label_kind(second)
+    if first_vehicle is not None and second_vehicle is not None:
+        return (
+            first_vehicle == second_vehicle
+            or first_vehicle == "vehicle"
+            or second_vehicle == "vehicle"
+        )
+    return vrsbench_vehicle_class(first) == vrsbench_vehicle_class(second)
+
+
+def same_box_observation(first: list[int], second: list[int]) -> bool:
+    """Match shifted small-object boxes without merging adjacent instances.
+    匹配发生偏移的小目标框，同时避免合并相邻实例。
+    """
+
+    if box_iou(first, second) >= 0.7:
+        return True
+    return (
+        box_intersection_over_smaller(first, second) >= 0.8
+        and normalized_box_center_distance(first, second) <= 0.25
+    )
+
+
 def same_visual_observation(first: VisualEvidence, second: VisualEvidence) -> bool:
     """Return whether two evidence items describe the same observation.
     返回两条证据是否描述同一观测。
     """
 
-    if vrsbench_vehicle_class(first.label) != vrsbench_vehicle_class(second.label):
+    if not compatible_evidence_labels(first.label, second.label):
         return False
     if first.box is not None and second.box is not None:
-        return box_iou(first.box, second.box) >= 0.7
+        return same_box_observation(first.box, second.box)
     if first.point is not None and second.point is not None:
         return point_distance(first.point, second.point) <= 12
     box_item, point_item = (first, second) if first.box is not None else (second, first)
@@ -193,5 +266,11 @@ def prefer_candidate_evidence(candidate: VisualEvidence, existing: VisualEvidenc
     if candidate.box is not None and existing.box is None:
         return True
     if candidate.box is None and existing.box is not None:
+        return False
+    candidate_vehicle = vehicle_label_kind(candidate.label)
+    existing_vehicle = vehicle_label_kind(existing.label)
+    if candidate_vehicle in {"small-vehicle", "large-vehicle"} and existing_vehicle == "vehicle":
+        return True
+    if candidate_vehicle == "vehicle" and existing_vehicle in {"small-vehicle", "large-vehicle"}:
         return False
     return candidate.confidence > existing.confidence
