@@ -257,7 +257,8 @@ For `counting` and `fine_grained_counting`, auto mode selects the highest-priori
 detector, preserves `final_count == accepted points`, and visibly falls back to Qwen for missing or
 invalid weights, missing optional dependencies, task/class-map mismatch, or detector failure. A
 zero YOLO result triggers an independent Qwen point review unless local configuration explicitly
-trusts empty detections. VRSBench quantity VQA continues to use its existing dedicated Qwen route.
+trusts empty detections. In auto mode, supported VRSBench quantity targets use YOLO first and retain
+the dedicated VRSBench Qwen backend for unavailable/error/empty-result fallback.
 
 `run-dataset --task counting` now writes `outputs/runs/<run-id>/counting.report/report.html` and
 `samples.csv`. The report shows the executed backend, YOLO attempt/fallback state, detector profile,
@@ -322,12 +323,13 @@ python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
   --dataset VRSBench --root /path/to/vrsbench --split validation \
   --task general_vqa --run-id vrsbench-qwen3vl-router-20 \
   --max-samples 20 --sample-concurrency 1 \
-  --evaluate --judge-policy all
+  --judge-policy all
 ```
 
-For VQA, `--evaluate` now defaults to `--judge-policy all`. If `DEEPSEEK_API_KEY` is not present
-in the process environment, the command fails visibly instead of silently marking Judge as
-`not_requested`; use `--judge-policy none` only when DeepSeek evaluation is intentionally disabled.
+`run-dataset` enables evaluation by default, and VQA uses `--judge-policy all`. If
+`DEEPSEEK_API_KEY` is not present in the process environment, the command fails visibly instead of
+silently marking Judge as `not_requested`; use `--no-evaluate` or `--judge-policy none` only when
+DeepSeek evaluation is intentionally disabled.
 To add or retry DeepSeek results for an existing run without loading or calling Qwen, export the
 same environment key and run `judge-vqa-run --run-id <run-id>`. Successful existing Judge records
 are reused unless `--force` is supplied, and the HTML report is rebuilt from persisted Qwen results.

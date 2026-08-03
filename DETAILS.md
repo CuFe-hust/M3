@@ -652,7 +652,7 @@ status tokens such as `partial` are removed from the semantic answer field, and 
 answers are not downgraded solely because they have no localizable box. Partial VQA artifacts remain
 visible in the HTML report.
 
-Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. With `--evaluate`, VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--judge-policy none` remains the explicit offline opt-out. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
+Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. `run-dataset` enables evaluation by default and VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--no-evaluate` and `--judge-policy none` remain explicit offline opt-outs. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
 
 Before strict `VisualEvidence` validation, the structured result normalizes a model-emitted pair of corner points into one flat box and reclassifies a single two-value box as a point. Reversed corners are ordered. A zero-width or zero-height observation is never expanded into a fabricated one-pixel box: labeled evidence is retained as a point and unlabeled legacy boxes are dropped. A simultaneous valid box and point retains the box, while a degenerate box with an explicit point retains the point. Normalization names, per-item evidence quality, and aggregate repair severity are retained in the geometry audit. Deterministic box geometry never consumes a repaired point.
 
@@ -701,8 +701,10 @@ YOLO backend only when its audited classes support the requested target. Unsuppo
 `qwen_point`. A detector unavailable at execution or failing inference falls back to Qwen only when
 the corresponding explicit configuration permits it, and `agent_trace.json` records primary,
 executed, attempted backends and the fallback reason. A zero YOLO count receives an independent
-Qwen point review unless `trust_empty_detection` is explicitly enabled. VRSBench quantity VQA keeps
-the existing `vrsbench_qwen_count` route. YOLO results still use owner-core acceptance, confidence
+Qwen point review unless `trust_empty_detection` is explicitly enabled. In auto mode, VRSBench
+quantity VQA uses the highest-priority supported YOLO detector and retains `vrsbench_qwen_count` as
+its unavailable/error/empty-result fallback; explicit Qwen mode keeps the dedicated Qwen route.
+YOLO results still use owner-core acceptance, confidence
 gating, conservative adjacent-tile duplicate processing, and the unchanged invariant that
 `final_count` equals accepted global points.
 
@@ -710,8 +712,7 @@ Counting-only dataset runs create `counting.jsonl`, `counting.metadata.json`, an
 `counting.report/report.html` plus CSV/image artifacts. The shared audit report reads trace fields
 rather than inferring detector facts from names; it displays whether YOLO was attempted, used for the
 final result, or fell back. The first profile is limited to declared DOTAv1 classes and does not add
-multi-detector ensembling, per-box Qwen review, training, export, or a replacement for VRSBench
-quantity counting.
+multi-detector ensembling, per-box Qwen review, training, or export.
 
 ## 16. Non-Counting Agent Cutover Contract
 

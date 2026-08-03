@@ -80,3 +80,18 @@ def test_backend_selector_selects_vrsbench_for_vehicle_quantity():
     selection = selector.select(target, sample)
     assert selection is not None
     assert selection.backend_name == "vrsbench_qwen_count"
+
+
+def test_backend_selector_uses_yolo_for_vrsbench_vehicle_quantity():
+    registry = BackendRegistry()
+    registry.register(_FakeBackend("qwen_point"))
+    registry.register(_FakeBackend("vrsbench_qwen_count", vehicle="large-vehicle"))
+    registry.register(_FakeBackend("yolo26s_dota_obb", priority=100, vehicle="large-vehicle"))
+    selector = BackendSelector(registry)
+
+    sample = _sample("VRSBench", "general_vqa", "How many large vehicles are visible in the image?", "quantity")
+    target = CountTargetSpec(canonical_label="large-vehicle", inclusion_rule="count", exclusion_rule="none")
+    plan = selector.plan(target, sample)
+    assert plan is not None
+    assert plan.primary_backend_name == "yolo26s_dota_obb"
+    assert plan.fallback_backend_names == ("vrsbench_qwen_count",)

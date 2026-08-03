@@ -50,9 +50,18 @@ def test_explicit_qwen_ignores_yolo() -> None:
     assert BackendSelector(_registry(), default_backend="qwen_point").plan(_target("ship"), _sample()).primary_backend_name == "qwen_point"
 
 
-def test_vrsbench_quantity_preserves_dedicated_backend() -> None:
+def test_vrsbench_quantity_uses_yolo_with_dedicated_qwen_fallback() -> None:
     registry = _registry()
     registry.register(VRSBenchQwenCountBackend(object(), settings=object(), prompts={"count_proposal": "", "count_localize": ""}))
     sample = _sample("general_vqa", dataset="VRSBench")
     plan = BackendSelector(registry).plan(_target("vehicle"), sample)
+    assert plan.primary_backend_name == "yolo26s_dota_obb"
+    assert plan.fallback_backend_names == ("vrsbench_qwen_count",)
+
+
+def test_vrsbench_quantity_explicit_qwen_preserves_dedicated_backend() -> None:
+    registry = _registry()
+    registry.register(VRSBenchQwenCountBackend(object(), settings=object(), prompts={"count_proposal": "", "count_localize": ""}))
+    sample = _sample("general_vqa", dataset="VRSBench")
+    plan = BackendSelector(registry, default_backend="qwen_point").plan(_target("vehicle"), sample)
     assert plan.primary_backend_name == "vrsbench_qwen_count"

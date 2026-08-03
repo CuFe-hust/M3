@@ -35,15 +35,23 @@ class BackendSelector:
         在可用性检查隐藏部署错误之前规划主后端。
         """
         if is_vrsbench_quantity(sample):
-            return self._named_plan("vrsbench_qwen_count", ("qwen_point",), "vrsbench_quantity_preserved", target)
+            if self._default_backend == "qwen_point":
+                return self._named_plan("vrsbench_qwen_count", ("qwen_point",), "vrsbench_quantity_explicit_qwen", target)
+            yolo_candidates = self._supported_yolo_candidates(target)
+            if yolo_candidates:
+                selected = max(yolo_candidates, key=lambda backend: (backend.priority, backend.name))
+                return BackendPlan(
+                    selected.name,
+                    ("vrsbench_qwen_count",),
+                    ("vrsbench_quantity", "target_supported_by_yolo", "highest_priority_supported_detector"),
+                    self._target_classes(selected, target),
+                )
+            return self._named_plan("vrsbench_qwen_count", ("qwen_point",), "vrsbench_quantity_no_supported_yolo", target)
         if sample.task not in {"counting", "fine_grained_counting"}:
             return None
         if self._default_backend == "qwen_point":
             return self._named_plan("qwen_point", (), "explicit_qwen_point", target)
-        yolo_candidates = [
-            backend for backend in self._registry.items()
-            if backend.name not in {"qwen_point", "vrsbench_qwen_count"} and backend.supports(target)
-        ]
+        yolo_candidates = self._supported_yolo_candidates(target)
         if self._default_backend == "yolo_obb":
             if not yolo_candidates:
                 return self._named_plan("qwen_point", (), "explicit_yolo_unsupported_target_qwen", target)
@@ -53,6 +61,17 @@ class BackendSelector:
             selected = max(yolo_candidates, key=lambda backend: (backend.priority, backend.name))
             return BackendPlan(selected.name, ("qwen_point",), (f"task_{sample.task}", "target_supported_by_yolo", "highest_priority_supported_detector"), self._target_classes(selected, target))
         return self._named_plan("qwen_point", (), "no_supported_yolo_detector_qwen", target)
+
+    def _supported_yolo_candidates(self, target: CountTargetSpec) -> list[object]:
+        """Return enabled detector backends that explicitly support the target.
+        返回已启用且明确支持目标的检测器后端。
+        """
+        return [
+            backend for backend in self._registry.items()
+            if backend.name not in {"qwen_point", "vrsbench_qwen_count"}
+            and backend.is_available()
+            and backend.supports(target)
+        ]
 
     def select(self, target: CountTargetSpec, sample: UnifiedSample | None = None) -> BackendSelection | None:
         """Preserve the legacy selection API for callers outside CountingAgent.

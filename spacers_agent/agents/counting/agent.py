@@ -69,10 +69,11 @@ class CountingAgent:
                 yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
                 if outcome.counting.final_count == 0 and self._settings.backend.yolo.verify_empty_with_qwen and not self._settings.backend.trust_empty_detection:
                     yolo_trace["zero_review_triggered"] = True
-                    yolo_trace["zero_review_backend"] = "qwen_point"
+                    review_name = plan.fallback_backend_names[0] if plan.fallback_backend_names else "qwen_point"
+                    yolo_trace["zero_review_backend"] = review_name
                     try:
-                        review_backend = self._selector.backend_by_name("qwen_point")
-                        attempted.append("qwen_point")
+                        review_backend = self._selector.backend_by_name(review_name)
+                        attempted.append(review_name)
                         review = await review_backend.count(request, context)
                         yolo_trace["zero_review_status"] = review.counting.status
                         yolo_trace["zero_review_result_count"] = review.counting.final_count

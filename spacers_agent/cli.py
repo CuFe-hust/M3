@@ -105,7 +105,12 @@ def build_parser() -> argparse.ArgumentParser:
     dataset.add_argument("--task", help="One or more comma-separated tasks; omitted means adapter-supported tasks.")
     dataset.add_argument("--run-id")
     dataset.add_argument("--resume", action="store_true")
-    dataset.add_argument("--evaluate", action="store_true")
+    dataset.add_argument(
+        "--evaluate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Run evaluation and DeepSeek VQA judging by default; use --no-evaluate to opt out.",
+    )
     dataset.add_argument("--judge-policy", choices=("none", "errors-only", "all"), default="all")
     dataset.add_argument("--judge-sample-rate", type=float, default=0.1)
     dataset.add_argument("--max-samples", "--limit", dest="limit", type=int, default=0)

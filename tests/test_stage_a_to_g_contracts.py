@@ -35,6 +35,9 @@ def test_new_cli_contracts_are_parseable() -> None:
     assert parser.parse_args(["run-dataset", "--dataset", "XLRS-Bench-lite", "--root", "data", "--split", "test", "--task", "counting", "--run-id", "r"]).command == "run-dataset"
     dataset = parser.parse_args(["run-dataset", "--dataset", "XLRS-Bench-lite", "--root", "data", "--split", "test", "--max-samples", "0", "--shard-index", "1", "--num-shards", "2", "--sample-concurrency", "1"])
     assert dataset.limit == 0 and dataset.shard_count == 2 and dataset.judge_policy == "all"
+    assert dataset.evaluate is True
+    offline_dataset = parser.parse_args(["run-dataset", "--dataset", "VRSBench", "--root", "data", "--split", "test", "--no-evaluate"])
+    assert offline_dataset.evaluate is False
     assert parser.parse_args(["resume-run", "--run-id", "r"]).command == "resume-run"
     assert parser.parse_args(["evaluate-run", "--run-id", "r", "--deepseek"]).command == "evaluate-run"
     assert parser.parse_args(["judge-vqa-run", "--run-id", "r"]).command == "judge-vqa-run"
