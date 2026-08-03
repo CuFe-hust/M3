@@ -121,6 +121,7 @@ class QwenTransformersClient(VisionLanguageClient):
         messages: list[dict[str, Any]],
         response_model: type[ModelT],
         request_meta: RequestMeta,
+        max_tokens: int | None = None,
     ) -> ModelT:
         """Generate once, validate JSON, and persist auditable local-call metadata.
         生成一次、校验 JSON，并保存可审计的本地调用元数据。
@@ -144,7 +145,9 @@ class QwenTransformersClient(VisionLanguageClient):
         attempt_errors: list[dict[str, Any]] = []
         token_usage: dict[str, int] | None = None
         try:
-            raw_response, token_usage = await asyncio.to_thread(self._generate, messages, response_model)
+            raw_response, token_usage = await asyncio.to_thread(
+                self._generate, messages, response_model, max_tokens
+            )
             raw_responses.append(raw_response)
             try:
                 result = _validate_response(raw_response, response_model)
@@ -153,7 +156,9 @@ class QwenTransformersClient(VisionLanguageClient):
                 if self.repair_prompt is None:
                     raise
                 repair_messages = _repair_messages(self.repair_prompt, raw_response, str(error))
-                repaired, repair_usage = await asyncio.to_thread(self._generate, repair_messages, response_model)
+                repaired, repair_usage = await asyncio.to_thread(
+                    self._generate, repair_messages, response_model, max_tokens
+                )
                 raw_responses.append(repaired)
                 token_usage = _sum_token_usage(token_usage, repair_usage)
                 result = _validate_response(repaired, response_model)
@@ -218,6 +223,7 @@ class QwenTransformersClient(VisionLanguageClient):
         self,
         messages: list[dict[str, Any]],
         response_model: type[BaseModel],
+        max_tokens: int | None = None,
     ) -> tuple[str, dict[str, int]]:
         """Convert data URLs to PIL images and run deterministic generation.
         将数据 URL 转为 PIL 图像并执行确定性生成。
@@ -239,7 +245,7 @@ class QwenTransformersClient(VisionLanguageClient):
         inputs = _move_processor_inputs(inputs, self.model.device)
         generated = self.model.generate(
             **inputs,
-            max_new_tokens=self.settings.max_tokens,
+            max_new_tokens=max_tokens or self.settings.max_tokens,
             do_sample=False,
         )
         input_tokens = int(inputs["input_ids"].shape[-1])
@@ -562,17 +568,26 @@ def _validate_response(raw_response: str, response_model: type[ModelT]) -> Model
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError as error:
-        recovered = _recover_truncated_json(stripped, error)
-        if recovered is None:
-            raise
-        payload, recovery = recovered
+        model_recover = getattr(response_model, "recover_json_payload", None)
+        model_payload = model_recover(stripped) if callable(model_recover) else None
+        if model_payload is not None:
+            payload = model_payload
+            recovery = "compact_candidate_sequence_recovered_locally"
+        else:
+            recovered = _recover_truncated_json(stripped, error)
+            if recovered is None:
+                raise
+            payload, recovery = recovered
     if recovery is not None and isinstance(payload, dict) and "geometry" in response_model.model_fields:
         geometry = dict(payload.get("geometry") or {})
         normalizations = list(geometry.get("input_normalizations") or [])
         normalizations.append(recovery)
         geometry["input_normalizations"] = list(dict.fromkeys(normalizations))
         payload["geometry"] = geometry
-    return response_model.model_validate(payload)
+    result = response_model.model_validate(payload)
+    if recovery is not None and hasattr(result, "_local_recoveries"):
+        result._local_recoveries.append(recovery)
+    return result
 
 
 def _recover_truncated_json(
@@ -699,10 +714,11 @@ def _result_local_recoveries(result: BaseModel) -> list[str]:
     在调用元数据中公开本地截断恢复标记。
     """
 
+    private_recoveries = list(getattr(result, "_local_recoveries", []))
     geometry = getattr(result, "geometry", None)
     if not isinstance(geometry, dict):
-        return []
-    return [
+        return private_recoveries
+    return private_recoveries + [
         str(value)
         for value in geometry.get("input_normalizations", [])
         if str(value).startswith("truncated_json_")

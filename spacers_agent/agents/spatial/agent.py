@@ -28,6 +28,7 @@ class SpatialAgent(VisualAgentBase):
         grid_prompt: PromptAsset | None = None,
         review_prompt: PromptAsset | None = None,
         grid_review_prompt: PromptAsset | None = None,
+        review_max_tokens: int = 128,
         apply_geometry: bool = True,
     ) -> None:
         super().__init__(
@@ -46,6 +47,7 @@ class SpatialAgent(VisualAgentBase):
             review_prompt_version=review_prompt.version if review_prompt is not None else "",
             grid_review_prompt=grid_review_prompt.text if grid_review_prompt is not None else "",
             grid_review_prompt_version=grid_review_prompt.version if grid_review_prompt is not None else "",
+            review_max_tokens=review_max_tokens,
         )
 
     # ── hooks ─────────────────────────────────────────────────────────────

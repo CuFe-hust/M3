@@ -566,7 +566,7 @@ DeepSeek, and any future judge must receive only text and structured evidence ra
 The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v4.md`,
 `count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
 `missing_point_review_v3.md`, `spatial_v4.md`, `spatial_v5.md`,
-`spatial_candidate_review_v2.md`, `spatial_candidate_review_v3.md`, and
+`spatial_candidate_review_v4.md`, `spatial_candidate_review_v5.md`, and
 `general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
 snapshots each active asset. Prompts are not changed
 in place when their behavior changes; a new versioned file must be added and selected explicitly.
@@ -726,12 +726,17 @@ only re-export public compatibility symbols.
 Non-counting Agents receive frozen `PromptAsset` values resolved from `PromptCatalog`, rather than
 maintaining a second mutable Prompt dictionary. Observable request contracts remain unchanged:
 change uses request version `change-expert-v1`, grounding and general VQA use `general-vqa-v2`,
-spatial uses `spatial-v4` or grid `spatial-v5`, review uses v2/v3, and caption uses its dedicated
+spatial uses `spatial-v4` or grid `spatial-v5`, review uses compact v4/v5, and caption uses its dedicated
 `caption-v1` asset. Caption was a frozen unsupported gap in the legacy multi-Agent DatasetRunner;
 the standalone CaptionAgent now closes that gap with one `ExpertResult` request and the unchanged
 `expert_result.json` artifact contract.
 
-Spatial candidate review is issued at most once. Pure review predicates, target matching, evidence
+Spatial candidate review is issued at most once and uses a configurable 128-token default ceiling.
+Its v4/v5 response contains only labeled boxes and an enumeration-complete flag; answers, prose
+evidence, confidence, points, geometry, and status are not regenerated. A first-pass extreme-vehicle
+result skips review only when two or more classed boxes exist, the derived extreme class matches the
+answer, and its centre is within 40 normalized units of the requested image edge. Arrangement
+questions retain review, while the existing valid singular grid-target skip remains. Pure review predicates, target matching, evidence
 recovery, duplicate suppression, repair-severity selection, box IoU, and point distance live in
 `agents/spatial/evidence_merge.py`; former workflow-private helper names are aliases to these
 functions. Candidate-review failure preserves the primary result, records the visible error, and

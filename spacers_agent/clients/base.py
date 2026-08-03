@@ -44,6 +44,7 @@ class VisionLanguageClient(Protocol):
         messages: list[dict[str, Any]],
         response_model: type[ModelT],
         request_meta: RequestMeta,
+        max_tokens: int | None = None,
     ) -> ModelT:
         """Return one schema-validated JSON response.
         返回一条经 Schema 校验的 JSON 响应。

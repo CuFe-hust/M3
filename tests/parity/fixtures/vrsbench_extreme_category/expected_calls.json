@@ -29,12 +29,12 @@
         }
       ],
       "image_sha256": null,
-      "match_key": "vrsbench_extreme_category|ExpertResult|vrsbench_extreme_category:spatial-candidate-review",
-      "messages_sha256": "a27a7ec9941e771955a44218578c1370a0a9a7055217758a80e2de6d021905c1",
-      "prompt_version": "spatial-candidate-review-v2",
-      "request_hash": "16afb753d248d7deaa0833576a183785e3d609c2a2db9664f9bf6ae6bca310e6",
+      "match_key": "vrsbench_extreme_category|SpatialCandidateReviewResult|vrsbench_extreme_category:spatial-candidate-review",
+      "messages_sha256": "b7803cbbe82b96567056565eb06bebefc5a489a9c97bb2de4d194e5655a1010b",
+      "prompt_version": "spatial-candidate-review-v4",
+      "request_hash": "8e017709766806fb23cd285358c9c356bd45d1aade46ef922640d93de4e9a955",
       "request_id": "vrsbench_extreme_category:spatial-candidate-review",
-      "response_model": "ExpertResult",
+      "response_model": "SpatialCandidateReviewResult",
       "sample_id": "vrsbench_extreme_category"
     }
   ]

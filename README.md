@@ -278,6 +278,7 @@ models:
     use_kernels: false
     local_files_only: true
     max_tokens: 512
+    spatial_review_max_tokens: 128
 ```
 
 The same local Transformers backend also supports the native multimodal
@@ -287,6 +288,8 @@ checkpoint directory, for example `/home/user/models/Qwen3.5-9B`, and retain
 `local_files_only: true`. The loader selects the native class from the checkpoint's
 `model_type`. For Qwen3.5 it disables thinking in the chat template so the existing
 JSON-only Agent response contract is preserved; Qwen3-VL rendering remains unchanged.
+Spatial candidate review uses its own 128-token ceiling and a compact box-only schema, so
+it does not consume the full general-response budget reproducing prose evidence and geometry.
 On NVIDIA GB10, install the optional runtime with
 `python -m pip install -e '.[qwen35-gb10]'`, set `use_kernels: true`, and set
 `device_map: cuda:0` in the ignored machine-local configuration. This resolves the

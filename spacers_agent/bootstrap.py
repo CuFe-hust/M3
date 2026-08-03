@@ -96,6 +96,7 @@ def build_agent_registry(
             grid_prompt=prompt_catalog.asset("spatial_grid"),
             review_prompt=prompt_catalog.asset("spatial_review"),
             grid_review_prompt=prompt_catalog.asset("spatial_grid_review"),
+            review_max_tokens=settings.models.qwen.spatial_review_max_tokens,
         )
     )
     registry.register(GeneralVQAAgent(qwen_client, prompt_catalog.asset("general"), model))

@@ -6,10 +6,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from spacers_agent.agents.spatial.evidence_merge import (
     box_intersection_over_smaller,
     box_iou,
     compatible_evidence_labels,
+    extreme_vehicle_evidence_is_sufficient,
     is_corner_anchored_box,
     matches_position_target,
     maximum_repair_severity,
@@ -20,6 +23,8 @@ from spacers_agent.agents.spatial.evidence_merge import (
     position_review_evidence,
     same_box_observation,
 )
+from spacers_agent.agents.spatial.candidate_review import SpatialCandidateReviewResult
+from spacers_agent.clients.qwen_transformers import _validate_response
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample, VisualEvidence
 
 
@@ -54,6 +59,46 @@ def test_needs_candidate_review_replaces_corner_placeholder_once() -> None:
 
     assert needs_candidate_review(_grid_sample(), first) is True
     assert needs_candidate_review(_grid_sample(), reviewed) is False
+
+
+def test_edge_complete_extreme_vehicle_skips_review() -> None:
+    sample = _grid_sample("What object class is the bottom-most vehicle?").model_copy(
+        update={"metadata": {"question_type": "object category"}}
+    )
+    result = ExpertResult(
+        expert="spatial_expert",
+        answer="small-vehicle",
+        evidence_items=[
+            VisualEvidence(label="large-vehicle", box=[10, 300, 100, 600]),
+            VisualEvidence(label="small-vehicle", box=[680, 970, 740, 999]),
+        ],
+        status="completed",
+    )
+
+    assert extreme_vehicle_evidence_is_sufficient(sample.question, result) is True
+    assert needs_candidate_review(sample, result) is False
+
+
+def test_central_extreme_and_arrangement_keep_review() -> None:
+    extreme = _grid_sample("What object class is the bottom-most vehicle?").model_copy(
+        update={"metadata": {"question_type": "object category"}}
+    )
+    arrangement = _grid_sample("Are the vehicles arranged in a line?").model_copy(
+        update={"metadata": {"question_type": "object arrangement"}}
+    )
+    result = ExpertResult(
+        expert="spatial_expert",
+        answer="small-vehicle",
+        evidence_items=[
+            VisualEvidence(label="large-vehicle", box=[10, 300, 100, 600]),
+            VisualEvidence(label="small-vehicle", box=[600, 700, 680, 800]),
+        ],
+        status="completed",
+    )
+
+    assert extreme_vehicle_evidence_is_sufficient(extreme.question, result) is False
+    assert needs_candidate_review(extreme, result) is True
+    assert needs_candidate_review(arrangement, result) is True
 
 
 def test_position_target_and_corner_rules_are_explicit() -> None:
@@ -133,3 +178,30 @@ def test_geometry_helpers_preserve_threshold_inputs() -> None:
     assert box_iou([0, 0, 10, 10], [20, 20, 30, 30]) == 0.0
     assert point_distance([0, 0], [3, 4]) == 5.0
     assert maximum_repair_severity("low", "high") == "high"
+
+
+def test_compact_review_clamps_only_one_step_coordinate_drift() -> None:
+    result = SpatialCandidateReviewResult.model_validate(
+        {"boxes": [["small-vehicle", -1, 966, 738, 1000]], "complete": True}
+    )
+
+    assert result.boxes == [("small-vehicle", 0, 966, 738, 999)]
+
+    with pytest.raises(ValueError):
+        SpatialCandidateReviewResult.model_validate(
+            {"boxes": [["small-vehicle", -2, 966, 738, 1001]], "complete": True}
+        )
+
+
+def test_compact_review_recovers_qwen_missing_inner_brackets_locally() -> None:
+    malformed = (
+        '{"boxes":[["large-vehicle",11,400,88,595],'
+        '"small-vehicle",620,295,665,360],'
+        '"small-vehicle",610,815,655,885],"complete":true}'
+    )
+
+    result = _validate_response(malformed, SpatialCandidateReviewResult)
+
+    assert len(result.boxes) == 3
+    assert result.complete is True
+    assert result._local_recoveries == ["compact_candidate_sequence_recovered_locally"]

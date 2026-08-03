@@ -95,8 +95,8 @@ class SpatialExpert:
             _prompt_asset("spatial", prompt, "spatial-v4"),
             model,
             grid_prompt=_prompt_asset("spatial_grid", grid_prompt, "spatial-v5") if grid_prompt else None,
-            review_prompt=_prompt_asset("spatial_review", review_prompt, "spatial-candidate-review-v2") if review_prompt else None,
-            grid_review_prompt=_prompt_asset("spatial_grid_review", grid_review_prompt, "spatial-candidate-review-v3") if grid_review_prompt else None,
+            review_prompt=_prompt_asset("spatial_review", review_prompt, "spatial-candidate-review-v4") if review_prompt else None,
+            grid_review_prompt=_prompt_asset("spatial_grid_review", grid_review_prompt, "spatial-candidate-review-v5") if grid_review_prompt else None,
             apply_geometry=False,
         )
 
@@ -132,8 +132,8 @@ class WorkflowService:
         self._registry.register(SpatialAgent(
             client, _prompt_asset("spatial", prompts["spatial"], "spatial-v4"), model,
             grid_prompt=_prompt_asset("spatial_grid", prompts.get("spatial_grid", ""), "spatial-v5"),
-            review_prompt=_prompt_asset("spatial_review", prompts.get("spatial_review", ""), "spatial-candidate-review-v2"),
-            grid_review_prompt=_prompt_asset("spatial_grid_review", prompts.get("spatial_grid_review", ""), "spatial-candidate-review-v3"),
+            review_prompt=_prompt_asset("spatial_review", prompts.get("spatial_review", ""), "spatial-candidate-review-v4"),
+            grid_review_prompt=_prompt_asset("spatial_grid_review", prompts.get("spatial_grid_review", ""), "spatial-candidate-review-v5"),
             apply_geometry=False,
         ))
         self._registry.register(GeneralVQAAgent(client, _prompt_asset("general", prompts["general"], "general-vqa-v2"), model))

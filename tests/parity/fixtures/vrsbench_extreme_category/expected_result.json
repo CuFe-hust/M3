@@ -23,9 +23,9 @@
         220,
         220
       ],
-      "confidence": 0.9,
+      "confidence": 0.0,
       "coordinate_frame": "normalized_0_999_top_left",
-      "image_id": "legacy-image",
+      "image_id": null,
       "label": "small-vehicle",
       "point": null
     },
@@ -36,9 +36,9 @@
         650,
         650
       ],
-      "confidence": 0.9,
+      "confidence": 0.0,
       "coordinate_frame": "normalized_0_999_top_left",
-      "image_id": "legacy-image",
+      "image_id": null,
       "label": "large-vehicle",
       "point": null
     }
@@ -61,7 +61,7 @@
     "evidence_valid": true,
     "normalized_answer": "small-vehicle",
     "question_type": "object",
-    "raw_answer": "small vehicle",
+    "raw_answer": "partial",
     "repair_severity": "none",
     "rule": "top_most_box_center_y",
     "selected_box": [

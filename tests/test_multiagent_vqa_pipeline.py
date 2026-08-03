@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from PIL import Image
+from pydantic import BaseModel
 
 from spacers_agent.clients.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
@@ -147,19 +148,23 @@ class _MessageMockClient(MockVisionClient):
     def __init__(self, responses: dict[str, dict[str, Any]]) -> None:
         super().__init__(responses)
         self.message_history: list[list[dict[str, Any]]] = []
+        self.max_token_history: list[int | None] = []
 
     async def complete_json(
         self,
         *,
         messages: list[dict[str, Any]],
-        response_model: type[ExpertResult],
+        response_model: type[BaseModel],
         request_meta: RequestMeta,
-    ) -> ExpertResult:
+        max_tokens: int | None = None,
+    ) -> BaseModel:
         self.message_history.append(messages)
+        self.max_token_history.append(max_tokens)
         return await super().complete_json(
             messages=messages,
             response_model=response_model,
             request_meta=request_meta,
+            max_tokens=max_tokens,
         )
 
 
@@ -758,12 +763,11 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
                 ],
             },
             "7:spatial-candidate-review": {
-                "expert": "spatial_expert",
-                "answer": "small-vehicle",
-                "evidence_items": [
-                    {"label": "large-vehicle", "box": [0, 400, 100, 600], "confidence": 0.8},
-                    {"label": "small-vehicle", "box": [600, 100, 680, 180], "confidence": 0.9},
+                "boxes": [
+                    ["large-vehicle", 0, 400, 100, 600],
+                    ["small-vehicle", 600, 100, 680, 180],
                 ],
+                "complete": True,
             },
         }
     )
@@ -787,6 +791,7 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
     assert initial_payload["answer_vocabulary"] == ["small-vehicle", "large-vehicle"]
     assert review_payload["review_mode"] == "independent_candidate_enumeration"
     assert "first_pass_evidence" not in review_payload
+    assert client.max_token_history == [None, 128]
 
 
 @pytest.mark.asyncio
@@ -858,10 +863,8 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
                 ],
             },
             "7:spatial-candidate-review": {
-                "expert": "spatial_expert",
-                "answer": "upper right",
-                "boxes": [[840, 273, 925, 312]],
-                "evidence_items": [],
+                "boxes": [["small-vehicle", 840, 273, 925, 312]],
+                "complete": True,
             },
         }
     )
@@ -911,11 +914,8 @@ async def test_grid_position_review_recovers_generic_target_from_top_level_box(t
                 "status": "partial",
             },
             "7:spatial-candidate-review": {
-                "expert": "spatial_expert",
-                "answer": "The vehicle is near the bottom center.",
-                "boxes": [[420, 670, 520, 770]],
-                "evidence_items": [],
-                "status": "completed",
+                "boxes": [["position-target", 420, 670, 520, 770]],
+                "complete": True,
             },
         }
     )
@@ -929,7 +929,7 @@ async def test_grid_position_review_recovers_generic_target_from_top_level_box(t
     )
     result = apply_vrsbench_geometry(sample.question, "object position", raw)
 
-    assert raw.answer == "The vehicle is near the bottom center."
+    assert raw.answer == "partial"
     assert raw.evidence_items[0].label == "position-target"
     assert raw.evidence_items[0].box == [420, 670, 520, 770]
     assert result.answer == "bottom-middle"

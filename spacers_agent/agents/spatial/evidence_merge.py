@@ -38,8 +38,61 @@ def needs_candidate_review(sample: UnifiedSample, result: ExpertResult) -> bool:
             return len(targets) != 1
         return len(targets) != 1 or is_corner_anchored_box(targets[0])
     if not result.geometry.get("candidate_review_used"):
+        if subtype == "extreme_category" and extreme_vehicle_evidence_is_sufficient(
+            sample.question, result
+        ):
+            return False
         return True
     return len(vehicles) < 2
+
+
+def extreme_vehicle_evidence_is_sufficient(
+    question: str,
+    result: ExpertResult,
+    *,
+    edge_margin: int = 40,
+) -> bool:
+    """Conservatively prove that a first-pass extreme vehicle is image-edge complete.
+    保守证明首轮极值车辆证据已覆盖到相应图像边缘。
+    """
+
+    if result.status != "completed" or str(result.geometry.get("repair_severity", "none")) == "high":
+        return False
+    direction = _extreme_direction(question)
+    if direction is None:
+        return False
+    vehicles = [
+        item
+        for item in result.evidence_items
+        if item.box is not None
+        and vrsbench_vehicle_class(item.label) in {"small-vehicle", "large-vehicle"}
+    ]
+    if len(vehicles) < 2:
+        return False
+    axis = 0 if direction in {"left", "right"} else 1
+    centers = [((item.box[axis] + item.box[axis + 2]) / 2, item) for item in vehicles]
+    extreme_center, extreme_item = (
+        min(centers, key=lambda value: value[0])
+        if direction in {"left", "top"}
+        else max(centers, key=lambda value: value[0])
+    )
+    touches_extreme_band = (
+        extreme_center <= edge_margin
+        if direction in {"left", "top"}
+        else extreme_center >= 999 - edge_margin
+    )
+    return touches_extreme_band and (
+        vrsbench_vehicle_class(result.answer)
+        == vrsbench_vehicle_class(extreme_item.label)
+    )
+
+
+def _extreme_direction(question: str) -> str | None:
+    lowered = question.casefold()
+    for direction in ("top", "bottom", "left", "right"):
+        if re.search(rf"\b{direction}[\s-]*most\b", lowered):
+            return direction
+    return None
 
 
 def matches_position_target(question: str, item: VisualEvidence) -> bool:

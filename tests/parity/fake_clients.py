@@ -23,7 +23,7 @@ class RecordingFakeQwen:
         self.scenario = scenario
         self.calls: list[dict[str, Any]] = []
 
-    async def complete_json(self, *, messages, response_model, request_meta):
+    async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         model_name = response_model.__name__
         key = f"{request_meta.sample_id}|{model_name}|{request_meta.request_id}"
         normalized_messages = normalize_messages(messages)
@@ -179,6 +179,14 @@ def response_payload(
             "boxes": [[100, 100, 220, 220]],
             "evidence": ["one proposal box intentionally omitted"],
             "status": "completed",
+        }
+    if model_name == "SpatialCandidateReviewResult":
+        return {
+            "boxes": [
+                ["small-vehicle", 100, 100, 220, 220],
+                ["large-vehicle", 500, 500, 650, 650],
+            ],
+            "complete": True,
         }
     if model_name != "ExpertResult":
         raise KeyError(f"No deterministic response for {sample_id}|{model_name}|{request_id}")

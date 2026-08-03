@@ -28,12 +28,13 @@ class MockVisionClient(VisionLanguageClient):
         messages: list[dict[str, Any]],
         response_model: type[ModelT],
         request_meta: RequestMeta,
+        max_tokens: int | None = None,
     ) -> ModelT:
         """Validate a configured response without making a network request.
         不发起网络请求并校验预配置响应。
         """
 
-        del messages
+        del messages, max_tokens
         self.calls.append(request_meta)
         value = self.responses.get(request_meta.request_id, self.responses.get(request_meta.request_hash))
         if value is None:

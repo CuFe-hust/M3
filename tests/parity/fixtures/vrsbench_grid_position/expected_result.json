@@ -44,9 +44,9 @@
         220,
         220
       ],
-      "confidence": 0.9,
+      "confidence": 0.0,
       "coordinate_frame": "normalized_0_999_top_left",
-      "image_id": "legacy-image",
+      "image_id": null,
       "label": "small-vehicle",
       "point": null
     },
@@ -57,9 +57,9 @@
         650,
         650
       ],
-      "confidence": 0.9,
+      "confidence": 0.0,
       "coordinate_frame": "normalized_0_999_top_left",
-      "image_id": "legacy-image",
+      "image_id": null,
       "label": "large-vehicle",
       "point": null
     }
@@ -70,7 +70,7 @@
     "answer_source": "deterministic_geometry",
     "candidate_count": 1,
     "candidate_review_added": 2,
-    "candidate_review_labeled_boxes": 0,
+    "candidate_review_labeled_boxes": 2,
     "candidate_review_replaced": 0,
     "candidate_review_used": true,
     "coordinate_frame": "normalized_0_999_top_left",

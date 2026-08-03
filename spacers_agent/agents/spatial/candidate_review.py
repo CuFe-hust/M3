@@ -11,21 +11,89 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
+
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
-from spacers_agent.schemas import ExpertResult, UnifiedSample
+from spacers_agent.schemas import ExpertResult, UnifiedSample, VisualEvidence
 from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype
 from spacers_agent.agents.spatial.evidence_merge import (
     is_corner_anchored_box,
-    is_status_answer_placeholder,
     matches_position_target,
     maximum_repair_severity,
     merge_visual_evidence,
     needs_candidate_review,
-    position_review_evidence,
 )
+
+
+class SpatialCandidateReviewResult(BaseModel):
+    """Compact review contract without duplicated prose or geometry fields.
+    不含重复文字与几何字段的紧凑复核契约。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    boxes: list[tuple[str, int, int, int, int]] = Field(default_factory=list, max_length=200)
+    complete: bool = True
+    _local_recoveries: list[str] = PrivateAttr(default_factory=list)
+
+    @classmethod
+    def recover_json_payload(cls, value: str) -> dict[str, Any] | None:
+        """Recover complete candidate tuples from Qwen's missing inner brackets.
+        从 Qwen 缺失内层方括号的输出中恢复完整候选元组。
+        """
+
+        if not value.lstrip().startswith('{"boxes"'):
+            return None
+        pattern = re.compile(
+            r'"([^"\\]+)"\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)'
+        )
+        boxes = [
+            [label, int(x1), int(y1), int(x2), int(y2)]
+            for label, x1, y1, x2, y2 in pattern.findall(value)
+        ]
+        if not boxes:
+            return None
+        complete_match = re.search(r'"complete"\s*:\s*(true|false)', value, re.IGNORECASE)
+        return {
+            "boxes": boxes,
+            "complete": bool(complete_match and complete_match.group(1).casefold() == "true"),
+        }
+
+    @field_validator("boxes", mode="before")
+    @classmethod
+    def clamp_one_step_coordinate_drift(cls, value: Any) -> Any:
+        """Clamp only the model's common -1/1000 normalization drift.
+        仅裁剪模型常见的 -1/1000 归一化越界。
+        """
+
+        if not isinstance(value, list):
+            return value
+        normalized: list[Any] = []
+        for item in value:
+            if not isinstance(item, (list, tuple)) or len(item) != 5:
+                normalized.append(item)
+                continue
+            label, *coordinates = item
+            normalized.append([
+                label,
+                *[
+                    min(999, max(0, coordinate))
+                    if isinstance(coordinate, int) and -1 <= coordinate <= 1000
+                    else coordinate
+                    for coordinate in coordinates
+                ],
+            ])
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_boxes(self) -> "SpatialCandidateReviewResult":
+        for label, x1, y1, x2, y2 in self.boxes:
+            VisualEvidence(label=label, box=[x1, y1, x2, y2])
+        return self
 
 
 class SpatialCandidateReviewer:
@@ -42,6 +110,7 @@ class SpatialCandidateReviewer:
         review_prompt_version: str,
         grid_review_prompt: str = "",
         grid_review_prompt_version: str = "",
+        review_max_tokens: int = 128,
     ) -> None:
         self._client = client
         self._model = model
@@ -49,6 +118,7 @@ class SpatialCandidateReviewer:
         self._review_prompt_version = review_prompt_version
         self._grid_review_prompt = grid_review_prompt
         self._grid_review_prompt_version = grid_review_prompt_version
+        self._review_max_tokens = review_max_tokens
 
     def needs_review(self, sample: UnifiedSample, result: ExpertResult) -> bool:
         """Return whether a spatial result requires candidate review.
@@ -99,7 +169,11 @@ class SpatialCandidateReviewer:
             ]
             replaced_evidence = len(first_result.evidence_items) - len(first_evidence)
 
-        review_evidence, labeled_review_boxes = position_review_evidence(sample.question, subtype, review_result)
+        review_evidence = [
+            VisualEvidence(label=label, box=[x1, y1, x2, y2], confidence=0.0)
+            for label, x1, y1, x2, y2 in review_result.boxes
+        ]
+        labeled_review_boxes = len(review_evidence) if is_grid else 0
         merged = merge_visual_evidence(first_evidence, review_evidence)
 
         # -- geometry audit / 几何审计 --
@@ -110,31 +184,33 @@ class SpatialCandidateReviewer:
             "candidate_review_added": len(merged) - len(first_evidence),
             "candidate_review_replaced": replaced_evidence,
             "candidate_review_labeled_boxes": labeled_review_boxes,
-            "candidate_review_geometry": review_result.geometry,
+            "candidate_review_geometry": {
+                "review_contract": "compact-boxes-v1",
+                "enumeration_complete": review_result.complete,
+            },
             "evidence_quality": merged_quality,
             "repair_severity": maximum_repair_severity(
                 str(first_result.geometry.get("repair_severity", "none")),
-                str(review_result.geometry.get("repair_severity", "none")),
+                "none",
             ),
         })
 
         # -- finalise answer / 最终化答案 --
-        reviewed_answer = first_result.answer
-        if is_status_answer_placeholder(reviewed_answer) and not is_status_answer_placeholder(review_result.answer):
-            reviewed_answer = review_result.answer
-
         reviewed_result = first_result.model_copy(update={
-            "answer": reviewed_answer,
             "boxes": [list(item.box) for item in merged if item.box is not None],
             "evidence_items": merged,
             "geometry": geometry,
         })
-        status = "partial" if needs_candidate_review(sample, reviewed_result) else "completed"
+        status = (
+            "partial"
+            if not review_result.complete or needs_candidate_review(sample, reviewed_result)
+            else "completed"
+        )
         return reviewed_result.model_copy(update={"status": status})
 
     async def _request_review(
         self, sample: UnifiedSample, prompt: str, version: str, subtype: str, artifact_dir: Path
-    ) -> ExpertResult:
+    ) -> SpatialCandidateReviewResult:
         """Issue the review request. / 发起复查请求。"""
 
         content: list[dict[str, Any]] = []
@@ -161,8 +237,7 @@ class SpatialCandidateReviewer:
 
         system_prompt = (
             prompt
-            + "\n\nReturn valid JSON only. Set expert to 'spatial_expert', keep answer concise, "
-            "copy every evidence box into boxes, and set status to 'completed' only when enumeration is complete."
+            + "\n\nReturn valid JSON only using the compact response schema."
         )
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": system_prompt},
@@ -170,14 +245,14 @@ class SpatialCandidateReviewer:
         ]
         request_hash = build_request_hash(
             model=self._model,
-            generation={"temperature": 0.0},
+            generation={"temperature": 0.0, "max_tokens": self._review_max_tokens},
             prompt_version=version,
             messages=messages,
             image_sha256="|".join(image_hashes),
         )
         return await self._client.complete_json(
             messages=messages,
-            response_model=ExpertResult,
+            response_model=SpatialCandidateReviewResult,
             request_meta=RequestMeta(
                 request_id=f"{sample.sample_id}:spatial-candidate-review",
                 request_hash=request_hash,
@@ -185,4 +260,5 @@ class SpatialCandidateReviewer:
                 sample_id=sample.sample_id,
                 artifact_dir=artifact_dir / "spatial_expert_candidate_review",
             ),
+            max_tokens=self._review_max_tokens,
         )

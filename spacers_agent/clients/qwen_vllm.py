@@ -55,6 +55,7 @@ class QwenVLLMClient(VisionLanguageClient):
         messages: list[dict[str, Any]],
         response_model: type[ModelT],
         request_meta: RequestMeta,
+        max_tokens: int | None = None,
     ) -> ModelT:
         """Return cached or live schema-validated JSON with one repair attempt.
         返回缓存或线上经 Schema 校验的 JSON，并允许一次修复。
@@ -86,7 +87,7 @@ class QwenVLLMClient(VisionLanguageClient):
                     model=self.settings.model,
                     messages=active_messages,
                     temperature=self.settings.temperature,
-                    max_tokens=self.settings.max_tokens,
+                    max_tokens=max_tokens or self.settings.max_tokens,
                     response_format={"type": "json_object"},
                 )
                 raw_response = _response_content(response)

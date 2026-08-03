@@ -108,6 +108,30 @@ async def test_qwen_client_retries_a_transient_status_code(tmp_path: Path) -> No
     assert result.value == 9
 
 
+@pytest.mark.asyncio
+async def test_qwen_client_honors_per_call_token_limit(tmp_path: Path) -> None:
+    observed: dict[str, object] = {}
+
+    async def complete(**kwargs: object) -> SimpleNamespace:
+        observed.update(kwargs)
+        return _response('{"value": 5}')
+
+    client = QwenVLLMClient(
+        QwenSettings(max_tokens=4096, max_retries=0),
+        repair_prompt="repair",
+        completion_create=complete,
+    )
+    result = await client.complete_json(
+        messages=[],
+        response_model=PointResponse,
+        request_meta=_meta(tmp_path),
+        max_tokens=128,
+    )
+
+    assert result.value == 5
+    assert observed["max_tokens"] == 128
+
+
 def test_data_url_hashing_and_sanitizing_do_not_retain_base64() -> None:
     encoded = image_to_data_url(b"image-bytes", "image/png")
     assert base64.b64encode(b"image-bytes").decode("ascii") in encoded
