@@ -9,7 +9,7 @@ from PIL import Image
 
 from spacers_agent.clients.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
-from spacers_agent.clients.qwen_transformers import QwenTransformersClient
+from spacers_agent.clients.qwen_transformers import QwenTransformersClient, _model_load_kwargs
 from spacers_agent.bootstrap import assemble_runtime, build_dataset_runner
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import VQAAnswerJudgeResult
@@ -246,6 +246,26 @@ async def test_qwen35_transformers_client_disables_thinking_for_json(tmp_path: P
 
     assert result.answer == "Yes"
     assert processor.template_kwargs_history[0]["enable_thinking"] is False
+
+
+def test_qwen_settings_opt_in_to_hub_kernels() -> None:
+    settings = QwenSettings(
+        backend="transformers",
+        model="local-qwen35",
+        device_map="cuda:0",
+        use_kernels=True,
+    )
+
+    assert settings.device_map == "cuda:0"
+    assert settings.use_kernels is True
+    assert _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_5") == {
+        "dtype": "bf16",
+        "device_map": "cuda:0",
+        "local_files_only": False,
+        "trust_remote_code": True,
+        "use_kernels": True,
+    }
+    assert "use_kernels" not in _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_vl")
 
 
 @pytest.mark.asyncio

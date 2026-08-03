@@ -92,10 +92,7 @@ class QwenTransformersClient(VisionLanguageClient):
         model_factory = _qwen_model_factory(transformers, config.model_type)
         model = model_factory.from_pretrained(
             self.settings.model,
-            dtype=dtype,
-            device_map=self.settings.device_map,
-            local_files_only=self.settings.local_files_only,
-            trust_remote_code=True,
+            **_model_load_kwargs(self.settings, dtype=dtype, model_type=config.model_type),
         )
         processor = AutoProcessor.from_pretrained(
             self.settings.model,
@@ -305,6 +302,18 @@ def _uses_qwen35_chat_template(model: Any) -> bool:
     """
 
     return getattr(getattr(model, "config", None), "model_type", None) == "qwen3_5"
+
+
+def _model_load_kwargs(settings: QwenSettings, *, dtype: Any, model_type: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "dtype": dtype,
+        "device_map": settings.device_map,
+        "local_files_only": settings.local_files_only,
+        "trust_remote_code": True,
+    }
+    if model_type == "qwen3_5" and settings.use_kernels:
+        kwargs["use_kernels"] = True
+    return kwargs
 
 
 def _transformer_messages(

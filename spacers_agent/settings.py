@@ -33,6 +33,7 @@ class QwenSettings(BaseModel):
     max_tokens: int = Field(default=4096, gt=0)
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     device_map: str = "auto"
+    use_kernels: bool = False
     local_files_only: bool = False
     min_pixels: int | None = Field(default=None, gt=0)
     max_pixels: int | None = Field(default=None, gt=0)

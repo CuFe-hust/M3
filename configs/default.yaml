@@ -10,6 +10,7 @@ models:
     max_tokens: 4096
     dtype: auto
     device_map: auto
+    use_kernels: false
     local_files_only: false
     min_pixels: null
     max_pixels: null
