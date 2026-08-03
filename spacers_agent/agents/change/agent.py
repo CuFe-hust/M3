@@ -190,6 +190,8 @@ def _verification_reasons(result: ExpertResult) -> list[str]:
     if result.status != "completed":
         reasons.append("analysis_status_not_completed")
     combined = " ".join([result.answer, *result.evidence]).casefold()
+    if "no visually supported land-cover change" in combined:
+        reasons.append("analysis_qualified_no_change")
     if any(
         term in combined
         for term in (
@@ -227,14 +229,90 @@ def _select_verified_result(
     if (
         _is_no_change_answer(analysis.answer)
         and not _is_no_change_answer(verification.answer)
-        and not _has_contrastive_change_evidence(verification)
     ):
-        return (
-            analysis,
-            "analysis",
-            "rejected_non_contrastive_positive_override",
-        )
+        if _is_appearance_only_positive_change(verification):
+            return (
+                analysis,
+                "analysis",
+                "rejected_appearance_only_positive_override",
+            )
+        if (
+            _is_qualified_no_change_answer(analysis.answer)
+            and _has_stable_structural_anchor(verification)
+        ):
+            return verification, "verification", None
+        if not _has_contrastive_change_evidence(verification):
+            return (
+                analysis,
+                "analysis",
+                "rejected_non_contrastive_positive_override",
+            )
     return verification, "verification", None
+
+
+def _is_qualified_no_change_answer(answer: str) -> bool:
+    """Recognize the analysis conclusion that deliberately requests verification."""
+
+    normalized = " ".join(answer.casefold().split())
+    return "no visually supported land-cover change" in normalized
+
+
+def _has_stable_structural_anchor(result: ExpertResult) -> bool:
+    """Recognize stable man-made anchors in the answer or evidence."""
+
+    combined = " ".join(
+        [result.answer, *result.evidence]
+    ).casefold()
+    return any(
+        term in combined
+        for term in (
+            "building",
+            "house",
+            "residential",
+            "villa",
+            "roof",
+            "structure",
+            "construction",
+            "road",
+            "path",
+            "parking",
+            "paved",
+            "pavement",
+            "bridge",
+            "runway",
+            "water body",
+            "waterbody",
+        )
+    )
+
+
+def _is_appearance_only_positive_change(result: ExpertResult) -> bool:
+    """Identify appearance-only vegetation claims without a stable structural anchor.
+    识别没有稳定结构锚点、仅由植被外观构成的正向变化结论。
+    """
+
+    combined = " ".join(
+        [result.answer, *result.evidence]
+    ).casefold()
+    appearance_terms = (
+        "vegetation",
+        "green",
+        "greener",
+        "grass",
+        "tree",
+        "forest",
+        "woodland",
+        "canopy",
+        "bare ground",
+        "brown ground",
+        "color",
+        "colour",
+        "season",
+    )
+    return (
+        any(term in combined for term in appearance_terms)
+        and not _has_stable_structural_anchor(result)
+    )
 
 
 def _has_contrastive_change_evidence(result: ExpertResult) -> bool:
@@ -295,7 +373,9 @@ def _is_no_change_answer(answer: str) -> bool:
             "no change",
             "no significant",
             "no verifiable",
+            "no detectable land-cover change",
             "no visible land-cover change",
+            "no visually supported land-cover change",
             "scenes are identical",
             "images are identical",
             "same as before",

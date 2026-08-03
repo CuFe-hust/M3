@@ -22,6 +22,9 @@ NO_CHANGE_PHRASES = (
     "nothing has changed",
     "no significant land-cover change",
     "no verifiable land-cover change",
+    "no detectable land-cover change",
+    "no visible land-cover change",
+    "no visually supported land-cover change",
 )
 
 

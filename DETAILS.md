@@ -711,12 +711,13 @@ adapters. `workflow.py` defines no DatasetRunner or count flow, and `counting.py
 only re-export public compatibility symbols.
 
 Non-counting Agents receive frozen `PromptAsset` values resolved from `PromptCatalog`, rather than
-maintaining a second mutable Prompt dictionary. Observable request contracts remain unchanged:
+maintaining a second mutable Prompt dictionary. Observable request contracts are versioned and auditable:
 change captions always run `change-analysis-v2` and conditionally run `change-verification-v4`
 only when the first pass is incomplete, uncertain, or makes a positive claim without geometry or
 a localized T1/T2 textual comparison. The trace records the trigger decision and reasons. When
 verification runs, a positive override of a first-pass no-change result is rejected unless it
-supplies contrastive evidence,
+supplies contrastive evidence; an appearance-only vegetation override without a stable structural
+anchor is also rejected,
 while compatibility and change QA retain `change-expert-v1`; grounding and general VQA use
 `general-vqa-v2`,
 spatial uses `spatial-v4` or grid `spatial-v5`, review uses v2/v3, and caption uses its dedicated

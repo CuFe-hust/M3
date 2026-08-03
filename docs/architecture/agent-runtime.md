@@ -78,8 +78,9 @@ another expert dictionary or model-request implementation.
 The request versions are `caption-v1`, mandatory `change-analysis-v2` and conditional
 `change-verification-v4` for change captions. Deterministic structural risk rules trigger the
 second request only for incomplete, uncertain, or unsupported positive analyses, and the trace
-records the reasons. An auditable guard still rejects non-contrastive positive overrides of a
-first-pass no-change result; `change-expert-v1` remains active for compatibility and
+records the reasons. Auditable guards reject both unsupported and appearance-only vegetation
+overrides of a first-pass no-change result while retaining explicit building, road, and comparable
+structural corrections; `change-expert-v1` remains active for compatibility and
 single-pass change QA, `general-vqa-v2`, `spatial-v4`,
 `spatial-v5`, and spatial-review v2/v3. Spatial review predicates and evidence merging are pure
 functions in `agents/spatial/evidence_merge.py`. A spatial request performs no more than one

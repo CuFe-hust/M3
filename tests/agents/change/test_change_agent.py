@@ -10,6 +10,7 @@ import pytest
 from spacers_agent.agents.change.agent import (
     ChangeAgent,
     _is_no_change_answer,
+    _select_verified_result,
     _verification_reasons,
 )
 from spacers_agent.agents.base import AgentContext
@@ -182,7 +183,7 @@ async def test_change_caption_rejects_positive_override_without_evidence(
     assert execution.payload == analysis
     assert execution.trace["selected_stage"] == "analysis"
     assert execution.trace["verification_guard"] == (
-        "rejected_non_contrastive_positive_override"
+        "rejected_appearance_only_positive_override"
     )
 
 
@@ -221,7 +222,7 @@ async def test_change_caption_rejects_generic_positive_evidence(
     assert execution.payload == analysis
     assert execution.trace["selected_stage"] == "analysis"
     assert execution.trace["verification_guard"] == (
-        "rejected_non_contrastive_positive_override"
+        "rejected_appearance_only_positive_override"
     )
 
 
@@ -411,3 +412,126 @@ def test_change_risk_rules_keep_local_unchanged_clause_positive() -> None:
     assert _verification_reasons(result) == [
         "positive_without_contrastive_evidence"
     ]
+
+
+def test_change_risk_rules_verify_qualified_no_change() -> None:
+    answer = (
+        "No visually supported land-cover changes detected "
+        "between the two images."
+    )
+    result = ExpertResult(
+        expert="change_expert",
+        answer=answer,
+        status="completed",
+    )
+
+    assert _is_no_change_answer(answer) is True
+    assert _verification_reasons(result) == [
+        "analysis_qualified_no_change"
+    ]
+
+
+def test_change_guard_rejects_localized_vegetation_only_override() -> None:
+    analysis = ExpertResult(
+        expert="change_expert",
+        answer="No visually supported land-cover changes detected.",
+        status="completed",
+    )
+    verification = ExpertResult(
+        expert="change_expert",
+        answer=(
+            "Bare ground in T1 was replaced by dense green vegetation "
+            "in T2."
+        ),
+        evidence=[
+            "In the upper region, bare ground in T1 is green vegetation in T2."
+        ],
+        status="completed",
+    )
+
+    selected, stage, guard = _select_verified_result(
+        analysis,
+        verification,
+    )
+
+    assert selected == analysis
+    assert stage == "analysis"
+    assert guard == "rejected_appearance_only_positive_override"
+
+
+def test_change_guard_accepts_structural_override_with_vegetation_context() -> None:
+    analysis = ExpertResult(
+        expert="change_expert",
+        answer="No visually supported land-cover changes detected.",
+        status="completed",
+    )
+    verification = ExpertResult(
+        expert="change_expert",
+        answer="A new road appeared through the vegetation.",
+        evidence=[
+            "In the upper-left region, dense vegetation covers T1 "
+            "while a paved road crosses the same location in T2."
+        ],
+        status="completed",
+    )
+
+    selected, stage, guard = _select_verified_result(
+        analysis,
+        verification,
+    )
+
+    assert selected == verification
+    assert stage == "verification"
+    assert guard is None
+
+
+def test_change_guard_accepts_qualified_structural_answer_without_evidence() -> None:
+    analysis = ExpertResult(
+        expert="change_expert",
+        answer="No visually supported land-cover changes detected.",
+        status="completed",
+    )
+    verification = ExpertResult(
+        expert="change_expert",
+        answer=(
+            "A paved road and parking area appear in the second image."
+        ),
+        status="completed",
+    )
+
+    selected, stage, guard = _select_verified_result(
+        analysis,
+        verification,
+    )
+
+    assert selected == verification
+    assert stage == "verification"
+    assert guard is None
+
+
+def test_change_guard_rejects_tree_appearance_override() -> None:
+    analysis = ExpertResult(
+        expert="change_expert",
+        answer="No detectable land-cover changes.",
+        status="completed",
+    )
+    verification = ExpertResult(
+        expert="change_expert",
+        answer=(
+            "A cluster of trees appears in the upper-right area "
+            "of the second image."
+        ),
+        evidence=[
+            "The upper-right area has fewer trees in T1 and more trees in T2."
+        ],
+        status="completed",
+    )
+
+    selected, stage, guard = _select_verified_result(
+        analysis,
+        verification,
+    )
+
+    assert selected == analysis
+    assert stage == "analysis"
+    assert guard == "rejected_appearance_only_positive_override"

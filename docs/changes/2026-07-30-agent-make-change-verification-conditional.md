@@ -32,6 +32,17 @@ two Qwen calls on every sample.
 - Reserve model-call budget when each call is actually issued.
 - Persist `verification_triggered` and `verification_reasons` in the Agent trace.
 - Stop treating a local clause such as “the rest remains unchanged” as a global no-change answer.
+- Recognize “no visible”, “no detectable”, and “no visually supported” land-cover-change
+  conclusions consistently in both runtime gating and the auxiliary report diagnostic.
+- Keep the qualified “no visually supported” conclusion eligible for verification under the
+  explicit `analysis_qualified_no_change` reason; validation replay showed that treating it as a
+  low-risk skip reduced both auxiliary accuracy and caption metrics.
+- Reject a verification-only positive override when it describes vegetation or tree appearance
+  without a stable building, road, path, pavement, or comparable structural anchor.
+- Preserve explicit structural corrections for the qualified “no visually supported” first-pass
+  conclusion even when the model's evidence text does not satisfy the stricter contrastive format.
+- A validation experiment with a more prescriptive `change-analysis-v3` prompt reduced both
+  auxiliary accuracy and caption metrics, so the active analysis request remains v2.
 - Allow the portable comparison report to represent samples where verification was not triggered.
 
 ## Whether the Canonical Sample Format Was Changed

@@ -9,7 +9,10 @@ from pathlib import Path
 
 from PIL import Image
 
-from eval.change_comparison_report import build_change_comparison_report
+from eval.change_comparison_report import (
+    _predicts_no_change,
+    build_change_comparison_report,
+)
 
 
 def _write_json(path: Path, value: object) -> None:
@@ -173,3 +176,15 @@ def test_change_report_supports_skipped_conditional_verification(
     assert "未触发条件核验。" in report
     assert "未触发（沿用第一阶段）" in report
     assert summary["verification_trigger_distribution"] == {"False": 1}
+
+
+def test_change_report_recognizes_visible_no_change_variants() -> None:
+    assert _predicts_no_change(
+        "No visible land-cover changes detected between the images."
+    )
+    assert _predicts_no_change(
+        "No visually supported land-cover changes were found."
+    )
+    assert _predicts_no_change(
+        "No detectable land-cover changes were found."
+    )
