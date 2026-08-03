@@ -610,6 +610,9 @@ class YoloDetectorSettings(BaseModel):
     enabled: bool = False
     weights: Path
     task: Literal["obb"] = "obb"
+    model_id: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_dataset: str = Field(default="DOTAv1", min_length=1)
     priority: int = Field(default=100, ge=0)
     classes: list[str] = Field(min_length=1)
     aliases: dict[str, str] = Field(default_factory=dict)
@@ -619,6 +622,33 @@ class YoloDetectorSettings(BaseModel):
     image_size: int = Field(default=1024, gt=0)
     device: str = "0"
     max_detections: int = Field(default=1000, gt=0)
+    boundary_duplicate_iou: float = Field(default=0.50, ge=0.0, le=1.0)
+    boundary_duplicate_center_px: float = Field(default=16.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_detector_contract(self) -> "YoloDetectorSettings":
+        """Normalize and validate detector class declarations without I/O.
+        在不访问文件系统的前提下规范并校验检测器类别声明。
+        """
+        self.sha256 = self.sha256.casefold()
+        normalized = [value.strip() for value in self.classes]
+        folded = [value.casefold() for value in normalized]
+        if len(folded) != len(set(folded)):
+            raise ValueError("YOLO detector classes must be unique after normalization")
+        known = set(folded)
+        for alias, target in self.aliases.items():
+            if target.strip().casefold() not in known:
+                raise ValueError(f"YOLO alias {alias!r} targets unknown class {target!r}")
+        for composite, targets in self.composite_targets.items():
+            if not targets:
+                raise ValueError(f"YOLO composite target {composite!r} must not be empty")
+            missing = [target for target in targets if target.strip().casefold() not in known]
+            if missing:
+                raise ValueError(f"YOLO composite {composite!r} contains unknown classes {missing!r}")
+        if self.name in {"qwen_point", "vrsbench_qwen_count"}:
+            raise ValueError(f"YOLO detector name {self.name!r} is reserved")
+        self.classes = normalized
+        return self
 
 
 class YoloCountingSettings(BaseModel):
@@ -629,8 +659,20 @@ class YoloCountingSettings(BaseModel):
     enabled: bool = False
     fallback_to_qwen_on_unavailable: bool = True
     fallback_to_qwen_on_error: bool = True
-    verify_empty_with_qwen: bool = False
+    verify_empty_with_qwen: bool = True
     detectors: list[YoloDetectorSettings] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_enabled_detectors(self) -> "YoloCountingSettings":
+        """Require an enabled detector only when YOLO execution is enabled.
+        仅在启用 YOLO 执行时要求至少一个已启用检测器。
+        """
+        names = [detector.name for detector in self.detectors]
+        if len(names) != len(set(names)):
+            raise ValueError("YOLO detector names must be unique")
+        if self.enabled and not any(detector.enabled for detector in self.detectors):
+            raise ValueError("enabled YOLO requires at least one enabled detector")
+        return self
 
 
 class BackendConfig(BaseModel):
@@ -659,6 +701,10 @@ class PointProvenance(BaseModel):
     source_class: str | None = None
     detector_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     obb_polygon_local_px: list[list[float]] | None = None
+    obb_polygon_global_px: list[list[float]] | None = None
+    detector_task: Literal["obb"] | None = None
+    detector_source_dataset: str | None = None
+    weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 
 
 # ------------------------------------------------------------------------------------------------

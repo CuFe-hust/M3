@@ -42,6 +42,7 @@ from spacers_agent.workflows.artifact_writer import atomic_write_json
 from spacers_agent.workflows.judge_service import JudgeService
 from spacers_agent.workflows.sample_runner import DatasetRunOptions
 from spacers_agent.vqa_report import build_multiagent_vqa_report
+from spacers_agent.counting_report import build_multiagent_counting_report
 from spacers_agent.commands import count_image as count_image_command
 
 
@@ -370,6 +371,13 @@ async def _run_dataset(settings: object, args: object) -> int:
         # A missing key still produces deterministic records; it never silently skips evaluation.
         # 缺少密钥时仍生成确定性记录，绝不静默跳过评估。
         await _evaluate_run(settings, run_id, bool(os.environ.get(settings.models.deepseek.api_key_env)))
+    if any(task in {"counting", "fine_grained_counting"} for task in requested):
+        report_path = build_multiagent_counting_report(
+            run_dir, qwen=settings.models.qwen,
+            model_load_seconds=float(getattr(qwen_client, "load_seconds", 0.0)),
+        )
+        if report_path is not None:
+            print(json.dumps({"counting_html_report": str(report_path)}, ensure_ascii=False))
     if "general_vqa" in requested:
         report_path = build_multiagent_vqa_report(
             run_dir,

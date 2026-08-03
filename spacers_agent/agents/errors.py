@@ -89,6 +89,30 @@ class DetectorWeightsMissingError(FileNotFoundError):
         self.weight_path = weight_path
 
 
+class DetectorWeightsHashMismatchError(RuntimeError):
+    """Raised when a local detector weight digest differs from its declared digest.
+    当本地检测器权重摘要与声明摘要不一致时抛出。
+    """
+
+
+class DetectorTaskMismatchError(RuntimeError):
+    """Raised when a loaded detector is not the configured task type.
+    当加载的检测器不是配置任务类型时抛出。
+    """
+
+
+class DetectorClassMapMismatchError(RuntimeError):
+    """Raised when model classes differ from the audited configuration.
+    当模型类别与已审计配置不一致时抛出。
+    """
+
+
+class DetectorInferenceError(RuntimeError):
+    """Raised when one detector inference cannot produce a valid tile result.
+    当一次检测器推理无法生成有效 tile 结果时抛出。
+    """
+
+
 class OptionalDependencyMissingError(ImportError):
     """Raised when an optional feature is requested but its dependency is not installed.
     当请求可选功能但其依赖未安装时抛出。

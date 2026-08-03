@@ -77,10 +77,6 @@ def build_agent_registry(
     9. Validate router-referenced agents all exist
     """
 
-    if settings.backend.yolo.enabled:
-        raise RuntimeError(
-            "YOLO is intentionally disabled during the new-agent runtime cutover."
-        )
     model = settings.models.qwen.model
     prompts = _load_prompts(prompt_catalog)
     registry = AgentRegistry()
@@ -89,7 +85,7 @@ def build_agent_registry(
     backend_registry = _create_counting_backend_registry(settings, qwen_client, prompts)
 
     # 2-7. Register agents in order / 按顺序注册 Agent
-    registry.register(CountingAgent(qwen_client, prompts, model, backend_registry))
+    registry.register(CountingAgent(qwen_client, prompts, model, backend_registry, settings=settings))
     registry.register(ChangeAgent(qwen_client, prompt_catalog.asset("change"), model))
     registry.register(GroundingAgent(qwen_client, prompt_catalog.asset("grounding"), model))
     registry.register(
@@ -124,10 +120,6 @@ def assemble_runtime(
     创建并组装全部 Agent 运行时组件，不加载模型。
     """
 
-    if settings.backend.yolo.enabled:
-        raise RuntimeError(
-            "YOLO is intentionally disabled during the new-agent runtime cutover."
-        )
     if prompt_root is None:
         prompt_root = Path(__file__).resolve().parents[1] / "prompts"
 
@@ -249,8 +241,8 @@ def _create_counting_backend_registry(
     client: VisionLanguageClient | None,
     prompts: dict[str, str] | None,
 ) -> BackendRegistry:
-    """Create counting backend registry with QwenPoint + VRSBenchQwenCount backends.
-    创建包含 QwenPoint + VRSBenchQwenCount 后端的计数后端注册表。
+    """Create counting backend registry without loading optional YOLO models.
+    创建计数后端注册表，且不加载可选 YOLO 模型。
     """
 
     registry = BackendRegistry()
@@ -268,5 +260,14 @@ def _create_counting_backend_registry(
         registry.register(VRSBenchQwenCountBackend(
             client, settings=settings, prompts=prompts,
         ))
+
+    if settings.backend.yolo.enabled:
+        from spacers_agent.agents.counting.backends.yolo_model_store import YoloModelStore
+        from spacers_agent.agents.counting.backends.yolo_obb import YoloOBBCountingBackend
+
+        model_store = YoloModelStore()
+        for detector in settings.backend.yolo.detectors:
+            if detector.enabled:
+                registry.register(YoloOBBCountingBackend(detector, model_store=model_store))
 
     return registry

@@ -32,9 +32,20 @@ class BackendRegistry:
                 return backend
         raise KeyError(f"Unknown counting backend {name!r}; available={self.all_names()}")
 
-    def list_available(self, target: CountTargetSpec) -> list[CountingBackend]:
+    def list_available(
+        self,
+        target: CountTargetSpec,
+        *,
+        exclude_names: frozenset[str] = frozenset(),
+    ) -> list[CountingBackend]:
         """Return backends that can handle the target. / 返回能处理目标的后端。"""
-        return [b for b in self._backends if b.is_available() and b.supports(target)]
+        return [b for b in self._backends if b.name not in exclude_names and b.is_available() and b.supports(target)]
+
+    def items(self) -> tuple[CountingBackend, ...]:
+        """Return registered backends without exposing registry storage.
+        返回已注册后端而不暴露注册表内部存储。
+        """
+        return tuple(self._backends)
 
     def all_names(self) -> list[str]:
         """Return all registered backend names. / 返回所有注册后端名。"""

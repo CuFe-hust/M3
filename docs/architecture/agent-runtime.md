@@ -112,12 +112,13 @@ ROUTES map task → (primary_agent, fallback_agents...).
 - VRSBench general_vqa → `vrsbench_qwen_count`
 - Default → `qwen_point`
 
-## YOLO Isolation During Cutover
+## Optional YOLO OBB Runtime
 
-YOLO draft modules remain in the repository, but the Composition Root does not import or register
-them. `backend.yolo.enabled: true` is rejected with a `RuntimeError`. The only registered counting
-backends in this cutover are `qwen_point` and `vrsbench_qwen_count`; no `ultralytics` import, model
-load, weight validation, or YOLO inference is part of the runtime acceptance gate.
+Default runtime construction registers only Qwen backends and does not import `ultralytics`. When
+`backend.yolo.enabled` is explicitly set with enabled detectors, the Composition Root registers
+verified local OBB backends around one lazy `YoloModelStore`. Planning chooses a supported detector
+before execution so deployment failures remain visible and can fall back to `qwen_point`; VRSBench
+quantity continues to use `vrsbench_qwen_count`.
 
 ## Artifacts
 

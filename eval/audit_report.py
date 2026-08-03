@@ -181,6 +181,7 @@ def build_audit_report(
             displayed_semantic += int(semantic)
         usage = deepseek.get("token_usage") if deepseek else None
         agent_trace = artifact.get("agent_trace", {})
+        detector = _detector_report_fields(agent_trace)
         rows.append(
             {
                 "index": index,
@@ -197,6 +198,7 @@ def build_audit_report(
                 "agent_entrypoint": agent_trace.get("entrypoint", ""),
                 "agent_route": agent_trace.get("route", ""),
                 "router_used": agent_trace.get("router_used", ""),
+                **detector,
             }
         )
         cards.append(_sample_card(index, artifact, exact, deepseek, usage))
@@ -209,6 +211,7 @@ def build_audit_report(
 
     completed = int(metadata.get("completed_samples", len(displayed)))
     metric_summary = _metric_summary(metrics, displayed_exact, len(displayed), displayed_semantic, semantic_evaluated)
+    detector_summary = _detector_summary(displayed)
     model = metadata.get("model", {})
     html_path = report_dir / "report.html"
     html_path.write_text(
@@ -221,10 +224,53 @@ def build_audit_report(
             metadata=metadata,
             has_deepseek=bool(deepseek_records),
             cards=cards,
+            detector_summary=detector_summary,
         ),
         encoding="utf-8",
     )
     return html_path.resolve()
+
+
+def _detector_report_fields(agent_trace: dict[str, Any]) -> dict[str, Any]:
+    """Expose stable detector trace fields while tolerating historic traces.
+    在兼容历史轨迹的同时公开稳定的检测器轨迹字段。
+    """
+    yolo = agent_trace.get("yolo")
+    yolo = yolo if isinstance(yolo, dict) else {}
+    return {
+        "counting_backend": agent_trace.get("executed_backend", agent_trace.get("backend", "")),
+        "primary_backend": agent_trace.get("primary_backend", ""),
+        "yolo_attempted": bool(yolo.get("attempted")),
+        "yolo_used_for_final": bool(yolo.get("used_for_final")),
+        "yolo_detector": yolo.get("detector_name", ""),
+        "yolo_model_id": yolo.get("model_id", ""),
+        "yolo_source_dataset": yolo.get("source_dataset", ""),
+        "yolo_target_classes": " | ".join(map(str, yolo.get("resolved_target_classes", []))),
+        "yolo_confidence": yolo.get("confidence", ""),
+        "yolo_iou": yolo.get("iou", ""),
+        "yolo_image_size": yolo.get("image_size", ""),
+        "yolo_fallback_triggered": bool(agent_trace.get("fallback_triggered", False)),
+        "yolo_fallback_reason": agent_trace.get("fallback_reason", ""),
+        "yolo_zero_review_triggered": bool(yolo.get("zero_review_triggered", False)),
+    }
+
+
+def _detector_summary(displayed: list[dict[str, Any]]) -> str:
+    """Summarize trace-backed detector usage without creating a benchmark metric.
+    汇总基于轨迹的检测器使用情况，而不创建新的基准指标。
+    """
+    fields = [_detector_report_fields(item.get("agent_trace", {})) for item in displayed]
+    attempted = sum(bool(item["yolo_attempted"]) for item in fields)
+    final = sum(bool(item["yolo_used_for_final"]) for item in fields)
+    fallback = sum(bool(item["yolo_fallback_triggered"]) for item in fields)
+    zero_review = sum(bool(item["yolo_zero_review_triggered"]) for item in fields)
+    by_detector: dict[str, int] = {}
+    for item in fields:
+        name = str(item["yolo_detector"])
+        if name:
+            by_detector[name] = by_detector.get(name, 0) + 1
+    detectors = ", ".join(f"{name}={count}" for name, count in sorted(by_detector.items())) or "none"
+    return f"YOLO attempted: {attempted}; YOLO final: {final}; Qwen fallback: {fallback}; zero review: {zero_review}; detectors: {detectors}"
 
 
 def _sample_card(
@@ -237,6 +283,14 @@ def _sample_card(
     sample = artifact["sample"]
     prediction = artifact["prediction"]
     agent_trace = artifact.get("agent_trace", {})
+    detector = _detector_report_fields(agent_trace)
+    yolo_trace = agent_trace.get("yolo") if isinstance(agent_trace.get("yolo"), dict) else {}
+    detector_details = (
+        "<details><summary>YOLO detector trace</summary><pre>"
+        f"{_escape(json.dumps(yolo_trace, ensure_ascii=False, indent=2))}</pre></details>"
+        if yolo_trace
+        else ""
+    )
     candidate = prediction.get("answer") or prediction.get("text", "")
     raw_text = prediction.get("meta", {}).get("raw_text", prediction.get("text", ""))
     visual_evidence = artifact.get("visual_evidence", [])
@@ -287,6 +341,8 @@ def _sample_card(
     <dt>Agent 路由</dt><dd><code>{_escape(agent_trace.get('route', '未记录'))}</code> · router_used={_escape(agent_trace.get('router_used', '未记录'))} · task_type={_escape(agent_trace.get('task_type', sample.get('task_type', '')))}</dd>
     <dt>官方题型 / 执行任务</dt><dd>{_escape(agent_trace.get('official_question_type', '未记录'))} / {_escape(agent_trace.get('execution_task', '未记录'))}</dd>
     <dt>Prompt 版本</dt><dd><code>{_escape(agent_trace.get('prompt_version', '未记录'))}</code></dd>
+    <dt>Counting / YOLO backend</dt><dd>{_escape(detector['counting_backend'] or 'not recorded')} · YOLO {'attempted' if detector['yolo_attempted'] else 'not called'} · final={'yes' if detector['yolo_used_for_final'] else 'no'} · detector={_escape(detector['yolo_detector'] or 'not called')} · fallback={_escape(detector['yolo_fallback_reason'] or 'none')}</dd>
+    <dt>YOLO profile and call evidence</dt><dd>{detector_details or 'YOLO was not called.'}</dd>
     {evidence_section}
     <dt>程序几何审计</dt><dd><pre>{_escape(json.dumps(agent_trace.get('geometry', {}), ensure_ascii=False, indent=2))}</pre></dd>
     <dt>Qwen 单条推理耗时</dt><dd>{_escape(artifact.get('inference_seconds', ''))} 秒</dd>
@@ -325,6 +381,7 @@ def _page(
     metadata: dict[str, Any],
     has_deepseek: bool,
     cards: list[str],
+    detector_summary: str,
 ) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -334,6 +391,7 @@ def _page(
 <h1>Qwen3-VL 逐样本审计报告</h1>
 <p class="lead">结果文件：{_escape(result_path)}。共完成 {completed} 条，报告展示 {displayed} 条。{_escape(metric_summary)}</p>
 <section class="summary"><h2>运行信息</h2><p>模型：{_escape(model.get('id', ''))}；dtype：{_escape(model.get('dtype', ''))}；max_new_tokens：{_escape(model.get('max_new_tokens', ''))}；local_files_only：{_escape(model.get('local_files_only', False))}。</p><p>模型加载耗时：{_escape(metadata.get('model_load_seconds', ''))} 秒；推理总耗时：{_escape(metadata.get('inference_seconds', ''))} 秒。</p></section>
+<section class="summary"><h2>Detector usage summary</h2><p>{_escape(detector_summary)}</p></section>
 <section class="process"><h2>可审计运行过程</h2><ol><li>加载配置指定的 Qwen3-VL 权重和 processor。</li><li>逐条校验规范样本，记录实际 Agent 类、入口和路由，再将图片与提示交给模型确定性生成。</li><li>保存 Qwen 原始回复、最终答案、标准答案、图片和单条耗时。</li><li>评测命令计算原有指标；启用 DeepSeek 时，它只接收问题、参考答案和候选答案，不查看图片。</li></ol><p>本报告不保存、生成或推测隐藏思维链。DeepSeek 逐条审查：{'已保存' if has_deepseek else '未运行'}。<a href="samples.csv">打开 CSV 对照表</a></p></section>
 {''.join(cards)}
 </main></body></html>"""

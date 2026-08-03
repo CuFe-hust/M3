@@ -39,10 +39,11 @@ Preserves 200-sample-comparable VRSBench vehicle pipeline:
 4. Box evidence → accepted centres → dedup → border fragment rejection
 5. `final_count == accepted points`
 
-## YoloOBBCountingBackend Draft
+## YoloOBBCountingBackend
 
-This backend is intentionally outside the active runtime cutover. The files remain as drafts, but
-`bootstrap.assemble_runtime()` rejects YOLO enablement and never imports or registers this backend.
+This optional backend is registered only when enabled local detector settings are supplied. It lazy
+loads a SHA256-verified OBB model, validates its task and class map, filters every detection to the
+requested target classes, and converts OBB centres into owner-core accepted points.
 
 Per-detector backend:
 - `YoloDetectorSettings` defines classes, aliases, composites
@@ -54,8 +55,8 @@ Per-detector backend:
 
 ## Configuration
 
-The following draft configuration is not accepted by the cutover Composition Root. The active
-default remains disabled, and enabling it raises a visible `RuntimeError`.
+The default remains disabled. An enabled local configuration is accepted only when it supplies an
+enabled detector with its model ID, SHA256, source dataset, and audited class map.
 
 ```yaml
 backend:
@@ -77,7 +78,7 @@ backend:
 ## Safety
 
 - YOLO disabled → no `ultralytics` import
-- YOLO enabled → Composition Root rejects startup before backend registration
+- YOLO enabled → registers configured detectors but still does not load them during runtime assembly
 - Weight file missing → `DetectorWeightsMissingError` before import
 - No auto-download, no network access
 - `ultralytics` is an optional dependency (`[yolo]` extra)

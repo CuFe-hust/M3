@@ -1,63 +1,103 @@
-"""YOLO model store — lazy loading, caching, no network, no auto-download.
-YOLO 模型存储 — 延迟加载、缓存、无网络、无自动下载。
+"""Audited lazy loading for local YOLO models.
+本地 YOLO 模型的可审计延迟加载。
 """
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
+
+from spacers_agent.agents.errors import (
+    DetectorClassMapMismatchError,
+    DetectorTaskMismatchError,
+    DetectorWeightsHashMismatchError,
+    DetectorWeightsMissingError,
+    OptionalDependencyMissingError,
+)
+from spacers_agent.schemas import YoloDetectorSettings
 
 
 class YoloModelStore:
-    """Lazy-load and cache YOLO models keyed by resolved weight path.
-    按解析后权重路径为键延迟加载并缓存 YOLO 模型。
-
-    Never downloads. Never imports ultralytics at module level.
-    绝不下载。绝不在模块级导入 ultralytics。
+    """Load a verified OBB model once per resolved path and expected digest.
+    每个解析后的权重路径和预期摘要仅加载一次已验证的 OBB 模型。
     """
 
-    def __init__(self) -> None:
-        self._models: dict[str, Any] = {}
+    def __init__(self, loader: Callable[[str], Any] | None = None) -> None:
+        self._models: dict[tuple[str, str], Any] = {}
         self._lock = threading.Lock()
+        self._loader = loader
 
-    def get(self, weight_path: Path, *, confidence: float, iou: float,
-            image_size: int, device: str, max_detections: int) -> Any:
-        """Return cached model or load once. / 返回缓存模型或加载一次。"""
-
-        resolved = str(weight_path.resolve())
-
+    def get(self, detector: YoloDetectorSettings) -> Any:
+        """Return a digest-verified cached model without network downloads.
+        返回经摘要验证的缓存模型，且绝不进行网络下载。
+        """
+        path = detector.weights.resolve()
+        key = (str(path), detector.sha256)
         with self._lock:
-            if resolved in self._models:
-                return self._models[resolved]
+            cached = self._models.get(key)
+        if cached is not None:
+            return cached
+        if not path.is_file():
+            raise DetectorWeightsMissingError(detector.name, path.name)
+        actual = _sha256(path)
+        if actual != detector.sha256:
+            raise DetectorWeightsHashMismatchError(
+                f"Detector {detector.name!r} digest mismatch for {path.name}: expected "
+                f"{detector.sha256}, got {actual}"
+            )
+        model = self._load(path)
+        actual_task = str(getattr(model, "task", ""))
+        if actual_task != detector.task:
+            raise DetectorTaskMismatchError(
+                f"Detector {detector.name!r} expected task {detector.task!r}, got {actual_task!r}"
+            )
+        model_names = _normalized_names(getattr(model, "names", {}))
+        expected_names = [value.casefold() for value in detector.classes]
+        if model_names != expected_names:
+            raise DetectorClassMapMismatchError(
+                f"Detector {detector.name!r} class map differs from configured DOTAv1 classes"
+            )
+        with self._lock:
+            return self._models.setdefault(key, model)
 
-        # Validate weight exists BEFORE import / 在导入前验证权重存在
-        if not weight_path.is_file():
-            from spacers_agent.agents.errors import DetectorWeightsMissingError
-            raise DetectorWeightsMissingError("yolo_obb", str(weight_path))
+    def has(self, weight_path: Path, sha256: str | None = None) -> bool:
+        """Return whether an exact verified model cache key is present.
+        返回精确已验证模型缓存键是否存在。
+        """
+        resolved = str(weight_path.resolve())
+        return any(path == resolved and (sha256 is None or digest == sha256) for path, digest in self._models)
 
-        # Lazy import ultralytics / 延迟导入 ultralytics
+    def _load(self, path: Path) -> Any:
+        if self._loader is not None:
+            return self._loader(str(path))
         try:
             from ultralytics import YOLO  # noqa: PLC0415
         except ImportError as exc:
-            from spacers_agent.agents.errors import OptionalDependencyMissingError
             raise OptionalDependencyMissingError(
-                "yolo", dependency="ultralytics", install_hint="pip install ultralytics",
+                "yolo", dependency="ultralytics", install_hint="pip install -e '.[yolo]'"
             ) from exc
+        return YOLO(str(path))
 
-        model = YOLO(str(weight_path))
-        model.overrides["conf"] = confidence
-        model.overrides["iou"] = iou
-        model.overrides["imgsz"] = image_size
-        model.overrides["device"] = device
-        model.overrides["max_det"] = max_detections
-        model.overrides["verbose"] = False
 
-        with self._lock:
-            self._models[resolved] = model
+def _sha256(path: Path) -> str:
+    """Hash a local weight file incrementally to avoid large-file buffering.
+    增量计算本地权重文件摘要，避免缓冲整个大文件。
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for block in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
-        return model
 
-    def has(self, weight_path: Path) -> bool:
-        """Return whether model is cached. / 返回模型是否已缓存。"""
-        return str(weight_path.resolve()) in self._models
+def _normalized_names(value: object) -> list[str]:
+    """Convert Ultralytics list or indexed mapping class names into one list.
+    将 Ultralytics 列表或索引映射类别名转换为统一列表。
+    """
+    if isinstance(value, dict):
+        return [str(value[index]).strip().casefold() for index in sorted(value)]
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip().casefold() for item in value]
+    return []

@@ -235,8 +235,34 @@ python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 `assemble_runtime` → `build_dataset_runner` (dataset commands) or `SampleRunner` (one image) →
 `TaskRouter` → `AgentRegistry` → concrete Agent → counting/VRSBench backend →
 `ArtifactWriter` and optional `JudgeService`. `workflow.py`, `counting.py`, and `experts.py` remain
-only as import-compatible shims; they do not provide a second business path. YOLO is not registered
-or loaded by this runtime.
+only as import-compatible shims; they do not provide a second business path.
+
+## Optional YOLO26s OBB Counting
+
+The repository default keeps YOLO disabled. It neither imports `ultralytics` nor inspects weights
+until a local configuration enables an audited detector. Install the optional runtime only on the
+deployment machine:
+
+```bash
+python -m pip install -e '.[yolo]'
+```
+
+Copy `configs/yolo.example.yaml` to an ignored `configs/local.*.yaml`, point `weights` to an
+already-downloaded `yolo26s-obb.pt`, and keep its SHA256 equal to the configured value. Do not add
+weights to Git and do not rely on automatic downloads. The `yolo26s_dota_obb` profile supports only
+its declared DOTAv1 OBB classes; for example it can select `ship` and the `vehicle` composite, but
+unsupported targets such as `building` use `qwen_point`.
+
+For `counting` and `fine_grained_counting`, auto mode selects the highest-priority supported YOLO
+detector, preserves `final_count == accepted points`, and visibly falls back to Qwen for missing or
+invalid weights, missing optional dependencies, task/class-map mismatch, or detector failure. A
+zero YOLO result triggers an independent Qwen point review unless local configuration explicitly
+trusts empty detections. VRSBench quantity VQA continues to use its existing dedicated Qwen route.
+
+`run-dataset --task counting` now writes `outputs/runs/<run-id>/counting.report/report.html` and
+`samples.csv`. The report shows the executed backend, YOLO attempt/fallback state, detector profile,
+and trace-backed detector summary; it never renders an absolute weight path or credentials. Review
+the Ultralytics AGPL license and your deployment obligations before use.
 
 The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
 

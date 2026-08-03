@@ -55,17 +55,44 @@ router:
   max_total_experts: 3
   repair_attempts: 1
   enable_rule_fallback: true
-# Optional: YOLO OBB counting backend. / 可选：YOLO OBB 计数后端。
-# Disabled by default. Requires local weight files and optional dependency 'ultralytics'.
-# 默认关闭。需要本地权重文件与可选依赖 'ultralytics'。
+# Default counting backend selection. / 默认计数后端选择。
+agents:
+  counting:
+    default_backend: auto
+
+# Optional YOLO OBB counting backend. / 可选 YOLO OBB 计数后端。
+# Repository defaults stay disabled and never download weights. / 仓库默认保持关闭，绝不下载权重。
+backend:
+  trust_empty_detection: false
+  yolo:
+    enabled: false
+    fallback_to_qwen_on_unavailable: true
+    fallback_to_qwen_on_error: true
+    verify_empty_with_qwen: true
+    detectors: []
+# Example only. Keep disabled in local repository defaults. / 仅为示例，仓库本地默认必须保持关闭。
 # backend:
 #   yolo:
-#     enabled: false
-#     weights:
-#       - name: "vehicle-obb-v1"
-#         path: "./weights/vehicle_obb.pt"
-#         categories: ["small-vehicle", "large-vehicle", "car", "truck", "bus"]
-#         priority: 10
-#     confidence_threshold: 0.25
-#     iou_threshold: 0.45
-#   trust_empty_detection: false
+#     enabled: true
+#     fallback_to_qwen_on_unavailable: true
+#     fallback_to_qwen_on_error: true
+#     verify_empty_with_qwen: true
+#     detectors:
+#       - name: yolo26s_dota_obb
+#         enabled: true
+#         weights: /home/user/models/yolo26/yolo26s-obb.pt
+#         task: obb
+#         model_id: Ultralytics/YOLO26:yolo26s-obb
+#         sha256: 38dbd72ef6804f9bbbea7ad20f486e6ca6e093c8cd9bc857207a846565bd6e0b
+#         source_dataset: DOTAv1
+#         priority: 100
+#         confidence: 0.20
+#         iou: 0.50
+#         image_size: 1024
+#         device: "0"
+#         max_detections: 1000
+#         boundary_duplicate_iou: 0.50
+#         boundary_duplicate_center_px: 16.0
+#         classes: [plane, ship, storage tank, baseball diamond, tennis court, basketball court, ground track field, harbor, bridge, large vehicle, small vehicle, helicopter, roundabout, soccer ball field, swimming pool]
+#         aliases: {airplane: plane, aeroplane: plane, vessel: ship, boat: ship, storage-tank: storage tank, oil tank: storage tank, large-vehicle: large vehicle, small-vehicle: small vehicle, football field: soccer ball field, soccer field: soccer ball field, swimming-pool: swimming pool}
+#         composite_targets: {vehicle: [small vehicle, large vehicle], aircraft: [plane, helicopter]}

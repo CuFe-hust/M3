@@ -4,6 +4,7 @@
 
 from spacers_agent.agents.counting.backends.base import (
     BackendSelection,
+    BackendPlan,
     CountingBackend,
     CountingBackendOutcome,
     CountingRequest,
@@ -16,6 +17,7 @@ from spacers_agent.agents.counting.backends.vrsbench_qwen_count import VRSBenchQ
 __all__ = [
     "BackendRegistry",
     "BackendSelection",
+    "BackendPlan",
     "BackendSelector",
     "CountingBackend",
     "CountingBackendOutcome",

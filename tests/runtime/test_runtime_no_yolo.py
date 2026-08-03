@@ -25,8 +25,20 @@ def test_default_runtime_registers_only_allowed_counting_backends() -> None:
     assert {name for name in sys.modules if name.startswith("ultralytics")} == modules_before
 
 
-def test_runtime_rejects_yolo_enablement_before_registration() -> None:
-    settings = AppSettings.model_validate({"backend": {"yolo": {"enabled": True}}})
+def test_enabled_runtime_registers_yolo_without_importing_ultralytics(tmp_path) -> None:
+    weights = tmp_path / "model.pt"
+    weights.write_bytes(b"test-weight")
+    settings = AppSettings.model_validate({
+        "backend": {"yolo": {"enabled": True, "detectors": [{
+            "name": "yolo26s_dota_obb", "enabled": True, "weights": str(weights),
+            "model_id": "test-yolo", "sha256": "0" * 64, "classes": ["ship"],
+        }]}},
+    })
+    modules_before = {name for name in sys.modules if name.startswith("ultralytics")}
+    runtime = assemble_runtime(settings, qwen_client=_FakeQwen())
+    counting_agent = runtime.agent_registry.get("counting_agent")
 
-    with pytest.raises(RuntimeError, match="intentionally disabled"):
-        assemble_runtime(settings, qwen_client=_FakeQwen())
+    assert counting_agent._selector._registry.all_names() == [
+        "qwen_point", "vrsbench_qwen_count", "yolo26s_dota_obb",
+    ]
+    assert {name for name in sys.modules if name.startswith("ultralytics")} == modules_before

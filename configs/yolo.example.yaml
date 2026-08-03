@@ -7,30 +7,29 @@
 agents:
   counting:
     default_backend: auto
-    yolo:
-      enabled: true
-      fallback_to_qwen_on_unavailable: true
-      fallback_to_qwen_on_error: true
-      verify_empty_with_qwen: false
-      detectors:
-        - name: dota_obb
-          enabled: true
-          weights: weights/yolo11s-obb.pt
-          task: obb
-          priority: 100
-          classes: [plane, ship, storage tank, large vehicle, small vehicle, helicopter, bridge]
-          aliases:
-            airplane: plane
-            aircraft: plane
-            vessel: ship
-            car: small vehicle
-            automobile: small vehicle
-            truck: large vehicle
-            bus: large vehicle
-          composite_targets:
-            vehicle: [small vehicle, large vehicle]
-          confidence: 0.20
-          iou: 0.50
-          image_size: 1024
-          device: "0"
-          max_detections: 1000
+backend:
+  trust_empty_detection: false
+  yolo:
+    enabled: true
+    fallback_to_qwen_on_unavailable: true
+    fallback_to_qwen_on_error: true
+    verify_empty_with_qwen: true
+    detectors:
+      - name: yolo26s_dota_obb
+        enabled: true
+        weights: /replace/with/local/yolo26s-obb.pt
+        task: obb
+        model_id: Ultralytics/YOLO26:yolo26s-obb
+        sha256: 38dbd72ef6804f9bbbea7ad20f486e6ca6e093c8cd9bc857207a846565bd6e0b
+        source_dataset: DOTAv1
+        priority: 100
+        classes: [plane, ship, storage tank, baseball diamond, tennis court, basketball court, ground track field, harbor, bridge, large vehicle, small vehicle, helicopter, roundabout, soccer ball field, swimming pool]
+        aliases: {airplane: plane, aeroplane: plane, vessel: ship, boat: ship, storage-tank: storage tank, oil tank: storage tank, large-vehicle: large vehicle, small-vehicle: small vehicle, football field: soccer ball field, soccer field: soccer ball field, swimming-pool: swimming pool}
+        composite_targets: {vehicle: [small vehicle, large vehicle], aircraft: [plane, helicopter]}
+        confidence: 0.20
+        iou: 0.50
+        image_size: 1024
+        device: "0"
+        max_detections: 1000
+        boundary_duplicate_iou: 0.50
+        boundary_duplicate_center_px: 16.0

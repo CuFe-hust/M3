@@ -29,6 +29,18 @@ class BackendSelection:
 
 
 @dataclass(frozen=True)
+class BackendPlan:
+    """Primary and fallback counting backends selected before execution.
+    在执行前选定的主计数后端与回退后端。
+    """
+
+    primary_backend_name: str
+    fallback_backend_names: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+    target_classes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class CountingBackendOutcome:
     """Validated backend result plus optional legacy VQA compatibility data.
     已校验的后端结果，以及可选的旧 VQA 兼容数据。
@@ -43,6 +55,7 @@ class CountingBackend(Protocol):
     """Execution contract for a pluggable counting backend. / 可插拔计数后端的执行契约。"""
 
     name: str
+    priority: int
 
     def is_available(self) -> bool:
         """Return whether the backend is ready (weights loaded, client alive). / 返回后端是否就绪。"""
