@@ -124,6 +124,60 @@ For MME Real RS, inference also writes `mme_real_rs.official.json`, preserving e
 record and replacing only its `Output` field. It can be passed directly to the upstream
 MME-RealWorld evaluator.
 
+## Fine-Tuning with LLaMA-Factory (LoRA)
+
+`scripts/finetune_vlm_lora.py` LoRA-fine-tunes two VLM families with
+LLaMA-Factory: `internvl3.5-8b` (local `models/InternVL3_5-8B/` by default)
+and `qwen3-vl-4b` (`Qwen/Qwen3-VL-4B-Instruct` by default; pass
+`--model-name-or-path` for an offline local path). It uses the merged
+ShareGPT dataset in `data/微调数据集/merged/`, registers it at runtime, and
+auto-exports the best LoRA adapter, the merged base+LoRA full model, and
+training curves.
+
+Install LLaMA-Factory on the training environment first:
+
+```bash
+pip install llamafactory tensorboard matplotlib
+```
+
+Run InternVL fine-tuning (the dedicated server only handles InternVL; add
+`--server` there to reject Qwen by design):
+
+```bash
+python scripts/finetune_vlm_lora.py --model internvl3.5-8b --server
+```
+
+LLaMA-Factory 0.9.x requires InternVL weights in Hugging Face–compatible
+format (`InternVLForConditionalGeneration`); GitHub-format snapshots
+(`InternVLChatModel`) are rejected and must be converted first.
+
+Run Qwen3-VL fine-tuning in a local/other environment:
+
+```bash
+python scripts/finetune_vlm_lora.py --model qwen3-vl-4b --model-name-or-path /path/to/Qwen3-VL-4B-Instruct
+```
+
+Use `--dry-run` to print the generated LLaMA-Factory YAML and the planned
+steps without executing anything. Paths, epochs, batch size, LoRA rank/alpha,
+and the best-checkpoint metric are all configurable through command-line
+arguments (see `python scripts/finetune_vlm_lora.py --help`).
+
+Resume behavior:
+
+- interrupted runs resume automatically from the latest `checkpoint-*` when
+  the output directory already contains training artifacts;
+- finished runs skip training and go directly to export/curves;
+- `--force-restart` requires an empty output directory and never deletes
+  files automatically.
+
+Outputs under `<output_dir>` (default `outputs/finetune/<model>_lora/`):
+
+- `best_lora/`: adapter weights of the best checkpoint (default lowest
+  `eval_loss` from `trainer_log.jsonl`);
+- `merged/`: full model after merging the base weights with the best LoRA;
+- `train_curves.png` and `runs/`: training curves as PNG and TensorBoard
+  events.
+
 ## Local Multi-Agent Foundation (Phase 1)
 
 The existing baseline remains unchanged. The additive local foundation creates reproducible

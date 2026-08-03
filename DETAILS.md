@@ -647,15 +647,14 @@ The Transformers client permits one versioned, text-only JSON-format repair afte
 
 After a VRSBench general-VQA run, `spacers_agent.vqa_report` converts the persisted multi-Agent results to the unchanged canonical VQA sample/prediction format and invokes the default audit report component. The run directory receives `vrsbench_vqa.jsonl`, metrics, DeepSeek audit JSONL, and `vrsbench_vqa.report/report.html`. The HTML displays the actual subtype route, prompt version, labeled evidence, program-geometry audit, and a report-only image copy with boxes or accepted points overlaid. Original dataset images are never modified.
 
-## 15. Fine-Tuning Datasets for LLaMA-Factory
+## 15. Fine-Tuning Datasets
 
-`data/微调数据集/` holds the ShareGPT-format fine-tuning datasets used with
-LLaMA-Factory (InternVL LoRA). It is a data directory only; it is not imported
-as code and is excluded from Git together with `*.tar` transfer packages.
+`data/微调数据集/` holds the ShareGPT-format fine-tuning datasets
+(InternVL LoRA). It is a data directory only; it is not imported as code and
+is excluded from Git together with `*.tar` transfer packages.
 
 The canonical training dataset is the merged and shuffled `merged/` directory,
-which combines VRSBench and LEVIR-CC into a single set of splits so that one
-LLaMA-Factory `--media_dir` resolves every image.
+which combines VRSBench and LEVIR-CC into a single set of splits.
 
 - `merged/train.json`, `merged/val.json`, `merged/test.json`: unified ShareGPT
   records for both datasets, shuffled within each split with the fixed seed
@@ -674,14 +673,14 @@ LLaMA-Factory `--media_dir` resolves every image.
 
 Path convention: the `images` field of every `merged/` record is relative to
 the `merged/` directory itself (for example `train/vrsbench/00005_0000.png` or
-`train/levir-cc/A/train_005870.png`). Point LLaMA-Factory `--media_dir` at
-`merged/` and all paths resolve. Records keep `id`, `images`, and
-`conversations` (`from`/`value`, human/gpt); LEVIR-CC records additionally keep
-`pair_id`, `caption_id`, `split`, and `changeflag`.
+`train/levir-cc/A/train_005870.png`), so all image paths resolve together with
+their JSON records. Records keep `id`, `images`, and `conversations`
+(`from`/`value`, human/gpt); LEVIR-CC records additionally keep `pair_id`,
+`caption_id`, `split`, and `changeflag`.
 
-Only the `train.json` files are for training; `val.json` may serve as
-`eval_dataset`; `test.json` and the `*_references.json` files are reserved for
-final evaluation and must not be used for training or prompt development.
+Only the `train.json` files are for training; `val.json` may serve as the
+evaluation split; `test.json` and the `*_references.json` files are reserved
+for final evaluation and must not be used for training or prompt development.
 
 Provenance: `merged/` was built from the original `vrsbench/` and `levir-cc/`
 per-split datasets (recorded in `merge_manifest.json`, including the shuffle
@@ -693,36 +692,78 @@ fine-tuning data. To rebuild from source, rerun the generator scripts (kept in
 scripts keep server-side default paths; regenerate LEVIR-CC with
 `--image-path-mode relative` to preserve the relative-path convention.
 
-### 15.1 InternVL LoRA Fine-Tuning Entry Point
+## 16. LLaMA-Factory LoRA Fine-Tuning Workflow
 
-`configs/llamafactory/` holds the LLaMA-Factory artifacts for LoRA fine-tuning
-of `models/InternVL3_5-8B/` on the merged dataset:
+`scripts/finetune_vlm_lora.py` is the Python entry point for LLaMA-Factory
+LoRA SFT. It supports two model families:
 
-- `dataset_info.json`: registers `merged_train` / `merged_val` / `merged_test`
-  as ShareGPT datasets (`conversations` + `images`); `media_dir` is the
-  `merged/` directory.
-- `train_internvl_lora.yaml`: SFT + LoRA config for InternVL3.5-8B
-  (`template: qwen3`, `trust_remote_code: true`, LoRA on the LLM attention and
-  MLP projections, bf16).
+- `internvl3.5-8b`: defaults to the local `models/InternVL3_5-8B/` directory,
+  template `intern_vl` (LLaMA-Factory 0.9.x registers InternVL3.5 as
+  `intern_vl` with image support), `trust_remote_code: true` (the model
+  directory ships its own modeling code).
+- `qwen3-vl-4b`: defaults to the HF id `Qwen/Qwen3-VL-4B-Instruct`; pass
+  `--model-name-or-path` for an offline local path. Template `qwen3_vl`,
+  which requires a recent LLaMA-Factory release that registers this template.
 
-Launch with `scripts/finetune_internvl_lora.sh --model <MODEL_DIR>`. The
-launcher injects `model_name_or_path` / `dataset_dir` / `output_dir` and
-regenerates `dataset_info.json` with an absolute `media_dir`, so relative image
-paths resolve wherever the data lives on the server. Use `--data-dir` to
-override the default `<repo>/data/微调数据集/merged`; use `--max-samples N` for
-a quick smoke run. Artifacts are written under `outputs/finetune/internvl_lora/`
-(ignored by Git).
+The dataset is the merged ShareGPT directory `data/微调数据集/merged/`.
+At runtime the script registers `merged_train` / `merged_val` / `merged_test`
+in `.cache/llamafactory/dataset_info.json` (`messages=conversations`,
+`images=images`, `media_dir` set to the absolute data path) and generates the
+train/export YAML files in the same cache directory. The generated train YAML
+also sets the top-level LLaMA-Factory `media_dir` argument (required by
+LLaMA-Factory >= 0.9 to resolve relative image paths). No absolute server path
+is hard-coded.
 
-Training curves: `train_internvl_lora.yaml` sets `report_to: tensorboard`
-(requires `pip install tensorboard`), so TensorBoard events land in
-`<output_dir>/runs/`; view them with
-`tensorboard --logdir <output_dir>/runs`. LLaMA-Factory also writes
-`trainer_log.jsonl` in the output dir; `scripts/plot_train_curves.py
-<output_dir>` renders a static PNG of train/eval loss and learning rate
-(requires `pip install matplotlib`), which works on headless servers.
+Example commands:
 
-Merged full model: `scripts/export_internvl_lora.sh --model <MODEL_DIR>
---adapter <ADAPTER_DIR>` merges the base model with the LoRA adapter via
-`llamafactory-cli export` (`configs/llamafactory/export_internvl_lora.yaml`)
-and writes the full model to
-`outputs/finetune/internvl_lora_merged/` (safetensors, ~5GB shards, CPU merge).
+```bash
+python scripts/finetune_vlm_lora.py --model internvl3.5-8b
+python scripts/finetune_vlm_lora.py --model qwen3-vl-4b --model-name-or-path /path/to/Qwen3-VL-4B-Instruct
+python scripts/finetune_vlm_lora.py --model internvl3.5-8b --dry-run --output-dir outputs/finetune/check
+```
+
+Checkpoint/resume behavior:
+
+- When the output directory already contains `checkpoint-*` or
+  `trainer_log.jsonl`, the script automatically resumes from the latest
+  checkpoint (or explicitly with `--resume`); the generated train YAML then
+  contains `resume_from_checkpoint`.
+- A finished run (state file `.finetune_state.json` or `all_results.json`)
+  skips training and goes directly to export/curves.
+- `--force-restart` requires an empty output directory and never auto-deletes
+  files.
+- A fingerprint in the state file rejects resume attempts when the model,
+  data directory, or core hyperparameters differ.
+
+After training, the script:
+
+- selects the best checkpoint from `trainer_log.jsonl` (default: lowest
+  `eval_loss`; use `--metric` / `--higher-is-better` for other metrics such as
+  generation metrics, e.g. `--metric predict_bleu-4 --higher-is-better`);
+- copies only the adapter weights (`adapter_config.json` + `adapter_model*`)
+  to `<output_dir>/best_lora/`;
+- runs `llamafactory-cli export` to write the merged base+LoRA full model to
+  `<output_dir>/merged/`;
+- plots training curves to `<output_dir>/train_curves.png` by reusing
+  `scripts/plot_train_curves.py` (TensorBoard events remain in
+  `<output_dir>/runs/`).
+
+Server constraint: the dedicated server is responsible only for InternVL
+fine-tuning; the `--server` flag rejects `qwen3-vl-4b`. Qwen3-VL fine-tuning
+runs in a local or other environment. Server credentials are not stored in
+the repository.
+
+Model-format note: LLaMA-Factory 0.9.5 refuses the InternVL “GitHub format”
+(`InternVLChatModel` + `internvl_chat` model type) and requires the
+Hugging Face–compatible format (`InternVLForConditionalGeneration`). The
+server-side smoke test converted the existing GitHub-format snapshot into
+`models/OpenGVLab--InternVL3_5-8B-HF/snapshots/master/` using the official
+key-mapping rules (key set matches the official `-HF` index, 841/841; the
+original GitHub-format directory was kept). The same conversion is required
+for any other GitHub-format InternVL copy before LLaMA-Factory 0.9.x can
+fine-tune it.
+
+Environment requirements: an installed LLaMA-Factory CLI
+(`llamafactory-cli` or `python -m llamafactory.cli`), `tensorboard` for
+`report_to: tensorboard`, and `matplotlib` for PNG curve export. LLaMA-Factory
+`>= 0.9` is required for `eval_strategy` and the `qwen3_vl` template.
