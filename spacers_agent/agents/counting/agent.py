@@ -18,7 +18,7 @@ from spacers_agent.agents.errors import (
     OptionalDependencyMissingError,
 )
 from spacers_agent.imaging import read_normalized_image
-from spacers_agent.schemas import CountTargetSpec, IssueRecord
+from spacers_agent.schemas import CountTargetSpec, CountingResult, ExpertResult, IssueRecord, VisualEvidence
 from spacers_agent.vqa_geometry import vrsbench_count_target
 
 
@@ -121,6 +121,12 @@ class CountingAgent:
             trace["yolo"] = yolo_trace
         else:
             trace["yolo"] = {"attempted": False, "used_for_final": False}
+        if is_vrsbench_quantity(sample) and outcome.expert_result is None:
+            outcome = CountingBackendOutcome(
+                counting=outcome.counting,
+                expert_result=self._vrsbench_expert_result(outcome.counting, sample.images[0].image_id),
+                trace=outcome.trace,
+            )
         if outcome.expert_result is not None:
             return AgentExecution(agent_name=self.name, payload=outcome.expert_result, result_filename="expert_result.json", additional_results={"counting_result.json": outcome.counting}, trace=trace)
         return AgentExecution(agent_name=self.name, payload=outcome.counting, result_filename="counting_result.json", trace=trace)
@@ -143,3 +149,36 @@ class CountingAgent:
     @staticmethod
     def _is_yolo(backend: object) -> bool:
         return getattr(backend, "name", "") not in {"qwen_point", "vrsbench_qwen_count"}
+
+    @staticmethod
+    def _vrsbench_expert_result(counting: CountingResult, image_id: str) -> ExpertResult:
+        """Adapt detector points to the canonical VQA result required by reports and Judge.
+        将检测器点适配为报告和审评所需的标准 VQA 结果。
+        """
+        accepted = [point for point in counting.global_points if point.accepted]
+        evidence = [
+            VisualEvidence(
+                label=(point.provenance.source_class if point.provenance and point.provenance.source_class else counting.target),
+                point=[point.global_x_norm, point.global_y_norm],
+                confidence=point.confidence,
+                image_id=image_id,
+            )
+            for point in accepted
+        ]
+        status = "failed" if counting.status == "failed" else "partial" if counting.status == "partial" else "completed"
+        return ExpertResult(
+            expert="counting_expert",
+            answer=str(counting.final_count),
+            evidence=[point.short_evidence for point in accepted],
+            evidence_items=evidence,
+            geometry={
+                "version": "accepted-detector-point-count-v1",
+                "coordinate_frame": "normalized_0_999_top_left",
+                "rule": "final_count_equals_accepted_points",
+                "accepted_point_count": len(accepted),
+                "final_count": counting.final_count,
+                "counting_status": counting.status,
+                "warnings": [item.model_dump(mode="json") for item in counting.warnings],
+            },
+            status=status,
+        )

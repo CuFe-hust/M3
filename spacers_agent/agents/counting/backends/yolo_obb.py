@@ -134,13 +134,30 @@ class YoloOBBCountingBackend:
                 ))
         effective_min_confidence = max(settings.counting.min_confidence, self._detector.confidence)
         points = [apply_acceptance_policy(point, min_confidence=effective_min_confidence) for point in points]
+        border_fragment_ids = [
+            point.global_id
+            for point in points
+            if point.accepted and _is_clipped_border_fragment(point, image.width, image.height)
+        ]
+        border_fragment_set = set(border_fragment_ids)
+        points = [
+            point.model_copy(update={"accepted": False, "rejection_reason": "IMAGE_BORDER_FRAGMENT"})
+            if point.global_id in border_fragment_set else point
+            for point in points
+        ]
+        if border_fragment_ids:
+            warnings.append(IssueRecord(
+                code="YOLO_IMAGE_BORDER_FRAGMENT_REJECTED",
+                message=f"Rejected {len(border_fragment_ids)} detector observations clipped by the image border.",
+                point_ids=border_fragment_ids,
+            ))
         accepted_before_merge = sum(point.accepted for point in points)
-        pairs, unresolved = _boundary_duplicate_pairs(points, tiles, self._detector)
+        pairs, unresolved = _detector_duplicate_pairs(points, tiles, self._detector)
         points, merged_groups = finalize_representatives(points, pairs)
         if merged_groups:
             warnings.append(IssueRecord(
-                code="YOLO_BOUNDARY_DUPLICATE_MERGED",
-                message=f"Merged {len(merged_groups)} strongly matching boundary duplicate groups.",
+                code="YOLO_DUPLICATE_MERGED",
+                message=f"Merged {len(merged_groups)} strongly matching detector duplicate groups.",
                 point_ids=[point_id for group in merged_groups for point_id in group],
             ))
         for first, second in unresolved:
@@ -183,6 +200,7 @@ class YoloOBBCountingBackend:
                 "raw_detection_count": raw_count,
                 "unrelated_class_rejected_count": unrelated_count,
                 "acceptance_rejected_count": acceptance_rejected,
+                "border_fragment_rejected_count": len(border_fragment_ids),
                 "merged_duplicate_count": sum(len(group) - 1 for group in merged_groups),
                 "unresolved_conflict_count": len(unresolved),
                 "accepted_count": counting.final_count,
@@ -270,7 +288,7 @@ def _model_names(value: object) -> dict[int, str]:
     return {}
 
 
-def _boundary_duplicate_pairs(
+def _detector_duplicate_pairs(
     points: Sequence[GlobalPointObservation],
     tiles: Sequence[TileSpec],
     detector: YoloDetectorSettings,
@@ -278,20 +296,45 @@ def _boundary_duplicate_pairs(
     tile_by_id = {tile.tile_id: tile for tile in tiles}
     merged: list[tuple[str, str]] = []
     unresolved: list[tuple[str, str]] = []
-    candidates = [point for point in points if point.accepted and point.near_core_boundary]
+    candidates = [point for point in points if point.accepted]
     for index, first in enumerate(candidates):
         for second in candidates[index + 1:]:
             if first.target != second.target or _source_class(first) != _source_class(second):
                 continue
-            if not _neighbouring(tile_by_id.get(first.source_tile_id), tile_by_id.get(second.source_tile_id)):
+            same_tile = first.source_tile_id == second.source_tile_id
+            neighbouring_boundary = (
+                first.near_core_boundary
+                and second.near_core_boundary
+                and _neighbouring(tile_by_id.get(first.source_tile_id), tile_by_id.get(second.source_tile_id))
+            )
+            if not same_tile and not neighbouring_boundary:
                 continue
             distance = ((first.global_x_px - second.global_x_px) ** 2 + (first.global_y_px - second.global_y_px) ** 2) ** 0.5
             iou = _polygon_envelope_iou(first, second)
-            if iou >= detector.boundary_duplicate_iou or distance <= detector.boundary_duplicate_center_px:
+            if iou >= detector.boundary_duplicate_iou or (
+                neighbouring_boundary and distance <= detector.boundary_duplicate_center_px
+            ):
                 merged.append((first.global_id, second.global_id))
-            elif distance <= detector.boundary_duplicate_center_px * 2:
+            elif neighbouring_boundary and distance <= detector.boundary_duplicate_center_px * 2:
                 unresolved.append((first.global_id, second.global_id))
     return merged, unresolved
+
+
+def _is_clipped_border_fragment(point: GlobalPointObservation, width: int, height: int) -> bool:
+    """Reject detections whose centre and polygon are both clipped at an image edge.
+    拒绝中心与多边形同时贴近图像边缘的截断检测。
+    """
+    polygon = point.provenance.obb_polygon_global_px if point.provenance else None
+    if not polygon:
+        return False
+    xs = [item[0] for item in polygon]
+    ys = [item[1] for item in polygon]
+    return (
+        (min(xs) <= 0 and point.global_x_norm < 25)
+        or (min(ys) <= 0 and point.global_y_norm < 25)
+        or (max(xs) >= width - 1 and point.global_x_norm > 974)
+        or (max(ys) >= height - 1 and point.global_y_norm > 974)
+    )
 
 
 def _source_class(point: GlobalPointObservation) -> str | None:

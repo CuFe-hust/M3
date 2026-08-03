@@ -11,7 +11,8 @@ from spacers_agent.agents.counting.backends.registry import BackendRegistry
 from spacers_agent.agents.counting.backends.selector import BackendSelector
 from spacers_agent.agents.counting.backends.vrsbench_qwen_count import VRSBenchQwenCountBackend
 from spacers_agent.agents.counting.backends.yolo_obb import YoloOBBCountingBackend
-from spacers_agent.schemas import CountTargetSpec, ImageRef, UnifiedSample, YoloDetectorSettings, YoloCountingSettings
+from spacers_agent.agents.counting.backends.yolo_obb import _detector_duplicate_pairs, _is_clipped_border_fragment
+from spacers_agent.schemas import CountTargetSpec, GlobalPointObservation, ImageRef, PointProvenance, UnifiedSample, YoloDetectorSettings, YoloCountingSettings
 
 
 def _target(label: str) -> CountTargetSpec:
@@ -65,3 +66,38 @@ def test_vrsbench_quantity_explicit_qwen_preserves_dedicated_backend() -> None:
     sample = _sample("general_vqa", dataset="VRSBench")
     plan = BackendSelector(registry, default_backend="qwen_point").plan(_target("vehicle"), sample)
     assert plan.primary_backend_name == "vrsbench_qwen_count"
+
+
+def _point(name: str, x: int, y: int, polygon: list[list[float]]) -> GlobalPointObservation:
+    return GlobalPointObservation(
+        global_id=name, target="small-vehicle", source_tile_id="r000_c000", local_id=name,
+        local_x_norm=x, local_y_norm=y, local_radius_norm=10,
+        global_x_px=round(x * 511 / 999), global_y_px=round(y * 511 / 999),
+        global_x_norm=x, global_y_norm=y, radius_px=5.0, confidence=0.8,
+        ownership_valid=True, near_core_boundary=y > 950, accepted=True,
+        short_evidence="detector point",
+        provenance=PointProvenance(
+            source="yolo_obb_center", backend_name="yolo", model_id="model",
+            source_class="small vehicle", detector_confidence=0.8,
+            obb_polygon_local_px=polygon, obb_polygon_global_px=polygon,
+            detector_task="obb", detector_source_dataset="DOTAv1", weights_sha256="0" * 64,
+        ),
+    )
+
+
+def test_yolo_rejects_clipped_image_border_fragment() -> None:
+    fragment = _point("fragment", 954, 991, [[476, 502], [499, 502], [499, 519], [476, 519]])
+    interior = _point("interior", 895, 334, [[441, 149], [475, 149], [475, 193], [441, 193]])
+    assert _is_clipped_border_fragment(fragment, 512, 512)
+    assert not _is_clipped_border_fragment(interior, 512, 512)
+
+
+def test_yolo_merges_same_tile_overlapping_obb_only_by_iou() -> None:
+    detector = _registry().get("yolo26s_dota_obb")._detector
+    first = _point("first", 500, 500, [[240, 240], [270, 240], [270, 270], [240, 270]])
+    duplicate = _point("duplicate", 505, 505, [[242, 242], [272, 242], [272, 272], [242, 272]])
+    adjacent = _point("adjacent", 510, 500, [[271, 240], [301, 240], [301, 270], [271, 270]])
+    merged, unresolved = _detector_duplicate_pairs([first, duplicate, adjacent], [], detector)
+    assert ("first", "duplicate") in merged
+    assert all("adjacent" not in pair for pair in merged)
+    assert unresolved == []
