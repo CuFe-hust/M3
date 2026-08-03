@@ -21,6 +21,7 @@ Qwen3.5-9B checkpoint without breaking Qwen3-VL-4B behavior or the JSON-only Age
 - `tests/test_multiagent_vqa_pipeline.py`
 - `README.md`
 - `DETAILS.md`
+- `docs/experiments/2026-08-03-qwen35-9b-spark-smoke.md`
 
 ## Core Changes
 
@@ -65,8 +66,10 @@ No. Model weights and local configurations are already ignored and remain outsid
 
 ## Validation Method
 
-Run the focused loading and multi-Agent client tests, the repository offline check,
-and an explicitly authorized Spark smoke inference against the downloaded checkpoint.
+The local focused suite passed 23 tests and the full offline suite passed 367 tests.
+The deployed Spark focused suite passed the same 23 tests. An explicitly authorized
+Spark smoke inference loaded the complete local checkpoint and returned one valid
+`ExpertResult` with `status: completed` and no thinking prefix.
 
 ## Risks and Follow-up TODOs
 
