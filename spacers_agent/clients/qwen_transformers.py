@@ -332,7 +332,7 @@ def _qwen35_gb10_kernel_config() -> Any:
                 )
             }
         },
-        use_local_kernel=True,
+        use_local_kernel=False,
     )
 
 

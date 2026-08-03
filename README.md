@@ -291,7 +291,14 @@ On NVIDIA GB10, install the optional runtime with
 `python -m pip install -e '.[qwen35-gb10]'`, set `use_kernels: true`, and set
 `device_map: cuda:0` in the ignored machine-local configuration. This selects the
 Qwen3.5 Gated DeltaNet Hub kernel and avoids unintended CPU offload without changing
-the default Qwen3-VL path.
+the default Qwen3-VL path. Before an offline run, cache the pinned kernel revision once:
+
+```bash
+python -c "from kernels import install_kernel; print(install_kernel('Atlas-Inference/gdn', revision='ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172'))"
+```
+
+The model mapping retains that exact revision during both online installation and
+offline cache reuse; it does not treat the Hub repository ID as a local filesystem path.
 
 Then run sequentially; this path does not require or contact vLLM:
 

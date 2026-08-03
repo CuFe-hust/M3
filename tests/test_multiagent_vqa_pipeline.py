@@ -264,8 +264,13 @@ def test_qwen_settings_opt_in_to_hub_kernels() -> None:
     assert kwargs["local_files_only"] is False
     assert kwargs["trust_remote_code"] is True
     assert kwargs["use_kernels"] is True
-    assert kwargs["kernel_config"].use_local_kernel is True
+    assert kwargs["kernel_config"].use_local_kernel is False
     assert set(kwargs["kernel_config"].kernel_mapping) == {"Qwen3_5GatedDeltaNet"}
+    kernel_repo, kernel_metadata = kwargs["kernel_config"].kernel_mapping[
+        "Qwen3_5GatedDeltaNet"
+    ]["cuda"]
+    assert kernel_repo == "Atlas-Inference/gdn:Qwen3_5GatedDeltaNet"
+    assert kernel_metadata["revision"] == "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172"
     assert "use_kernels" not in _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_vl")
 
 
