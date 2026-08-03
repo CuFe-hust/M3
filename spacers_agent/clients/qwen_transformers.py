@@ -68,9 +68,10 @@ class QwenTransformersClient(VisionLanguageClient):
 
         try:
             import torch
-            from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+            import transformers
+            from transformers import AutoConfig, AutoProcessor
         except ImportError as error:
-            raise QwenTransformersError("Install requirements.txt before loading local Qwen3-VL.") from error
+            raise QwenTransformersError("Install requirements.txt before loading local Qwen.") from error
         dtype: Any = "auto"
         if self.settings.dtype != "auto":
             dtype = {
@@ -83,7 +84,13 @@ class QwenTransformersClient(VisionLanguageClient):
             processor_kwargs["min_pixels"] = self.settings.min_pixels
         if self.settings.max_pixels is not None:
             processor_kwargs["max_pixels"] = self.settings.max_pixels
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
+        config = AutoConfig.from_pretrained(
+            self.settings.model,
+            local_files_only=self.settings.local_files_only,
+            trust_remote_code=True,
+        )
+        model_factory = _qwen_model_factory(transformers, config.model_type)
+        model = model_factory.from_pretrained(
             self.settings.model,
             dtype=dtype,
             device_map=self.settings.device_map,
@@ -208,7 +215,17 @@ class QwenTransformersClient(VisionLanguageClient):
         """
 
         model_messages, images = _transformer_messages(messages, response_model)
-        text = self.processor.apply_chat_template(model_messages, tokenize=False, add_generation_prompt=True)
+        template_kwargs: dict[str, Any] = {}
+        if _uses_qwen35_chat_template(self.model):
+            # Qwen3.5 thinking text would violate the JSON-only response contract.
+            # Qwen3.5 的思考文本会违反仅 JSON 响应契约。
+            template_kwargs["enable_thinking"] = False
+        text = self.processor.apply_chat_template(
+            model_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **template_kwargs,
+        )
         inputs = self.processor(text=[text], images=images or None, padding=True, return_tensors="pt")
         inputs = inputs.to(self.model.device)
         generated = self.model.generate(
@@ -229,7 +246,6 @@ class QwenTransformersClient(VisionLanguageClient):
             "completion_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
-
     def _write_artifacts(
         self,
         request_meta: RequestMeta,
@@ -264,6 +280,31 @@ class QwenTransformersClient(VisionLanguageClient):
         )
         if result is not None:
             _write_json(directory / "parsed.json", result.model_dump(mode="json"))
+
+
+def _qwen_model_factory(transformers: Any, model_type: str) -> Any:
+    """Select the native Transformers class without changing existing Qwen3-VL loading.
+    选择原生 Transformers 类，且不改变现有 Qwen3-VL 加载行为。
+    """
+
+    class_name = {
+        "qwen3_vl": "Qwen3VLForConditionalGeneration",
+        "qwen3_5": "Qwen3_5ForConditionalGeneration",
+    }.get(model_type)
+    if class_name is None or not hasattr(transformers, class_name):
+        raise QwenTransformersError(
+            f"Unsupported local Qwen model_type {model_type!r}; install a Transformers version "
+            "that provides the matching native model class."
+        )
+    return getattr(transformers, class_name)
+
+
+def _uses_qwen35_chat_template(model: Any) -> bool:
+    """Return whether non-thinking Qwen3.5 chat rendering is required.
+    返回是否需要使用非思考的 Qwen3.5 对话模板。
+    """
+
+    return getattr(getattr(model, "config", None), "model_type", None) == "qwen3_5"
 
 
 def _transformer_messages(

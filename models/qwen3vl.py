@@ -46,12 +46,18 @@ class Qwen3VLBaseline:
     def _load(self) -> tuple[Any, Any]:
         try:
             import torch
-            from transformers import AutoProcessor, Qwen3VLForConditionalGeneration
+            import transformers
+            from transformers import AutoConfig, AutoProcessor
         except ImportError as error:
-            raise RuntimeError("Install requirements.txt before loading Qwen3-VL.") from error
+            raise RuntimeError("Install requirements.txt before loading Qwen.") from error
 
         dtype = _resolve_dtype(torch, self.settings.dtype)
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
+        config = AutoConfig.from_pretrained(
+            self.settings.model_id,
+            local_files_only=self.settings.local_files_only,
+        )
+        model_factory = _qwen_model_factory(transformers, config.model_type)
+        model = model_factory.from_pretrained(
             self.settings.model_id,
             dtype=dtype,
             device_map=self.settings.device_map,
@@ -77,7 +83,13 @@ class Qwen3VLBaseline:
 
         sample.validate()
         messages = [{"role": "user", "content": _message_content(sample)}]
-        text = self.processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        template_kwargs = {"enable_thinking": False} if _uses_qwen35_chat_template(self.model) else {}
+        text = self.processor.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **template_kwargs,
+        )
         inputs = self.processor(text=[text], images=sample.images, padding=True, return_tensors="pt")
         inputs = inputs.to(self.model.device)
         max_new_tokens = min(self.settings.max_new_tokens, _task_max_new_tokens(sample))
@@ -119,6 +131,31 @@ def _resolve_dtype(torch: Any, name: str) -> Any:
     if name not in available:
         raise ValueError(f"Unsupported dtype: {name}")
     return available[name]
+
+
+def _qwen_model_factory(transformers: Any, model_type: str) -> Any:
+    """Select the native class for supported Qwen multimodal checkpoints.
+    为支持的 Qwen 多模态权重选择原生类。
+    """
+
+    class_name = {
+        "qwen3_vl": "Qwen3VLForConditionalGeneration",
+        "qwen3_5": "Qwen3_5ForConditionalGeneration",
+    }.get(model_type)
+    if class_name is None or not hasattr(transformers, class_name):
+        raise RuntimeError(
+            f"Unsupported Qwen model_type {model_type!r}; install a Transformers version "
+            "that provides the matching native model class."
+        )
+    return getattr(transformers, class_name)
+
+
+def _uses_qwen35_chat_template(model: Any) -> bool:
+    """Return whether Qwen3.5 thinking output must be disabled.
+    返回是否必须禁用 Qwen3.5 思考输出。
+    """
+
+    return getattr(getattr(model, "config", None), "model_type", None) == "qwen3_5"
 
 
 def _message_content(sample: CanonicalSample) -> list[dict[str, Any]]:

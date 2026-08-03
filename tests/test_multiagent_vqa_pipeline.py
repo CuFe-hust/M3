@@ -60,10 +60,12 @@ class _FakeProcessor:
         self.raw = [raw] if isinstance(raw, str) else list(raw)
         self.messages: list[dict[str, Any]] = []
         self.message_history: list[list[dict[str, Any]]] = []
+        self.template_kwargs_history: list[dict[str, object]] = []
 
-    def apply_chat_template(self, messages: list[dict[str, Any]], **_: object) -> str:
+    def apply_chat_template(self, messages: list[dict[str, Any]], **kwargs: object) -> str:
         self.messages = messages
         self.message_history.append(messages)
+        self.template_kwargs_history.append(kwargs)
         return "rendered"
 
     def __call__(self, **_: object) -> _FakeInputs:
@@ -78,6 +80,10 @@ class _FakeModel:
 
     def generate(self, **_: object) -> list[_FakeTensor]:
         return [_FakeTensor(7)]
+
+
+class _FakeQwen35Model(_FakeModel):
+    config = type("FakeConfig", (), {"model_type": "qwen3_5"})()
 
 
 class _Judge:
@@ -207,6 +213,39 @@ async def test_transformers_client_runs_local_model_and_persists_trace(tmp_path:
     assert validation["backend"] == "transformers"
     assert validation["response_metadata"]["token_usage"]["total_tokens"] == 7
     assert "base64" not in (artifact_dir / "request.json").read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_qwen35_transformers_client_disables_thinking_for_json(tmp_path: Path) -> None:
+    raw = json.dumps(
+        {
+            "expert": "general_vqa_expert",
+            "answer": "Yes",
+            "boxes": [],
+            "evidence": [],
+            "status": "completed",
+        }
+    )
+    processor = _FakeProcessor(raw)
+    client = QwenTransformersClient(
+        QwenSettings(backend="transformers", model="local-qwen35", max_tokens=32),
+        model=_FakeQwen35Model(),
+        processor=processor,
+    )
+
+    result = await client.complete_json(
+        messages=[{"role": "system", "content": "answer"}],
+        response_model=ExpertResult,
+        request_meta=RequestMeta(
+            request_id="qwen35",
+            request_hash="9" * 64,
+            prompt_version="general-vqa-v2",
+            artifact_dir=tmp_path / "qwen35",
+        ),
+    )
+
+    assert result.answer == "Yes"
+    assert processor.template_kwargs_history[0]["enable_thinking"] is False
 
 
 @pytest.mark.asyncio

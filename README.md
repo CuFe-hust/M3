@@ -253,6 +253,14 @@ models:
     max_tokens: 512
 ```
 
+The same local Transformers backend also supports the native multimodal
+`Qwen/Qwen3.5-9B` checkpoint when the installed Transformers release provides
+`Qwen3_5ForConditionalGeneration`. Point `models.qwen.model` at the downloaded
+checkpoint directory, for example `/home/user/models/Qwen3.5-9B`, and retain
+`local_files_only: true`. The loader selects the native class from the checkpoint's
+`model_type`. For Qwen3.5 it disables thinking in the chat template so the existing
+JSON-only Agent response contract is preserved; Qwen3-VL rendering remains unchanged.
+
 Then run sequentially; this path does not require or contact vLLM:
 
 If an existing ignored `configs/local.spark.yaml` copied older counting keys, set
