@@ -258,13 +258,14 @@ def test_qwen_settings_opt_in_to_hub_kernels() -> None:
 
     assert settings.device_map == "cuda:0"
     assert settings.use_kernels is True
-    assert _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_5") == {
-        "dtype": "bf16",
-        "device_map": "cuda:0",
-        "local_files_only": False,
-        "trust_remote_code": True,
-        "use_kernels": True,
-    }
+    kwargs = _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_5")
+    assert kwargs["dtype"] == "bf16"
+    assert kwargs["device_map"] == "cuda:0"
+    assert kwargs["local_files_only"] is False
+    assert kwargs["trust_remote_code"] is True
+    assert kwargs["use_kernels"] is True
+    assert kwargs["kernel_config"].use_local_kernel is True
+    assert set(kwargs["kernel_config"].kernel_mapping) == {"Qwen3_5GatedDeltaNet"}
     assert "use_kernels" not in _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_vl")
 
 

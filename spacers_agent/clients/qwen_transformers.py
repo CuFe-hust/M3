@@ -313,7 +313,27 @@ def _model_load_kwargs(settings: QwenSettings, *, dtype: Any, model_type: str) -
     }
     if model_type == "qwen3_5" and settings.use_kernels:
         kwargs["use_kernels"] = True
+        kwargs["kernel_config"] = _qwen35_gb10_kernel_config()
     return kwargs
+
+
+def _qwen35_gb10_kernel_config() -> Any:
+    from transformers.utils.kernel_config import KernelConfig
+
+    return KernelConfig(
+        kernel_mapping={
+            "Qwen3_5GatedDeltaNet": {
+                "cuda": (
+                    "Atlas-Inference/gdn:Qwen3_5GatedDeltaNet",
+                    {
+                        "revision": "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172",
+                        "trust_remote_code": True,
+                    },
+                )
+            }
+        },
+        use_local_kernel=True,
+    )
 
 
 def _transformer_messages(

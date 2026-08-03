@@ -24,7 +24,7 @@ Allow a machine-local Qwen3.5 Transformers deployment to opt into the Hugging Fa
 
 ## Core Changes
 
-Added the optional `models.qwen.use_kernels` setting. The Transformers client forwards `use_kernels=True` only for a Qwen3.5 checkpoint when explicitly configured. Deployment documentation records the GB10-specific `use_kernels: true` and `device_map: cuda:0` settings.
+Added the optional `models.qwen.use_kernels` setting. The Transformers client forwards `use_kernels=True` only for a Qwen3.5 checkpoint when explicitly configured and restricts kernelization to the official fixed-revision Gated DeltaNet mapping. The optional dependency is constrained to the `kernels` range accepted by the installed Transformers integration. Deployment documentation records the GB10-specific `use_kernels: true` and `device_map: cuda:0` settings.
 
 ## Whether the Canonical Sample Format Was Changed
 

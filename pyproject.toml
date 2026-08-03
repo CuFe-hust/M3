@@ -18,7 +18,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23"]
 yolo = ["ultralytics==8.4.102"]
-qwen35-gb10 = ["kernels"]
+qwen35-gb10 = ["kernels>=0.15.2,<0.16.0"]
 
 [tool.setuptools.packages.find]
 include = ["spacers_agent*"]
