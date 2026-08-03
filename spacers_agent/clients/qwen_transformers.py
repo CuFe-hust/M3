@@ -6,6 +6,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
+import importlib
+import inspect
 import io
 import json
 import os
@@ -90,9 +93,18 @@ class QwenTransformersClient(VisionLanguageClient):
             trust_remote_code=True,
         )
         model_factory = _qwen_model_factory(transformers, config.model_type)
+        model_load_kwargs = _model_load_kwargs(
+            self.settings, dtype=dtype, model_type=config.model_type
+        )
+        if config.model_type == "qwen3_5" and self.settings.use_kernels:
+            model_module = importlib.import_module(model_factory.__module__)
+            _expose_qwen35_gdn_forward_signature(
+                getattr(model_module, "Qwen3_5GatedDeltaNet")
+            )
+            _adapt_qwen35_gdn_cache_abi(model_load_kwargs["kernel_config"])
         model = model_factory.from_pretrained(
             self.settings.model,
-            **_model_load_kwargs(self.settings, dtype=dtype, model_type=config.model_type),
+            **model_load_kwargs,
         )
         processor = AutoProcessor.from_pretrained(
             self.settings.model,
@@ -224,13 +236,13 @@ class QwenTransformersClient(VisionLanguageClient):
             **template_kwargs,
         )
         inputs = self.processor(text=[text], images=images or None, padding=True, return_tensors="pt")
-        inputs = inputs.to(self.model.device)
+        inputs = _move_processor_inputs(inputs, self.model.device)
         generated = self.model.generate(
             **inputs,
             max_new_tokens=self.settings.max_tokens,
             do_sample=False,
         )
-        input_tokens = int(inputs.input_ids.shape[-1])
+        input_tokens = int(inputs["input_ids"].shape[-1])
         trimmed = [output[input_tokens:] for output in generated]
         raw = self.processor.batch_decode(
             trimmed,
@@ -313,27 +325,178 @@ def _model_load_kwargs(settings: QwenSettings, *, dtype: Any, model_type: str) -
     }
     if model_type == "qwen3_5" and settings.use_kernels:
         kwargs["use_kernels"] = True
-        kwargs["kernel_config"] = _qwen35_gb10_kernel_config()
+        kwargs["kernel_config"] = _qwen35_gb10_kernel_config(
+            local_files_only=settings.local_files_only
+        )
     return kwargs
 
 
-def _qwen35_gb10_kernel_config() -> Any:
+def _qwen35_gb10_kernel_config(*, local_files_only: bool) -> Any:
+    """Resolve the pinned Hub snapshot, then disable inherited kernel mappings.
+    解析固定版本的 Hub 快照，并关闭继承的默认 kernel 映射。
+    """
+
+    from huggingface_hub import snapshot_download
     from transformers.utils.kernel_config import KernelConfig
 
-    return KernelConfig(
+    class _PinnedLocalKernelConfig(KernelConfig):
+        """Bridge the local tuple format emitted by Transformers 5.14 registration.
+        兼容 Transformers 5.14 注册阶段产生的本地 tuple 格式。
+        """
+
+        def create_compatible_mapping(self, model: Any, compile: bool = False) -> None:
+            self.kernel_mapping = _local_kernel_paths_only(self.kernel_mapping)
+            super().create_compatible_mapping(model, compile=compile)
+
+    revision = "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172"
+    kernel_path = snapshot_download(
+        repo_id="Atlas-Inference/gdn",
+        repo_type="kernel",
+        revision=revision,
+        local_files_only=local_files_only,
+    )
+    return _PinnedLocalKernelConfig(
         kernel_mapping={
             "Qwen3_5GatedDeltaNet": {
-                "cuda": (
-                    "Atlas-Inference/gdn:Qwen3_5GatedDeltaNet",
-                    {
-                        "revision": "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172",
-                        "trust_remote_code": True,
-                    },
-                )
+                "cuda": f"{kernel_path}:Qwen3_5GatedDeltaNet"
             }
         },
-        use_local_kernel=False,
+        # Transformers uses this flag both for repository type and for whether
+        # global defaults are inherited. The resolved snapshot keeps the exact
+        # revision while preventing unrelated kernels from being activated.
+        # Transformers 同时用此开关判断仓库类型和是否继承全局默认映射；先解析
+        # 固定快照可锁定版本，并防止无关 kernel 被意外启用。
+        use_local_kernel=True,
     )
+
+
+def _local_kernel_paths_only(kernel_mapping: dict[Any, Any]) -> dict[Any, Any]:
+    """Drop remote-only metadata that Transformers reattaches to local paths.
+    删除 Transformers 重新附加到本地路径上的远端专用元数据。
+    """
+
+    normalized: dict[Any, Any] = {}
+    for layer_name, device_mapping in kernel_mapping.items():
+        if isinstance(device_mapping, tuple):
+            normalized[layer_name] = device_mapping[0]
+            continue
+        if isinstance(device_mapping, dict):
+            normalized[layer_name] = {
+                device: repo[0] if isinstance(repo, tuple) else repo
+                for device, repo in device_mapping.items()
+            }
+            continue
+        normalized[layer_name] = device_mapping
+    return normalized
+
+
+def _expose_qwen35_gdn_forward_signature(layer_class: Any) -> None:
+    """Restore the ABI hidden by Transformers' accelerate-hook decorator.
+    恢复被 Transformers accelerate-hook 装饰器隐藏的 ABI 签名。
+    """
+
+    def _pinned_gdn_forward(
+        self: Any,
+        hidden_states: Any,
+        cache_params: Any = None,
+        attention_mask: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    # kernels 0.15 validates parameter kinds before replacing the method. The
+    # fixed kernel has this exact ABI, while force_accelerate_hooks exposes only
+    # (*args, **kwargs) without functools.wraps on Transformers 5.14.1.
+    # kernels 0.15 会在替换方法前校验参数类型；固定 kernel 正是此 ABI，
+    # 而 Transformers 5.14.1 的装饰器只暴露 (*args, **kwargs)。
+    layer_class.forward.__signature__ = inspect.signature(_pinned_gdn_forward)
+
+
+def _move_processor_inputs(inputs: Any, device: Any) -> Any:
+    """Move either BatchFeature or the plain mapping returned by Qwen3.5.
+    将 BatchFeature 或 Qwen3.5 返回的普通映射移动到模型设备。
+    """
+
+    if hasattr(inputs, "to"):
+        return inputs.to(device)
+    if isinstance(inputs, dict):
+        return {
+            name: value.to(device) if hasattr(value, "to") else value
+            for name, value in inputs.items()
+        }
+    raise TypeError(f"Unsupported processor output type: {type(inputs).__name__}")
+
+
+class _KernelCacheLayerView:
+    """Expose state zero as expected by the pinned Atlas kernel.
+    按固定 Atlas kernel 的预期暴露第零号状态。
+    """
+
+    def __init__(self, layer: Any) -> None:
+        self._layer = layer
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._layer, name)
+        if name in {"conv_states", "recurrent_states"} and isinstance(value, dict):
+            return value[0]
+        return value
+
+
+class _KernelCacheLayersView:
+    def __init__(self, layers: Any) -> None:
+        self._layers = layers
+
+    def __getitem__(self, index: int) -> _KernelCacheLayerView:
+        return _KernelCacheLayerView(self._layers[index])
+
+
+class _KernelCacheView:
+    """Delegate updates while adapting only the layer-state read shape.
+    保持更新方法原样转发，仅适配层状态的读取形状。
+    """
+
+    def __init__(self, cache: Any) -> None:
+        self._cache = cache
+        self.layers = _KernelCacheLayersView(cache.layers)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cache, name)
+
+
+def _adapt_qwen35_gdn_cache_abi(kernel_config: Any) -> None:
+    """Bridge Transformers 5.14 state dictionaries without editing the snapshot.
+    不修改固定快照，兼容 Transformers 5.14 的状态字典。
+    """
+
+    from kernels import LocalLayerRepository
+
+    repository = kernel_config.kernel_mapping["Qwen3_5GatedDeltaNet"]["cuda"]
+    repo_path, separator, layer_name = repository.rpartition(":")
+    if not separator:
+        raise ValueError("Qwen3.5 kernel mapping must include a layer name")
+    kernel_class = LocalLayerRepository(
+        repo_path=Path(repo_path), layer_name=layer_name
+    ).load()
+    kernel_module = importlib.import_module(kernel_class.__module__)
+    original = kernel_module._gdn_run
+    if getattr(original, "_cooper_cache_abi_adapter", False):
+        return
+
+    @functools.wraps(original)
+    def _adapted_gdn_run(
+        host: Any,
+        hidden_states: Any,
+        cache_params: Any,
+        mixed_qkv: Any,
+        z: Any,
+        b: Any,
+        a: Any,
+    ) -> Any:
+        cache_view = _KernelCacheView(cache_params) if cache_params is not None else None
+        return original(host, hidden_states, cache_view, mixed_qkv, z, b, a)
+
+    _adapted_gdn_run._cooper_cache_abi_adapter = True
+    kernel_module._gdn_run = _adapted_gdn_run
 
 
 def _transformer_messages(

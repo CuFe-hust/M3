@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 from pathlib import Path
 from typing import Any
@@ -9,7 +10,14 @@ from PIL import Image
 
 from spacers_agent.clients.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
-from spacers_agent.clients.qwen_transformers import QwenTransformersClient, _model_load_kwargs
+from spacers_agent.clients.qwen_transformers import (
+    QwenTransformersClient,
+    _KernelCacheView,
+    _expose_qwen35_gdn_forward_signature,
+    _local_kernel_paths_only,
+    _model_load_kwargs,
+    _move_processor_inputs,
+)
 from spacers_agent.bootstrap import assemble_runtime, build_dataset_runner
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import VQAAnswerJudgeResult
@@ -248,12 +256,23 @@ async def test_qwen35_transformers_client_disables_thinking_for_json(tmp_path: P
     assert processor.template_kwargs_history[0]["enable_thinking"] is False
 
 
-def test_qwen_settings_opt_in_to_hub_kernels() -> None:
+def test_qwen_settings_opt_in_to_pinned_local_kernel_snapshot(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    kernel_snapshot = tmp_path / "gdn-snapshot"
+    snapshot_calls: list[dict[str, object]] = []
+
+    def _snapshot_download(**kwargs: object) -> str:
+        snapshot_calls.append(kwargs)
+        return str(kernel_snapshot)
+
+    monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
     settings = QwenSettings(
         backend="transformers",
         model="local-qwen35",
         device_map="cuda:0",
         use_kernels=True,
+        local_files_only=True,
     )
 
     assert settings.device_map == "cuda:0"
@@ -261,17 +280,106 @@ def test_qwen_settings_opt_in_to_hub_kernels() -> None:
     kwargs = _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_5")
     assert kwargs["dtype"] == "bf16"
     assert kwargs["device_map"] == "cuda:0"
-    assert kwargs["local_files_only"] is False
+    assert kwargs["local_files_only"] is True
     assert kwargs["trust_remote_code"] is True
     assert kwargs["use_kernels"] is True
-    assert kwargs["kernel_config"].use_local_kernel is False
+    assert kwargs["kernel_config"].use_local_kernel is True
     assert set(kwargs["kernel_config"].kernel_mapping) == {"Qwen3_5GatedDeltaNet"}
-    kernel_repo, kernel_metadata = kwargs["kernel_config"].kernel_mapping[
-        "Qwen3_5GatedDeltaNet"
-    ]["cuda"]
-    assert kernel_repo == "Atlas-Inference/gdn:Qwen3_5GatedDeltaNet"
-    assert kernel_metadata["revision"] == "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172"
+    kernel_repo = kwargs["kernel_config"].kernel_mapping["Qwen3_5GatedDeltaNet"]["cuda"]
+    assert kernel_repo == f"{kernel_snapshot}:Qwen3_5GatedDeltaNet"
+    assert snapshot_calls == [
+        {
+            "repo_id": "Atlas-Inference/gdn",
+            "repo_type": "kernel",
+            "revision": "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172",
+            "local_files_only": True,
+        }
+    ]
     assert "use_kernels" not in _model_load_kwargs(settings, dtype="bf16", model_type="qwen3_vl")
+
+
+def test_local_kernel_mapping_drops_registration_metadata() -> None:
+    mapping = {
+        "Qwen3_5GatedDeltaNet": {
+            "cuda": (
+                "/cache/gdn-snapshot:Qwen3_5GatedDeltaNet",
+                {"version": 1, "trust_remote_code": False},
+            )
+        }
+    }
+
+    assert _local_kernel_paths_only(mapping) == {
+        "Qwen3_5GatedDeltaNet": {
+            "cuda": "/cache/gdn-snapshot:Qwen3_5GatedDeltaNet"
+        }
+    }
+
+
+def test_qwen35_kernel_signature_restores_decorated_forward_abi() -> None:
+    class _DecoratedGatedDeltaNet:
+        def forward(self, *args: object, **kwargs: object) -> object:
+            return args, kwargs
+
+    _expose_qwen35_gdn_forward_signature(_DecoratedGatedDeltaNet)
+
+    parameters = inspect.signature(_DecoratedGatedDeltaNet.forward).parameters
+    assert list(parameters) == [
+        "self",
+        "hidden_states",
+        "cache_params",
+        "attention_mask",
+        "kwargs",
+    ]
+    assert parameters["kwargs"].kind is inspect.Parameter.VAR_KEYWORD
+
+
+def test_qwen35_plain_processor_mapping_moves_each_tensor() -> None:
+    class _Movable:
+        def __init__(self) -> None:
+            self.device: object | None = None
+
+        def to(self, device: object) -> "_Movable":
+            self.device = device
+            return self
+
+    input_ids = _Movable()
+    pixel_values = _Movable()
+
+    moved = _move_processor_inputs(
+        {"input_ids": input_ids, "pixel_values": pixel_values, "metadata": "keep"},
+        "cuda:0",
+    )
+
+    assert moved == {
+        "input_ids": input_ids,
+        "pixel_values": pixel_values,
+        "metadata": "keep",
+    }
+    assert input_ids.device == "cuda:0"
+    assert pixel_values.device == "cuda:0"
+
+
+def test_qwen35_kernel_cache_view_exposes_state_zero_and_delegates_updates() -> None:
+    conv_state = object()
+    recurrent_state = object()
+
+    class _Layer:
+        conv_states = {0: conv_state}
+        recurrent_states = {0: recurrent_state}
+
+    class _Cache:
+        layers = [_Layer()]
+
+        def update_conv_state(self, value: object, layer_idx: int) -> tuple[object, int]:
+            return value, layer_idx
+
+    cache = _Cache()
+    view = _KernelCacheView(cache)
+
+    assert view.layers[0].conv_states is conv_state
+    assert view.layers[0].recurrent_states is recurrent_state
+    marker = object()
+    assert view.update_conv_state(marker, 3) == (marker, 3)
 
 
 @pytest.mark.asyncio
