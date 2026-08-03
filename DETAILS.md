@@ -743,6 +743,8 @@ functions. Candidate-review failure preserves the primary result, records the vi
 marks it partial. Successful review performs placeholder replacement and evidence merging before a
 single VRSBench geometry postprocess. During evidence merging, positional vehicle-role labels such
 as `top-most vehicle` and `bottom-most vehicle` may spatially match an explicit small/large vehicle
-class, while conflicting explicit classes remain distinct. Small shifted boxes are duplicates only
-when either IoU is at least 0.7 or the smaller-box coverage and normalized centre-distance guards
-both pass; an explicit vehicle-class label is retained instead of a positional role label.
+class, while conflicting explicit classes remain distinct. Generic roles containing `vehicle`,
+including `isolated_vehicle`, `target vehicle`, and `reference-vehicle`, may also match an explicit
+vehicle class. Small shifted boxes are duplicates only when either IoU is at least 0.7 or smaller-box
+coverage is at least 0.45 and normalized centre distance is at most 0.40. Adjacent boxes below the
+coverage guard remain distinct. An explicit class label and a box at least 15% tighter are preferred.

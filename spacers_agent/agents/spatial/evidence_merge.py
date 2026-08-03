@@ -259,7 +259,8 @@ def vehicle_label_kind(label: str) -> str | None:
     canonical = vrsbench_vehicle_class(label)
     if canonical in {"small-vehicle", "large-vehicle"}:
         return canonical
-    if re.search(r"\b(?:top|bottom|left|right)[\s-]*most[\s-]+vehicles?\b", label.casefold()):
+    normalized_role = re.sub(r"[_-]+", " ", label.casefold())
+    if re.search(r"\bvehicles?\b", normalized_role):
         return "vehicle"
     return None
 
@@ -288,8 +289,8 @@ def same_box_observation(first: list[int], second: list[int]) -> bool:
     if box_iou(first, second) >= 0.7:
         return True
     return (
-        box_intersection_over_smaller(first, second) >= 0.8
-        and normalized_box_center_distance(first, second) <= 0.25
+        box_intersection_over_smaller(first, second) >= 0.45
+        and normalized_box_center_distance(first, second) <= 0.40
     )
 
 
@@ -326,4 +327,11 @@ def prefer_candidate_evidence(candidate: VisualEvidence, existing: VisualEvidenc
         return True
     if candidate_vehicle == "vehicle" and existing_vehicle in {"small-vehicle", "large-vehicle"}:
         return False
+    if candidate.box is not None and existing.box is not None:
+        candidate_area = (candidate.box[2] - candidate.box[0]) * (candidate.box[3] - candidate.box[1])
+        existing_area = (existing.box[2] - existing.box[0]) * (existing.box[3] - existing.box[1])
+        if candidate_area <= existing_area * 0.85:
+            return True
+        if existing_area <= candidate_area * 0.85:
+            return False
     return candidate.confidence > existing.confidence

@@ -22,6 +22,7 @@ from spacers_agent.agents.spatial.evidence_merge import (
     point_distance,
     position_review_evidence,
     same_box_observation,
+    vehicle_label_kind,
 )
 from spacers_agent.agents.spatial.candidate_review import SpatialCandidateReviewResult
 from spacers_agent.clients.qwen_transformers import _validate_response
@@ -171,6 +172,44 @@ def test_shifted_small_boxes_use_overlap_and_center_guard() -> None:
     assert normalized_box_center_distance(first, shifted) <= 0.25
     assert same_box_observation(first, shifted) is True
     assert same_box_observation(first, adjacent) is False
+
+
+@pytest.mark.parametrize(
+    ("first_label", "first_box", "review_box"),
+    [
+        ("Reference: Small vehicles on road", [580, 280, 650, 350], [620, 295, 665, 360]),
+        ("bottom-most vehicle", [592, 812, 638, 888], [615, 816, 660, 890]),
+        ("isolated_vehicle", [826, 286, 906, 326], [853, 288, 916, 322]),
+    ],
+)
+def test_report_shifted_vehicle_boxes_merge_to_tighter_review(
+    first_label: str,
+    first_box: list[int],
+    review_box: list[int],
+) -> None:
+    first = VisualEvidence(label=first_label, box=first_box, confidence=0.95)
+    review = VisualEvidence(label="small-vehicle", box=review_box, confidence=0.0)
+
+    merged = merge_visual_evidence([first], [review])
+
+    assert same_box_observation(first_box, review_box) is True
+    assert merged == [review]
+
+
+def test_relaxed_shift_guard_keeps_adjacent_vehicles_distinct() -> None:
+    first = VisualEvidence(label="small-vehicle", box=[100, 100, 150, 170], confidence=0.9)
+    adjacent = VisualEvidence(label="small-vehicle", box=[135, 100, 185, 170], confidence=0.9)
+
+    assert box_intersection_over_smaller(first.box, adjacent.box) < 0.45
+    assert same_box_observation(first.box, adjacent.box) is False
+    assert merge_visual_evidence([first], [adjacent]) == [first, adjacent]
+
+
+def test_generic_vehicle_roles_match_explicit_vehicle_classes() -> None:
+    assert vehicle_label_kind("isolated_vehicle") == "vehicle"
+    assert vehicle_label_kind("target vehicle") == "vehicle"
+    assert vehicle_label_kind("reference-vehicle") == "vehicle"
+    assert compatible_evidence_labels("isolated_vehicle", "small-vehicle") is True
 
 
 def test_geometry_helpers_preserve_threshold_inputs() -> None:
