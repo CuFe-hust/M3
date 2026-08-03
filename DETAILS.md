@@ -646,3 +646,83 @@ Before strict `VisualEvidence` validation, the structured result normalizes a mo
 The Transformers client permits one versioned, text-only JSON-format repair after a parse or schema failure; the repair receives the failed raw output and validation error but no image. If either model response is truncated only at the end, the client first closes the known JSON containers. When the final array/object member is itself incomplete, it discards only that incomplete tail member and validates the remaining response. It does not synthesize missing visual evidence. Local truncation recovery is recorded in both `geometry.input_normalizations` and call validation metadata; both model attempts, validation errors, timing, and cumulative token usage remain persisted.
 
 After a VRSBench general-VQA run, `spacers_agent.vqa_report` converts the persisted multi-Agent results to the unchanged canonical VQA sample/prediction format and invokes the default audit report component. The run directory receives `vrsbench_vqa.jsonl`, metrics, DeepSeek audit JSONL, and `vrsbench_vqa.report/report.html`. The HTML displays the actual subtype route, prompt version, labeled evidence, program-geometry audit, and a report-only image copy with boxes or accepted points overlaid. Original dataset images are never modified.
+
+## 15. Fine-Tuning Datasets for LLaMA-Factory
+
+`data/微调数据集/` holds the ShareGPT-format fine-tuning datasets used with
+LLaMA-Factory (InternVL LoRA). It is a data directory only; it is not imported
+as code and is excluded from Git together with `*.tar` transfer packages.
+
+The canonical training dataset is the merged and shuffled `merged/` directory,
+which combines VRSBench and LEVIR-CC into a single set of splits so that one
+LLaMA-Factory `--media_dir` resolves every image.
+
+- `merged/train.json`, `merged/val.json`, `merged/test.json`: unified ShareGPT
+  records for both datasets, shuffled within each split with the fixed seed
+  recorded in `merged/merge_manifest.json`. Counts are train 60262
+  (vrsbench 56262 + levir-cc 4000), val 7453 (6953 + 500), test 7460
+  (6960 + 500). No sample changed splits; records were only merged and
+  shuffled within each split.
+- `merged/<split>/vrsbench/` and `merged/<split>/levir-cc/{A,B}/`: images for
+  each split.
+- `merged/levir_cc_val_references.json` and
+  `merged/levir_cc_test_references.json`: one record per LEVIR-CC pair with all
+  five caption references for evaluation.
+- `merged/vrsbench_split_manifest.json`, `merged/prepare_vrsbench_10k.py`,
+  `merged/prepare_levir_cc_sharegpt.py`: carried-over provenance and generator
+  scripts.
+
+Path convention: the `images` field of every `merged/` record is relative to
+the `merged/` directory itself (for example `train/vrsbench/00005_0000.png` or
+`train/levir-cc/A/train_005870.png`). Point LLaMA-Factory `--media_dir` at
+`merged/` and all paths resolve. Records keep `id`, `images`, and
+`conversations` (`from`/`value`, human/gpt); LEVIR-CC records additionally keep
+`pair_id`, `caption_id`, `split`, and `changeflag`.
+
+Only the `train.json` files are for training; `val.json` may serve as
+`eval_dataset`; `test.json` and the `*_references.json` files are reserved for
+final evaluation and must not be used for training or prompt development.
+
+Provenance: `merged/` was built from the original `vrsbench/` and `levir-cc/`
+per-split datasets (recorded in `merge_manifest.json`, including the shuffle
+seed). Those legacy folders were deleted on 2026-08-03 after the merged copy
+passed full verification (record multiset equivalence, path resolution, image
+byte/sha256 equality); `merged/` is now the only on-disk copy of the
+fine-tuning data. To rebuild from source, rerun the generator scripts (kept in
+`merged/`) on the preparation server and repeat the merge. The generator
+scripts keep server-side default paths; regenerate LEVIR-CC with
+`--image-path-mode relative` to preserve the relative-path convention.
+
+### 15.1 InternVL LoRA Fine-Tuning Entry Point
+
+`configs/llamafactory/` holds the LLaMA-Factory artifacts for LoRA fine-tuning
+of `models/InternVL3_5-8B/` on the merged dataset:
+
+- `dataset_info.json`: registers `merged_train` / `merged_val` / `merged_test`
+  as ShareGPT datasets (`conversations` + `images`); `media_dir` is the
+  `merged/` directory.
+- `train_internvl_lora.yaml`: SFT + LoRA config for InternVL3.5-8B
+  (`template: qwen3`, `trust_remote_code: true`, LoRA on the LLM attention and
+  MLP projections, bf16).
+
+Launch with `scripts/finetune_internvl_lora.sh --model <MODEL_DIR>`. The
+launcher injects `model_name_or_path` / `dataset_dir` / `output_dir` and
+regenerates `dataset_info.json` with an absolute `media_dir`, so relative image
+paths resolve wherever the data lives on the server. Use `--data-dir` to
+override the default `<repo>/data/微调数据集/merged`; use `--max-samples N` for
+a quick smoke run. Artifacts are written under `outputs/finetune/internvl_lora/`
+(ignored by Git).
+
+Training curves: `train_internvl_lora.yaml` sets `report_to: tensorboard`
+(requires `pip install tensorboard`), so TensorBoard events land in
+`<output_dir>/runs/`; view them with
+`tensorboard --logdir <output_dir>/runs`. LLaMA-Factory also writes
+`trainer_log.jsonl` in the output dir; `scripts/plot_train_curves.py
+<output_dir>` renders a static PNG of train/eval loss and learning rate
+(requires `pip install matplotlib`), which works on headless servers.
+
+Merged full model: `scripts/export_internvl_lora.sh --model <MODEL_DIR>
+--adapter <ADAPTER_DIR>` merges the base model with the LoRA adapter via
+`llamafactory-cli export` (`configs/llamafactory/export_internvl_lora.yaml`)
+and writes the full model to
+`outputs/finetune/internvl_lora_merged/` (safetensors, ~5GB shards, CPU merge).

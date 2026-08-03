@@ -1,0 +1,60 @@
+# LLaMA-Factory LoRA fine-tuning config for InternVL3.5-8B.
+# 基于合并遥感微调数据集的 InternVL3.5-8B LoRA 微调配置。
+#
+# Launch via scripts/finetune_internvl_lora.sh, which injects
+# model_name_or_path / dataset_dir / output_dir at runtime.
+# 通过 scripts/finetune_internvl_lora.sh 启动，模型路径与数据集、输出目录在运行时注入。
+
+# Model and chat template. 模型与对话模板。
+model_name_or_path: null   # filled by the launcher script; 由启动脚本注入
+template: qwen3            # InternVL3.5 uses the Qwen-style chat format; InternVL2/2.5 -> qwen2
+                           # InternVL3.5 使用 Qwen 风格对话模板；InternVL2/2.5 请改用 qwen2
+trust_remote_code: true    # InternVL3.5 ships its own modeling code in the model directory; 需加载模型目录自带代码
+
+# SFT with LoRA. 监督微调 + LoRA 参数高效微调。
+stage: sft
+finetuning_type: lora
+lora_target: q_proj,v_proj,k_proj,o_proj,gate_proj,up_proj,down_proj  # LLM attention + MLP projections; 语言模型注意力与 MLP 投影层
+lora_rank: 16
+lora_alpha: 32
+lora_dropout: 0.05
+freeze_vision_tower: true  # keep the vision tower frozen; 冻结视觉塔
+use_llama_pro: false
+
+# Dataset. 数据集。
+dataset: merged_train
+eval_dataset: merged_val   # fixed val split, not a random split of train; requires LLaMA-Factory >= 0.9
+                           # 使用固定验证集而非从训练集随机切分；需要 LLaMA-Factory >= 0.9
+dataset_dir: null          # filled by the launcher script; 由启动脚本注入
+cutoff_len: 2048
+packing: false
+
+# Training and evaluation schedule. 训练与评估节奏。
+do_train: true
+do_eval: true
+per_device_train_batch_size: 2
+per_device_eval_batch_size: 2
+gradient_accumulation_steps: 16  # effective batch size = 2 * 16 = 32; 等效 batch size 为 32
+learning_rate: 1.0e-4
+num_train_epochs: 1.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.03
+logging_steps: 10
+save_strategy: steps
+save_steps: 1000
+save_total_limit: 2
+eval_strategy: steps
+eval_steps: 1000
+predict_with_generate: false
+
+# Memory and precision. 显存与精度。
+gradient_checkpointing: true
+bf16: true
+torch_dtype: bfloat16
+optim: adamw_torch
+
+# Misc. 其他。
+report_to: tensorboard  # record curves into <output_dir>/runs (pip install tensorboard)
+                        # 记录训练曲线到 <output_dir>/runs；需 pip install tensorboard
+seed: 42
+output_dir: null           # filled by the launcher script; 由启动脚本注入

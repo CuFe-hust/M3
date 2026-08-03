@@ -4,6 +4,14 @@
 datasets/
 model_cache/
 hf_cache/
+models/InternVL3_5-8B/
+*.safetensors
+
+# Fine-tuning datasets and transfer packages
+# 微调数据集与传输打包
+data/微调数据集/
+*.tar
+*.tgz
 
 # Baseline outputs and local experiment settings
 outputs/
@@ -11,6 +19,14 @@ config/local*.json
 .env
 configs/local*.yaml
 .firecrawl/
+
+# Runtime-generated config cache
+.cache/
+
+# Local editor config and quick test images
+# 本地编辑器配置与快速测试图片
+.vscode/
+tank_*.jpg
 
 # Python bytecode
 __pycache__/
