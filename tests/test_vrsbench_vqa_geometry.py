@@ -106,6 +106,11 @@ def test_vrsbench_count_target_has_fixed_vehicle_aliases() -> None:
     assert all_vehicles.canonical_label == "vehicle" and "car" in all_vehicles.aliases
 
 
+def test_vrsbench_count_target_leaves_non_vehicle_nouns_for_the_parser() -> None:
+    assert vrsbench_count_target("How many ships are visible?") is None
+    assert vrsbench_count_target("How many cars are visible?") is None
+
+
 def test_expert_result_normalizes_corner_pair_boxes_and_single_points() -> None:
     boxed = ExpertResult.model_validate(
         {

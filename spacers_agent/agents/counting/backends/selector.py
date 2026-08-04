@@ -7,7 +7,7 @@ from __future__ import annotations
 from spacers_agent.agents.counting.backends.base import BackendPlan, BackendSelection
 from spacers_agent.agents.counting.backends.registry import BackendRegistry
 from spacers_agent.schemas import CountTargetSpec, UnifiedSample
-from spacers_agent.vqa_geometry import vrsbench_question_subtype
+from spacers_agent.vqa_geometry import vrsbench_question_subtype, vrsbench_vehicle_class
 
 
 def is_vrsbench_quantity(sample: UnifiedSample) -> bool:
@@ -34,7 +34,7 @@ class BackendSelector:
         """Plan a primary backend before availability checks can hide a bad deployment.
         在可用性检查隐藏部署错误之前规划主后端。
         """
-        if is_vrsbench_quantity(sample):
+        if is_vrsbench_quantity(sample) and self._is_vrsbench_vehicle_target(target):
             if self._default_backend == "qwen_point":
                 return self._named_plan("vrsbench_qwen_count", ("qwen_point",), "vrsbench_quantity_explicit_qwen", target)
             yolo_candidates = self._supported_yolo_candidates(target)
@@ -47,6 +47,17 @@ class BackendSelector:
                     self._target_classes(selected, target),
                 )
             return self._named_plan("vrsbench_qwen_count", ("qwen_point",), "vrsbench_quantity_no_supported_yolo", target)
+        if is_vrsbench_quantity(sample):
+            yolo_candidates = self._supported_yolo_candidates(target)
+            if self._default_backend != "qwen_point" and yolo_candidates:
+                selected = max(yolo_candidates, key=lambda backend: (backend.priority, backend.name))
+                return BackendPlan(
+                    selected.name,
+                    ("qwen_point",),
+                    ("vrsbench_quantity_generic_target", "target_supported_by_yolo", "highest_priority_supported_detector"),
+                    self._target_classes(selected, target),
+                )
+            return self._named_plan("qwen_point", (), "vrsbench_quantity_generic_target_qwen", target)
         if sample.task not in {"counting", "fine_grained_counting"}:
             return None
         if self._default_backend == "qwen_point":
@@ -72,6 +83,13 @@ class BackendSelector:
             and backend.is_available()
             and backend.supports(target)
         ]
+
+    @staticmethod
+    def _is_vrsbench_vehicle_target(target: CountTargetSpec) -> bool:
+        """Restrict the VRSBench proposal backend to its vehicle ontology.
+        将 VRSBench proposal 后端限制在其车辆本体类别内。
+        """
+        return vrsbench_vehicle_class(target.canonical_label) in {"vehicle", "small-vehicle", "large-vehicle"}
 
     def select(self, target: CountTargetSpec, sample: UnifiedSample | None = None) -> BackendSelection | None:
         """Preserve the legacy selection API for callers outside CountingAgent.

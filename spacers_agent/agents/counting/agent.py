@@ -136,7 +136,9 @@ class CountingAgent:
         if override is not None:
             return CountTargetSpec.model_validate(override)
         if is_vrsbench_quantity(sample):
-            return vrsbench_count_target(sample.question)
+            vehicle_target = vrsbench_count_target(sample.question)
+            if vehicle_target is not None:
+                return vehicle_target
         context.call_budget.reserve_qwen()
         return await CountTargetParser(self._client, self._target_prompt, self._model).parse(sample.question, sample_id=sample.sample_id, artifact_dir=context.artifact_dir)
 

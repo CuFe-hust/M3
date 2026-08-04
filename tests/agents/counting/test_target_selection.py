@@ -5,9 +5,11 @@ Phase 4 - CountingAgent 目标选择与状态传播测试。
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from spacers_agent.agents.counting.agent import CountingAgent
 from spacers_agent.agents.counting.backends.selector import BackendSelector, is_vrsbench_quantity
 from spacers_agent.agents.counting.backends.registry import BackendRegistry
 from spacers_agent.schemas import CountTargetSpec, UnifiedSample, GroundTruth, ImageRef
@@ -95,3 +97,45 @@ def test_backend_selector_uses_yolo_for_vrsbench_vehicle_quantity():
     assert plan is not None
     assert plan.primary_backend_name == "yolo26s_dota_obb"
     assert plan.fallback_backend_names == ("vrsbench_qwen_count",)
+
+
+def test_backend_selector_uses_generic_qwen_for_non_vehicle_vrsbench_quantity():
+    registry = BackendRegistry()
+    registry.register(_FakeBackend("qwen_point"))
+    registry.register(_FakeBackend("vrsbench_qwen_count", vehicle="large-vehicle"))
+    selector = BackendSelector(registry)
+
+    sample = _sample("VRSBench", "general_vqa", "How many ships are visible in the image?", "quantity")
+    target = CountTargetSpec(canonical_label="ship", inclusion_rule="count", exclusion_rule="none")
+    plan = selector.plan(target, sample)
+
+    assert plan is not None
+    assert plan.primary_backend_name == "qwen_point"
+    assert plan.reason_codes == ("vrsbench_quantity_generic_target_qwen",)
+
+
+@pytest.mark.asyncio
+async def test_counting_agent_parses_non_vehicle_vrsbench_quantity_target(monkeypatch, tmp_path: Path):
+    parsed_target = CountTargetSpec(canonical_label="ship", inclusion_rule="count ships", exclusion_rule="none")
+    calls: list[str] = []
+
+    class _Parser:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        async def parse(self, question: str, **kwargs) -> CountTargetSpec:
+            calls.append(question)
+            return parsed_target
+
+    class _Budget:
+        def reserve_qwen(self) -> None:
+            calls.append("reserve_qwen")
+
+    monkeypatch.setattr("spacers_agent.agents.counting.agent.CountTargetParser", _Parser)
+    settings = SimpleNamespace(agents=SimpleNamespace(counting=SimpleNamespace(default_backend="auto")))
+    agent = CountingAgent(None, {"target": "unused"}, "unused", BackendRegistry(), settings=settings)
+    sample = _sample("VRSBench", "general_vqa", "How many ships are visible in the image?", "quantity")
+    context = SimpleNamespace(call_budget=_Budget(), artifact_dir=tmp_path)
+
+    assert await agent._target(sample, context) is parsed_target
+    assert calls == ["reserve_qwen", "How many ships are visible in the image?"]

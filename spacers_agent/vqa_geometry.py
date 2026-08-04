@@ -155,7 +155,7 @@ def _asks_extreme_vehicle_category(question: str) -> bool:
     )
 
 
-def vrsbench_count_target(question: str) -> CountTargetSpec:
+def vrsbench_count_target(question: str) -> CountTargetSpec | None:
     """Return the audited VRSBench vehicle ontology without an LLM parse call.
     不调用大模型，返回经审计的 VRSBench 车辆计数类别体系。
     """
@@ -175,12 +175,14 @@ def vrsbench_count_target(question: str) -> CountTargetSpec:
             inclusion_rule="Count each visible truck, bus, trailer, or semi-truck as one large vehicle.",
             exclusion_rule="Exclude cars, motorcycles, and non-vehicle objects.",
         )
-    return CountTargetSpec(
-        canonical_label="vehicle",
-        aliases=["vehicle", *_SMALL_VEHICLE_ALIASES, *_LARGE_VEHICLE_ALIASES],
-        inclusion_rule="Count each visible small or large vehicle as one vehicle.",
-        exclusion_rule="Exclude non-vehicle objects and do not count one vehicle more than once.",
-    )
+    if re.search(r"\bvehicles?\b", lowered):
+        return CountTargetSpec(
+            canonical_label="vehicle",
+            aliases=["vehicle", *_SMALL_VEHICLE_ALIASES, *_LARGE_VEHICLE_ALIASES],
+            inclusion_rule="Count each visible small or large vehicle as one vehicle.",
+            exclusion_rule="Exclude non-vehicle objects and do not count one vehicle more than once.",
+        )
+    return None
 
 
 def apply_vrsbench_geometry(
