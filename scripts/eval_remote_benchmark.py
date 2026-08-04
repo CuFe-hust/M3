@@ -74,8 +74,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help=(
             "Enable the optional non-official DeepSeek VQA semantic proxy metric; "
-            "DEEPSEEK_API_KEY is read from the environment only. "
-            "启用可选的非官方 DeepSeek VQA 语义代理指标；密钥仅从环境变量 DEEPSEEK_API_KEY 读取。"
+            "the key is read from --deepseek-api-key when provided, otherwise from "
+            "DEEPSEEK_API_KEY. 启用可选的非官方 DeepSeek VQA 语义代理指标；"
+            "密钥优先取 --deepseek-api-key，否则从环境变量 DEEPSEEK_API_KEY 读取。"
+        ),
+    )
+    parser.add_argument(
+        "--deepseek-api-key",
+        default=None,
+        help=(
+            "Optional DeepSeek API key for the proxy metric; takes precedence over "
+            "DEEPSEEK_API_KEY. Note that CLI values may appear in shell history or "
+            "process listings. 可选的 DeepSeek API 密钥，优先于环境变量 "
+            "DEEPSEEK_API_KEY；注意命令行传参会出现在 shell 历史或进程列表中。"
         ),
     )
     parser.add_argument(
@@ -183,13 +194,16 @@ def main(argv: list[str] | None = None) -> int:
                 encoding="utf-8",
             )
             deepseek_audit: list[dict[str, Any]] | None = [] if args.deepseek_proxy else None
+            deepseek_config: dict[str, Any] = {
+                "model": args.deepseek_model,
+                "base_url": args.deepseek_base_url,
+            }
+            if args.deepseek_api_key:
+                deepseek_config["api_key"] = args.deepseek_api_key
             metrics = evaluate_records(
                 records,
                 use_deepseek=args.deepseek_proxy,
-                deepseek_config={
-                    "model": args.deepseek_model,
-                    "base_url": args.deepseek_base_url,
-                },
+                deepseek_config=deepseek_config,
                 deepseek_audit=deepseek_audit,
             )
             metric_path = result_path.with_suffix(".metrics.json")
@@ -529,6 +543,7 @@ def _build_summary(
         "deepseek_proxy": args.deepseek_proxy,
         "deepseek_model": args.deepseek_model if args.deepseek_proxy else None,
         "deepseek_base_url": args.deepseek_base_url if args.deepseek_proxy else None,
+        "deepseek_api_key_source": "cli" if args.deepseek_api_key else "environment",
         "started_at": started_at,
         "finished_at": datetime.now(timezone.utc).isoformat(),
         "environment": env,

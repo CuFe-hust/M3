@@ -473,9 +473,11 @@ optional `--lora-path`, `--dataset-root`, `--datasets`, `--limit`, and `--seed`.
 `--limit` is set, each dataset is first shuffled with the configured `--seed` and then
 truncated to the first N samples, so different seeds produce different per-dataset
 subsamples. The optional `--deepseek-proxy` switch enables the same non-official text-only
-DeepSeek VQA semantic proxy used by the baseline; the key is read only from
-`DEEPSEEK_API_KEY`, while `--deepseek-model` and `--deepseek-base-url` select the endpoint.
-DeepSeek audit records are written to `<result-stem>.report/deepseek_audit.jsonl`. Each run
+DeepSeek VQA semantic proxy used by the baseline; the key is read from
+`--deepseek-api-key` when provided and otherwise from `DEEPSEEK_API_KEY`, while
+`--deepseek-model` and `--deepseek-base-url` select the endpoint. The CLI key is never
+written to summary, metrics, or audit artifacts. DeepSeek audit records are written to
+`<result-stem>.report/deepseek_audit.jsonl`. Each run
 prints per-label metrics, per-dataset combined metrics grouped by metric family (VQA /
 caption / grounding), and an overall combined result for all datasets; the same aggregates
 are persisted in `summary.json` under `combined_results`. Combined aggregates use the same

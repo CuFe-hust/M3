@@ -95,9 +95,11 @@ def _deepseek_semantic_metrics(
     config: dict[str, Any],
     audit_records: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    api_key = config.get("api_key") or os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
-        raise RuntimeError("Set DEEPSEEK_API_KEY before requesting the DeepSeek proxy metric.")
+        raise RuntimeError(
+            "Set deepseek_config['api_key'] or DEEPSEEK_API_KEY before requesting the DeepSeek proxy metric."
+        )
     scores = []
     failures = []
     for record in records:

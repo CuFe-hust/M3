@@ -142,6 +142,44 @@ def test_deepseek_proxy_collects_auditable_raw_response(monkeypatch) -> None:
     assert "request_payload" in audit[0]
 
 
+def test_deepseek_proxy_uses_config_api_key(monkeypatch) -> None:
+    body = {"choices": [{"message": {"content": '{"score": 1}'}}]}
+
+    class FakeResponse:
+        def __enter__(self) -> FakeResponse:
+            return self
+
+        def __exit__(self, exc_type: object, exc_value: object, traceback: object) -> None:
+            return None
+
+        def read(self) -> bytes:
+            return json.dumps(body).encode("utf-8")
+
+    captured_authorization: list[str] = []
+
+    def fake_urlopen(request, timeout):
+        captured_authorization.append(request.get_header("Authorization"))
+        return FakeResponse()
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "env-key")
+    monkeypatch.setattr(metrics_module, "urlopen", fake_urlopen)
+    records = [
+        {
+            "sample": _sample("q-1").serializable(),
+            "prediction": _prediction("q-1").serializable(),
+        }
+    ]
+
+    metrics = evaluate_records(
+        records,
+        use_deepseek=True,
+        deepseek_config={"api_key": "config-key"},
+    )
+
+    assert metrics["deepseek_proxy"]["score"] == 1.0
+    assert captured_authorization == ["Bearer config-key"]
+
+
 def test_infer_prints_default_report_absolute_path(tmp_path: Path, monkeypatch, capsys) -> None:
     sample = _sample("q-1")
 

@@ -39,6 +39,7 @@ def test_parse_args_defaults() -> None:
     assert args.skip_figures is False
     assert args.seed == 42
     assert args.deepseek_proxy is False
+    assert args.deepseek_api_key is None
     assert args.deepseek_model == "deepseek-chat"
     assert args.deepseek_base_url == "https://api.deepseek.com/v1"
 
@@ -57,9 +58,12 @@ def test_parse_args_deepseek_switch() -> None:
             "deepseek-v4-flash",
             "--deepseek-base-url",
             "https://api.deepseek.com",
+            "--deepseek-api-key",
+            "test-key",
         ]
     )
     assert args.deepseek_proxy is True
+    assert args.deepseek_api_key == "test-key"
     assert args.deepseek_model == "deepseek-v4-flash"
     assert args.deepseek_base_url == "https://api.deepseek.com"
 
