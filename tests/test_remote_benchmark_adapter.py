@@ -222,7 +222,7 @@ def test_remote_xlrs_samples(tmp_path: Path, monkeypatch) -> None:
     root = tmp_path / "XLRSBench_Native_690"
     _make_xlrs(root, monkeypatch)
     samples = list(loaders.load_remote_benchmark_samples(tmp_path, "xlrs"))
-    assert len(samples) == 3
+    assert len(samples) == 4
     by_label = {sample.meta["benchmark_task"]: sample for sample in samples}
     vqa = by_label["xlrs_vqa_lite"]
     assert vqa.task_type == "vqa"
@@ -235,6 +235,10 @@ def test_remote_xlrs_samples(tmp_path: Path, monkeypatch) -> None:
     assert grounding.task_type == "grounding"
     assert grounding.boxes[0] == [10.0, 20.0, 30.0, 40.0]
     assert grounding.meta["image_width"] == 1000.0
+    grounding_fine = by_label["xlrs_grounding_fine"]
+    assert grounding_fine.task_type == "grounding"
+    assert grounding_fine.boxes[0] == [10.0, 20.0, 30.0, 40.0]
+    assert grounding_fine.meta["release_split"] == "test"
 
 
 def test_remote_benchmark_unknown_dataset(tmp_path: Path) -> None:

@@ -174,10 +174,10 @@ def test_qwen3_lora_loading_calls(monkeypatch, tmp_path: Path) -> None:
     )
     assert model.effective_model_path == base.resolve()
     assert model.adapter_path == lora.resolve()
-    assert model_calls[0][0] == str(base.resolve())
+    assert model_calls[0][0] == base.resolve()
     assert model_calls[0][1]["local_files_only"] is True
     assert adapter_calls == [str(lora.resolve())]
-    assert processor_calls[0][0] == str(base.resolve())
+    assert processor_calls[0][0] == base.resolve()
 
 
 def test_internvl_loading_calls(monkeypatch, tmp_path: Path) -> None:
@@ -223,7 +223,7 @@ def test_internvl_loading_calls(monkeypatch, tmp_path: Path) -> None:
         local_files_only=True,
     )
     assert model.effective_model_path == base.resolve()
-    assert model_calls[0][0] == str(base.resolve())
+    assert model_calls[0][0] == base.resolve()
     assert model_calls[0][1]["trust_remote_code"] is True
     assert tokenizer_calls[0][1]["trust_remote_code"] is True
     assert adapter_calls == []
