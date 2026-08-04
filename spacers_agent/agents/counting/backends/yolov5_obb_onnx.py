@@ -31,6 +31,9 @@ class YoloV5ObbOnnxModel:
             ) from exc
         self._cv2 = cv2
         self._np = np
+        # Preload NVIDIA site-package CUDA/cuDNN libraries before creating CUDA EP.
+        # 在创建 CUDA 执行器前预加载 NVIDIA site-package 中的 CUDA/cuDNN 库。
+        ort.preload_dlls(directory="")
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         self._session = ort.InferenceSession(str(weights), providers=providers)
         self.providers = tuple(self._session.get_providers())

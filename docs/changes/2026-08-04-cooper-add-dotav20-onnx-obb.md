@@ -28,6 +28,7 @@ Make the verified YOLOv5m-OBB CSL DOTA-v2.0 ONNX artifact the deployable default
 ## Core Changes
 
 - Added a lazy GPU ONNX Runtime adapter for YOLOv5-OBB CSL output `[cx, cy, long, short, objectness, classes, 180 theta bins]`.
+- Preload NVIDIA site-package CUDA/cuDNN libraries before creating the CUDA execution provider, supporting Spark's isolated `Cooper_for_qwen9b` environment.
 - Preserved the `detectors` list and priority-based routing interface; each detector now selects `ultralytics` or `onnx_yolov5_obb` explicitly.
 - Restored OBB polygons with the source image-coordinate convention (`-sin(theta)`), including the corresponding rotated-NMS angle sign.
 - Declared the DOTA-v2.0 18-class example profile and its verified SHA256.
