@@ -467,6 +467,20 @@ result, duration, attempts, token usage, and errors. It never stores the API key
 then regenerated with per-sample Qwen/reference comparison and DeepSeek judgment. DeepSeek remains
 text-only and never claims visual verification.
 
+`scripts/eval_remote_benchmark.py` is the remote 评测数据集 benchmark entry for
+Qwen3-VL-4B / InternVL3.5-8B (base or LoRA). It accepts `--model-type`, `--model-path`,
+optional `--lora-path`, `--dataset-root`, `--datasets`, `--limit`, and `--seed`. When
+`--limit` is set, each dataset is first shuffled with the configured `--seed` and then
+truncated to the first N samples, so different seeds produce different per-dataset
+subsamples. The optional `--deepseek-proxy` switch enables the same non-official text-only
+DeepSeek VQA semantic proxy used by the baseline; the key is read only from
+`DEEPSEEK_API_KEY`, while `--deepseek-model` and `--deepseek-base-url` select the endpoint.
+DeepSeek audit records are written to `<result-stem>.report/deepseek_audit.jsonl`. Each run
+prints per-label metrics, per-dataset combined metrics grouped by metric family (VQA /
+caption / grounding), and an overall combined result for all datasets; the same aggregates
+are persisted in `summary.json` under `combined_results`. Combined aggregates use the same
+local deterministic metrics; the DeepSeek proxy remains a per-label optional score.
+
 ## 7. Phase 1 Local Multi-Agent Foundation
 
 `spacers_agent/` is an additive local package that does not replace the existing `main.py`

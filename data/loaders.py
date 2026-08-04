@@ -75,6 +75,47 @@ def load_samples(dataset_name: str, data_root: Path) -> Iterator[CanonicalSample
         raise ValueError(f"Unsupported dataset evaluation target: {dataset_name}")
 
 
+REMOTE_BENCHMARK_DATASETS = (
+    "vrsbench",
+    "mme_real_rs",
+    "xlrs",
+    "levir_cc",
+)
+
+REMOTE_BENCHMARK_DIRS = {
+    "vrsbench": "vrsbench(1100)",
+    "mme_real_rs": "MMERealRS_Stratified_914",
+    "xlrs": "XLRSBench_Native_690",
+    "levir_cc": "levir-cc(400)",
+}
+
+
+def load_remote_benchmark_samples(dataset_root: Path, dataset_name: str) -> Iterator[CanonicalSample]:
+    """Load one remote evaluation subset from its audited directory layout.
+    按已审计的远端目录布局加载一个远端评测子集。
+    """
+
+    if dataset_name not in REMOTE_BENCHMARK_DATASETS:
+        raise ValueError(
+            f"Unsupported remote benchmark dataset: {dataset_name}; "
+            f"choose from {', '.join(REMOTE_BENCHMARK_DATASETS)}"
+        )
+    root = dataset_root / REMOTE_BENCHMARK_DIRS[dataset_name]
+    if not root.is_dir():
+        raise FileNotFoundError(f"Remote benchmark dataset directory not found: {root}")
+    if dataset_name == "vrsbench":
+        for task_type in ("caption", "vqa", "grounding"):
+            for sample in _load_vrsbench(root, task_type):
+                sample.meta["benchmark_task"] = f"vrsbench_{task_type}"
+                yield sample
+    elif dataset_name == "mme_real_rs":
+        yield from _load_remote_mme(root)
+    elif dataset_name == "xlrs":
+        yield from _load_remote_xlrs(root)
+    else:
+        yield from _load_remote_levir(root)
+
+
 def _local_dataset_root(data_root: Path, dataset_name: str) -> Path:
     """Resolve official XLRS releases downloaded under their published names."""
 
@@ -135,7 +176,11 @@ def _load_vrsbench(root: Path, task_type: str) -> Iterator[CanonicalSample]:
                         images=[image],
                         prompt=f"Answer the question using only the image. {question}",
                         answers=[answer],
-                        meta={"source": "VRSBench", "question": question},
+                        meta={
+                            "source": "VRSBench",
+                            "question": question,
+                            "question_type": str(pair.get("type", record.get("type", ""))),
+                        },
                     )
             continue
         objects = record.get("objects") or record.get("refs") or [record]
@@ -273,6 +318,198 @@ def _load_levir_cc(root: Path) -> Iterator[CanonicalSample]:
             ),
             answers=answers,
             meta={"source": "LEVIR-CC", "split": "test"},
+        )
+
+
+def _load_remote_mme(root: Path) -> Iterator[CanonicalSample]:
+    """Load the stratified MME-RealWorld RS 914 subset from annotations.jsonl.
+    从 annotations.jsonl 加载分层 MME-RealWorld RS 914 子集。
+    """
+
+    annotation = root / "annotations.jsonl"
+    if not annotation.is_file():
+        raise FileNotFoundError(f"MME remote annotation not found: {annotation}")
+    image_index = _image_index(root)
+    with annotation.open(encoding="utf-8") as file:
+        for line_number, line in enumerate(file, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError as error:
+                raise ValueError(f"Invalid MME JSONL at {annotation}:{line_number}: {error}") from error
+            question = _first_text(record, ("question", "Text"))
+            options = record.get("options") or {}
+            answer = str(record.get("answer", "")).strip()
+            image_path = record.get("image_path")
+            if not question or not options or not answer or not image_path:
+                raise ValueError(f"Invalid MME remote record at line {line_number}: {record.keys()}")
+            choices = [
+                f"{letter}. {text}"
+                for letter, text in options.items()
+                if letter in "ABCDE" and str(text).strip()
+            ]
+            yield CanonicalSample(
+                id=str(record.get("sample_id", f"mme-rs-{line_number}")),
+                task_type="vqa",
+                images=[_open_image(image_path, root, image_index)],
+                prompt=_multiple_choice_prompt(question, choices, False, option_count=5),
+                answers=[answer],
+                choices=choices,
+                meta={
+                    "source": "MMERealRS_Stratified_914",
+                    "benchmark_task": "mme_real_rs_vqa",
+                    "question": question,
+                    "question_type": str(record.get("question_type", "")),
+                    "difficulty": str(record.get("difficulty", "")),
+                    "evaluation_group": str(record.get("evaluation_group", "")),
+                    "record": record,
+                },
+            )
+
+
+def _load_arrow_split(path: Path) -> Any:
+    """Load one local Hugging Face arrow split directory.
+    加载一个本地 Hugging Face arrow 分片目录。
+    """
+
+    try:
+        from datasets import load_from_disk
+    except ImportError as error:
+        raise RuntimeError("Install datasets to read XLRS-Bench arrow splits.") from error
+    return load_from_disk(str(path))
+
+
+def _load_remote_xlrs(root: Path) -> Iterator[CanonicalSample]:
+    """Load the XLRS-Bench Native 690 subset (VQA/caption/grounding arrows).
+    加载 XLRS-Bench Native 690 子集（VQA/描述/定位 arrow 分片）。
+    """
+
+    lite_root = root / "XLRS-Bench-lite"
+    caption_root = root / "XLRS-Bench_caption_en" / "train"
+    grounding_condition_root = root / "XLRS-Bench_visual_grounding_en" / "train"
+    grounding_fine_root = root / "XLRS-Bench_visual_grounding_en" / "test"
+    for path, label, task_type in (
+        (lite_root, "xlrs_vqa_lite", "vqa"),
+        (caption_root, "xlrs_caption_en", "caption"),
+        (grounding_condition_root, "xlrs_grounding_condition", "grounding"),
+        (grounding_fine_root, "xlrs_grounding_fine", "grounding"),
+    ):
+        if not path.is_dir():
+            raise FileNotFoundError(f"XLRS arrow split not found: {path}")
+    for row_number, row in enumerate(_load_arrow_split(lite_root)["train"]):
+        yield _remote_xlrs_vqa_sample(row, row_number)
+    for row_number, row in enumerate(_load_arrow_split(caption_root)):
+        yield _remote_xlrs_caption_sample(row, row_number)
+    for row_number, row in enumerate(_load_arrow_split(grounding_condition_root)):
+        yield _remote_xlrs_grounding_sample(row, row_number, "condition")
+    for row_number, row in enumerate(_load_arrow_split(grounding_fine_root)):
+        yield _remote_xlrs_grounding_sample(row, row_number, "fine")
+
+
+def _remote_xlrs_vqa_sample(row: dict[str, Any], row_number: int) -> CanonicalSample:
+    question = _first_text(row, ("question", "text", "query"))
+    choices = _choices(row)
+    answer = str(_first_value(row, ("answer", "label", "ground_truth")) or "").strip()
+    if not question or not isinstance(choices, list) or not choices or not answer:
+        raise ValueError(f"XLRS Lite row {row_number} is missing VQA fields: {row.keys()}")
+    return CanonicalSample(
+        id=str(_first_value(row, ("index", "id", "question_id")) or f"xlrs_vqa_lite-{row_number}"),
+        task_type="vqa",
+        images=_hf_images(row),
+        prompt=_multiple_choice_prompt(question, choices, len(answer) > 1, option_count=4),
+        answers=[answer],
+        choices=[str(choice) for choice in choices],
+        meta={
+            "source": "XLRS-Bench Native Lite VQA",
+            "benchmark_task": "xlrs_vqa_lite",
+            "question": question,
+            "category": str(row.get("category", "")),
+            "l2_category": str(row.get("l2_category", "")),
+        },
+    )
+
+
+def _remote_xlrs_caption_sample(row: dict[str, Any], row_number: int) -> CanonicalSample:
+    question = _first_text(row, ("question",))
+    answer_value = _first_value(row, ("caption", "text", "answer", "description"))
+    answers = [str(answer) for answer in answer_value] if isinstance(answer_value, list) else [str(answer_value or "")]
+    if not question or not answers[0]:
+        raise ValueError(f"XLRS caption row {row_number} has no caption field: {row.keys()}")
+    return CanonicalSample(
+        id=str(_first_value(row, ("id", "question_id")) or f"xlrs_caption_en-{row_number}"),
+        task_type="caption",
+        images=_hf_images(row),
+        prompt=question,
+        answers=answers,
+        meta={
+            "source": "XLRS-Bench Native English caption",
+            "benchmark_task": "xlrs_caption_en",
+            "release_split": "train",
+        },
+    )
+
+
+def _remote_xlrs_grounding_sample(row: dict[str, Any], row_number: int, kind: str) -> CanonicalSample:
+    question = _first_text(row, ("question",))
+    box = _first_value(row, ("bbox", "box", "boxes", "polygon"))
+    if not question or box is None:
+        raise ValueError(f"XLRS grounding row {row_number} is missing text or box: {row.keys()}")
+    label = "xlrs_grounding_condition" if kind == "condition" else "xlrs_grounding_fine"
+    return CanonicalSample(
+        id=str(_first_value(row, ("question_id", "id")) or f"{label}-{row_number}"),
+        task_type="grounding",
+        images=_hf_images(row),
+        prompt=question,
+        boxes=[_normalize_box(box)],
+        meta={
+            "source": "XLRS-Bench Native English grounding",
+            "benchmark_task": label,
+            "release_split": "train" if kind == "condition" else "test",
+            "image_width": float(row["image_width"]),
+            "image_height": float(row["image_height"]),
+        },
+    )
+
+
+def _load_remote_levir(root: Path) -> Iterator[CanonicalSample]:
+    """Load the 400-pair LEVIR-CC val subset with five references per pair.
+    加载每对含五条参考描述的 400 对 LEVIR-CC val 子集。
+    """
+
+    annotation = _find_file(root, "LevirCCcaptions.json")
+    with annotation.open(encoding="utf-8") as file:
+        payload = json.load(file)
+    records = payload.get("images") if isinstance(payload, dict) else payload
+    if not isinstance(records, list):
+        raise ValueError(f"Unsupported LEVIR-CC remote annotation structure: {annotation}")
+    image_index = _image_index(root)
+    for record_number, record in enumerate(records):
+        split = str(record.get("split", "val")).lower()
+        filepath = str(record.get("filepath", split))
+        filename = str(record.get("filename", ""))
+        if not filename:
+            raise ValueError(f"LEVIR-CC remote record {record_number} has no filename.")
+        image_a = _open_image(root / "images" / filepath / "A" / filename, root, image_index)
+        image_b = _open_image(root / "images" / filepath / "B" / filename, root, image_index)
+        answers = _caption_texts(record.get("sentences") or [])
+        yield CanonicalSample(
+            id=str(record.get("imgid", f"levir-cc-{record_number}")),
+            task_type="change_caption",
+            images=[image_a, image_b],
+            prompt=(
+                "The first image is before and the second image is after. "
+                "Describe only the visible land-cover changes between the two remote sensing images."
+            ),
+            answers=answers,
+            meta={
+                "source": "LEVIR-CC_ModelCompare_400",
+                "benchmark_task": "levir_cc_change_caption",
+                "split": split,
+                "changeflag": int(record.get("changeflag", 0) or 0),
+                "filename": filename,
+            },
         )
 
 
