@@ -84,6 +84,20 @@ python main.py --config config/local.baseline.json evaluate \
   --result outputs/baseline/mme_real_rs.jsonl
 ```
 
+Run the separately maintained team standard evaluator against any canonical result and merge its
+primary metric into the existing HTML audit report:
+
+```bash
+python -m spacers_agent.cli standard-evaluate \
+  --result outputs/runs/<run-id>/vrsbench_vqa.jsonl \
+  --tool-dir ~/eval_standard
+```
+
+The command writes `<result-stem>.standard.json` beside the canonical JSONL and refreshes the
+existing HTML report when its visual audit artifacts are present. `EVAL_LLM_API_KEY` and
+`EVAL_LLM_BACKEND` remain owned by `eval_standard`; this integration neither reads nor persists
+the key. Use `--output` or `--python` when the report location or evaluator environment differs.
+
 For VRSBench open-ended VQA, the optional DeepSeek semantic proxy requires the user to set
 the key in the Colab session, never in a repository file:
 
@@ -353,7 +367,9 @@ entails it. The canonical evaluation task and reference answers remain unchanged
 records the actual Agent route and prompt version, overlays labeled boxes or accepted points on a
 report-only image copy, and includes the deterministic geometry audit.
 
-VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-aware target parse.
+VRSBench quantity routing uses the fixed vehicle ontology only when the question explicitly asks
+for a vehicle, small vehicle, or large vehicle. Other quantity targets use the normal target parser,
+so their requested noun is preserved rather than being widened to `vehicle`.
 The default configuration scans a fitting image as one overview, enlarges small transmitted crops
 to a maximum side of 768 pixels, and independently rechecks empty results. A review that reports
 `zero_unconfirmed` triggers finer owner-core crops with a smaller halo; a zero answer remains solely

@@ -467,6 +467,14 @@ result, duration, attempts, token usage, and errors. It never stores the API key
 then regenerated with per-sample Qwen/reference comparison and DeepSeek judgment. DeepSeek remains
 text-only and never claims visual verification.
 
+`eval/standard_adapter.py` is a subprocess boundary to the separately maintained team
+`eval_standard/evaluate.py`. The `standard-evaluate` CLI accepts an existing canonical JSONL,
+writes `<result-stem>.standard.json` by default, validates that the tool produced a JSON object,
+and refreshes the existing HTML audit report. The project does not duplicate or reinterpret the
+standard evaluator's rules, synonym library, CHAIR2 implementation, prompt, or API configuration.
+The HTML displays its `primary_metric`, `primary_value`, and `score` separately from the legacy
+deterministic and DeepSeek proxy metrics, preserving historical comparability.
+
 ## 7. Phase 1 Local Multi-Agent Foundation
 
 `spacers_agent/` is an additive local package that does not replace the existing `main.py`
@@ -627,8 +635,9 @@ The Qwen3.5 GB10 mapping uses the Hub repository loader with pinned revision
 Hugging Face offline mode. It does not pass the Hub repository ID to the local-filesystem repository
 loader, which would incorrectly interpret `Atlas-Inference/gdn` as a relative directory.
 
-Known VRSBench quantity questions use a fixed, reference-independent vehicle ontology rather than
-an LLM target parse. Their dedicated route first obtains a compact whole-image count proposal using
+Explicit VRSBench vehicle quantity questions use a fixed, reference-independent vehicle ontology;
+other quantity questions retain their requested target through the normal target parser. The
+dedicated vehicle route first obtains a compact whole-image count proposal using
 the proven GeneralVQA v1 contract. Proposal boxes are normalized and converted to accepted centre
 points; when boxes are missing or disagree with the proposed integer, an independent localization
 pass enumerates tight boxes without treating that integer as ground truth. Duplicate evidence and

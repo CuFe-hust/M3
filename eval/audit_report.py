@@ -143,6 +143,7 @@ def build_audit_report(
     result_path: Path,
     metrics_path: Path | None = None,
     deepseek_audit_path: Path | None = None,
+    standard_metrics_path: Path | None = None,
 ) -> Path | None:
     """Build HTML and CSV from persisted inference and optional evaluation artifacts.
     根据已保存的推理产物和可选评测产物生成 HTML 与 CSV。
@@ -158,6 +159,8 @@ def build_audit_report(
     metadata_path = result_path.with_suffix(".metadata.json")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8")) if metadata_path.exists() else {}
     metrics = json.loads(metrics_path.read_text(encoding="utf-8")) if metrics_path and metrics_path.exists() else {}
+    standard_path = standard_metrics_path or result_path.with_suffix(".standard.json")
+    standard_metrics = json.loads(standard_path.read_text(encoding="utf-8")) if standard_path.exists() else {}
     deepseek_records = _read_jsonl(deepseek_audit_path) if deepseek_audit_path and deepseek_audit_path.exists() else []
     deepseek_by_id = {str(record["sample_id"]): record for record in deepseek_records}
 
@@ -212,6 +215,7 @@ def build_audit_report(
     completed = int(metadata.get("completed_samples", len(displayed)))
     metric_summary = _metric_summary(metrics, displayed_exact, len(displayed), displayed_semantic, semantic_evaluated)
     detector_summary = _detector_summary(displayed)
+    standard_summary = _standard_metric_summary(standard_metrics)
     model = metadata.get("model", {})
     html_path = report_dir / "report.html"
     html_path.write_text(
@@ -225,6 +229,7 @@ def build_audit_report(
             has_deepseek=bool(deepseek_records),
             cards=cards,
             detector_summary=detector_summary,
+            standard_summary=standard_summary,
         ),
         encoding="utf-8",
     )
@@ -372,6 +377,19 @@ def _metric_summary(
     return f"严格匹配：{exact_text}；DeepSeek 语义代理：{semantic_text}。"
 
 
+def _standard_metric_summary(report: dict[str, Any]) -> str:
+    """Render the external standard result without recalculating its metrics.
+    展示外部统一评分结果，不在本项目中重新计算指标。
+    """
+
+    if not report:
+        return ""
+    return (
+        f"primary_metric={report.get('primary_metric', 'unknown')}; "
+        f"primary_value={report.get('primary_value')}; score={report.get('score')}."
+    )
+
+
 def _page(
     result_path: Path,
     completed: int,
@@ -382,6 +400,7 @@ def _page(
     has_deepseek: bool,
     cards: list[str],
     detector_summary: str,
+    standard_summary: str,
 ) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -391,6 +410,7 @@ def _page(
 <h1>Qwen3-VL 逐样本审计报告</h1>
 <p class="lead">结果文件：{_escape(result_path)}。共完成 {completed} 条，报告展示 {displayed} 条。{_escape(metric_summary)}</p>
 <section class="summary"><h2>运行信息</h2><p>模型：{_escape(model.get('id', ''))}；dtype：{_escape(model.get('dtype', ''))}；max_new_tokens：{_escape(model.get('max_new_tokens', ''))}；local_files_only：{_escape(model.get('local_files_only', False))}。</p><p>模型加载耗时：{_escape(metadata.get('model_load_seconds', ''))} 秒；推理总耗时：{_escape(metadata.get('inference_seconds', ''))} 秒。</p></section>
+{f'<section class="summary"><h2>Standard evaluation</h2><p>{_escape(standard_summary)}</p></section>' if standard_summary else ''}
 <section class="summary"><h2>Detector usage summary</h2><p>{_escape(detector_summary)}</p></section>
 <section class="process"><h2>可审计运行过程</h2><ol><li>加载配置指定的 Qwen3-VL 权重和 processor。</li><li>逐条校验规范样本，记录实际 Agent 类、入口和路由，再将图片与提示交给模型确定性生成。</li><li>保存 Qwen 原始回复、最终答案、标准答案、图片和单条耗时。</li><li>评测命令计算原有指标；启用 DeepSeek 时，它只接收问题、参考答案和候选答案，不查看图片。</li></ol><p>本报告不保存、生成或推测隐藏思维链。DeepSeek 逐条审查：{'已保存' if has_deepseek else '未运行'}。<a href="samples.csv">打开 CSV 对照表</a></p></section>
 {''.join(cards)}

@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import os
+import sys
 from pathlib import Path
 from typing import Sequence
 
@@ -44,6 +45,8 @@ from spacers_agent.workflows.sample_runner import DatasetRunOptions
 from spacers_agent.vqa_report import build_multiagent_vqa_report
 from spacers_agent.counting_report import build_multiagent_counting_report
 from spacers_agent.commands import count_image as count_image_command
+from eval.audit_report import build_audit_report
+from eval.standard_adapter import default_standard_report_path, run_standard_evaluation
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -134,6 +137,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     judge_vqa.add_argument("--run-id", required=True)
     judge_vqa.add_argument("--force", action="store_true", help="Rejudge samples that already succeeded.")
+    standard = commands.add_parser(
+        "standard-evaluate",
+        help="Run the external team standard evaluator and refresh the HTML audit report.",
+    )
+    standard.add_argument("--result", type=Path, required=True, help="Canonical sample/prediction JSONL file.")
+    standard.add_argument("--tool-dir", type=Path, default=Path("~/eval_standard"), help="Directory containing evaluate.py.")
+    standard.add_argument("--output", type=Path, help="JSON report path; defaults beside the result JSONL.")
+    standard.add_argument("--python", default=sys.executable, help="Python executable used for eval_standard.")
     inspect_data = commands.add_parser("inspect-data", help="Read a local dataset layout without modifying source files.")
     inspect_data.add_argument("--root", type=Path, required=True, help="Local dataset root to inspect read-only.")
     inspect_data.add_argument("--output", type=Path, required=True, help="Separate JSON report output path.")
@@ -179,6 +190,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return asyncio.run(_evaluate_run(settings, args.run_id, args.deepseek))
     if args.command == "judge-vqa-run":
         return asyncio.run(_judge_vqa_run(settings, args.run_id, force=args.force))
+    if args.command == "standard-evaluate":
+        output_path = args.output or default_standard_report_path(args.result)
+        report = run_standard_evaluation(
+            args.result,
+            tool_dir=args.tool_dir,
+            output_path=output_path,
+            python_executable=args.python,
+        )
+        html_path = build_audit_report(args.result, standard_metrics_path=output_path)
+        print(json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True))
+        print(f"Saved standard evaluation report to {output_path.expanduser().resolve()}")
+        if html_path is not None:
+            print(f"Updated HTML audit report at {html_path}")
+        return 0
     store = RunStore(settings.runs.root, PROJECT_ROOT)
     manifest = store.create_run(
         settings,
