@@ -689,9 +689,9 @@ Judge errors remain visible in `vqa_evaluation.json` while the Agent result and 
 sample status are retained.
 
 The Composition Root always registers `qwen_point` and `vrsbench_qwen_count`. With the default
-`backend.yolo.enabled: false`, it neither imports `ultralytics`, checks weights, nor loads a detector.
+`backend.yolo.enabled: false`, it neither imports a detector runtime, checks weights, nor loads a detector.
 When explicitly enabled, it registers each enabled `YoloDetectorSettings` using one shared lazy
-`YoloModelStore`. A detector declares its OBB task, model ID, SHA256, source dataset, class map,
+`YoloModelStore`. A detector declares its OBB task, runtime (`ultralytics` or `onnx_yolov5_obb`), model ID, SHA256, source dataset, class map,
 aliases, composites, inference parameters, and conservative boundary-duplicate thresholds. Runtime
 loading validates file presence, streaming SHA256, `model.task == "obb"`, and the complete ordered
 class map before inference; no path auto-download occurs.
@@ -711,7 +711,7 @@ gating, conservative adjacent-tile duplicate processing, and the unchanged invar
 Counting-only dataset runs create `counting.jsonl`, `counting.metadata.json`, and
 `counting.report/report.html` plus CSV/image artifacts. The shared audit report reads trace fields
 rather than inferring detector facts from names; it displays whether YOLO was attempted, used for the
-final result, or fell back. The first profile is limited to declared DOTAv1 classes and does not add
+final result, or fell back. Profiles are limited to their declared audited class maps and do not add
 multi-detector ensembling, per-box Qwen review, training, or export.
 
 ## 16. Non-Counting Agent Cutover Contract

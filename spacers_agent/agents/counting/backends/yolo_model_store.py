@@ -47,7 +47,7 @@ class YoloModelStore:
                 f"Detector {detector.name!r} digest mismatch for {path.name}: expected "
                 f"{detector.sha256}, got {actual}"
             )
-        model = self._load(path)
+        model = self._load(path, detector)
         actual_task = str(getattr(model, "task", ""))
         if actual_task != detector.task:
             raise DetectorTaskMismatchError(
@@ -69,9 +69,13 @@ class YoloModelStore:
         resolved = str(weight_path.resolve())
         return any(path == resolved and (sha256 is None or digest == sha256) for path, digest in self._models)
 
-    def _load(self, path: Path) -> Any:
+    def _load(self, path: Path, detector: YoloDetectorSettings) -> Any:
         if self._loader is not None:
             return self._loader(str(path))
+        if detector.runtime == "onnx_yolov5_obb":
+            from spacers_agent.agents.counting.backends.yolov5_obb_onnx import YoloV5ObbOnnxModel  # noqa: PLC0415
+
+            return YoloV5ObbOnnxModel(path, detector.classes)
         try:
             from ultralytics import YOLO  # noqa: PLC0415
         except ImportError as exc:

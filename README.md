@@ -237,21 +237,31 @@ python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 `ArtifactWriter` and optional `JudgeService`. `workflow.py`, `counting.py`, and `experts.py` remain
 only as import-compatible shims; they do not provide a second business path.
 
-## Optional YOLO26s OBB Counting
+## Optional YOLO OBB Counting
 
-The repository default keeps YOLO disabled. It neither imports `ultralytics` nor inspects weights
-until a local configuration enables an audited detector. Install the optional runtime only on the
-deployment machine:
+The repository default keeps YOLO disabled. It neither imports a detector runtime nor inspects
+weights until a local configuration enables an audited detector. Install only the runtime selected
+by the deployed detector profile:
 
 ```bash
 python -m pip install -e '.[yolo]'
+# or, for the YOLOv5-OBB CSL ONNX profile
+python -m pip install -e '.[yolo-onnx]'
+```
+
+On Linux ARM64 with CUDA 13, install the official nightly GPU wheel first, then install the
+project extra without replacing that wheel:
+
+```bash
+python -m pip install --pre --index-url https://aiinfra.pkgs.visualstudio.com/PublicPackages/_packaging/ort-cuda-13-nightly/pypi/simple/ onnxruntime-gpu --no-deps
+python -m pip install -e '.[yolo-onnx]'
 ```
 
 Copy `configs/yolo.example.yaml` to an ignored `configs/local.*.yaml`, point `weights` to an
-already-downloaded `yolo26s-obb.pt`, and keep its SHA256 equal to the configured value. Do not add
-weights to Git and do not rely on automatic downloads. The `yolo26s_dota_obb` profile supports only
-its declared DOTAv1 OBB classes; for example it can select `ship` and the `vehicle` composite, but
-unsupported targets such as `building` use `qwen_point`.
+already-downloaded detector artifact, and keep its SHA256 equal to the configured value. The
+`yolov5m_obb_csl_dotav20` profile uses GPU ONNX Runtime and DOTA-v2.0's 18-class map. The
+`detectors` list remains a multi-weight interface, while a deployment can enable only one default
+detector. Do not rely on automatic model downloads.
 
 For `counting` and `fine_grained_counting`, auto mode selects the highest-priority supported YOLO
 detector, preserves `final_count == accepted points`, and visibly falls back to Qwen for missing or

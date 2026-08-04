@@ -609,6 +609,7 @@ class YoloDetectorSettings(BaseModel):
     name: str = Field(min_length=1)
     enabled: bool = False
     weights: Path
+    runtime: Literal["ultralytics", "onnx_yolov5_obb"] = "ultralytics"
     task: Literal["obb"] = "obb"
     model_id: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")

@@ -80,13 +80,14 @@ backend:
 #     fallback_to_qwen_on_error: true
 #     verify_empty_with_qwen: true
 #     detectors:
-#       - name: yolo26s_dota_obb
+#       - name: yolov5m_obb_csl_dotav20
 #         enabled: true
-#         weights: /home/user/models/yolo26/yolo26s-obb.pt
+#         weights: /home/user/models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+#         runtime: onnx_yolov5_obb
 #         task: obb
-#         model_id: Ultralytics/YOLO26:yolo26s-obb
-#         sha256: 38dbd72ef6804f9bbbea7ad20f486e6ca6e093c8cd9bc857207a846565bd6e0b
-#         source_dataset: DOTAv1
+#         model_id: YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m
+#         sha256: c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a
+#         source_dataset: DOTAv2.0
 #         priority: 100
 #         confidence: 0.20
 #         iou: 0.50

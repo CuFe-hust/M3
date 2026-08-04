@@ -23,6 +23,9 @@ weights/
 *.om
 *.engine
 
+# User-authorized deploy artifact tracked through Git LFS
+!models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+
 # Python bytecode
 __pycache__/
 *.py[cod]
