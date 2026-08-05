@@ -20,23 +20,7 @@ The source releases are [VRSBench](https://huggingface.co/datasets/xiang709/VRSB
 [XLRS-Bench](https://huggingface.co/collections/initiacms/xlrs-bench), and
 [LEVIR-CC](https://huggingface.co/datasets/lcybuaa/LEVIR-CC).
 
-### Run in Colab
-
-Enable a GPU runtime, then clone or upload this repository. Run the following cells from
-the repository root:
-
-```bash
-pip install -r requirements-models.txt
-cp config/baseline.example.json config/local.baseline.json
-```
-
-Edit `config/local.baseline.json` only to choose storage paths or supported model runtime settings.
-The default paths keep downloaded data in `datasets/` and outputs in `outputs/`, both ignored by Git.
-Do not put API keys in this file.
-
-The default `report` settings generate a visual audit report for up to 200 samples per result.
-Increase `report.max_samples` only when the additional image and HTML size is acceptable, or set
-`report.enabled` to `false` to disable report artifacts for a particular local run.
+### Local Model Loading
 
 Main-flow models are constructed only through the unified entry
 `models.entry.create_model(name, ...)`: `qwen3_vl_baseline` (the sync baseline in
@@ -47,61 +31,22 @@ has been removed, and `spacers_agent/clients/` keeps only the test/training
 `DeepSeekJudgeClient` and `MockVisionClient`. CUDA-matched PyTorch remains the server operator's
 responsibility, and mock tests download no weights.
 
-For a checkpoint that is already present on a local server, set `model.id` to that external
-directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
-network fallback while preserving the original Qwen3-VL loading and prediction interfaces.
-Keep the server-specific absolute path only in the ignored `config/local.baseline.json` file.
+For a checkpoint already present on a local server, set `models.qwen.model` (or `QWEN_MODEL`) to
+that external directory and `models.qwen.local_files_only` to `true` in the ignored local YAML
+config (`configs/local*.yaml`). This prevents accidental Hugging Face network fallback while
+preserving the original Qwen3-VL loading and prediction interfaces.
 
-Download the official data releases:
+Download and inspect official data releases through the data modules:
 
 ```bash
-python main.py --config config/local.baseline.json download
+python -m data.downloader --root /data --datasets vrsbench
+python -m data.loader --dataset vrsbench_vqa --root /data --limit 3
+python -m data.validator --root /data --datasets vrsbench
 ```
 
 Dataset reading is unified in `data/loader.py`, which streams canonical samples lazily and
 accepts `limit` for smoke tests. The default local data root is `/data` (override with
-`DATASET_ROOT` or `--root`). The new module entry points are:
-
-```bash
-python -m data.loader --dataset vrsbench_vqa --root /data --limit 3
-python -m data.downloader --root /data --datasets vrsbench
-python -m data.validator --root /data --datasets vrsbench
-```
-
-Inspect each release before a full run. This prints the canonical sample derived from its
-released fields and fails visibly if a source release changes its format:
-
-```bash
-python main.py --config config/local.baseline.json inspect --dataset vrsbench_vqa
-python main.py --config config/local.baseline.json inspect --dataset mme_real_rs
-python main.py --config config/local.baseline.json inspect --dataset xlrs_vqa_lite
-python main.py --config config/local.baseline.json inspect --dataset levir_cc
-```
-
-Run a smoke test before the full evaluation. The `--limit` flag is only for smoke tests and
-must be omitted from final results.
-
-```bash
-python main.py --config config/local.baseline.json infer --dataset all --limit 2
-python main.py --config config/local.baseline.json infer --dataset all --overwrite
-```
-
-Each inference command prints the absolute path of its default HTML report. For a result named
-`outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
-`outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
-questions/prompts, model raw and final answers, references, exact-match comparison, and per-sample
-inference duration. Each sample also records the actual Agent class, call entrypoint, route name,
-task type, and whether a Router was used. The direct baseline is reported truthfully as
-`models.qwen3vl.Qwen3VLBaseline` with `route=direct_baseline` and `router_used=false`; a future
-workflow may provide `prediction.meta.agent_trace` to replace that fallback with its actual trace.
-Images are content-addressed so repeated source images are stored only once.
-
-Compute deterministic metrics for one saved result file:
-
-```bash
-python main.py --config config/local.baseline.json evaluate \
-  --result outputs/baseline/mme_real_rs.jsonl
-```
+`DATASET_ROOT` or `--root`).
 
 Run the separately maintained team standard evaluator against any canonical result and merge its
 primary metric into the existing HTML audit report:
@@ -117,24 +62,8 @@ existing HTML report when its visual audit artifacts are present. `EVAL_LLM_API_
 `EVAL_LLM_BACKEND` remain owned by `eval_standard`; this integration neither reads nor persists
 the key. Use `--output` or `--python` when the report location or evaluator environment differs.
 
-For VRSBench open-ended VQA, the optional DeepSeek semantic proxy requires the user to set
-the key in the Colab session, never in a repository file:
-
-```bash
-export DEEPSEEK_API_KEY='set-this-in-the-Colab-session'
-python main.py --config config/local.baseline.json evaluate \
-  --result outputs/baseline/vrsbench_vqa.jsonl --deepseek-proxy
-```
-
-The resulting `deepseek_semantic_match_proxy` is not the official GPT-based VRSBench score;
-report it as a separate proxy metric. For official oriented-box grounding metrics, run the
-upstream VRSBench or XLRS-Bench evaluator on the canonical prediction file after converting
-its documented output fields.
-
-When `--deepseek-proxy` is used, the same report is regenerated with per-sample DeepSeek scores,
-raw API responses, parsed results, duration, attempts, and token usage. The key is read only from
-`DEEPSEEK_API_KEY` and is never written to the report. DeepSeek receives text and reference
-answers only; it does not inspect the source image.
+For official oriented-box grounding metrics, run the upstream VRSBench or XLRS-Bench evaluator
+on the canonical prediction file after converting its documented output fields.
 
 ### Output Format
 
@@ -254,7 +183,9 @@ The overlay renders owner cores, accepted points, and rejected points; the summa
 
 ## Runnable Qwen Agent and Dataset Commands
 
-The baseline `main.py` remains unchanged. New operations use `python -m spacers_agent.cli` and make network calls only for commands explicitly marked `--live` or requiring inference:
+The legacy Colab baseline CLI (`main.py`) has been removed. All operations use
+`python -m spacers_agent.cli` and make network calls only for commands explicitly marked
+`--live` or requiring inference:
 
 ```powershell
 python -m spacers_agent.cli health qwen --live

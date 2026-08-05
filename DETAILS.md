@@ -22,7 +22,6 @@ AGENTS.md
 CLAUDE.md
 README.md
 DETAILS.md
-main.py
 requirements.txt
 .gitignore
 config/
@@ -62,7 +61,6 @@ AGENTS.md
 CLAUDE.md
 README.md
 DETAILS.md
-main.py
 requirements.txt
 .gitignore
 
@@ -160,23 +158,15 @@ Directory evolution must comply with the following:
 This section explains the responsibilities that directories should assume once they exist.
 If a directory has not yet been created, the AI agent must not proactively create it merely because it is mentioned in this section; it should first determine whether the current task genuinely requires that directory.
 
-### 3.1 `main.py`
+### 3.1 Removed Colab Baseline CLI (`main.py`)
 
-`main.py` is the main entry point of the project.
-
-Allowed:
-
-- Parse command-line arguments;
-- Load configurations;
-- Call the router;
-- Start training, inference, evaluation, or deployment workflows.
-
-Prohibited:
-
-- Writing specific model structures in `main.py`;
-- Writing specific dataset parsing logic in `main.py`;
-- Writing evaluation metrics in `main.py`;
-- Writing quantization and chip-adaptation details in `main.py`.
+The Colab-ready baseline CLI `main.py` and its JSON config
+`config/baseline.example.json` have been removed. The active command-line entry is
+`python -m spacers_agent.cli`, which loads `configs/default.yaml` (or an ignored
+`configs/local*.yaml`) and is the only supported runtime entry.
+Colab 基线 CLI `main.py` 及其 JSON 配置 `config/baseline.example.json` 已删除；
+当前唯一命令行入口为 `python -m spacers_agent.cli`，使用 `configs/default.yaml`
+（或忽略的 `configs/local*.yaml`）。
 
 ### 3.2 `config/`
 
@@ -445,25 +435,22 @@ Do not hard-code local absolute paths in code. Real local configurations should 
 
 ## 6. Current Qwen3-VL-4B Baseline Interface
 
-The currently implemented zero-shot baseline entry point is `main.py`; its model wrapper is
-The unified baseline is constructed through `models.entry.create_model("qwen3_vl_baseline", ...)`
-and returns the `Qwen3VLBaseline` wrapper; the shared local Transformers client is
+The zero-shot Qwen3-VL-4B baseline wrapper is located in
+`models/qwen3_vl/baseline.py` (compatibility alias `models/qwen3vl.py`) and uses the original
+`Qwen/Qwen3-VL-4B-Instruct` checkpoint. It is constructed through
+`models.entry.create_model("qwen3_vl_baseline", ...)`; the shared local Transformers client is
 `create_model("qwen_transformers", ...)`. Adding a model means adding one `@register` builder in
 `models/entry.py`. Main-flow models live in per-model folders (`models/qwen3_vl/`,
-`models/qwen3_5/`) with weights under `weights/`; `models/qwen3vl.py` is a backward-compatible
-alias. The remote vLLM client `QwenVLLMClient` and its server scripts/settings have been removed.
-Every wrapper accepts `CanonicalSample`, validates it, and returns `CanonicalPrediction` with
-explicit model and coordinate metadata.
+`models/qwen3_5/`) with weights under `weights/`. The remote vLLM client `QwenVLLMClient` and its
+server scripts/settings have been removed, as has the Colab baseline CLI `main.py` and its JSON
+config. Every wrapper accepts `CanonicalSample`, validates it, and returns
+`CanonicalPrediction` with explicit model and coordinate metadata.
 
-The default baseline is located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint.
-It accepts a JSON configuration file
-with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
-not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
-The optional `model.local_files_only` setting is `false` by default. Set it to `true` together
-with an external local `model.id` path to prohibit network fallback during server inference;
-the model, processor, tokenizer, checkpoint contents, and prediction contract remain unchanged.
-`config/baseline.example.json` uses project-relative `datasets/baseline` and `outputs/baseline`
-paths. Users copy it to the ignored `config/local.baseline.json` before running Colab commands.
+The baseline wrapper does not include model fine-tuning, LoRA loading, quantization, or any
+server-transfer logic. The optional `models.qwen.local_files_only` setting is `false` by default;
+set it to `true` together with an external `models.qwen.model` path in the ignored
+`configs/local*.yaml` to prohibit network fallback during server inference. The model,
+processor, tokenizer, checkpoint contents, and prediction contract remain unchanged.
 
 `data/schema.py` defines `CanonicalSample` and `CanonicalPrediction`. All implemented
 download adapters, Qwen3-VL inference, persisted JSONL records, and local metrics pass data
@@ -521,8 +508,8 @@ deterministic and DeepSeek proxy metrics, preserving historical comparability.
 
 ## 7. Phase 1 Local Multi-Agent Foundation
 
-`spacers_agent/` is an additive local package that does not replace the existing `main.py`
-baseline. `python -m spacers_agent.cli run-init` loads `configs/default.yaml`, applies
+`spacers_agent/` is the active local runtime package; it replaces the removed Colab baseline
+CLI `main.py`. `python -m spacers_agent.cli run-init` loads `configs/default.yaml`, applies
 non-secret environment overrides from `.env` or the process environment, and creates a run
 directory with `manifest.json`, `config.snapshot.yaml`, `prompts.snapshot/`, and
 `events.jsonl`. API-key values are intentionally not read into the settings model or written
@@ -580,8 +567,9 @@ mapping; that remains blocked until the named local datasets are available for a
 
 ## 10. Phase 4 Point Counting Orchestration
 
-`spacers_agent.counting` is an additive module; it does not alter the baseline `main.py`, the
-existing canonical sample/prediction format, dataset splits, or evaluation metrics. Its
+`spacers_agent.counting` is an additive module; it does not alter the baseline wrapper in
+`models/qwen3_vl/baseline.py`, the existing canonical sample/prediction format, dataset splits,
+or evaluation metrics. Its
 `PointCountingOrchestrator` accepts a normalized image, a stable `CountTargetSpec`, and an
 injected `VisionLanguageClient`. It processes tiles row-major and sequentially, with one image per
 request. `TileCheckpointStore` writes `spec.json`, `parsed.json`, conversion validation, and a
@@ -680,7 +668,7 @@ Atomic JSON publication is implemented by `workflows.artifact_writer`, dataset e
 
 `spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
 
-The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `AutoProcessor` and the native class selected from `AutoConfig.model_type`: `Qwen3VLForConditionalGeneration` for Qwen3-VL and `Qwen3_5ForConditionalGeneration` for Qwen3.5. Qwen3.5 chat rendering sets `enable_thinking: false` so its default `<think>` prefix cannot violate the existing JSON-only Agent contract; Qwen3-VL chat rendering is unchanged. The optional `models.qwen.use_kernels` flag defaults to `false` and is forwarded only for Qwen3.5; NVIDIA GB10 machine-local configurations may enable it after installing the optional Hugging Face `kernels` package. The client first resolves the official `Qwen3_5GatedDeltaNet` Hub kernel at the fixed revision into the Hugging Face cache, then supplies that snapshot as a local-only `KernelConfig` mapping. This preserves the pinned code while disabling Transformers' global mapping inheritance, so unrelated kernels such as `kernels-community/activation` are not resolved in an offline deployment. An explicit `device_map: cuda:0` avoids unintended CPU offload when the checkpoint fits, while the repository default remains `auto`. This backend does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingAgent`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialAgent`; every other or unknown form falls back to `GeneralVQAAgent` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
+The new CLI replaces the removed Colab baseline `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Qwen models always run through the local Transformers backend: `create_model("qwen_transformers", ...)` loads `models.qwen.model` directly with `AutoProcessor` and the native class selected from `AutoConfig.model_type`: `Qwen3VLForConditionalGeneration` for Qwen3-VL and `Qwen3_5ForConditionalGeneration` for Qwen3.5. Qwen3.5 chat rendering sets `enable_thinking: false` so its default `<think>` prefix cannot violate the existing JSON-only Agent contract; Qwen3-VL chat rendering is unchanged. The optional `models.qwen.use_kernels` flag defaults to `false` and is forwarded only for Qwen3.5; NVIDIA GB10 machine-local configurations may enable it after installing the optional Hugging Face `kernels` package. The client first resolves the official `Qwen3_5GatedDeltaNet` Hub kernel at the fixed revision into the Hugging Face cache, then supplies that snapshot as a local-only `KernelConfig` mapping. This preserves the pinned code while disabling Transformers' global mapping inheritance, so unrelated kernels such as `kernels-community/activation` are not resolved in an offline deployment. An explicit `device_map: cuda:0` avoids unintended CPU offload when the checkpoint fits, while the repository default remains `auto`. This path never starts or contacts vLLM; `health qwen --live` therefore reports local metadata only (`network_check: local_transformers_only`) and only DeepSeek supports live endpoint checks. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingAgent`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialAgent`; every other or unknown form falls back to `GeneralVQAAgent` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
 
 The Qwen3.5 GB10 mapping uses the Hub repository loader with pinned revision
 `ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172`; deployments cache that revision once before enabling

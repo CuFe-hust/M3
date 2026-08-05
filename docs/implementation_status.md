@@ -59,9 +59,9 @@
 
 ## 当前仓库状态
 
-仓库是一个可在 Colab 执行的 Qwen3-VL-4B 零样本基线，而非现成的多 Agent 系统。当前入口为 `main.py`，使用 JSON 配置，直接通过 Transformers 加载 `Qwen/Qwen3-VL-4B-Instruct`；已有下载、检查、推理和评测子命令。
+Colab 基线 CLI `main.py` 已删除；当前入口为 `python -m spacers_agent.cli`，使用 YAML 配置，Qwen 通过本地 Transformers 后端加载。
 
-已跟踪的核心代码目录为 `data/`、`models/`、`eval/` 和 `tests/`。`config/` 中只有 `baseline.example.json`；没有 `pyproject.toml`、`setup.py`、`src/` 包目录、Pydantic Settings、运行 manifest、请求缓存、结构化日志、恢复检查点或独立 Prompt 文件。
+已跟踪的核心代码目录为 `data/`、`models/`、`eval/`、`spacers_agent/` 和 `tests/`；配置位于 `configs/default.yaml`，并已有 Pydantic Settings、运行 manifest、请求缓存、结构化日志、恢复检查点与独立 Prompt 文件。
 
 Git 工作树在审计前为空。为满足仓库的隔离开发要求，已仅在本地创建 `docs/phase0-audit` 分支；未推送远端。
 
@@ -73,7 +73,7 @@ Git 工作树在审计前为空。为满足仓库的隔离开发要求，已仅�
 | `data/loaders.py` | VRSBench、MME-RealWorld、XLRS、LEVIR-CC 基线适配器和图像解析辅助函数 | 目前包含候选字段/文件名推断；新 Adapter 必须先以真实本地布局验证，不可沿用猜测作为事实。 |
 | `models/qwen3_vl/baseline.py`（兼容别名 `models/qwen3vl.py`） | 统一样本到统一预测的本地 Transformers 推理路径 | 必须保留；主流程模型统一经 `models/entry.py` 构建，vLLM 远程客户端已删除。 |
 | `eval/metrics.py` | 已有确定性文本/框指标和可选 DeepSeek 代理指标 | 不改动现有指标、分割或答案读取；新的计数指标应独立加入，DeepSeek 仅作文本与结构化证据判断。 |
-| `main.py` | 基线 CLI、配置读取和 JSONL 记录 | 新 CLI 应避免破坏现有 `python main.py --config ...` 入口。 |
+| `spacers_agent/cli.py` | 当前唯一命令行入口与运行组装 | 保持 `python -m spacers_agent.cli` 现有子命令兼容。 |
 | `tests/` | Schema 与基线 Adapter 的 pytest 覆盖 | 可作为新增几何、配置、manifest、CLI 测试的风格参考。 |
 
 ## 真实数据布局审计
@@ -128,7 +128,7 @@ Phase 3 已新增统一 Pydantic 样本/切片/点/计数 Schema、EXIF/RGB 图�
 ### 已识别冲突
 
 1. 实施指令固定云端 DeepSeek 路径；Qwen 已统一为本地 Transformers，远程 vLLM 客户端已删除。用户明确禁止当前连接服务器和云端，因此当前只能做离线实现与 Mock 验证。
-2. 实施指令要求 Pydantic v2 schema 和新包 CLI；基线目前使用 dataclass、单文件 `main.py` 与 JSON 配置。迁移必须增量进行，且保留已有 CLI、基线配置和 JSONL 兼容性。
+2. 实施指令要求 Pydantic v2 schema 和新包 CLI；旧的单文件 `main.py` Colab 基线已删除，迁移完成。当前统一入口为 `python -m spacers_agent.cli`，JSONL 记录格式保持不变。
 3. 实施指令以点式 `count` 为核心任务；现有 `VALID_TASK_TYPES` 不含 `count`，虽 `CanonicalPrediction` 已有 `count` 字段。增加样本任务类型会改变规范样本格式，需以兼容方式设计并补齐测试、`DETAILS.md` 和变更记录。
 4. 实施指令要求先按真实布局实现 Adapter；现有 XLRS 加载器在本地数据不存在时会调用 `datasets.load_dataset`，而 `download` 子命令也会调用 Hugging Face。这些联网路径在当前约束下不能运行，且新实现不得把网络回退作为默认行为。
 5. 实施指令要求在每个 Phase 完成后停下并汇报；因此本次不会跨入 Phase 1。

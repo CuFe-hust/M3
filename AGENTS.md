@@ -591,7 +591,6 @@ models/
 eval/
 deploy/
 config/
-main.py
 DETAILS.md
 ```
 

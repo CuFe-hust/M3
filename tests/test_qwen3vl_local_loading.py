@@ -3,7 +3,6 @@ from __future__ import annotations
 import sys
 from types import ModuleType
 
-import main as baseline_main
 from models.qwen3vl import Qwen3VLBaseline, Qwen3VLSettings
 
 
@@ -122,24 +121,3 @@ def test_qwen35_uses_native_model_class(monkeypatch) -> None:
     assert model_calls[0][0] == "/external/models/Qwen3.5-9B"
     assert model_calls[0][1]["dtype"] is torch_module.bfloat16
 
-
-def test_baseline_config_enables_local_files_only(monkeypatch) -> None:
-    captured: list[Qwen3VLSettings] = []
-
-    class FakeBaseline:
-        def __init__(self, settings: Qwen3VLSettings) -> None:
-            captured.append(settings)
-
-    monkeypatch.setattr("models.qwen3_vl.baseline.Qwen3VLBaseline", FakeBaseline)
-    baseline_main._load_model(
-        {
-            "model": {
-                "id": "/external/models/qwen3-vl",
-                "local_files_only": True,
-            }
-        }
-    )
-
-    assert len(captured) == 1
-    assert captured[0].model_id == "/external/models/qwen3-vl"
-    assert captured[0].local_files_only is True

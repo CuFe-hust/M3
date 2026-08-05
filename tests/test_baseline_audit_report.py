@@ -7,7 +7,6 @@ from pathlib import Path
 from PIL import Image
 
 import eval.metrics as metrics_module
-import main as baseline_main
 from data.schema import CanonicalPrediction, CanonicalSample
 from eval.audit_report import AuditReportWriter, build_audit_report, report_dir_for_result, write_deepseek_audit
 from eval.metrics import evaluate_records
@@ -142,30 +141,3 @@ def test_deepseek_proxy_collects_auditable_raw_response(monkeypatch) -> None:
     assert audit[0]["token_usage"] == body["usage"]
     assert "request_payload" in audit[0]
 
-
-def test_infer_prints_default_report_absolute_path(tmp_path: Path, monkeypatch, capsys) -> None:
-    sample = _sample("q-1")
-
-    class FakeModel:
-        def predict(self, current: CanonicalSample) -> CanonicalPrediction:
-            return _prediction(current.id)
-
-    monkeypatch.setattr(baseline_main, "load_samples", lambda dataset_name, data_root: iter([sample]))
-    baseline_main._infer_target(
-        "vrsbench_vqa",
-        tmp_path / "data",
-        tmp_path / "output",
-        FakeModel(),
-        limit=1,
-        overwrite=False,
-        config={"model": {"id": "local-qwen"}},
-        model_load_seconds=1.0,
-    )
-
-    output = capsys.readouterr().out
-    expected = (tmp_path / "output" / "vrsbench_vqa.report" / "report.html").resolve()
-    assert f"Saved default audit report to {expected}" in output
-    assert expected.is_file()
-    report_html = expected.read_text(encoding="utf-8")
-    assert f"{FakeModel.__module__}.{FakeModel.__name__}" in report_html
-    assert "router_used=False" in report_html
