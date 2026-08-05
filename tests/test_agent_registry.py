@@ -13,7 +13,7 @@ from spacers_agent.agents.base import (
 )
 from spacers_agent.agents.registry import AgentRegistry
 from spacers_agent.agents.errors import DuplicateAgentError, UnsupportedAgentError
-from spacers_agent.schemas import ExpertResult
+from spacers_agent.schemas import AgentResult
 
 
 class _FakeAgent:
@@ -25,8 +25,8 @@ class _FakeAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="test", answer="ok"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok"),
+            result_filename="agent_result.json",
             trace={"route": "test"},
         )
 
@@ -40,8 +40,8 @@ class _FakeCountingAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="fake", answer="0"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="counting_agent", answer="0"),
+            result_filename="agent_result.json",
         )
 
 
@@ -142,12 +142,12 @@ def test_agent_execution_fields():
     """AgentExecution can be created with minimal fields. / AgentExecution 可用最少字段创建。"""
     execution = AgentExecution(
         agent_name="change_agent",
-        payload=ExpertResult(expert="test", answer="ok"),
-        result_filename="expert_result.json",
+        payload=AgentResult(agent_name="general_vqa_agent", answer="ok"),
+        result_filename="agent_result.json",
         trace={"route": "test -> done"},
     )
     assert execution.agent_name == "change_agent"
-    assert execution.result_filename == "expert_result.json"
+    assert execution.result_filename == "agent_result.json"
     assert execution.trace["route"] == "test -> done"
     assert execution.status == "completed"
 
@@ -171,7 +171,7 @@ def test_agent_execution_rejects_bad_filename():
     with pytest.raises(ValueError):
         AgentExecution(agent_name="change_agent", payload=None, result_filename="/etc/passwd")
     with pytest.raises(ValueError):
-        AgentExecution(agent_name="change_agent", payload=None, result_filename="../expert_result.json")
+        AgentExecution(agent_name="change_agent", payload=None, result_filename="../agent_result.json")
 
 
 def test_agent_execution_rejects_sensitive_trace_keys():
@@ -180,6 +180,6 @@ def test_agent_execution_rejects_sensitive_trace_keys():
         AgentExecution(
             agent_name="change_agent",
             payload=None,
-            result_filename="expert_result.json",
+            result_filename="agent_result.json",
             trace={"api_key": "sk-secret"},
         )

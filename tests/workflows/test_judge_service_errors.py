@@ -1,4 +1,4 @@
-﻿"""Phase 5 — JudgeService error visibility and resume behavior.
+"""Phase 5 — JudgeService error visibility and resume behavior.
 Phase 5 — JudgeService 错误可见性与 resume 行为。
 """
 
@@ -110,8 +110,8 @@ async def test_judge_vqa_resume_skips_when_already_succeeded(tmp_path: Path):
     )
     sample_dir = tmp_path / "samples" / "s1"
     sample_dir.mkdir(parents=True)
-    (sample_dir / "expert_result.json").write_text(
-        json.dumps({"expert": "vqa", "answer": "yes"}), encoding="utf-8"
+    (sample_dir / "agent_result.json").write_text(
+        json.dumps({"agent_name": "vqa", "answer": "yes"}), encoding="utf-8"
     )
     (sample_dir / "vqa_evaluation.json").write_text(
         json.dumps({"sample_id": "s1", "judge_status": "succeeded", "exact_match": True}),

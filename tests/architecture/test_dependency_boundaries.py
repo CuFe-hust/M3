@@ -67,10 +67,8 @@ def test_agent_modules_do_not_import_cli():
     )
 
 
-def test_non_counting_agent_modules_do_not_import_legacy_workflow():
-    """Cut-over non-counting Agents must not depend on transitional workflow.
-    已切换的非计数 Agent 不得依赖过渡期 workflow。
-    """
+def test_agent_modules_do_not_import_removed_legacy_modules():
+    """Concrete Agents must not import removed modules. / 具体 Agent 不得导入已移除模块。"""
 
     import ast
     from pathlib import Path
@@ -82,13 +80,15 @@ def test_non_counting_agent_modules_do_not_import_legacy_workflow():
             continue
         tree = ast.parse(py_file.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
-            if isinstance(node, ast.ImportFrom) and node.module == "spacers_agent.workflow":
+            if isinstance(node, ast.ImportFrom) and node.module in {
+                "spacers_agent.workflow", "spacers_agent.counting", "spacers_agent.experts",
+            }:
                 violations.append(py_file.as_posix())
             elif isinstance(node, ast.Import):
-                if any(alias.name == "spacers_agent.workflow" for alias in node.names):
+                if any(alias.name in {"spacers_agent.workflow", "spacers_agent.counting", "spacers_agent.experts"} for alias in node.names):
                     violations.append(py_file.as_posix())
 
-    assert not violations, "Agent modules import legacy workflow:\n" + "\n".join(violations)
+    assert not violations, "Agent modules import removed modules:\n" + "\n".join(violations)
 
 
 def test_count_image_enters_the_composed_runtime():
@@ -105,18 +105,13 @@ def test_count_image_enters_the_composed_runtime():
     assert "PointCountingOrchestrator" not in source
 
 
-def test_workflow_module_is_a_thin_compatibility_layer():
-    """The old workflow import module must not define a DatasetRunner implementation.
-    旧 workflow 导入模块不得定义 DatasetRunner 实现。
-    """
-
-    import ast
+def test_removed_legacy_modules_are_absent():
+    """The old public modules are intentionally unavailable. / 旧公共模块应明确不可用。"""
     from pathlib import Path
 
-    workflow_path = Path(__file__).resolve().parents[2] / "spacers_agent" / "workflow.py"
-    tree = ast.parse(workflow_path.read_text(encoding="utf-8"))
-    defined_classes = {node.name for node in ast.walk(tree) if isinstance(node, ast.ClassDef)}
-    assert "DatasetRunner" not in defined_classes
+    package_root = Path(__file__).resolve().parents[2] / "spacers_agent"
+    for name in ("workflow.py", "counting.py", "experts.py"):
+        assert not (package_root / name).exists()
 
 
 def test_router_does_not_import_yolo_classes():
@@ -200,15 +195,15 @@ def test_agent_execution_rejects_parent_ref():
         AgentExecution(
             agent_name="change_agent",
             payload=None,
-            result_filename="../expert_result.json",
+            result_filename="../agent_result.json",
         )
 
 
 def test_agent_execution_accepts_valid_filenames():
-    """result_filename allows counting_result.json and expert_result.json."""
+    """result_filename allows counting_result.json and agent_result.json."""
     from spacers_agent.agents.base import AgentExecution
 
-    for name in ("counting_result.json", "expert_result.json"):
+    for name in ("counting_result.json", "agent_result.json"):
         exec_result = AgentExecution(
             agent_name="change_agent",
             payload=None,
@@ -242,6 +237,6 @@ def test_agent_execution_trace_rejects_sensitive_keys():
         AgentExecution(
             agent_name="change_agent",
             payload=None,
-            result_filename="expert_result.json",
+            result_filename="agent_result.json",
             trace={"authorization": "Bearer sk-fake-key-for-test-only"},
         )

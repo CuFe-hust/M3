@@ -26,7 +26,7 @@
       "point": null
     }
   ],
-  "expert": "grounding_expert",
+  "agent_name": "grounding_agent",
   "geometry": {
     "evidence_quality": [
       "trusted_box"

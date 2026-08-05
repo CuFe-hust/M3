@@ -13,7 +13,7 @@ from spacers_agent.agents.base import AgentContext
 from spacers_agent.bootstrap import assemble_runtime, build_agent_registry
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudgetFactory
-from spacers_agent.schemas import ExpertResult
+from spacers_agent.schemas import AgentResult
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
 from tests.parity.canonicalize import canonicalize_artifact
 from tests.parity.fake_clients import RecordingFakeQwen
@@ -74,8 +74,8 @@ async def test_new_visual_agent_matches_frozen_request_and_result(
     expected_result = json.loads((fixture_dir / "expected_result.json").read_text(encoding="utf-8"))
     assert canonicalize_artifact(client.calls, run_root=run_root, project_root=PROJECT_ROOT) == expected_calls
     assert canonicalize_artifact(execution.payload.model_dump(mode="json")) == expected_result
-    assert execution.result_filename == "expert_result.json"
-    assert result_path == sample_dir / "expert_result.json"
+    assert execution.result_filename == "agent_result.json"
+    assert result_path == sample_dir / "agent_result.json"
     assert json.loads(result_path.read_text(encoding="utf-8")) == execution.payload.model_dump(mode="json")
     assert execution.trace["prompt_version"] == expected_calls[0]["prompt_version"]
 
@@ -109,16 +109,16 @@ async def test_caption_agent_uses_its_dedicated_contract(tmp_path: Path) -> None
     result_path = ArtifactWriter().write_execution(sample_dir, execution)
 
     assert len(client.calls) == 1
-    assert client.calls[0]["response_model"] == "ExpertResult"
-    assert client.calls[0]["request_id"] == "caption:caption_expert"
+    assert client.calls[0]["response_model"] == "AgentResult"
+    assert client.calls[0]["request_id"] == "caption:caption_agent"
     assert client.calls[0]["prompt_version"] == "caption-v1"
-    assert client.calls[0]["artifact_dir"] == "samples/caption/caption_expert"
+    assert client.calls[0]["artifact_dir"] == "samples/caption/caption_agent"
     assert len(client.calls[0]["image_inputs"]) == 1
     assert execution.agent_name == "caption_agent"
-    assert isinstance(execution.payload, ExpertResult)
-    assert execution.payload.expert == "caption_expert"
+    assert isinstance(execution.payload, AgentResult)
+    assert execution.payload.agent_name == "caption_agent"
     assert execution.payload.status == "completed"
-    assert result_path.name == "expert_result.json"
+    assert result_path.name == "agent_result.json"
 
 
 class _ChangeFallbackClient:
@@ -132,19 +132,19 @@ class _ChangeFallbackClient:
 
     async def complete_json(self, *, messages, response_model, request_meta):
         self.request_ids.append(request_meta.request_id)
-        if request_meta.request_id.endswith(":change_expert"):
+        if request_meta.request_id.endswith(":change_agent"):
             if self.primary_status is None:
                 raise RuntimeError("deterministic change primary failure")
             return response_model.model_validate(
                 {
-                    "expert": "change_expert",
+                    "agent_name": "change_agent",
                     "answer": "primary answer",
                     "status": self.primary_status,
                 }
             )
         return response_model.model_validate(
             {
-                "expert": "general_vqa_expert",
+                "agent_name": "general_vqa_agent",
                 "answer": "fallback answer",
                 "status": "completed",
             }

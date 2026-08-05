@@ -34,7 +34,7 @@ class SpatialAgent(VisualAgentBase):
         super().__init__(
             client,
             model,
-            agent_name="spatial_expert",
+            agent_name=self.name,
             default_prompt=prompt,
         )
         self._client_ref = client
@@ -84,7 +84,7 @@ class SpatialAgent(VisualAgentBase):
         return AgentExecution(
             agent_name=self.name,
             payload=reviewed,
-            result_filename="expert_result.json",
+            result_filename="agent_result.json",
             trace={
                 "agent_class": "spacers_agent.agents.spatial.agent.SpatialAgent",
                 "route": route,

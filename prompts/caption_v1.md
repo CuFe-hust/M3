@@ -6,6 +6,6 @@ factual English sentence. Focus on the scene type, visible objects, and spatial
 arrangement. Do not list objects or use bullet points. Do not mention the
 coordinate system, image borders, or your own process.
 
-Return valid JSON only. Set expert to 'caption_expert'; put the concise caption
+Return valid JSON only. Set agent_name to 'caption_agent'; put the concise caption
 in answer; use empty boxes, evidence, and evidence_items; set status to
 'completed' only when a valid caption is provided.

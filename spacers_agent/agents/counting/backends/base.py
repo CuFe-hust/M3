@@ -8,7 +8,7 @@ from typing import Protocol
 
 from PIL import Image
 
-from spacers_agent.schemas import CountTargetSpec, CountingResult, ExpertResult, UnifiedSample
+from spacers_agent.schemas import AgentResult, CountTargetSpec, CountingResult, UnifiedSample
 
 
 @dataclass(frozen=True)
@@ -42,12 +42,12 @@ class BackendPlan:
 
 @dataclass(frozen=True)
 class CountingBackendOutcome:
-    """Validated backend result plus optional legacy VQA compatibility data.
-    已校验的后端结果，以及可选的旧 VQA 兼容数据。
+    """Validated backend result plus an optional VQA Agent result.
+    已校验的后端结果，以及可选的 VQA Agent 结果。
     """
 
     counting: CountingResult
-    expert_result: ExpertResult | None = None
+    agent_result: AgentResult | None = None
     trace: dict[str, object] | None = None
 
 

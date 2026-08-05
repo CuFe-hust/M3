@@ -43,7 +43,7 @@
       "point": null
     }
   ],
-  "expert": "spatial_expert",
+  "agent_name": "spatial_agent",
   "geometry": {
     "answer_normalization_version": "vrsbench-answer-v2",
     "answer_source": "deterministic_geometry",

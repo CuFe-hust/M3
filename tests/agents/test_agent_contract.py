@@ -14,7 +14,7 @@ from spacers_agent.agents.base import (
     AgentExecution,
     validate_agent_execution,
 )
-from spacers_agent.schemas import CountingResult, ExpertResult
+from spacers_agent.schemas import CountingResult, AgentResult
 
 
 # ── AgentExecution validation / AgentExecution 校验 ───────────────────────
@@ -40,10 +40,10 @@ class TestResultFilename:
     def test_accepts_expert_result(self):
         exec_result = AgentExecution(
             agent_name="change_agent",
-            payload=ExpertResult(expert="test", answer="ok"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok"),
+            result_filename="agent_result.json",
         )
-        assert exec_result.result_filename == "expert_result.json"
+        assert exec_result.result_filename == "agent_result.json"
 
     def test_rejects_absolute_path(self):
         with pytest.raises(ValueError, match="plain basename"):
@@ -58,7 +58,7 @@ class TestResultFilename:
             AgentExecution(
                 agent_name="change_agent",
                 payload=None,
-                result_filename="../expert_result.json",
+                result_filename="../agent_result.json",
             )
 
     def test_rejects_backslash(self):
@@ -86,7 +86,7 @@ class TestTraceSanitization:
             AgentExecution(
                 agent_name="change_agent",
                 payload=None,
-                result_filename="expert_result.json",
+                result_filename="agent_result.json",
                 trace={"api_key": "sk-secret"},
             )
 
@@ -95,7 +95,7 @@ class TestTraceSanitization:
             AgentExecution(
                 agent_name="change_agent",
                 payload=None,
-                result_filename="expert_result.json",
+                result_filename="agent_result.json",
                 trace={"authorization": "Bearer token"},
             )
 
@@ -104,15 +104,15 @@ class TestTraceSanitization:
             AgentExecution(
                 agent_name="change_agent",
                 payload=None,
-                result_filename="expert_result.json",
+                result_filename="agent_result.json",
                 trace={"request": {"headers": {"api_key": "secret"}}},
             )
 
     def test_accepts_safe_trace(self):
         exec_result = AgentExecution(
             agent_name="change_agent",
-            payload=ExpertResult(expert="test", answer="ok"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok"),
+            result_filename="agent_result.json",
             trace={
                 "agent_class": "ChangeAgent",
                 "route": "ChangeAgent.run -> Expert.run",
@@ -130,8 +130,8 @@ class TestTraceSanitization:
         """Trace dict must be JSON-serializable. / Trace 字典必须 JSON 可序列化。"""
         exec_result = AgentExecution(
             agent_name="change_agent",
-            payload=ExpertResult(expert="test", answer="ok"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok"),
+            result_filename="agent_result.json",
             trace={"route": "test", "count": 1, "nested": {"key": "value"}},
         )
         dumped = json.dumps(exec_result.trace)
@@ -144,24 +144,24 @@ class TestAgentExecutionStatus:
     def test_completed_status(self):
         exec_result = AgentExecution(
             agent_name="change_agent",
-            payload=ExpertResult(expert="test", answer="ok", status="completed"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok", status="completed"),
+            result_filename="agent_result.json",
         )
         assert exec_result.status == "completed"
 
     def test_partial_status(self):
         exec_result = AgentExecution(
             agent_name="change_agent",
-            payload=ExpertResult(expert="test", answer="ok", status="partial"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok", status="partial"),
+            result_filename="agent_result.json",
         )
         assert exec_result.status == "partial"
 
     def test_failed_status(self):
         exec_result = AgentExecution(
             agent_name="change_agent",
-            payload=ExpertResult(expert="test", answer="ok", status="failed"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="ok", status="failed"),
+            result_filename="agent_result.json",
         )
         assert exec_result.status == "failed"
 

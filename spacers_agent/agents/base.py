@@ -15,12 +15,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Protocol, Union, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, Union, runtime_checkable
 
 from spacers_agent.clients.base import VisionLanguageClient
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing.budget import CallBudget
-from spacers_agent.schemas import CountingResult, ExpertResult
+from spacers_agent.schemas import AgentName, AgentResult, CountingResult
 from spacers_agent.settings import AppSettings
 
 if TYPE_CHECKING:
@@ -28,44 +28,7 @@ if TYPE_CHECKING:
 
 # ── type aliases / 类型别名 ──────────────────────────────────────────────
 
-AgentName = Literal[
-    "counting_agent",
-    "change_agent",
-    "grounding_agent",
-    "spatial_agent",
-    "general_vqa_agent",
-    "caption_agent",
-]
-
-AgentPayload = Union[CountingResult, ExpertResult]
-
-# ── legacy name normalization / 旧名规范化 ───────────────────────────────
-
-LEGACY_AGENT_NAME_ALIASES: dict[str, AgentName] = {
-    "counting_expert": "counting_agent",
-    "change_expert": "change_agent",
-    "grounding_expert": "grounding_agent",
-    "spatial_expert": "spatial_agent",
-    "general_vqa_expert": "general_vqa_agent",
-    "caption_expert": "caption_agent",
-}
-
-EXPERT_TO_AGENT: dict[str, AgentName] = dict(LEGACY_AGENT_NAME_ALIASES)
-
-AGENT_TO_EXPERT: dict[AgentName, str] = {v: k for k, v in LEGACY_AGENT_NAME_ALIASES.items()}
-
-
-def normalize_agent_name(raw: str) -> AgentName:
-    """Map legacy expert names to agent names; passes through valid agent names.
-    将旧 expert 名映射为 agent 名；有效的 agent 名原样通过。
-    """
-    if raw in LEGACY_AGENT_NAME_ALIASES:
-        return LEGACY_AGENT_NAME_ALIASES[raw]
-    # Also try AgentName literal check
-    from typing import get_args
-    if raw in get_args(AgentName):
-        return raw  # type: ignore[return-value]
-    raise ValueError(f"Unknown agent/expert name: {raw!r}. Known: {sorted(LEGACY_AGENT_NAME_ALIASES)}")
+AgentPayload = Union[CountingResult, AgentResult]
 
 
 # ── execution context / 执行上下文 ────────────────────────────────────────

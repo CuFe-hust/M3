@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PIL import Image
 
-from spacers_agent.counting import apply_acceptance_policy
+from spacers_agent.agents.counting.point_pipeline import apply_acceptance_policy
 from spacers_agent.seam import build_seam_crop
 from spacers_agent.schemas import GlobalPointObservation
 from spacers_agent.targeting import _rule_target

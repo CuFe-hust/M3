@@ -9,7 +9,11 @@ from PIL import Image
 
 from spacers_agent.clients.base import RequestMeta
 from spacers_agent.clients.mock import MockVisionClient
-from spacers_agent.counting import PointCountingOrchestrator, finalize_representatives, find_boundary_conflicts
+from spacers_agent.agents.counting.point_pipeline import (
+    PointCountingOrchestrator,
+    finalize_representatives,
+    find_boundary_conflicts,
+)
 from spacers_agent.imaging import build_core_halo_tiles, should_tile_image, split_tile_owner_core
 from spacers_agent.schemas import CountTargetSpec, GlobalPointObservation, TileCountResponse
 from spacers_agent.settings import CountingSettings, QwenSettings

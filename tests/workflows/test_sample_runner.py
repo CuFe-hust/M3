@@ -10,7 +10,7 @@ from spacers_agent.agents.registry import AgentRegistry
 from spacers_agent.agents.base import Agent, AgentContext, AgentExecution, AgentName
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudgetFactory, TaskRouter
-from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import AgentResult, ImageRef, UnifiedSample
 from spacers_agent.settings import AppSettings
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
 from spacers_agent.workflows.judge_service import JudgeService
@@ -27,7 +27,7 @@ class _CountingAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="counting", answer="3", status="completed"),
+            payload=AgentResult(agent_name="counting_agent", answer="3", status="completed"),
             result_filename="counting_result.json",
             trace={"route": "test"},
         )
@@ -40,8 +40,8 @@ class _VQAAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="vqa", answer="yes", status="completed"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="yes", status="completed"),
+            result_filename="agent_result.json",
             trace={"route": "test"},
         )
 

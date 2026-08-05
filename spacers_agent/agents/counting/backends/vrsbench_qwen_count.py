@@ -20,7 +20,7 @@ from spacers_agent.agents.counting.evidence import (
     recover_count_proposal_header,
 )
 from spacers_agent.clients.base import RequestMeta, build_request_hash, image_to_data_url
-from spacers_agent.schemas import CountTargetSpec, CountingResult, ExpertResult, IssueRecord
+from spacers_agent.schemas import AgentName, AgentResult, CountTargetSpec, CountingResult, IssueRecord
 from spacers_agent.vqa_geometry import vrsbench_vehicle_class
 
 
@@ -31,7 +31,7 @@ class _CountProposalResult(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    expert: str
+    agent_name: AgentName
     answer: str
     boxes: list[list[float]] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list)
@@ -186,8 +186,8 @@ class VRSBenchQwenCountBackend:
             "counting_status": counting.status,
             "warnings": [item.model_dump(mode="json") for item in counting.warnings],
         }
-        expert_result = ExpertResult(
-            expert="counting_expert",
+        agent_result = AgentResult(
+            agent_name="counting_agent",
             answer=(
                 str(counting.final_count)
                 if complete
@@ -203,10 +203,10 @@ class VRSBenchQwenCountBackend:
         )
         return CountingBackendOutcome(
             counting=counting,
-            expert_result=expert_result,
+            agent_result=agent_result,
             trace={
                 "prompt_version": "vrsbench-count-hybrid-v1",
-                "geometry": expert_result.geometry,
+                "geometry": agent_result.geometry,
                 "localization_used": localization_used,
             },
         )
@@ -219,7 +219,7 @@ class VRSBenchQwenCountBackend:
     ) -> tuple[_CountProposalResult, str | None]:
         image_bytes = sample.images[0].path.read_bytes()
         system_prompt = self._proposal_prompt + (
-            "\n\nReturn valid JSON only. Set expert to 'general_vqa_expert'; put the concise "
+            "\n\nReturn valid JSON only. Set agent_name to 'counting_agent'; put the concise "
             "final answer in answer, use empty boxes/evidence when they are not needed, and set "
             "status to 'completed'."
         )
@@ -244,7 +244,7 @@ class VRSBenchQwenCountBackend:
             messages=messages,
             image_sha256=image_hash,
         )
-        artifact_dir = sample_dir / "counting_expert" / "count_proposal"
+        artifact_dir = sample_dir / "counting_agent" / "count_proposal"
         try:
             context.call_budget.reserve_qwen()
             proposal = await self._client.complete_json(
@@ -269,7 +269,7 @@ class VRSBenchQwenCountBackend:
                 raise
             return (
                 _CountProposalResult(
-                    expert="general_vqa_expert",
+                    agent_name="counting_agent",
                     answer=str(recovered),
                     boxes=[],
                     evidence=[],
@@ -285,7 +285,7 @@ class VRSBenchQwenCountBackend:
         target: CountTargetSpec,
         proposal_count: int,
         context: AgentContext,
-    ) -> ExpertResult:
+    ) -> AgentResult:
         image_bytes = sample.images[0].path.read_bytes()
         image_hash = hashlib.sha256(image_bytes).hexdigest()
         messages: list[dict[str, Any]] = [
@@ -323,13 +323,13 @@ class VRSBenchQwenCountBackend:
         context.call_budget.reserve_qwen()
         return await self._client.complete_json(
             messages=messages,
-            response_model=ExpertResult,
+            response_model=AgentResult,
             request_meta=RequestMeta(
                 request_id=f"{sample.sample_id}:count-localizer",
                 request_hash=request_hash,
                 prompt_version="count-localize-v1",
                 sample_id=sample.sample_id,
                 image_sha256=image_hash,
-                artifact_dir=sample_dir / "counting_expert" / "count_localizer",
+                artifact_dir=sample_dir / "counting_agent" / "count_localizer",
             ),
         )

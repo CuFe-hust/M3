@@ -1,23 +1,22 @@
 {
-  "deepseek": [],
   "qwen": [
     {
-      "artifact_dir": "samples/spatial_relation/spatial_expert",
+      "match_key": "spatial_relation|AgentResult|spatial_relation:spatial_agent",
+      "response_model": "AgentResult",
+      "request_id": "spatial_relation:spatial_agent",
+      "request_hash": "f85c3a24c915380431c9799be9cbae079c0ee7810f4ff7bc7d9a6ee2dcea3d26",
+      "prompt_version": "spatial-v5",
+      "sample_id": "spatial_relation",
+      "image_sha256": null,
+      "messages_sha256": "1997111b4f62df71ecbf580c3758803d5f0806fa7f66fc63bd5085ed1ede3a83",
       "image_inputs": [
         {
-          "byte_length": 78,
+          "type": "image_url",
           "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
-          "type": "image_url"
+          "byte_length": 78
         }
       ],
-      "image_sha256": null,
-      "match_key": "spatial_relation|ExpertResult|spatial_relation:spatial_expert",
-      "messages_sha256": "29c73c60c9986271724320a2d642fb9173f664f673ca8ec9e905132fde030735",
-      "prompt_version": "spatial-v5",
-      "request_hash": "898294c2397dfb150c95f5974f1ee6a316c83ee85f3620869ca7e86f2cc73081",
-      "request_id": "spatial_relation:spatial_expert",
-      "response_model": "ExpertResult",
-      "sample_id": "spatial_relation"
+      "artifact_dir": "samples/spatial_relation/spatial_agent"
     }
   ]
 }

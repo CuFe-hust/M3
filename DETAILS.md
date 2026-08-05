@@ -565,7 +565,7 @@ and consumes a Qwen entry from `CallBudget` before it can call the router. The b
 validated against its configured limits, and may be attached to `PointCountingOrchestrator` so tile,
 recursive, seam, or review calls cannot exceed the same Qwen limit.
 
-`CountingExpert` delegates to the existing `PointCountingOrchestrator`; it contains no duplicate
+`CountingAgent` delegates to the existing `PointCountingOrchestrator`; it contains no duplicate
 geometry or counting logic. Its completed answer is derived from the accepted global-point set. If
 any tile failed, it reports the completed-tile fraction and confirmed points and marks the answer
 non-final. `CallBudget` also exposes a separate DeepSeek reservation method. No default route calls
@@ -624,11 +624,11 @@ dataset.
 
 ## 14. Runnable Agent Workflow, Explicit Adapters, and Spark Handoff
 
-`spacers_agent.workflow` is now import compatibility only. Atomic JSON publication is implemented by `workflows.artifact_writer`, dataset execution by `workflows.DatasetRunner`, and all Qwen visual execution by concrete Agents. Counting continues to derive `final_count` only from accepted global points; confidence gating sets low-confidence points to `accepted=False`, and seam merging occurs only after a `SeamDecision` explicitly returns `same_instance` for a local seam crop.
+Atomic JSON publication is implemented by `workflows.artifact_writer`, dataset execution by `workflows.DatasetRunner`, and all Qwen visual execution by concrete Agents. Counting continues to derive `final_count` only from accepted global points; confidence gating sets low-confidence points to `accepted=False`, and seam merging occurs only after a `SeamDecision` explicitly returns `same_instance` for a local seam crop.
 
 `spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
 
-The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `AutoProcessor` and the native class selected from `AutoConfig.model_type`: `Qwen3VLForConditionalGeneration` for Qwen3-VL and `Qwen3_5ForConditionalGeneration` for Qwen3.5. Qwen3.5 chat rendering sets `enable_thinking: false` so its default `<think>` prefix cannot violate the existing JSON-only Agent contract; Qwen3-VL chat rendering is unchanged. The optional `models.qwen.use_kernels` flag defaults to `false` and is forwarded only for Qwen3.5; NVIDIA GB10 machine-local configurations may enable it after installing the optional Hugging Face `kernels` package. The client first resolves the official `Qwen3_5GatedDeltaNet` Hub kernel at the fixed revision into the Hugging Face cache, then supplies that snapshot as a local-only `KernelConfig` mapping. This preserves the pinned code while disabling Transformers' global mapping inheritance, so unrelated kernels such as `kernels-community/activation` are not resolved in an offline deployment. An explicit `device_map: cuda:0` avoids unintended CPU offload when the checkpoint fits, while the repository default remains `auto`. This backend does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingExpert`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialExpert`; every other or unknown form falls back to `GeneralVQAExpert` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
+The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `AutoProcessor` and the native class selected from `AutoConfig.model_type`: `Qwen3VLForConditionalGeneration` for Qwen3-VL and `Qwen3_5ForConditionalGeneration` for Qwen3.5. Qwen3.5 chat rendering sets `enable_thinking: false` so its default `<think>` prefix cannot violate the existing JSON-only Agent contract; Qwen3-VL chat rendering is unchanged. The optional `models.qwen.use_kernels` flag defaults to `false` and is forwarded only for Qwen3.5; NVIDIA GB10 machine-local configurations may enable it after installing the optional Hugging Face `kernels` package. The client first resolves the official `Qwen3_5GatedDeltaNet` Hub kernel at the fixed revision into the Hugging Face cache, then supplies that snapshot as a local-only `KernelConfig` mapping. This preserves the pinned code while disabling Transformers' global mapping inheritance, so unrelated kernels such as `kernels-community/activation` are not resolved in an offline deployment. An explicit `device_map: cuda:0` avoids unintended CPU offload when the checkpoint fits, while the repository default remains `auto`. This backend does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingAgent`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialAgent`; every other or unknown form falls back to `GeneralVQAAgent` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
 
 The Qwen3.5 GB10 mapping uses the Hub repository loader with pinned revision
 `ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172`; deployments cache that revision once before enabling
@@ -661,7 +661,7 @@ status tokens such as `partial` are removed from the semantic answer field, and 
 answers are not downgraded solely because they have no localizable box. Partial VQA artifacts remain
 visible in the HTML report.
 
-Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `expert_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. `run-dataset` enables evaluation by default and VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--no-evaluate` and `--judge-policy none` remain explicit offline opt-outs. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
+Each VQA sample persists `routing_decision.json`, Qwen raw/parsed/timing/token artifacts, `agent_trace.json`, `agent_result.json`, optional `counting_result.json`, and `vqa_evaluation.json`. `run-dataset` enables evaluation by default and VQA defaults to `--judge-policy all`; a missing `DEEPSEEK_API_KEY` fails visibly instead of silently skipping Judge, while `--no-evaluate` and `--judge-policy none` remain explicit offline opt-outs. The versioned VQA Judge prompt sends only the question, official reference answers, candidate answer, and deterministic exact-match flag to DeepSeek. It never sends an image, Base64 value, image path, boxes, or points.
 
 Before strict `VisualEvidence` validation, the structured result normalizes a model-emitted pair of corner points into one flat box and reclassifies a single two-value box as a point. Reversed corners are ordered. A zero-width or zero-height observation is never expanded into a fabricated one-pixel box: labeled evidence is retained as a point and unlabeled legacy boxes are dropped. A simultaneous valid box and point retains the box, while a degenerate box with an explicit point retains the point. Normalization names, per-item evidence quality, and aggregate repair severity are retained in the geometry audit. Deterministic box geometry never consumes a repaired point.
 
@@ -726,20 +726,16 @@ multi-detector ensembling, per-box Qwen review, training, or export.
 ## 16. Non-Counting Agent Cutover Contract
 
 Caption, change, grounding, general-VQA, and spatial execution are implemented only by the
-standalone modules under `spacers_agent/agents/`. The transitional `workflow.WorkflowService`
-contains no expert dictionary and delegates legacy expert names through the same `AgentRegistry`
-name normalization used by the new runtime. The former `VisualExpert`, `ChangeExpert`,
-`GroundingExpert`, `GeneralVQAExpert`, and `SpatialExpert` symbols remain import-compatible
-adapters. `workflow.py` defines no DatasetRunner or count flow, and `counting.py`/`experts.py`
-only re-export public compatibility symbols.
+standalone modules under `spacers_agent/agents/`. The runtime accepts only the six canonical Agent
+names and has no import aliases, name normalization, or compatibility wrappers.
 
 Non-counting Agents receive frozen `PromptAsset` values resolved from `PromptCatalog`, rather than
 maintaining a second mutable Prompt dictionary. Observable request contracts remain unchanged:
 change uses request version `change-expert-v1`, grounding and general VQA use `general-vqa-v2`,
 spatial uses `spatial-v4` or grid `spatial-v5`, review uses compact v4/v5, and caption uses its dedicated
 `caption-v1` asset. Caption was a frozen unsupported gap in the legacy multi-Agent DatasetRunner;
-the standalone CaptionAgent now closes that gap with one `ExpertResult` request and the unchanged
-`expert_result.json` artifact contract.
+the standalone CaptionAgent now closes that gap with one `AgentResult` request and the
+`agent_result.json` artifact contract.
 
 Spatial candidate review is issued at most once and uses a configurable 128-token default ceiling.
 Its v4/v5 response contains only labeled boxes and an enumeration-complete flag; answers, prose
@@ -748,8 +744,7 @@ result skips review only when two or more classed boxes exist, the derived extre
 answer, and its centre is within 40 normalized units of the requested image edge. Arrangement
 questions retain review, while the existing valid singular grid-target skip remains. Pure review predicates, target matching, evidence
 recovery, duplicate suppression, repair-severity selection, box IoU, and point distance live in
-`agents/spatial/evidence_merge.py`; former workflow-private helper names are aliases to these
-functions. Candidate-review failure preserves the primary result, records the visible error, and
+`agents/spatial/evidence_merge.py`. Candidate-review failure preserves the primary result, records the visible error, and
 marks it partial. Successful review performs placeholder replacement and evidence merging before a
 single VRSBench geometry postprocess. During evidence merging, positional vehicle-role labels such
 as `top-most vehicle` and `bottom-most vehicle` may spatially match an explicit small/large vehicle

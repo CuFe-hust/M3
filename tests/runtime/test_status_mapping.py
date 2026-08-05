@@ -9,7 +9,7 @@ from spacers_agent.agents.registry import AgentRegistry
 from spacers_agent.dataset_adapters import AdapterProbe
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudgetFactory, TaskRouter
-from spacers_agent.schemas import CountingResult, ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import CountingResult, AgentResult, ImageRef, UnifiedSample
 from spacers_agent.settings import AppSettings
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
 from spacers_agent.workflows.dataset_runner import DatasetRunner
@@ -50,7 +50,7 @@ def test_counting_status_mapping(payload_status: str, expected: str) -> None:
     [("completed", "succeeded"), ("partial", "partial"), ("failed", "failed")],
 )
 def test_expert_status_mapping(payload_status: str, expected: str) -> None:
-    payload = ExpertResult(expert="general_vqa_expert", answer="answer", status=payload_status)
+    payload = AgentResult(agent_name="general_vqa_agent", answer="answer", status=payload_status)
     assert sample_state_from_payload(payload) == expected
 
 
@@ -87,11 +87,11 @@ async def test_dataset_runner_uses_outcome_status_without_default_success(tmp_pa
         images=[ImageRef(image_id="image-1", path=tmp_path / "image.png", role="image")],
         question="What is visible?",
     )
-    payload = ExpertResult(expert="general_vqa_expert", answer="partial", status="partial")
+    payload = AgentResult(agent_name="general_vqa_agent", answer="partial", status="partial")
     execution = AgentExecution(
         agent_name="general_vqa_agent",
         payload=payload,
-        result_filename="expert_result.json",
+        result_filename="agent_result.json",
     )
     from spacers_agent.schemas import SampleRunStatus
 
@@ -99,7 +99,7 @@ async def test_dataset_runner_uses_outcome_status_without_default_success(tmp_pa
         sample_id=sample.sample_id,
         task=sample.task,
         state="partial",
-        result_path=tmp_path / "expert_result.json",
+        result_path=tmp_path / "agent_result.json",
         updated_at="2026-07-26T00:00:00+00:00",
     )
     outcome = SampleRunOutcome(execution, status, None, None, False)
@@ -124,12 +124,12 @@ class _CompletedAgent:
     async def run(self, sample, context):
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(
-                expert="general_vqa_expert",
+            payload=AgentResult(
+                agent_name="general_vqa_agent",
                 answer="retained answer",
                 status="completed",
             ),
-            result_filename="expert_result.json",
+            result_filename="agent_result.json",
         )
 
 
@@ -168,7 +168,7 @@ async def test_judge_error_is_visible_without_deleting_agent_result(tmp_path: Pa
     outcome = await runner.run_one(sample, tmp_path / "sample", judge_policy="all")
 
     assert outcome.status.state == "succeeded"
-    assert (tmp_path / "sample" / "expert_result.json").is_file()
+    assert (tmp_path / "sample" / "agent_result.json").is_file()
     evaluation = outcome.evaluation
     assert isinstance(evaluation, dict)
     assert evaluation["judge_status"] == "failed"

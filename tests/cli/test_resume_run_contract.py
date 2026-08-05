@@ -59,11 +59,14 @@ def test_resume_run_skips_succeeded_samples():
     # This is a contract test — the logic exists, we just verify the code path
     # can be imported and the relevant classes exist.
     from spacers_agent.schemas import SampleRunStatus  # noqa: F401
-    from spacers_agent.workflow import DatasetRunner  # noqa: F401
+    from spacers_agent.workflows.dataset_runner import DatasetRunner  # noqa: F401
 
 
 def test_resume_run_does_not_call_completed_tiles():
     """PointCountingOrchestrator uses TileCheckpointStore.load_success()
     to avoid re-calling completed tiles on resume.
     """
-    from spacers_agent.counting import PointCountingOrchestrator, TileCheckpointStore  # noqa: F401
+    from spacers_agent.agents.counting.point_pipeline import (  # noqa: F401
+        PointCountingOrchestrator,
+        TileCheckpointStore,
+    )

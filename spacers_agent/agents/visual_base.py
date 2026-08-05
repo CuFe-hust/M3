@@ -1,9 +1,9 @@
 """Shared visual agent base — structured Qwen request dispatch.
 共享视觉 Agent 基类 — 结构化 Qwen 请求分发。
 
-Extracted from ``workflow.VisualExpert``. All agent-specific behaviour
+Shared by concrete visual Agents. All agent-specific behaviour
 is injected via hook methods rather than subclass overrides.
-从 ``workflow.VisualExpert`` 提取。所有特定 Agent 行为通过 hook 方法注入，
+由具体视觉 Agent 共用。所有特定 Agent 行为通过 hook 方法注入，
 而非子类覆盖。
 """
 
@@ -17,7 +17,7 @@ from typing import Any
 
 from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
 from spacers_agent.prompt_catalog import PromptAsset
-from spacers_agent.schemas import ExpertResult, UnifiedSample
+from spacers_agent.schemas import AgentResult, UnifiedSample
 from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype
 
 
@@ -76,7 +76,7 @@ class VisualAgentBase:
             payload.update({"semantic_subtype": subtype, "answer_vocabulary": answer_vocabulary})
         return payload
 
-    async def postprocess(self, sample: UnifiedSample, result: ExpertResult) -> ExpertResult:
+    async def postprocess(self, sample: UnifiedSample, result: AgentResult) -> AgentResult:
         """Post-process the raw model result. Override for geometry fixes.
         对原始模型结果进行后处理。子类可覆盖以应用几何修正。
         """
@@ -84,7 +84,7 @@ class VisualAgentBase:
 
     # ── core execution / 核心执行 ────────────────────────────────────────
 
-    async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> ExpertResult:
+    async def run(self, sample: UnifiedSample, *, artifact_dir: Path) -> AgentResult:
         """Execute the visual agent pipeline. / 执行视觉 Agent 管线。"""
 
         # Read images and build content / 读取图像并构建内容
@@ -102,7 +102,7 @@ class VisualAgentBase:
         prompt_sel = self.select_prompt(sample)
         structured_prompt = (
             prompt_sel.text
-            + f"\n\nReturn valid JSON only. Set expert to {self._agent_name!r}; "
+            + f"\n\nReturn valid JSON only. Set agent_name to {self._agent_name!r}; "
             "put the concise final answer in answer, retain relevant labeled boxes or points "
             "in evidence_items, copy evidence boxes into boxes, use concise factual evidence "
             "strings, and set status to 'completed'."
@@ -122,7 +122,7 @@ class VisualAgentBase:
 
         result = await self._client.complete_json(
             messages=messages,
-            response_model=ExpertResult,
+            response_model=AgentResult,
             request_meta=RequestMeta(
                 request_id=f"{sample.sample_id}:{self._agent_name}",
                 request_hash=request_hash,

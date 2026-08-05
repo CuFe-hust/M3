@@ -194,26 +194,21 @@ def build_dataset_runner(
 
 
 def _validate_router_coverage(registry: AgentRegistry) -> None:
-    """Ensure every expert name referenced by ROUTES has a registered agent.
-    确保 ROUTES 引用的每个 expert 名都有注册 Agent。
+    """Ensure every routed Agent is registered.
+    确保每个被路由引用的 Agent 均已注册。
     """
 
-    from spacers_agent.agents.base import LEGACY_AGENT_NAME_ALIASES
-
-    all_expert_names: set[str] = set()
-    for experts in ROUTES.values():
-        all_expert_names.update(experts)
-
-    missing: list[str] = []
-    for expert_name in sorted(all_expert_names):
-        agent_name = LEGACY_AGENT_NAME_ALIASES.get(expert_name, expert_name)
-        if not registry.contains(agent_name):
-            missing.append(f"{expert_name!r} → {agent_name!r}")
+    routed_agents = {
+        agent_name
+        for agent_names in ROUTES.values()
+        for agent_name in agent_names
+    }
+    missing = [agent_name for agent_name in sorted(routed_agents) if not registry.contains(agent_name)]
 
     if missing:
         raise RuntimeError(
-            f"Router references agents not in registry: {', '.join(missing)}. "
-            f"Registered: {list(registry.names())}"
+            f"Router references unregistered agents: {missing}; "
+            f"registered={list(registry.names())}"
         )
 
 

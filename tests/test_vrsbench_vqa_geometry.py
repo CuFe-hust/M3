@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from spacers_agent.schemas import ExpertResult, VisualEvidence
+from spacers_agent.schemas import AgentResult, VisualEvidence
 from spacers_agent.vqa_geometry import (
     apply_vrsbench_geometry,
     execution_task_for_vrsbench,
@@ -13,9 +13,9 @@ from spacers_agent.vqa_geometry import (
 )
 
 
-def _result(*items: VisualEvidence, answer: str = "model answer") -> ExpertResult:
-    return ExpertResult(
-        expert="spatial_expert",
+def _result(*items: VisualEvidence, answer: str = "model answer") -> AgentResult:
+    return AgentResult(
+        agent_name="spatial_agent",
         answer=answer,
         evidence_items=list(items),
     )
@@ -112,17 +112,17 @@ def test_vrsbench_count_target_leaves_non_vehicle_nouns_for_the_parser() -> None
 
 
 def test_expert_result_normalizes_corner_pair_boxes_and_single_points() -> None:
-    boxed = ExpertResult.model_validate(
+    boxed = AgentResult.model_validate(
         {
-            "expert": "spatial_expert",
+            "agent_name": "spatial_agent",
             "answer": "middle-left",
             "boxes": [[0, 427], [100, 599]],
             "evidence_items": [{"label": "large vehicle", "box": [0, 427], "confidence": 0.9}],
         }
     )
-    pointed = ExpertResult.model_validate(
+    pointed = AgentResult.model_validate(
         {
-            "expert": "spatial_expert",
+            "agent_name": "spatial_agent",
             "answer": "yes",
             "boxes": [[220, 100]],
             "evidence_items": [{"label": "vehicle", "box": [220, 100], "confidence": 0.9}],
@@ -137,9 +137,9 @@ def test_expert_result_normalizes_corner_pair_boxes_and_single_points() -> None:
 
 
 def test_expert_result_repairs_degenerate_boxes_and_resolves_point_conflicts() -> None:
-    result = ExpertResult.model_validate(
+    result = AgentResult.model_validate(
         {
-            "expert": "spatial_expert",
+            "agent_name": "spatial_agent",
             "answer": "yes",
             "boxes": [[999, 249], [0, 249]],
             "evidence_items": [
@@ -165,9 +165,9 @@ def test_expert_result_repairs_degenerate_boxes_and_resolves_point_conflicts() -
 
 
 def test_degenerate_line_without_point_is_retained_only_as_repaired_point() -> None:
-    result = ExpertResult.model_validate(
+    result = AgentResult.model_validate(
         {
-            "expert": "spatial_expert",
+            "agent_name": "spatial_agent",
             "answer": "north-south",
             "boxes": [[100, 250, 300, 250]],
             "evidence_items": [
@@ -292,7 +292,7 @@ def test_status_tokens_are_not_persisted_as_vqa_answers() -> None:
     result = apply_vrsbench_geometry(
         "What kind of area is shown in the image?",
         "object category",
-        ExpertResult(expert="general_vqa_expert", answer="Partial.", status="partial"),
+        AgentResult(agent_name="general_vqa_agent", answer="Partial.", status="partial"),
     )
 
     assert result.answer == ""

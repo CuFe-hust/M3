@@ -1,4 +1,4 @@
-﻿"""Phase 4 - parity of new CountingAgent with frozen VRSBench counting fixtures.
+"""Phase 4 - parity of new CountingAgent with frozen VRSBench counting fixtures.
 Phase 4 - 新 CountingAgent 与冻结 VRSBench 计数 fixture 的等价性。
 """
 
@@ -69,14 +69,14 @@ async def test_new_counting_agent_matches_frozen_vrsbench_count_fixture(
     actual_calls = canonicalize_artifact(client.calls, run_root=run_root, project_root=PROJECT_ROOT)
     assert actual_calls == expected_calls, f"call mismatch for {case_name}"
 
-    # result_filename is expert_result.json for VRSBench quantity
-    # VRSBench 数量的 result_filename 为 expert_result.json
-    assert execution.result_filename == "expert_result.json"
-    assert result_path.name == "expert_result.json"
+    # result_filename is agent_result.json for VRSBench quantity
+    # VRSBench 数量的 result_filename 为 agent_result.json
+    assert execution.result_filename == "agent_result.json"
+    assert result_path.name == "agent_result.json"
     assert "counting_result.json" in execution.additional_results
 
-    # Primary: ExpertResult, additional: CountingResult
-    # 主结果：ExpertResult，补充：CountingResult
+    # Primary: AgentResult, additional: CountingResult
+    # 主结果：AgentResult，补充：CountingResult
     assert execution.payload.status == "completed"
     assert execution.additional_results["counting_result.json"].final_count == 2
 

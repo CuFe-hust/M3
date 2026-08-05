@@ -1,7 +1,7 @@
 {
   "error_code": null,
   "error_message": null,
-  "result_path": "<RUN_ROOT>/samples/multiple_choice_vqa/expert_result.json",
+  "result_path": "<RUN_ROOT>/samples/multiple_choice_vqa/agent_result.json",
   "sample_id": "multiple_choice_vqa",
   "state": "succeeded",
   "task": "multiple_choice_vqa"

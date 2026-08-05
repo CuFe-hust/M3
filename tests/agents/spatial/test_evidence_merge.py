@@ -26,7 +26,7 @@ from spacers_agent.agents.spatial.evidence_merge import (
 )
 from spacers_agent.agents.spatial.candidate_review import SpatialCandidateReviewResult
 from spacers_agent.clients.qwen_transformers import _validate_response
-from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample, VisualEvidence
+from spacers_agent.schemas import AgentResult, ImageRef, UnifiedSample, VisualEvidence
 
 
 def _grid_sample(question: str = "Where is the large vehicle located?") -> UnifiedSample:
@@ -43,8 +43,8 @@ def _grid_sample(question: str = "Where is the large vehicle located?") -> Unifi
 
 def test_needs_candidate_review_replaces_corner_placeholder_once() -> None:
     corner = VisualEvidence(label="large-vehicle", box=[0, 0, 200, 200], confidence=0.9)
-    first = ExpertResult(
-        expert="spatial_expert",
+    first = AgentResult(
+        agent_name="spatial_agent",
         answer="top-left",
         evidence_items=[corner],
         status="completed",
@@ -66,8 +66,8 @@ def test_edge_complete_extreme_vehicle_skips_review() -> None:
     sample = _grid_sample("What object class is the bottom-most vehicle?").model_copy(
         update={"metadata": {"question_type": "object category"}}
     )
-    result = ExpertResult(
-        expert="spatial_expert",
+    result = AgentResult(
+        agent_name="spatial_agent",
         answer="small-vehicle",
         evidence_items=[
             VisualEvidence(label="large-vehicle", box=[10, 300, 100, 600]),
@@ -87,8 +87,8 @@ def test_central_extreme_and_arrangement_keep_review() -> None:
     arrangement = _grid_sample("Are the vehicles arranged in a line?").model_copy(
         update={"metadata": {"question_type": "object arrangement"}}
     )
-    result = ExpertResult(
-        expert="spatial_expert",
+    result = AgentResult(
+        agent_name="spatial_agent",
         answer="small-vehicle",
         evidence_items=[
             VisualEvidence(label="large-vehicle", box=[10, 300, 100, 600]),
@@ -113,8 +113,8 @@ def test_position_target_and_corner_rules_are_explicit() -> None:
 
 
 def test_position_review_recovers_labeled_top_level_boxes() -> None:
-    review = ExpertResult(
-        expert="spatial_expert",
+    review = AgentResult(
+        agent_name="spatial_agent",
         answer="bottom-middle",
         boxes=[[420, 670, 520, 770]],
         evidence_items=[],

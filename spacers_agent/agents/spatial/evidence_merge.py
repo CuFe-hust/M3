@@ -6,14 +6,14 @@ from __future__ import annotations
 
 import re
 
-from spacers_agent.schemas import ExpertResult, UnifiedSample, VisualEvidence
+from spacers_agent.schemas import AgentResult, UnifiedSample, VisualEvidence
 from spacers_agent.vqa_geometry import (
     vrsbench_question_subtype,
     vrsbench_vehicle_class,
 )
 
 
-def needs_candidate_review(sample: UnifiedSample, result: ExpertResult) -> bool:
+def needs_candidate_review(sample: UnifiedSample, result: AgentResult) -> bool:
     """Return whether VRSBench spatial evidence still needs one review pass.
     返回 VRSBench 空间证据是否仍需一次复核。
     """
@@ -48,7 +48,7 @@ def needs_candidate_review(sample: UnifiedSample, result: ExpertResult) -> bool:
 
 def extreme_vehicle_evidence_is_sufficient(
     question: str,
-    result: ExpertResult,
+    result: AgentResult,
     *,
     edge_margin: int = 40,
 ) -> bool:
@@ -120,7 +120,7 @@ def position_target_label(question: str) -> str | None:
 def position_review_evidence(
     question: str,
     subtype: str,
-    review: ExpertResult,
+    review: AgentResult,
 ) -> tuple[list[VisualEvidence], int]:
     """Recover labeled grid-position evidence from top-level review boxes.
     从复核结果的顶层框恢复带标签的九宫格位置证据。

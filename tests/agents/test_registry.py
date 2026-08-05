@@ -15,7 +15,7 @@ from spacers_agent.agents.errors import (
     UnsupportedAgentError,
 )
 from spacers_agent.agents.registry import AgentRegistry
-from spacers_agent.schemas import ExpertResult
+from spacers_agent.schemas import AgentResult
 
 
 # ── minimal agents for testing / 最小 Agent 实例 ────────────────────────
@@ -28,7 +28,7 @@ class _CountingAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="counting", answer="3"),
+            payload=AgentResult(agent_name="counting_agent", answer="3"),
             result_filename="counting_result.json",
         )
 
@@ -40,8 +40,8 @@ class _ChangeAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="change", answer="changed"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="change", answer="changed"),
+            result_filename="agent_result.json",
         )
 
 
@@ -52,8 +52,8 @@ class _GeneralVQAAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="vqa", answer="yes"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="yes"),
+            result_filename="agent_result.json",
         )
 
 
@@ -186,26 +186,6 @@ class TestTaskCoverage:
 
 
 # ── legacy name normalization / 旧名规范化 ───────────────────────────────
-
-
-class TestLegacyNormalization:
-    """LEGACY_AGENT_NAME_ALIASES maps correctly. / LEGACY_AGENT_NAME_ALIASES 正确映射。"""
-
-    def test_expert_to_agent(self):
-        from spacers_agent.agents.base import normalize_agent_name
-        assert normalize_agent_name("counting_expert") == "counting_agent"
-        assert normalize_agent_name("change_expert") == "change_agent"
-        assert normalize_agent_name("general_vqa_expert") == "general_vqa_agent"
-
-    def test_agent_name_passthrough(self):
-        from spacers_agent.agents.base import normalize_agent_name
-        assert normalize_agent_name("counting_agent") == "counting_agent"
-        assert normalize_agent_name("caption_agent") == "caption_agent"
-
-    def test_unknown_raises(self):
-        from spacers_agent.agents.base import normalize_agent_name
-        with pytest.raises(ValueError, match="Unknown agent"):
-            normalize_agent_name("nonexistent_expert")
 
 
 # ── YOLO-disabled construction / YOLO 关闭时构建 ─────────────────────────

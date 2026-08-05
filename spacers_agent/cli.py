@@ -17,7 +17,7 @@ import httpx
 from spacers_agent.imaging import build_core_halo_tiles, read_normalized_image
 from spacers_agent.reporting import summarize_evaluations
 from spacers_agent.run_store import RunStore
-from spacers_agent.schemas import CountingResult, ExpertResult, UnifiedSample
+from spacers_agent.schemas import AgentResult, CountingResult, UnifiedSample
 from spacers_agent.settings import load_settings
 from spacers_agent.data_audit import inspect_dataset_root, write_dataset_audit
 from spacers_agent.evaluation import EvaluationRecord
@@ -319,11 +319,11 @@ def _prompts() -> dict[str, str]:
 async def _smoke_qwen(settings: object, image_path: Path, question: str) -> int:
     """Perform one explicit local Qwen visual smoke request. / 执行一次明确的本地 Qwen 视觉 smoke 请求。"""
 
-    from spacers_agent.schemas import ExpertResult, UnifiedSample, ImageRef
+    from spacers_agent.schemas import AgentResult, UnifiedSample, ImageRef
     client = _client(settings, settings.runs.root / "smoke")
     data = image_path.read_bytes()
-    messages = [{"role": "system", "content": _prompts()["general"]}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(data).decode("ascii")}}, {"type": "text", "text": question}]}]
-    result = await client.complete_json(messages=messages, response_model=ExpertResult, request_meta=RequestMeta(request_id="smoke-qwen", request_hash=__import__("hashlib").sha256((question + str(image_path.stat().st_size)).encode()).hexdigest(), prompt_version="general-vqa-v2", artifact_dir=settings.runs.root / "smoke" / "artifacts"))
+    messages = [{"role": "system", "content": _prompts()["general"] + "\n\nReturn valid JSON only and set agent_name to 'general_vqa_agent'."}, {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64," + __import__("base64").b64encode(data).decode("ascii")}}, {"type": "text", "text": question}]}]
+    result = await client.complete_json(messages=messages, response_model=AgentResult, request_meta=RequestMeta(request_id="smoke-qwen", request_hash=__import__("hashlib").sha256((question + str(image_path.stat().st_size)).encode()).hexdigest(), prompt_version="general-vqa-v2", artifact_dir=settings.runs.root / "smoke" / "artifacts"))
     print(result.model_dump_json(indent=2))
     return 0
 
@@ -531,7 +531,7 @@ async def _judge_vqa_run(
     )
     for sample_dir in sample_dirs:
         sample_path = sample_dir / "sample.json"
-        result_path = sample_dir / "expert_result.json"
+        result_path = sample_dir / "agent_result.json"
         if not sample_path.is_file() or not result_path.is_file():
             continue
         sample = UnifiedSample.model_validate_json(sample_path.read_text(encoding="utf-8"))
@@ -546,7 +546,7 @@ async def _judge_vqa_run(
         if not force and existing.get("judge_status") == "succeeded":
             skipped += 1
             continue
-        result = ExpertResult.model_validate_json(result_path.read_text(encoding="utf-8"))
+        result = AgentResult.model_validate_json(result_path.read_text(encoding="utf-8"))
         references = sample.ground_truth.answers if sample.ground_truth is not None else []
         payload = build_vqa_judge_payload(
             question=sample.question,

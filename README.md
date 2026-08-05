@@ -174,7 +174,7 @@ C:\Users\TZDEZACR\miniconda3\envs\m3\python.exe -m spacers_agent.cli inspect-dat
 
 ## Point Counting Orchestration (Phase 4)
 
-`spacers_agent.counting.PointCountingOrchestrator` is an additive, async workflow for one
+`spacers_agent.agents.counting.point_pipeline.PointCountingOrchestrator` is an additive, async workflow for one
 normalized image and a caller-supplied `CountTargetSpec`. It sends one crop at a time through
 an injected structured client, uses non-overlapping owner cores with halo context, converts only
 validated `0..999` local points to global pixels, and derives `final_count` solely from accepted
@@ -193,9 +193,9 @@ a live client after authorization.
 
 `spacers_agent.routing.TaskRouter` uses fixed rule routes for declared tasks and does not make a
 model call in that case. Only `route_unknown` uses an injected, text-only client; it requires and
-consumes a `CallBudget` entry before the call. `CountingExpert` is a thin display wrapper around
-the existing point pipeline: complete answers are derived from accepted global points, while partial
-results explicitly report completed tiles and remain non-final.
+consumes a `CallBudget` entry before the call. `CountingAgent` runs the existing point pipeline:
+complete answers are derived from accepted global points, while partial results explicitly report
+completed tiles and remain non-final.
 
 Every prompt is an independent versioned file in `prompts/` and `run-init` snapshots all of them.
 The included Phase 5 tests use Mock clients only; no live routing, visual critic, or DeepSeek judge
@@ -247,9 +247,9 @@ python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 
 `run-dataset`, `resume-run`, and `count-image` all enter the same composed runtime:
 `assemble_runtime` → `build_dataset_runner` (dataset commands) or `SampleRunner` (one image) →
-`TaskRouter` → `AgentRegistry` → concrete Agent → counting/VRSBench backend →
-`ArtifactWriter` and optional `JudgeService`. `workflow.py`, `counting.py`, and `experts.py` remain
-only as import-compatible shims; they do not provide a second business path.
+`TaskRouter` → `RoutingDecision` → `AgentRegistry` → concrete `Agent.run(UnifiedSample, AgentContext)` →
+`AgentExecution` → `ArtifactWriter` and optional `JudgeService`. The runtime has no deprecated
+workflow, counting, or expert-module compatibility path.
 
 ## Optional YOLO OBB Counting
 

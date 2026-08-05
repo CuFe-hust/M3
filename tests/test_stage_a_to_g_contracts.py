@@ -7,7 +7,7 @@ import pytest
 from PIL import Image
 
 from spacers_agent.cli import build_parser
-from spacers_agent.counting import PointCountingOrchestrator
+from spacers_agent.agents.counting.point_pipeline import PointCountingOrchestrator
 from spacers_agent.dataset_adapters import DatasetProbeError, get_adapter
 from spacers_agent.schemas import CountTargetSpec, TileCountResponse
 from spacers_agent.settings import CountingSettings, QwenSettings

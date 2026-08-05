@@ -2,7 +2,7 @@
   "deepseek": [],
   "qwen": [
     {
-      "artifact_dir": "samples/succeeded_sample_resume/general_vqa_expert",
+      "artifact_dir": "samples/succeeded_sample_resume/general_vqa_agent",
       "image_inputs": [
         {
           "byte_length": 78,
@@ -11,12 +11,12 @@
         }
       ],
       "image_sha256": null,
-      "match_key": "succeeded_sample_resume|ExpertResult|succeeded_sample_resume:general_vqa_expert",
+      "match_key": "succeeded_sample_resume|AgentResult|succeeded_sample_resume:general_vqa_agent",
       "messages_sha256": "8156458c94c2ad3676af39987cdf91942a8b1a8b6a7d4d9ad464163bf2c5dda1",
       "prompt_version": "general-vqa-v2",
       "request_hash": "db0e4adc5d7139d30edf278bca20c01d43bbfccb0b0d56ec6766731e9255b8d2",
-      "request_id": "succeeded_sample_resume:general_vqa_expert",
-      "response_model": "ExpertResult",
+      "request_id": "succeeded_sample_resume:general_vqa_agent",
+      "response_model": "AgentResult",
       "sample_id": "succeeded_sample_resume"
     }
   ]

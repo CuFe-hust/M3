@@ -33,7 +33,7 @@
   "judge_status": "not_requested",
   "official_question_type": "quantity",
   "prompt_version": "vrsbench-count-hybrid-v1",
-  "route": "SingleSampleAdapter -> TaskRouter.route_vrsbench_vqa -> vrsbench_count_target -> CountingExpert.run -> GeneralVQA count proposal -> RecordingFakeQwen.complete_json -> accepted points -> CountEvidenceLocalizer -> RecordingFakeQwen.complete_json",
+  "route": "SingleSampleAdapter -> TaskRouter.route_vrsbench_vqa -> vrsbench_count_target -> CountingAgent.run -> GeneralVQA count proposal -> RecordingFakeQwen.complete_json -> accepted points -> CountEvidenceLocalizer -> RecordingFakeQwen.complete_json",
   "router_used": true,
   "task_type": "general_vqa"
 }
