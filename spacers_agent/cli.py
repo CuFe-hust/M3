@@ -22,10 +22,9 @@ from spacers_agent.settings import load_settings
 from spacers_agent.data_audit import inspect_dataset_root, write_dataset_audit
 from spacers_agent.evaluation import EvaluationRecord
 from spacers_agent.visualization import render_counting_overlay
-from spacers_agent.clients.base import JsonResponseCache, RequestMeta, VisionLanguageClient
+from models.base import JsonResponseCache, RequestMeta, VisionLanguageClient
+from models.entry import create_model
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
-from spacers_agent.clients.qwen_vllm import QwenVLLMClient
-from spacers_agent.clients.qwen_transformers import QwenTransformersClient
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import (
     VQAAnswerJudgeResult,
@@ -255,11 +254,26 @@ def _summarize_evaluations(input_path: Path, output_path: Path) -> int:
 
 
 def _show_health_metadata(settings: object, service: str, *, live: bool = False) -> int:
-    """Expose endpoint metadata while Phase 1 intentionally avoids networking.
-    在 Phase 1 有意不联网时展示端点元数据。
+    """Expose model metadata; live network checks apply only to DeepSeek.
+    展示模型元数据；仅 DeepSeek 支持 live 网络检查。
     """
 
-    model_settings = settings.models.qwen if service == "qwen" else settings.models.deepseek
+    if service == "qwen":
+        # Qwen now runs only through the local Transformers backend, so there
+        # is no remote endpoint to probe even when --live is requested.
+        # Qwen 现在只走本地 Transformers 后端，即使请求 --live 也没有远程端点可探测。
+        payload = {
+            "service": "qwen",
+            "backend": "transformers",
+            "model": settings.models.qwen.model,
+            "network_check": "local_transformers_only",
+            "live_supported": False,
+        }
+        if live:
+            payload["live_request"] = "skipped_local_transformers_backend"
+        print(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    model_settings = settings.models.deepseek
     payload = {
         "service": service,
         "base_url": model_settings.base_url,
@@ -280,17 +294,14 @@ def _show_health_metadata(settings: object, service: str, *, live: bool = False)
 
 
 def _client(settings: object, run_dir: Path) -> VisionLanguageClient:
-    """Create a live Qwen client with run-scoped safe cache. / 创建带运行范围安全缓存的在线 Qwen 客户端。"""
+    """Create the local Transformers Qwen client with run-scoped safe cache.
+    创建带运行范围安全缓存的本地 Transformers Qwen 客户端。
+    """
 
     cache = JsonResponseCache(run_dir / "cache")
-    if settings.models.qwen.backend == "transformers":
-        return QwenTransformersClient(
-            settings.models.qwen,
-            repair_prompt=DEFAULT_JSON_REPAIR_PROMPT.read_text(encoding="utf-8"),
-            cache=cache,
-        )
-    return QwenVLLMClient(
-        settings.models.qwen,
+    return create_model(
+        "qwen_transformers",
+        settings=settings.models.qwen,
         repair_prompt=DEFAULT_JSON_REPAIR_PROMPT.read_text(encoding="utf-8"),
         cache=cache,
     )

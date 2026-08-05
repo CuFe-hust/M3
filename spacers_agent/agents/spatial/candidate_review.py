@@ -17,7 +17,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
-from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
 from spacers_agent.schemas import ExpertResult, UnifiedSample, VisualEvidence
 from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype
 from spacers_agent.agents.spatial.evidence_merge import (

@@ -22,6 +22,7 @@ from data.loaders import DATASET_REPOS, download_datasets, load_samples
 from data.schema import CanonicalPrediction, CanonicalSample
 from eval.audit_report import AuditReportWriter, build_audit_report, report_dir_for_result, write_deepseek_audit
 from eval.metrics import evaluate_records
+from models.entry import create_model
 from models.qwen3vl import Qwen3VLBaseline, Qwen3VLSettings
 
 
@@ -122,7 +123,7 @@ def main() -> None:
         print("Default audit report unavailable; run inference again with report.enabled=true.")
 
 
-def _load_model(config: dict[str, Any]) -> Qwen3VLBaseline:
+def _load_model(config: dict[str, Any]) -> Any:
     model_config = config.get("model", {})
     settings = Qwen3VLSettings(
         model_id=model_config.get("id", "Qwen/Qwen3-VL-4B-Instruct"),
@@ -133,7 +134,7 @@ def _load_model(config: dict[str, Any]) -> Qwen3VLBaseline:
         max_pixels=model_config.get("max_pixels"),
         local_files_only=bool(model_config.get("local_files_only", False)),
     )
-    return Qwen3VLBaseline(settings)
+    return create_model("qwen3_vl_baseline", settings=settings)
 
 
 def _inspect(dataset_name: str, data_root: Path, limit: int) -> None:

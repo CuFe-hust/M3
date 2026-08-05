@@ -19,7 +19,7 @@ from spacers_agent.agents.counting.evidence import (
     parse_count_answer,
     recover_count_proposal_header,
 )
-from spacers_agent.clients.base import RequestMeta, build_request_hash, image_to_data_url
+from models.base import RequestMeta, build_request_hash, image_to_data_url
 from spacers_agent.schemas import CountTargetSpec, CountingResult, ExpertResult, IssueRecord
 from spacers_agent.vqa_geometry import vrsbench_vehicle_class
 

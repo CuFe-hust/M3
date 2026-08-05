@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from spacers_agent.clients.base import JsonResponseCache, RequestMeta
+from models.base import JsonResponseCache, RequestMeta
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.evaluation import (
     DeepSeekJudgeResult,

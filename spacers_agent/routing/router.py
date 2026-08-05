@@ -10,7 +10,7 @@ from typing import Any, Literal
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
-from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 from spacers_agent.agents.counting.point_pipeline import PointCountingOrchestrator
 from spacers_agent.routing.budget import CallBudget
 from spacers_agent.routing.policies import ROUTES, needs_tiling

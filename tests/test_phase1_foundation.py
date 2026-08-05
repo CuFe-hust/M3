@@ -94,6 +94,7 @@ def test_cli_help_offline_health_and_run_initialization(tmp_path: Path) -> None:
     assert help_result.returncode == 0
     assert "run-init" in help_result.stdout
     assert health_result.returncode == 0
-    assert "deferred_until_phase_2_and_explicit_authorization" in health_result.stdout
+    assert "local_transformers_only" in health_result.stdout
+    assert "backend" in health_result.stdout
     assert run_result.returncode == 0
     assert (tmp_path / "runs" / "cli-test" / "manifest.json").is_file()

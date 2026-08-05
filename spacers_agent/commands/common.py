@@ -6,8 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from spacers_agent.clients.base import JsonResponseCache
-from spacers_agent.clients.qwen_vllm import QwenVLLMClient
+from models.base import JsonResponseCache, VisionLanguageClient
+from models.entry import create_model
 from spacers_agent.settings import AppSettings
 
 EXIT_OK = 0
@@ -46,11 +46,18 @@ def prompts() -> dict[str, str]:
     }
 
 
-def qwen_client(settings: AppSettings, run_dir: Path) -> QwenVLLMClient:
-    """Create the run-scoped Qwen client and cache. / 创建运行范围的 Qwen 客户端和缓存。"""
+def qwen_client(settings: AppSettings, run_dir: Path) -> VisionLanguageClient:
+    """Create the run-scoped local Transformers Qwen client and cache.
+    创建运行范围的本地 Transformers Qwen 客户端和缓存。
+    """
 
     repair = (project_root() / "prompts" / "json_repair_v1.md").read_text(encoding="utf-8")
-    return QwenVLLMClient(settings.models.qwen, repair_prompt=repair, cache=JsonResponseCache(run_dir / "cache"))
+    return create_model(
+        "qwen_transformers",
+        settings=settings.models.qwen,
+        repair_prompt=repair,
+        cache=JsonResponseCache(run_dir / "cache"),
+    )
 
 
 def emit_summary(payload: dict[str, Any]) -> None:

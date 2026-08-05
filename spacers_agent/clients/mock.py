@@ -10,7 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from spacers_agent.clients.base import ModelT, RequestMeta, VisionLanguageClient
+from models.base import ModelT, RequestMeta, VisionLanguageClient
 
 
 class MockVisionClient(VisionLanguageClient):

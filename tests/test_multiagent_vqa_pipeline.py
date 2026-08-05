@@ -9,9 +9,9 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel
 
-from spacers_agent.clients.base import RequestMeta, image_to_data_url
+from models.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
-from spacers_agent.clients.qwen_transformers import (
+from models.qwen_transformers import (
     QwenTransformersClient,
     _KernelCacheView,
     _expose_qwen35_gdn_forward_signature,
@@ -200,7 +200,7 @@ async def test_transformers_client_runs_local_model_and_persists_trace(tmp_path:
     )
     processor = _FakeProcessor(raw)
     client = QwenTransformersClient(
-        QwenSettings(backend="transformers", model="local", max_tokens=32),
+        QwenSettings(model="local", max_tokens=32),
         model=_FakeModel(),
         processor=processor,
     )
@@ -241,7 +241,7 @@ async def test_qwen35_transformers_client_disables_thinking_for_json(tmp_path: P
     )
     processor = _FakeProcessor(raw)
     client = QwenTransformersClient(
-        QwenSettings(backend="transformers", model="local-qwen35", max_tokens=32),
+        QwenSettings(model="local-qwen35", max_tokens=32),
         model=_FakeQwen35Model(),
         processor=processor,
     )
@@ -273,7 +273,6 @@ def test_qwen_settings_opt_in_to_pinned_local_kernel_snapshot(
 
     monkeypatch.setattr("huggingface_hub.snapshot_download", _snapshot_download)
     settings = QwenSettings(
-        backend="transformers",
         model="local-qwen35",
         device_map="cuda:0",
         use_kernels=True,
@@ -403,7 +402,7 @@ async def test_transformers_client_repairs_invalid_json_without_resending_image(
     )
     processor = _FakeProcessor(['{"expert":"spatial_expert",', repaired])
     client = QwenTransformersClient(
-        QwenSettings(backend="transformers", model="local", max_tokens=32),
+        QwenSettings(model="local", max_tokens=32),
         repair_prompt="Repair JSON without adding evidence.",
         model=_FakeModel(),
         processor=processor,
@@ -447,7 +446,7 @@ async def test_transformers_client_prunes_only_incomplete_truncated_evidence_tai
     )
     processor = _FakeProcessor(raw)
     client = QwenTransformersClient(
-        QwenSettings(backend="transformers", model="local", max_tokens=32),
+        QwenSettings(model="local", max_tokens=32),
         repair_prompt="Repair JSON without adding evidence.",
         model=_FakeModel(),
         processor=processor,
@@ -515,7 +514,7 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     settings = AppSettings(
         paths=PathSettings(dataset_root=dataset_root),
         runs=RunSettings(root=tmp_path),
-        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+        models={"qwen": {"model": "local-qwen"}},
     )
     summary = await _dataset_runner(
         settings, get_adapter("VRSBench"), run_dir, client, _Judge(), "all"
@@ -575,7 +574,7 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
     settings = AppSettings(
         paths=PathSettings(dataset_root=dataset_root),
         runs=RunSettings(root=tmp_path),
-        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+        models={"qwen": {"model": "local-qwen"}},
     )
     summary = await _dataset_runner(
         settings, get_adapter("VRSBench"), run_dir, client, _Judge(), "all"
@@ -643,7 +642,7 @@ async def test_vrsbench_quantity_localizes_missing_boxes_and_drops_border_fragme
     settings = AppSettings(
         paths=PathSettings(dataset_root=dataset_root),
         runs=RunSettings(root=tmp_path),
-        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+        models={"qwen": {"model": "local-qwen"}},
     )
     summary = await _dataset_runner(
         settings, get_adapter("VRSBench"), run_dir, client, _Judge(), "all"
@@ -988,7 +987,7 @@ async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path
     settings = AppSettings(
         paths=PathSettings(dataset_root=dataset_root),
         runs=RunSettings(root=tmp_path),
-        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+        models={"qwen": {"model": "local-qwen"}},
     )
     summary = await _dataset_runner(
         settings, get_adapter("VRSBench"), run_dir, qwen, _Judge(), "all"
@@ -1032,7 +1031,7 @@ async def test_judge_vqa_run_reuses_persisted_qwen_result_and_rebuilds_report(tm
     settings = AppSettings(
         paths=PathSettings(dataset_root=dataset_root),
         runs=RunSettings(root=tmp_path),
-        models={"qwen": {"backend": "transformers", "model": "local-qwen"}},
+        models={"qwen": {"model": "local-qwen"}},
     )
 
     exit_code = await _judge_vqa_run(

@@ -108,7 +108,7 @@ def build_multiagent_vqa_report(
             "completed_samples": len(sample_dirs),
             "model": {
                 "id": qwen.model,
-                "backend": qwen.backend,
+                "backend": "transformers",
                 "dtype": qwen.dtype,
                 "max_new_tokens": qwen.max_tokens,
                 "local_files_only": qwen.local_files_only,

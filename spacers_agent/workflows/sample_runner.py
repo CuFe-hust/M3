@@ -12,7 +12,7 @@ from typing import Literal
 
 from spacers_agent.agents.base import AgentExecution, AgentPayload, AgentContext
 from spacers_agent.agents.registry import AgentRegistry
-from spacers_agent.clients.base import VisionLanguageClient
+from models.base import VisionLanguageClient
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudget, CallBudgetFactory, TaskRouter
 from spacers_agent.routing.schemas import RoutingDecision, normalize_agent_name
@@ -314,7 +314,7 @@ def _trace_payload(
         {
             "router_used": True,
             "task_type": decision.task,
-            "qwen_backend": settings.models.qwen.backend,
+            "qwen_backend": "transformers",
             "inference_seconds": inference_seconds,
             "execution_task": decision.task,
             "routing_source": decision.router_source,

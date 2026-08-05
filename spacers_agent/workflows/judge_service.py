@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from spacers_agent.clients.base import RequestMeta
+from models.base import RequestMeta
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.evaluation import (
     VQAAnswerJudgeResult,

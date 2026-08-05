@@ -248,10 +248,31 @@ Prohibited:
 Allowed:
 
 - Loading the base multimodal model;
+- Keeping one folder per main-flow model with its wrapper and local weights under `weights/`;
+  每个主流程模型一个目录，封装与本地权重放在 `weights/` 下；
+- Constructing all main-flow models through the unified entry
+  `models.entry.create_model(name, **kwargs)`; adding a model means adding one
+  `@register` builder function in `models/entry.py`;
+  所有主流程模型通过统一入口 `models.entry.create_model(name, **kwargs)` 构建；
+  新增模型只需在 `models/entry.py` 增加一个 `@register` 构建函数；
 - Loading LoRA, adapters, and projectors;
 - Managing the processor, tokenizer, and image processor;
 - Providing canonical `generate` / `forward` interfaces;
 - Loading and saving lightweight modules required by the project.
+
+The active main-flow entries are `qwen_transformers` (shared local Transformers
+client in `models/qwen_transformers.py`), `qwen3_vl_baseline` (sync baseline in
+`models/qwen3_vl/baseline.py`), and `qwen3_5_transformers` (same shared client
+via `models/qwen3_5/model.py`). `models/qwen3vl.py` is a backward-compatible
+alias for the baseline wrapper; `spacers_agent/clients/` keeps only the
+test/training clients `DeepSeekJudgeClient` and `MockVisionClient`, which are
+not part of the main-flow models/ entry.
+当前主流程入口为 `qwen_transformers`（`models/qwen_transformers.py` 中的共享
+本地 Transformers 客户端）、`qwen3_vl_baseline`（`models/qwen3_vl/baseline.py`
+中的同步基线）与 `qwen3_5_transformers`（经 `models/qwen3_5/model.py` 复用共享
+客户端）。`models/qwen3vl.py` 是基线封装的向后兼容别名；
+`spacers_agent/clients/` 仅保留测试/训练客户端 `DeepSeekJudgeClient` 与
+`MockVisionClient`，它们不属于主流程 models/ 入口。
 
 Prohibited:
 
@@ -283,6 +304,13 @@ Prohibited:
 - Writing training loops;
 - Hard-coding local dataset paths;
 - Returning temporary dictionaries incompatible with the canonical sample format.
+
+Dataset reading is unified in `data/loader.py`: `load_dataset(dataset_name, data_root=None, limit=None)`
+streams `CanonicalSample` objects lazily (images are decoded per sample), and `limit` caps the number of
+samples for smoke tests; `load_samples` is a backward-compatible alias. `data/downloader.py` contains
+official Hugging Face downloads organized as one function per dataset, and `data/validator.py` validates
+the four dataset roots (`vrsbench`, `xlrs_bench`, `levir_cc`, `mme_real_rs`). `data/loaders.py` is now a
+compatibility re-export shim for existing callers.
 
 ### 3.7 `eval/`
 
@@ -418,7 +446,9 @@ Do not hard-code local absolute paths in code. Real local configurations should 
 ## 6. Current Qwen3-VL-4B Baseline Interface
 
 The currently implemented zero-shot baseline entry point is `main.py`; its model wrapper is
-located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint.
+located in `models/qwen3_vl/baseline.py` (importable through the compatibility
+alias `models/qwen3vl.py`) and uses the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint.
+`main.py` constructs it through the unified entry `create_model("qwen3_vl_baseline", ...)`.
 It accepts a JSON configuration file
 with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
 not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
@@ -442,6 +472,13 @@ The VRSBench VQA adapter accepts the official evaluation release fields `image_i
 the question identifier remains the canonical sample ID when several questions share one image.
 XLRS-Bench full English captioning and grounding releases are reported separately from the
 official Lite VQA release; these scores must not be labelled as a single full-XLRS score.
+
+The unified streaming interface lives in `data/loader.py` (`load_dataset`/`load_samples`). The default
+local data root is `/data` with dataset subdirectories `vrsbench/`, `xlrs_bench/`, `levir_cc/`, and
+`mme_real_rs/`; callers may pass `data_root` explicitly or set the `DATASET_ROOT` environment variable.
+`python -m data.loader --dataset <target> --limit <n>` prints canonical samples for smoke tests,
+`python -m data.downloader --root /data [--datasets ...]` downloads official releases, and
+`python -m data.validator --root /data [--datasets ...]` checks local dataset structure.
 
 The `evaluate --deepseek-proxy` command reads `DEEPSEEK_API_KEY` only from the runtime
 environment and produces a non-official `deepseek_semantic_match_proxy` for VRSBench VQA.
@@ -495,13 +532,21 @@ explicit user authorization.
 
 ## 8. Phase 2 Structured Client Interfaces
 
-`spacers_agent.clients.VisionLanguageClient` defines async `complete_json` requests shared by
-the future Qwen client and the offline `MockVisionClient`. `QwenVLLMClient` is an
-OpenAI-compatible implementation that is inert until a caller invokes it with a key supplied
-through `QWEN_API_KEY` (or the configured environment-variable name). It supports bounded
-429/5xx/timeout retries, JSON fence normalization, one JSON repair request, Pydantic
-validation, a request-hash cache, and artifact persistence for raw responses, parsed JSON,
-validation errors, latency, and available token counters.
+`models.base.VisionLanguageClient` defines the async `complete_json` contract shared by
+the local Transformers Qwen client and the offline `MockVisionClient`. Main-flow models are
+constructed only through `models.entry.create_model`; the remote vLLM client
+`QwenVLLMClient` has been removed. `QwenTransformersClient` (in
+`models/qwen_transformers.py`) supports JSON fence normalization, one JSON repair request,
+Pydantic validation, a request-hash cache, local truncation recovery, and artifact
+persistence for raw responses, parsed JSON, validation errors, latency, and token counters.
+`DeepSeekJudgeClient` and `MockVisionClient` remain in `spacers_agent/clients/` for
+test/training flows and are not registered in the main-flow entry.
+`models.base.VisionLanguageClient` 定义共享的异步 `complete_json` 契约；主流程模型只通过
+`models.entry.create_model` 构建，远程 vLLM 客户端 `QwenVLLMClient` 已删除。
+`QwenTransformersClient` 支持 JSON fence 规范化、一次 JSON 修复、Pydantic 校验、
+请求哈希缓存、本地截断恢复以及原始响应/解析 JSON/校验信息/耗时/token 产物持久化。
+`DeepSeekJudgeClient` 与 `MockVisionClient` 仍保留在 `spacers_agent/clients/`，
+供测试/训练流程使用，不注册进主流程入口。
 
 `RequestMeta` and persisted request metadata exclude API keys and Base64 image data. Data URLs
 may be sent only by a live caller; `sanitize_messages` replaces them with a hash and encoded
@@ -628,7 +673,7 @@ dataset.
 
 `spacers_agent.dataset_adapters` intentionally does not reuse the baseline heuristics. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a local version-1 `spacers_adapter.json` that declares the samples file and exact field mappings. VRSBench general VQA instead has a strict read-only adapter for the audited official `VRSBench_EVAL_vqa.json` layout and requires `image_id`, `question`, `ground_truth`, `question_id`, and `type`. The official `type` and source `dataset` values are preserved in sample metadata. `probe()` validates the selected layout and reports observed fields before any sample runs. The source dataset is only read; no download or fallback inference occurs.
 
-The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Setting `models.qwen.backend: transformers` loads `models.qwen.model` directly with `AutoProcessor` and the native class selected from `AutoConfig.model_type`: `Qwen3VLForConditionalGeneration` for Qwen3-VL and `Qwen3_5ForConditionalGeneration` for Qwen3.5. Qwen3.5 chat rendering sets `enable_thinking: false` so its default `<think>` prefix cannot violate the existing JSON-only Agent contract; Qwen3-VL chat rendering is unchanged. The optional `models.qwen.use_kernels` flag defaults to `false` and is forwarded only for Qwen3.5; NVIDIA GB10 machine-local configurations may enable it after installing the optional Hugging Face `kernels` package. The client first resolves the official `Qwen3_5GatedDeltaNet` Hub kernel at the fixed revision into the Hugging Face cache, then supplies that snapshot as a local-only `KernelConfig` mapping. This preserves the pinned code while disabling Transformers' global mapping inheritance, so unrelated kernels such as `kernels-community/activation` are not resolved in an offline deployment. An explicit `device_map: cuda:0` avoids unintended CPU offload when the checkpoint fits, while the repository default remains `auto`. This backend does not start or contact vLLM. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingExpert`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialExpert`; every other or unknown form falls back to `GeneralVQAExpert` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
+The new CLI preserves `main.py` and adds `health --live`, `smoke-qwen`, `count-image`, `run-dataset`, `resume-run`, `evaluate-run`, and `judge-vqa-run`. Qwen models always run through the local Transformers backend: `create_model("qwen_transformers", ...)` loads `models.qwen.model` directly with `AutoProcessor` and the native class selected from `AutoConfig.model_type`: `Qwen3VLForConditionalGeneration` for Qwen3-VL and `Qwen3_5ForConditionalGeneration` for Qwen3.5. Qwen3.5 chat rendering sets `enable_thinking: false` so its default `<think>` prefix cannot violate the existing JSON-only Agent contract; Qwen3-VL chat rendering is unchanged. The optional `models.qwen.use_kernels` flag defaults to `false` and is forwarded only for Qwen3.5; NVIDIA GB10 machine-local configurations may enable it after installing the optional Hugging Face `kernels` package. The client first resolves the official `Qwen3_5GatedDeltaNet` Hub kernel at the fixed revision into the Hugging Face cache, then supplies that snapshot as a local-only `KernelConfig` mapping. This preserves the pinned code while disabling Transformers' global mapping inheritance, so unrelated kernels such as `kernels-community/activation` are not resolved in an offline deployment. An explicit `device_map: cuda:0` avoids unintended CPU offload when the checkpoint fits, while the repository default remains `auto`. This path never starts or contacts vLLM; `health qwen --live` therefore reports local metadata only (`network_check: local_transformers_only`) and only DeepSeek supports live endpoint checks. `judge-vqa-run` reads persisted VQA samples and predictions, calls only the text-only DeepSeek Judge, updates evaluation/trace artifacts, and rebuilds the HTML report without constructing a Qwen client. `TaskRouter.route_vrsbench_vqa` treats the official VRSBench `type` as audit metadata rather than a dispatch contract. Explicit numerical questions route to `CountingExpert`; only high-confidence geometry tasks such as direct single-target grid location, vehicle extreme-category, orientation, and arrangement route to `SpatialExpert`; every other or unknown form falls back to `GeneralVQAExpert` without a router-model call. Closed answer vocabularies are supplied only when the question text itself entails them. The canonical sample remains `general_vqa`. Quantity answers are derived only from accepted global points. Spatial/general results retain labeled `0..999` top-left-raster boxes or points; supported top/bottom and three-by-three position answers may be deterministically derived from box centers. Cardinal-direction answers are not programmatically overridden when north metadata is absent.
 
 The Qwen3.5 GB10 mapping uses the Hub repository loader with pinned revision
 `ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172`; deployments cache that revision once before enabling

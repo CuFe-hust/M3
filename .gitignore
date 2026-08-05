@@ -4,6 +4,11 @@
 datasets/
 model_cache/
 hf_cache/
+.cache/
+
+# Local editor and scratch artifacts
+.vscode/
+tank_*.jpg
 
 # Baseline outputs and local experiment settings
 outputs/
@@ -11,6 +16,10 @@ config/local*.json
 .env
 configs/local*.yaml
 .firecrawl/
+
+# Local dataset tarballs and fine-tuning data (never commit)
+data/*.tar
+data/微调数据集/
 
 # Model weights (local only, never commit)
 weights/
@@ -22,6 +31,9 @@ weights/
 *.onnx
 *.om
 *.engine
+models/*/weights/
+models/InternVL3_5-8B/
+models/*.tgz
 
 # User-authorized deploy artifact tracked through Git LFS
 !models/yolo_obb/yolov5m_obb_csl_dotav20.onnx

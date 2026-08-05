@@ -7,7 +7,7 @@ from __future__ import annotations
 from spacers_agent.agents.base import Agent, AgentContext, AgentExecution, AgentName
 from spacers_agent.agents.spatial.candidate_review import SpatialCandidateReviewer
 from spacers_agent.agents.visual_base import PromptSelection, VisualAgentBase
-from spacers_agent.clients.base import VisionLanguageClient
+from models.base import VisionLanguageClient
 from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.schemas import UnifiedSample
 from spacers_agent.vqa_geometry import apply_vrsbench_geometry, vrsbench_question_subtype

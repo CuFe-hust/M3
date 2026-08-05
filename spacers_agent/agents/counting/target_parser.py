@@ -8,7 +8,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 from spacers_agent.schemas import CountTargetSpec
 
 

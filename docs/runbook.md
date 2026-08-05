@@ -70,7 +70,12 @@ The local suite validates geometry, schema invariants, sequential Mock calls, re
 
 `run-dataset` requires an explicit `spacers_adapter.json` in the selected `--root`. The adapter rejects unproven layouts and prints the observed field names; source datasets are never modified. Successful sample status files are reused by `--resume`, while partial and failed samples remain visible in `dataset_summary.json`.
 
-For Spark, copy `scripts/server/env.example` to a protected server-only environment file and run `scripts/server/bootstrap.sh` before selecting vLLM parameters. `start_qwen_vllm.sh` binds the configured host (the example is loopback), `healthcheck.sh` calls `/v1/models`, and `run_dataset.sh`/`resume_dataset.sh` invoke the new CLI. No real server, tunnel, model download, dataset run, start/stop, or API smoke test was performed during local development.
+For Spark, copy `scripts/server/env.example` to a protected server-only environment file, run
+`scripts/server/bootstrap.sh` to record server facts, and set `QWEN_MODEL` to the local checkpoint
+path. Qwen runs through the local Transformers backend only; the remote vLLM client and its
+start/stop/health scripts have been removed. `run_dataset.sh`/`resume_dataset.sh` invoke the new
+CLI. No real server, tunnel, model download, dataset run, start/stop, or API smoke test was
+performed during local development.
 
 `count-image` accepts `--target-spec`, `--resume`, `--force`, `--no-seam-verify`, and call-budget limits. It builds a canonical one-image sample and enters `assemble_runtime()`/`SampleRunner`, so it has the same Router, Registry, CountingAgent, artifacts, and point-derived count invariant as `run-dataset`. Its final stdout line is a JSON summary and its exit code distinguishes data, Qwen, partial, Judge, and invariant failures. `run-dataset` supports comma-separated tasks, a stable SHA-256 sample-ID shard, `--max-samples 0` for no limit, explicit sample-ID filtering, start index, fail-fast, and append-only `predictions.jsonl`. The default sample concurrency is one; each image still processes tiles sequentially.
 

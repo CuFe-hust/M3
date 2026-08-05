@@ -16,7 +16,7 @@ from typing import Any, Literal
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
 
-from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
 from spacers_agent.imaging import (
     build_core_halo_tiles,
     convert_local_point_to_global,
@@ -539,7 +539,7 @@ class PointCountingOrchestrator:
         ]
         request_hash = build_request_hash(
             model=self.qwen.model,
-            generation={"temperature": self.qwen.temperature, "max_tokens": self.qwen.max_tokens},
+            generation={"temperature": 0.0, "max_tokens": self.qwen.max_tokens},
             prompt_version=self.counting.prompt_version,
             messages=messages,
             image_sha256=image_hash,
@@ -581,7 +581,7 @@ class PointCountingOrchestrator:
         ]
         request_hash = build_request_hash(
             model=self.qwen.model,
-            generation={"temperature": self.qwen.temperature, "max_tokens": self.qwen.max_tokens},
+            generation={"temperature": 0.0, "max_tokens": self.qwen.max_tokens},
             prompt_version="missing-point-review-v3",
             messages=messages,
             image_sha256=image_hash,
@@ -664,7 +664,7 @@ class PointCountingOrchestrator:
                 {"role": "system", "content": self.seam_prompt},
                 {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_to_data_url(image_bytes)}}, {"type": "text", "text": json.dumps({"conflict_id": conflict.conflict_id, "first_point": [first.global_x_px - left, first.global_y_px - top], "second_point": [second.global_x_px - left, second.global_y_px - top]}, ensure_ascii=False)}]},
             ]
-            request_hash = build_request_hash(model=self.qwen.model, generation={"temperature": self.qwen.temperature, "max_tokens": self.qwen.max_tokens}, prompt_version="seam-verify-v1", messages=messages, image_sha256=hashlib.sha256(image_bytes).hexdigest())
+            request_hash = build_request_hash(model=self.qwen.model, generation={"temperature": 0.0, "max_tokens": self.qwen.max_tokens}, prompt_version="seam-verify-v1", messages=messages, image_sha256=hashlib.sha256(image_bytes).hexdigest())
             try:
                 if self.before_qwen_call is not None:
                     self.before_qwen_call()

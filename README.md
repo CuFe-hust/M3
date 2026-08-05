@@ -49,6 +49,16 @@ Download the official data releases:
 python main.py --config config/local.baseline.json download
 ```
 
+Dataset reading is unified in `data/loader.py`, which streams canonical samples lazily and
+accepts `limit` for smoke tests. The default local data root is `/data` (override with
+`DATASET_ROOT` or `--root`). The new module entry points are:
+
+```bash
+python -m data.loader --dataset vrsbench_vqa --root /data --limit 3
+python -m data.downloader --root /data --datasets vrsbench
+python -m data.validator --root /data --datasets vrsbench
+```
+
 Inspect each release before a full run. This prints the canonical sample derived from its
 released fields and fails visibly if a source release changes its format:
 
@@ -156,10 +166,13 @@ network request.
 
 ## Structured Client Development (Phase 2)
 
-The project now includes an async OpenAI-compatible Qwen client and an offline Mock client.
-The default test suite injects local fake completions; it does not contact an endpoint. A live
-Qwen call remains a separately authorized action and requires `QWEN_API_KEY` only in the
-process environment or ignored `.env` file.
+The project now includes a unified local Transformers Qwen client and an offline Mock client.
+Main-flow models are constructed only through the unified entry
+`models.entry.create_model(name, ...)` (entries: `qwen_transformers`,
+`qwen3_vl_baseline`, `qwen3_5_transformers`); the remote vLLM client has been removed.
+The default test suite injects local fake completions; it does not contact an endpoint, and
+Qwen inference uses no API key or remote server. `DeepSeekJudgeClient` and `MockVisionClient`
+remain in `spacers_agent/clients/` for test/training flows.
 
 ## Read-Only Dataset Audit (Phase 3)
 
@@ -296,7 +309,6 @@ To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL ch
 ```yaml
 models:
   qwen:
-    backend: transformers
     model: /path/to/Qwen3_vl_4b_instruct
     dtype: bfloat16
     device_map: auto

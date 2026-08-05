@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, Union, runtime_checkable
 
-from spacers_agent.clients.base import VisionLanguageClient
+from models.base import VisionLanguageClient
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing.budget import CallBudget
 from spacers_agent.schemas import CountingResult, ExpertResult

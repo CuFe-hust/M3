@@ -130,7 +130,7 @@ def test_baseline_config_enables_local_files_only(monkeypatch) -> None:
         def __init__(self, settings: Qwen3VLSettings) -> None:
             captured.append(settings)
 
-    monkeypatch.setattr(baseline_main, "Qwen3VLBaseline", FakeBaseline)
+    monkeypatch.setattr("models.qwen3_vl.baseline.Qwen3VLBaseline", FakeBaseline)
     baseline_main._load_model(
         {
             "model": {

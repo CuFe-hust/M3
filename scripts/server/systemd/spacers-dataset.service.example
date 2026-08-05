@@ -1,6 +1,5 @@
 [Unit]
 Description=Spacers dataset runner
-After=qwen-vllm.service
 [Service]
 Type=oneshot
 EnvironmentFile=%h/.config/spacers-agent/server.env

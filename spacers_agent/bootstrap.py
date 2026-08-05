@@ -25,7 +25,7 @@ from spacers_agent.agents.counting.backends.vrsbench_qwen_count import VRSBenchQ
 from spacers_agent.agents.general_vqa.agent import GeneralVQAAgent
 from spacers_agent.agents.grounding.agent import GroundingAgent
 from spacers_agent.agents.spatial.agent import SpatialAgent
-from spacers_agent.clients.base import VisionLanguageClient
+from models.base import VisionLanguageClient
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.dataset_adapters import DatasetAdapter
 from spacers_agent.prompt_catalog import PromptCatalog

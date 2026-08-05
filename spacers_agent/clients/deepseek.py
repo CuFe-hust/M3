@@ -16,7 +16,7 @@ import httpx
 from openai import APIConnectionError, APITimeoutError, AsyncOpenAI, InternalServerError, RateLimitError
 from pydantic import BaseModel, ValidationError
 
-from spacers_agent.clients.base import CacheEntry, JsonResponseCache, ModelT, RequestMeta
+from models.base import CacheEntry, JsonResponseCache, ModelT, RequestMeta
 from spacers_agent.evaluation import DeepSeekJudgeResult
 from spacers_agent.settings import DeepSeekSettings
 

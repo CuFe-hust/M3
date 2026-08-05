@@ -56,7 +56,7 @@ def build_multiagent_counting_report(
     metadata = {
         "dataset": "counting", "completed_samples": len(sample_dirs), "partial_samples": state_counts.get("partial", 0),
         "failed_samples": state_counts.get("failed", 0),
-        "model": {"id": qwen.model, "backend": qwen.backend, "dtype": qwen.dtype, "max_new_tokens": qwen.max_tokens,
+        "model": {"id": qwen.model, "backend": "transformers", "dtype": qwen.dtype, "max_new_tokens": qwen.max_tokens,
                   "local_files_only": qwen.local_files_only, "yolo_enabled": True},
         "model_load_seconds": model_load_seconds,
         "pipeline": ["DatasetAdapter", "SampleRunner", "CountingAgent", "BackendSelector", "YoloOBBCountingBackend | QwenPointCountingBackend", "AuditReportWriter"],

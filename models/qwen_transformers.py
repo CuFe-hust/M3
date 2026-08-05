@@ -24,7 +24,7 @@ os.environ["TRANSFORMERS_OFFLINE"] = "1"
 from PIL import Image
 from pydantic import BaseModel, ValidationError
 
-from spacers_agent.clients.base import (
+from models.base import (
     CacheEntry,
     JsonResponseCache,
     ModelT,

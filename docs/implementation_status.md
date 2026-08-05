@@ -71,7 +71,7 @@ Git 工作树在审计前为空。为满足仓库的隔离开发要求，已仅�
 | --- | --- | --- |
 | `data/schema.py` | `CanonicalSample`、`CanonicalPrediction` 及序列化方法 | 现为 dataclass，任务类型不含 `count`；如迁移到 Pydantic v2，需保持既有基线字段和持久化 JSONL 兼容。 |
 | `data/loaders.py` | VRSBench、MME-RealWorld、XLRS、LEVIR-CC 基线适配器和图像解析辅助函数 | 目前包含候选字段/文件名推断；新 Adapter 必须先以真实本地布局验证，不可沿用猜测作为事实。 |
-| `models/qwen3vl.py` | 统一样本到统一预测的本地 Transformers 推理路径 | 必须保留，不能被后续 vLLM 客户端替换或破坏。 |
+| `models/qwen3_vl/baseline.py`（兼容别名 `models/qwen3vl.py`） | 统一样本到统一预测的本地 Transformers 推理路径 | 必须保留；主流程模型统一经 `models/entry.py` 构建，vLLM 远程客户端已删除。 |
 | `eval/metrics.py` | 已有确定性文本/框指标和可选 DeepSeek 代理指标 | 不改动现有指标、分割或答案读取；新的计数指标应独立加入，DeepSeek 仅作文本与结构化证据判断。 |
 | `main.py` | 基线 CLI、配置读取和 JSONL 记录 | 新 CLI 应避免破坏现有 `python main.py --config ...` 入口。 |
 | `tests/` | Schema 与基线 Adapter 的 pytest 覆盖 | 可作为新增几何、配置、manifest、CLI 测试的风格参考。 |
@@ -102,16 +102,14 @@ Git 工作树在审计前为空。为满足仓库的隔离开发要求，已仅�
 
 ## 云端环境待确认项
 
-实施指令预设 vLLM OpenAI-compatible Qwen 服务和 DeepSeek API；但当前用户约束是“所有代码只在本地完成，不连服务器、不使用云端，除非代码完成且明确要求”。因此，以下均被延后，不能在当前阶段验证：
+实施指令预设云端 DeepSeek API；但当前用户约束是“所有代码只在本地完成，不连服务器、不使用云端，除非代码完成且明确要求”。Qwen 已统一为本地 Transformers 后端，远程 vLLM 客户端与服务脚本已删除。因此，以下均被延后，不能在当前阶段验证：
 
-- `http://127.0.0.1:8000/v1` 是否有本地 vLLM 服务、服务模型名及其 JSON 输出兼容性；
-- 远端 Linux GPU、vLLM 版本、显存、并发及图像限制；
 - DeepSeek 凭据、网络连通性、模型可用性和响应格式；
 - 模型、数据集和第三方运行时是否已完整安装。
 
-第 02 节的服务器审计、vLLM 安装和锁定、模型 SHA256 清单、`vllm serve`、服务器/隧道健康检查以及 OOM 调优均需要后续明确授权，且只能在实际服务器环境执行。
+第 02 节的服务器审计、本地 Qwen 权重与 SHA256 清单、DeepSeek 健康检查以及显存/OOM 调优均需要后续明确授权，且只能在实际服务器环境执行。
 
-后续实现可提供不联网的 Mock 客户端和纯程序几何测试；真实 Qwen/DeepSeek smoke test 必须等用户完成代码后明确授权。
+后续实现可提供不联网的 Mock 客户端和纯程序几何测试；真实 Qwen 本地推理与 DeepSeek smoke test 必须等用户完成代码后明确授权。
 
 ## 可复用 / 需新增 / 冲突 / 风险
 
@@ -123,13 +121,13 @@ Git 工作树在审计前为空。为满足仓库的隔离开发要求，已仅�
 
 Phase 1 已新增 `spacers_agent/` 包、`python -m spacers_agent.cli`、Pydantic v2 配置模型、`.env.example`、机器可读错误码、结构化 JSONL 事件、run manifest、配置与 Prompt 快照以及 CLI 测试。后续 Phase 2--10 还需要纯程序切片几何、Mock/VLLM 客户端、点式计数、边界复核、恢复、数据检查和报告功能。
 
-Phase 2 已新增 `VisionLanguageClient` 异步协议、`QwenVLLMClient`、`MockVisionClient`、Base64 data URI、请求哈希缓存、有限重试、Markdown JSON fence 清理、Pydantic 校验、一次 JSON 修复、raw/parsed/validation artifact 落盘和 token/latency 记录。所有验证均使用注入 Mock；未连接 Qwen、DeepSeek、SSH 隧道或服务器。
+Phase 2 已新增 `VisionLanguageClient` 异步协议、本地 `QwenTransformersClient`、`MockVisionClient`、Base64 data URI、请求哈希缓存、JSON fence 清理、Pydantic 校验、一次 JSON 修复、本地截断恢复、raw/parsed/validation artifact 落盘和 token/latency 记录；主流程模型统一经 `models/entry.py` 构建，远程 `QwenVLLMClient` 已删除。所有验证均使用注入 Mock；未连接 Qwen、DeepSeek、SSH 隧道或服务器。
 
 Phase 3 已新增统一 Pydantic 样本/切片/点/计数 Schema、EXIF/RGB 图像规范化、非重叠 owner core + halo、缩放与 `0..999` 坐标换算、严格所有权判定和 `inspect-data` 只读 CLI。验证使用临时 fixture；真实 `dataset/` 根目录仍不存在，因此没有猜测任何 Adapter 字段映射。
 
 ### 已识别冲突
 
-1. 实施指令固定云端 vLLM/DeepSeek 路径；用户明确禁止当前连接服务器和云端。用户约束优先，当前只能做离线实现与 Mock 验证。
+1. 实施指令固定云端 DeepSeek 路径；Qwen 已统一为本地 Transformers，远程 vLLM 客户端已删除。用户明确禁止当前连接服务器和云端，因此当前只能做离线实现与 Mock 验证。
 2. 实施指令要求 Pydantic v2 schema 和新包 CLI；基线目前使用 dataclass、单文件 `main.py` 与 JSON 配置。迁移必须增量进行，且保留已有 CLI、基线配置和 JSONL 兼容性。
 3. 实施指令以点式 `count` 为核心任务；现有 `VALID_TASK_TYPES` 不含 `count`，虽 `CanonicalPrediction` 已有 `count` 字段。增加样本任务类型会改变规范样本格式，需以兼容方式设计并补齐测试、`DETAILS.md` 和变更记录。
 4. 实施指令要求先按真实布局实现 Adapter；现有 XLRS 加载器在本地数据不存在时会调用 `datasets.load_dataset`，而 `download` 子命令也会调用 Hugging Face。这些联网路径在当前约束下不能运行，且新实现不得把网络回退作为默认行为。
@@ -157,7 +155,7 @@ Phase 3 已新增统一 Pydantic 样本/切片/点/计数 Schema、EXIF/RGB 图�
 
 1. 确认在保留既有基线接口的前提下，可以新增 `count` 任务类型与兼容的 Pydantic v2 schema。
 2. 提供或指定可只读访问的本地数据根目录，供后续 `inspect-data` 审计；否则 Adapter 实现只能停留在无真实布局的 fixture 层。
-3. 确认代码完成前的验证范围限于离线单元测试、Mock 客户端和静态检查；真实 vLLM/DeepSeek health 与 smoke 需要后续明确授权。
+3. 确认代码完成前的验证范围限于离线单元测试、Mock 客户端和静态检查；真实 Qwen 本地推理与 DeepSeek health/smoke 需要后续明确授权。
 
 ## 本阶段验证
 

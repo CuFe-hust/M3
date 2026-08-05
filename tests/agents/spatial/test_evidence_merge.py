@@ -25,7 +25,7 @@ from spacers_agent.agents.spatial.evidence_merge import (
     vehicle_label_kind,
 )
 from spacers_agent.agents.spatial.candidate_review import SpatialCandidateReviewResult
-from spacers_agent.clients.qwen_transformers import _validate_response
+from models.qwen_transformers import _validate_response
 from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample, VisualEvidence
 
 

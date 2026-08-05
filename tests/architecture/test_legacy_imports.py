@@ -160,14 +160,18 @@ def test_schemas_core_models_importable():
 
 
 def test_clients_importable():
-    """Client base types importable."""
-    from spacers_agent.clients.base import (  # noqa: F401
+    """Shared model base types and test/training clients importable.
+    共享模型基础类型及测试/训练客户端可导入。
+    """
+    from models.base import (  # noqa: F401
         RequestMeta,
         VisionLanguageClient,
         JsonResponseCache,
         image_to_data_url,
         build_request_hash,
     )
+    from spacers_agent.clients.deepseek import DeepSeekJudgeClient  # noqa: F401
+    from spacers_agent.clients.mock import MockVisionClient  # noqa: F401
 
 
 # ── spacers_agent.settings ─────────────────────────────────────────────

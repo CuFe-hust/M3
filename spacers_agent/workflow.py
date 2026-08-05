@@ -20,7 +20,7 @@ from spacers_agent.agents.grounding.agent import GroundingAgent
 from spacers_agent.agents.spatial import evidence_merge as spatial_evidence
 from spacers_agent.agents.spatial.agent import SpatialAgent
 from spacers_agent.agents.visual_base import VisualAgentBase
-from spacers_agent.clients.base import VisionLanguageClient
+from models.base import VisionLanguageClient
 from spacers_agent.prompt_catalog import PromptAsset
 from spacers_agent.routing import CallBudgetFactory
 from spacers_agent.routing.schemas import normalize_agent_name

@@ -6,7 +6,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from spacers_agent.clients.base import RequestMeta
+from models.base import RequestMeta
 from spacers_agent.clients.mock import MockVisionClient
 from spacers_agent.counting import PointCountingOrchestrator
 from spacers_agent.routing import (

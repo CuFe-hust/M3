@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from spacers_agent.clients.base import RequestMeta
+from models.base import RequestMeta
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.schemas import GroundTruth, ImageRef, UnifiedSample
 from spacers_agent.settings import AppSettings

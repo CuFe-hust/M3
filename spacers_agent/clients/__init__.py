@@ -1,11 +1,20 @@
-"""Async vision-language clients and offline test doubles.
-异步视觉语言客户端与离线测试替身。
+"""Test and training model clients outside the main-flow models/ entry.
+主流程 models/ 入口之外的测试与训练用模型客户端。
+
+Main-flow models are constructed only through ``models.entry.create_model``;
+these clients are used by tests, offline doubles, and the text-only judge.
+主流程模型只通过 ``models.entry.create_model`` 构建；本包客户端用于测试、
+离线替身和纯文本评审。
 """
 
-from spacers_agent.clients.base import RequestMeta, VisionLanguageClient, image_to_data_url
+from models.base import RequestMeta, VisionLanguageClient, image_to_data_url
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
 from spacers_agent.clients.mock import MockVisionClient
-from spacers_agent.clients.qwen_vllm import QwenVLLMClient
-from spacers_agent.clients.qwen_transformers import QwenTransformersClient
 
-__all__ = ["DeepSeekJudgeClient", "MockVisionClient", "QwenTransformersClient", "QwenVLLMClient", "RequestMeta", "VisionLanguageClient", "image_to_data_url"]
+__all__ = [
+    "DeepSeekJudgeClient",
+    "MockVisionClient",
+    "RequestMeta",
+    "VisionLanguageClient",
+    "image_to_data_url",
+]
