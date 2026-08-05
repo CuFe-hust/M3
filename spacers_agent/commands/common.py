@@ -36,7 +36,7 @@ def prompts() -> dict[str, str]:
         "count_proposal": (root / "general_vqa_v1.md").read_text(encoding="utf-8"),
         "count_localize": (root / "count_localize_v1.md").read_text(encoding="utf-8"),
         "target": (root / "target_parse_v1.md").read_text(encoding="utf-8"),
-        "change": (root / "change_v1.md").read_text(encoding="utf-8"),
+        "change": (root / "change_dual_path_v1.md").read_text(encoding="utf-8"),
         "spatial": (root / "spatial_v4.md").read_text(encoding="utf-8"),
         "spatial_grid": (root / "spatial_v5.md").read_text(encoding="utf-8"),
         "spatial_review": (root / "spatial_candidate_review_v4.md").read_text(encoding="utf-8"),

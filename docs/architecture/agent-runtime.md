@@ -75,11 +75,26 @@ bindings from the Composition Root. `workflow.WorkflowService` is a transitional
 facade: it normalizes former expert names and delegates through an `AgentRegistry`; it does not own
 another expert dictionary or model-request implementation.
 
-The request versions remain `caption-v1`, `change-expert-v1`, `general-vqa-v2`, `spatial-v4`,
+The request versions are `caption-v1`, `change-dual-path-v1`, `general-vqa-v2`, `spatial-v4`,
 `spatial-v5`, and spatial-review v2/v3. Spatial review predicates and evidence merging are pure
 functions in `agents/spatial/evidence_merge.py`. A spatial request performs no more than one
 candidate-review call, then applies VRSBench geometry once. General VQA applies the same geometry
 postprocess once for non-spatial VRSBench questions.
+
+Change requests now use `change-dual-path-v1`. `ChangeAgent.run` remains the sole registered change entry and performs this sample-scoped sequence before its one structured Qwen call:
+
+```text
+raw T1/T2 ── PairValidator ── PairHarmonizer ── quality gate
+     │                                │ accepted
+     │                                └─ harmonized pair ─ difference proposals
+     └──────────────── raw full images/crops ──────────────┐
+                                                           ▼
+                                         structured Qwen + rule reviewer
+                                                           ▼
+                                             ExpertResult + Agent trace
+```
+
+The harmonized branch is comparative evidence only. Raw crops are semantic evidence. A non-applied gate decision selects raw inputs for proposal generation and remains visible in the trace. Preprocessing writes only inside the injected sample artifact directory and does not create a client, mutate run state, or bypass `AgentContext.call_budget`.
 
 ### Agent
 

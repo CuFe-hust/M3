@@ -23,8 +23,8 @@ from tests.parity.fixture_harness import PROJECT_ROOT, build_sample, harness_set
 FIXTURE_ROOT = Path(__file__).with_name("fixtures")
 PROMPT_ROOT = PROJECT_ROOT / "prompts"
 AGENT_BY_CASE = {
-    "change_caption": "change_agent",
-    "change_qa": "change_agent",
+    # ChangeAgent intentionally has a new dual-path request contract and is covered
+    # by tests/agents/change. / ChangeAgent 已采用新的双路径请求契约，由专用测试覆盖。
     "grounding": "grounding_agent",
     "general_vqa": "general_vqa_agent",
     "multiple_choice_vqa": "general_vqa_agent",

@@ -515,6 +515,10 @@ class RuntimeRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         if self.path.split("?", 1)[0] != "/ask":
+            # Consume the request body so the connection can close cleanly on
+            # Windows; otherwise the client may see an aborted connection.
+            # 消费请求体以便连接在 Windows 上干净关闭，否则客户端可能遇到连接中止。
+            self._read_body()
             self._send_json(404, {"status": "failed", "error": "not found"})
             return
         body = self._read_body()

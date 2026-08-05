@@ -153,12 +153,81 @@ class AgentsSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
     # Future: individual agent enable flags / 未来：各 Agent 启用标志
     counting: "AgentCountingSettings" = Field(default_factory=lambda: AgentCountingSettings())
+    change: "AgentChangeSettings" = Field(default_factory=lambda: AgentChangeSettings())
 
 
 class AgentCountingSettings(BaseModel):
     """Counting agent configuration. / 计数 Agent 配置。"""
     model_config = ConfigDict(extra="forbid")
     default_backend: Literal["auto", "qwen_point", "yolo_obb"] = "auto"
+
+
+class ChangeHarmonizationSettings(BaseModel):
+    """Conservative PIF/LAB harmonization limits. / 保守的 PIF/LAB 一致化限制。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    version: str = "pif_lab_midpoint_v1"
+    retain_raw_images: bool = True
+    save_artifacts: bool = True
+    calibration_file: Path | None = None
+    reject_when_pif_mad_worse: bool = True
+    max_pif_mad_degradation_ratio: float = Field(default=1.05, ge=1.0)
+    match_sharpness: bool = True
+    max_blur_sigma: float = Field(default=1.5, gt=0.0)
+    min_retained_lapvar_ratio: float = Field(default=0.65, gt=0.0, le=1.0)
+    sharpness_tolerance_ratio: float = Field(default=1.15, ge=1.0)
+    min_pif_ratio: float = Field(default=0.02, ge=0.0, le=1.0)
+    min_pif_pixels: int = Field(default=64, ge=1)
+    pif_blur_ksize: int = Field(default=21, ge=3)
+    pif_diff_k: float = Field(default=1.5, ge=0.0)
+    pif_grad_k: float = Field(default=1.5, ge=0.0)
+    max_abs_gain: float = Field(default=4.0, gt=0.0)
+    max_abs_offset: float = Field(default=160.0, gt=0.0)
+    max_clipped_pixel_ratio: float = Field(default=0.15, ge=0.0, le=1.0)
+
+
+class ChangeProposalSettings(BaseModel):
+    """Explainable difference proposal configuration. / 可解释差异候选配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    rgb_weight: float = Field(default=0.50, ge=0.0)
+    edge_weight: float = Field(default=0.25, ge=0.0)
+    structure_weight: float = Field(default=0.25, ge=0.0)
+    threshold_quantile: float = Field(default=0.90, gt=0.0, lt=1.0)
+    min_component_area_ratio: float = Field(default=0.0005, gt=0.0, lt=1.0)
+    max_component_area_ratio: float = Field(default=0.50, gt=0.0, le=1.0)
+    max_proposals: int = Field(default=6, ge=1, le=12)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.rgb_weight + self.edge_weight + self.structure_weight <= 0:
+            raise ValueError("change proposal weights must have a positive sum")
+
+
+class ChangeReviewSettings(BaseModel):
+    """Rule reviewer configuration. / 规则复核配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    require_proposal_evidence: bool = True
+
+
+class AgentChangeSettings(BaseModel):
+    """ChangeAgent dual-path configuration with legacy-safe defaults.
+    具有旧配置兼容默认值的 ChangeAgent 双路径配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dual_path_enabled: bool = True
+    input_mode: Literal["raw_only", "harmonized_only", "dual_path"] = "dual_path"
+    harmonization: ChangeHarmonizationSettings = Field(default_factory=ChangeHarmonizationSettings)
+    proposals: ChangeProposalSettings = Field(default_factory=ChangeProposalSettings)
+    review: ChangeReviewSettings = Field(default_factory=ChangeReviewSettings)
 
 
 class EnvironmentOverrides(BaseSettings):

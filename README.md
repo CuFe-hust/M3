@@ -278,6 +278,23 @@ the Ultralytics AGPL license and your deployment obligations before use.
 
 The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
 
+## Auditable LEVIR-CC ChangeAgent dual path
+
+`change_caption` and `change_qa` still run through `TaskRouter → AgentRegistry → ChangeAgent → AgentExecution`. By default, ChangeAgent validates the ordered T1/T2 pair, estimates one raw-image PIF mask, maps both images to a robust LAB midpoint, applies only a safety-limited down-blur, quality-gates the candidate, and builds explainable difference proposals. Harmonized imagery is used to find candidate regions; raw full images and raw crops remain the authority for final object identity and fine detail. A skipped, rejected, or failed transform automatically uses raw imagery and records `RAW_FALLBACK_USED`; source dataset files are never overwritten.
+
+The typed `agents.change` configuration supports `input_mode: raw_only | harmonized_only | dual_path`. The conservative repository default is `dual_path`, with up to six proposals, PIF-MAD degradation rejection at `1.05`, maximum blur sigma `1.5`, and minimum retained Laplacian-variance ratio `0.65`. Copy `configs/default.yaml` to an ignored local config to override these values or supply a calibration JSON.
+
+Run the offline, model-free harmonization evaluator with:
+
+```powershell
+C:\Users\TZDEZACR\miniconda3\envs\m3\python.exe -m scripts.evaluate_levir_harmonization `
+  --dataset LEVIR-CC --root C:\path\to\LEVIR-CC --split train `
+  --offset 0 --max-pairs 100 --output-dir outputs\levir_cc_harmonization_v1 `
+  --write-calibration
+```
+
+It writes `summary.json`, `metrics.csv`, `grouped_summary.json`, `failed_pairs.json`, and optional `calibration.json` outside the dataset tree. Pixel-mask metrics are emitted only when the inspected layout actually contains matching `labels/<split>` files.
+
 To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL checkpoint, create an ignored `configs/local.spark.yaml` from `configs/default.yaml` and set only local runtime values such as:
 
 ```yaml
