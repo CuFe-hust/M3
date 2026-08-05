@@ -418,7 +418,16 @@ Do not hard-code local absolute paths in code. Real local configurations should 
 ## 6. Current Qwen3-VL-4B Baseline Interface
 
 The currently implemented zero-shot baseline entry point is `main.py`; its model wrapper is
-located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint.
+The unified baseline exposes `models.registry.load_model_from_config(config["model"])` and returns
+a `CanonicalVisionModel`. Explicit types are `qwen3vl`, `qwen35_4b`, `qwen35_9b`, `internvl35`,
+`minicpmv46`, and `ovis25`. Qwen3.5-4B and Qwen3.5-9B have separate public Settings/Baseline
+classes; only their internal native Transformers runtime is shared in `models/qwen35_common.py`.
+Legacy configurations without `type` recognize only the two exact official Qwen3.5 Hub IDs;
+all other IDs retain the Qwen3-VL default. Every wrapper accepts `CanonicalSample`, validates it,
+and returns `CanonicalPrediction` with explicit model and coordinate metadata. Qwen3-VL and
+InternVL3.5 alone support optional standard PEFT LoRA loading.
+
+The default baseline is located in `models/qwen3vl.py` and uses the original `Qwen/Qwen3-VL-4B-Instruct` checkpoint.
 It accepts a JSON configuration file
 with `model` settings and external `paths.data_root` / `paths.output_root` values. It does
 not include model fine-tuning, LoRA loading, quantization, or any server-transfer logic.
