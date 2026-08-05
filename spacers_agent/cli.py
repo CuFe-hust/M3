@@ -25,7 +25,6 @@ from spacers_agent.visualization import render_counting_overlay
 from models.base import JsonResponseCache, RequestMeta, VisionLanguageClient
 from models.entry import create_model
 from spacers_agent.clients.deepseek import DeepSeekJudgeClient
-from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import (
     VQAAnswerJudgeResult,
     build_count_judge_payload,
@@ -35,7 +34,6 @@ from spacers_agent.evaluation import (
     merge_count_evaluation,
     merge_vqa_evaluation,
 )
-from spacers_agent.bootstrap import assemble_runtime, build_dataset_runner
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudgetFactory
 from spacers_agent.workflows.artifact_writer import atomic_write_json
@@ -44,6 +42,11 @@ from spacers_agent.workflows.sample_runner import DatasetRunOptions
 from spacers_agent.vqa_report import build_multiagent_vqa_report
 from spacers_agent.counting_report import build_multiagent_counting_report
 from spacers_agent.commands import count_image as count_image_command
+from spacers_agent.commands.run_dataset import (
+    PROMPT_PATHS as DEFAULT_PROMPT_PATHS,
+    RunDatasetOptions,
+    run_dataset,
+)
 from eval.audit_report import build_audit_report
 from eval.standard_adapter import default_standard_report_path, run_standard_evaluation
 
@@ -52,31 +55,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = PROJECT_ROOT / "configs" / "default.yaml"
 DEFAULT_COUNT_PROMPT = PROJECT_ROOT / "prompts" / "count_tile_v4.md"
 DEFAULT_JSON_REPAIR_PROMPT = PROJECT_ROOT / "prompts" / "json_repair_v1.md"
-DEFAULT_PROMPT_PATHS = [
-    DEFAULT_COUNT_PROMPT,
-    DEFAULT_JSON_REPAIR_PROMPT,
-    PROJECT_ROOT / "prompts" / "router_v1.md",
-    PROJECT_ROOT / "prompts" / "target_parse_v1.md",
-    PROJECT_ROOT / "prompts" / "count_repair_v1.md",
-    PROJECT_ROOT / "prompts" / "seam_verify_v1.md",
-    PROJECT_ROOT / "prompts" / "missing_point_review_v1.md",
-    PROJECT_ROOT / "prompts" / "missing_point_review_v2.md",
-    PROJECT_ROOT / "prompts" / "missing_point_review_v3.md",
-    PROJECT_ROOT / "prompts" / "change_dual_path_v1.md",
-    PROJECT_ROOT / "prompts" / "spatial_v2.md",
-    PROJECT_ROOT / "prompts" / "spatial_v3.md",
-    PROJECT_ROOT / "prompts" / "spatial_v4.md",
-    PROJECT_ROOT / "prompts" / "spatial_v5.md",
-    PROJECT_ROOT / "prompts" / "spatial_candidate_review_v1.md",
-    PROJECT_ROOT / "prompts" / "spatial_candidate_review_v2.md",
-    PROJECT_ROOT / "prompts" / "spatial_candidate_review_v3.md",
-    PROJECT_ROOT / "prompts" / "spatial_candidate_review_v4.md",
-    PROJECT_ROOT / "prompts" / "spatial_candidate_review_v5.md",
-    PROJECT_ROOT / "prompts" / "general_vqa_v2.md",
-    PROJECT_ROOT / "prompts" / "deepseek_judge_v1.md",
-    PROJECT_ROOT / "prompts" / "deepseek_judge_repair_v1.md",
-    PROJECT_ROOT / "prompts" / "deepseek_vqa_judge_v1.md",
-]
+# DEFAULT_PROMPT_PATHS is re-exported from spacers_agent.commands.run_dataset so
+# the internal CLI and the single main.py entry share one prompt snapshot list.
+# DEFAULT_PROMPT_PATHS 从 spacers_agent.commands.run_dataset 再导出，
+# 使内部 CLI 与单一 main.py 入口共享同一份 Prompt 快照列表。
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -391,46 +373,26 @@ async def _count_image(settings: object, image_path: Path, question: str, run_id
 async def _run_dataset(settings: object, args: object) -> int:
     """Create or resume a dataset run after adapter probing. / 在适配器探测后创建或恢复数据集运行。"""
 
-    settings.paths.dataset_root = args.root
-    if args.limit < 0 or args.start_index < 0 or args.sample_concurrency < 1:
-        raise ValueError("max-samples, start-index, and sample-concurrency must be valid")
-    run_id = args.run_id or f"{args.dataset}-{args.split}"
-    run_dir = settings.runs.root / run_id
-    if not run_dir.exists():
-        RunStore(settings.runs.root, PROJECT_ROOT).create_run(settings, prompt_paths=DEFAULT_PROMPT_PATHS, run_id=run_id, dataset=args.dataset, split=args.split, sample_filter=args.task)
-    adapter = get_adapter(args.dataset)
-    requested = args.task.split(",") if args.task else sorted(getattr(adapter, "supported_tasks", ()))
-    selected_ids = set(args.sample_ids.read_text(encoding="utf-8").split()) if args.sample_ids else None
-    qwen_client = _client(settings, run_dir)
-    judge_client = None
-    if args.evaluate and args.judge_policy != "none" and "general_vqa" in requested:
-        judge_client = _vqa_judge_client(settings, run_dir)
-    runtime = assemble_runtime(settings, qwen_client=qwen_client, judge_client=judge_client, prompt_root=PROJECT_ROOT / "prompts")
-    summaries: list = []
-    for task in requested:
-        runner = build_dataset_runner(runtime, adapter=adapter, run_dir=run_dir, settings=settings, judge_policy=args.judge_policy if args.evaluate else "none")
-        summaries.append(await runner.run(split=args.split, task=task, resume=args.resume, limit=None if args.limit == 0 else args.limit, shard_index=args.shard_index, shard_count=args.shard_count, start_index=args.start_index, sample_ids=selected_ids, fail_fast=args.fail_fast, sample_concurrency=args.sample_concurrency))
-    if args.evaluate and any(task in {"counting", "fine_grained_counting"} for task in requested):
-        # A missing key still produces deterministic records; it never silently skips evaluation.
-        # 缺少密钥时仍生成确定性记录，绝不静默跳过评估。
-        await _evaluate_run(settings, run_id, bool(os.environ.get(settings.models.deepseek.api_key_env)))
-    if any(task in {"counting", "fine_grained_counting"} for task in requested):
-        report_path = build_multiagent_counting_report(
-            run_dir, qwen=settings.models.qwen,
-            model_load_seconds=float(getattr(qwen_client, "load_seconds", 0.0)),
-        )
-        if report_path is not None:
-            print(json.dumps({"counting_html_report": str(report_path)}, ensure_ascii=False))
-    if "general_vqa" in requested:
-        report_path = build_multiagent_vqa_report(
-            run_dir,
-            qwen=settings.models.qwen,
-            model_load_seconds=float(getattr(qwen_client, "load_seconds", 0.0)),
-        )
-        if report_path is not None:
-            print(json.dumps({"html_report": str(report_path)}, ensure_ascii=False))
-    print(json.dumps([summary.model_dump(mode="json") for summary in summaries], ensure_ascii=False, indent=2))
-    return 0
+    options = RunDatasetOptions(
+        dataset=args.dataset,
+        root=args.root,
+        split=args.split,
+        task=args.task,
+        run_id=args.run_id,
+        max_samples=args.limit,
+        start_index=args.start_index,
+        sample_concurrency=args.sample_concurrency,
+        resume=args.resume,
+        fail_fast=args.fail_fast,
+        evaluate=args.evaluate,
+        judge_policy=args.judge_policy,
+        sample_ids=set(args.sample_ids.read_text(encoding="utf-8").split())
+        if args.sample_ids
+        else None,
+        shard_index=args.shard_index,
+        shard_count=args.shard_count,
+    )
+    return await run_dataset(settings, options)
 
 
 async def _resume_run(settings: object, run_id: str) -> int:
@@ -443,26 +405,21 @@ async def _resume_run(settings: object, run_id: str) -> int:
     if not manifest.get("dataset") or not manifest.get("split"):
         raise ValueError("run manifest is not a dataset run")
     task = manifest.get("sample_filter") or "counting"
-    tasks: tuple[str, ...] = tuple(task.split(",")) if task else ("counting",)
-    class Args:
-        pass
-    args = Args()
-    args.root = settings.paths.dataset_root
-    args.run_id = run_id
-    args.dataset = manifest["dataset"]
-    args.split = manifest["split"]
-    args.task = task
-    args.resume = True
-    args.limit = 0
-    args.shard_index = 0
-    args.shard_count = 1
-    args.evaluate = False
-    args.sample_concurrency = 1
-    args.sample_ids = None
-    args.fail_fast = False
-    args.judge_policy = "none"
-    args.start_index = 0
-    return await _run_dataset(settings, args)
+    options = RunDatasetOptions(
+        dataset=manifest["dataset"],
+        root=settings.paths.dataset_root,
+        split=manifest["split"],
+        task=task,
+        run_id=run_id,
+        max_samples=0,
+        start_index=0,
+        sample_concurrency=1,
+        resume=True,
+        fail_fast=False,
+        evaluate=False,
+        judge_policy="none",
+    )
+    return await run_dataset(settings, options)
 
 
 async def _evaluate_run(settings: object, run_id: str, deepseek: bool) -> int:

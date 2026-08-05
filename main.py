@@ -52,7 +52,18 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_CONFIG,
         help="Path to YAML configuration.",
     )
+    # Defaults for the implicit serve path: without a subcommand the root
+    # parser still exposes host/port so run_http_server never sees missing
+    # attributes. ``set_defaults`` covers host/port; the subparsers action's
+    # own ``default`` is required for command because argparse overwrites a
+    # parser default with None when no subcommand is given.
+    # 无子命令默认 serve 时，根解析器仍提供 host/port，使 run_http_server
+    # 不会遇到缺失属性。host/port 用 set_defaults；command 必须设置 subparsers
+    # action 自身的 default，因为未给子命令时 argparse 会把 parser 默认值
+    # 覆盖为 None。
+    parser.set_defaults(host="127.0.0.1", port=8000)
     commands = parser.add_subparsers(dest="command")
+    commands.default = "serve"
 
     serve = commands.add_parser(
         "serve",
@@ -115,8 +126,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
 
     args = build_parser().parse_args(argv)
-    if args.command is None:
-        args.command = "serve"
     try:
         settings = load_settings(args.config)
 

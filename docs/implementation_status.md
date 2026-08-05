@@ -6,6 +6,10 @@
   `run-dataset`, default `serve`); `spacers_agent.application.RuntimeApplication` loads the
   Qwen model once through `models.entry.create_model` and assembles the runtime once through
   `spacers_agent.bootstrap.assemble_runtime`.
+- Default-serve fix: the root parser now sets `command=serve`, `host=127.0.0.1`,
+  `port=8000`, so `python main.py` / `python main.py --config ...` start the default HTTP
+  service without `AttributeError`; `main()`-level regression tests cover the implicit
+  serve path, explicit overrides, and the ask-never-starts-HTTP guarantee.
 - The model service supports one load and multi-request reuse: the serial `HTTPServer`
   (`GET /health`, `POST /ask`) keeps one Qwen client, one Runtime, and one AgentRegistry
   for all requests and never reloads the model.
@@ -13,30 +17,42 @@
   routing (change tasks use strict `t1`/`t2` roles; a single image + empty question is
   `caption`). Requests run exactly one primary Agent: no service-level fallback, no Judge,
   no evaluation, no report.
-- `run-dataset` continues to reuse the existing workflow: `get_adapter` → `RunStore` →
-  `create_model` → `assemble_runtime` → `build_dataset_runner` (SampleRunner fallback,
-  Judge, Resume, Artifact, and Report preserved).
-- Validation: `tests/entry/` covers the parser, image collection, task rules, artifact
-  contents, HTTP status codes, and the model-loads-once architecture acceptance with fake
-  clients; the full offline pytest suite passes except two pre-existing environment-specific
-  failures (missing `transformers` in the isolated venv, and a Windows path-separator
-  assertion in `test_dataset_validator.py`). No real model load, CUDA check, or Spark server
-  validation was performed.
+- `run-dataset` now delegates to the shared public command
+  `spacers_agent.commands.run_dataset.run_dataset` (one dataset-loop implementation reused
+  by `main.py`, the internal CLI `_run_dataset`, and `resume-run`): `get_adapter` →
+  `RunStore` → `create_model` → `assemble_runtime` → `build_dataset_runner`, with
+  SampleRunner fallback, Judge, Resume, Artifact, and Report preserved.
+- CI: the offline-tests workflow compiles `main.py`/`spacers_agent`/`models`, runs
+  `tests/entry`, runs the full pytest suite, and verifies `main.py --help` plus the
+  internal maintenance CLI; `numpy` is declared in the `dev` extra for test collection.
+- Validation: `tests/entry/` covers the parser, `main()` execution, image collection, task
+  rules, artifact contents, HTTP status codes, and the model-loads-once architecture
+  acceptance with fake clients; the full offline pytest suite passes except one
+  pre-existing Windows path-separator assertion in `test_dataset_validator.py`. No real
+  model load, CUDA check, or Spark server validation was performed; GitHub Actions must be
+  confirmed green on the remote run before claiming CI success.
 - 本地已完成：根目录 `main.py` 成为唯一公开入口（`serve` / `ask` / `run-dataset`，默认
   `serve`）；`spacers_agent.application.RuntimeApplication` 经 `models.entry.create_model`
   只加载一次 Qwen 模型，并经 `spacers_agent.bootstrap.assemble_runtime` 只组装一次 Runtime。
+- 默认 serve 修复：根解析器设置 `command=serve`、`host=127.0.0.1`、`port=8000`，
+  `python main.py` / `python main.py --config ...` 直接启动默认 HTTP 服务，不再出现
+  `AttributeError`；`main()` 级别回归测试覆盖隐式 serve、显式覆盖与 ask 不启动 HTTP。
 - 模型服务支持一次加载、多请求复用：串行 `HTTPServer`（`GET /health`、`POST /ask`）为所有
   请求复用同一个 Qwen Client、同一个 Runtime、同一个 AgentRegistry，绝不重载模型。
 - `ask` 支持本地图片目录+问题，可显式指定任务或执行一次 `auto` 路由（变化任务严格使用
   `t1`/`t2` 角色；单图+空问题为 `caption`）。每个请求只执行一个主 Agent：无服务层 fallback、
   无 Judge、无评测、无报告。
-- `run-dataset` 继续复用现有工作流：`get_adapter` → `RunStore` → `create_model` →
-  `assemble_runtime` → `build_dataset_runner`（保留 SampleRunner fallback、Judge、Resume、
-  Artifact 与 Report）。
-- 验证：`tests/entry/` 覆盖解析器、图片收集、任务规则、产物内容、HTTP 状态码与
-  “模型只加载一次”架构验收（使用 fake 客户端）；完整离线 pytest 套件通过，仅剩两个与本
-  改动无关的既有环境性失败（隔离 venv 缺 `transformers`；`test_dataset_validator.py` 中
-  一个 Windows 路径分隔符断言）。未执行真实模型加载、CUDA 检查或 Spark 服务器验证。
+- `run-dataset` 现委托共享的公开命令 `spacers_agent.commands.run_dataset.run_dataset`
+  （数据集循环只有一份实现，`main.py`、内部 CLI `_run_dataset` 与 `resume-run` 共用）：
+  `get_adapter` → `RunStore` → `create_model` → `assemble_runtime` →
+  `build_dataset_runner`，保留 SampleRunner fallback、Judge、Resume、Artifact 与 Report。
+- CI：offline-tests 工作流编译 `main.py`/`spacers_agent`/`models`，运行 `tests/entry`，
+  运行完整 pytest，并验证 `main.py --help` 与内部维护 CLI；`dev` extra 声明 `numpy`
+  以支撑测试收集。
+- 验证：`tests/entry/` 覆盖解析器、`main()` 执行、图片收集、任务规则、产物内容、HTTP
+  状态码与“模型只加载一次”架构验收（使用 fake 客户端）；完整离线 pytest 套件通过，仅剩
+  一个既有的 Windows 路径分隔符断言失败（`test_dataset_validator.py`）。未执行真实模型
+  加载、CUDA 检查或 Spark 服务器验证；CI 通过以远端 GitHub Actions 实际结果为准。
 
 ## Phase 4 status
 

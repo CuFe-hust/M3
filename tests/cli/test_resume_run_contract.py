@@ -37,14 +37,20 @@ def test_resume_run_manifest_fields_complete():
     import inspect
 
     from spacers_agent.cli import _resume_run
+    from spacers_agent.commands.run_dataset import RunDatasetOptions
 
     source = inspect.getsource(_resume_run)
-    for attribute in (
-        "root", "run_id", "dataset", "split", "task", "resume", "limit",
-        "shard_index", "shard_count", "evaluate", "sample_concurrency", "sample_ids",
-        "fail_fast", "judge_policy", "start_index",
-    ):
-        assert f"args.{attribute} =" in source
+    explicit = (
+        "dataset", "root", "split", "task", "run_id", "max_samples",
+        "start_index", "sample_concurrency", "resume", "fail_fast",
+        "evaluate", "judge_policy",
+    )
+    for attribute in explicit:
+        assert f"{attribute}=" in source
+    # Defaulted options still exist on the typed options object.
+    # 未显式传入的选项仍由定型选项对象提供默认值。
+    for attribute in ("sample_ids", "shard_index", "shard_count"):
+        assert attribute in RunDatasetOptions.__dataclass_fields__
 
 
 def test_resume_run_skips_succeeded_samples():

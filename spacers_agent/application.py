@@ -28,7 +28,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, get_args
 
 from PIL import Image
@@ -638,37 +637,35 @@ def run_http_server(
 
 
 async def run_dataset_command(settings: AppSettings, args: argparse.Namespace) -> int:
-    """Run a dataset through the existing DatasetRunner workflow.
-    通过现有 DatasetRunner 工作流运行数据集。
+    """Run a dataset through the shared public DatasetRunner command.
+    通过共享的公开 DatasetRunner 命令运行数据集。
 
-    Delegates the whole dataset loop to the existing CLI implementation so the
-    manual entry never duplicates dataset logic: SampleRunner fallback, Judge,
-    Resume, Artifact, and Report behavior all stay in one place.
-    将整个数据集循环委托给现有 CLI 实现，手动入口绝不复制数据集逻辑：
-    SampleRunner fallback、Judge、Resume、Artifact 与 Report 行为全部保持单一实现。
+    Delegates to ``spacers_agent.commands.run_dataset.run_dataset`` so the manual
+    entry, the internal CLI, and resume-run share one dataset loop; SampleRunner
+    fallback, Judge, Resume, Artifact, and Report behavior stay in one place.
+    委托给 ``spacers_agent.commands.run_dataset.run_dataset``，使手动入口、内部
+    CLI 与 resume-run 共享同一数据集循环；SampleRunner fallback、Judge、Resume、
+    Artifact 与 Report 行为保持单一实现。
     """
 
     if args.max_samples < 0 or args.start_index < 0 or args.sample_concurrency < 1:
         raise ValueError("max-samples, start-index, and sample-concurrency must be valid")
     # Lazy import keeps the manual service/ask path free of dataset imports.
     # 惰性导入使手动服务/ask 路径不引入数据集相关依赖。
-    from spacers_agent.cli import _run_dataset
+    from spacers_agent.commands.run_dataset import RunDatasetOptions, run_dataset
 
-    dataset_args = SimpleNamespace(
-        root=args.root,
-        limit=args.max_samples,
-        start_index=args.start_index,
-        sample_concurrency=args.sample_concurrency,
-        run_id=args.run_id,
+    options = RunDatasetOptions(
         dataset=args.dataset,
+        root=args.root,
         split=args.split,
         task=args.task,
-        sample_ids=None,
+        run_id=args.run_id,
+        max_samples=args.max_samples,
+        start_index=args.start_index,
+        sample_concurrency=args.sample_concurrency,
+        resume=args.resume,
+        fail_fast=args.fail_fast,
         evaluate=args.evaluate,
         judge_policy=args.judge_policy,
-        resume=args.resume,
-        shard_index=0,
-        shard_count=1,
-        fail_fast=args.fail_fast,
     )
-    return await _run_dataset(settings, dataset_args)
+    return await run_dataset(settings, options)

@@ -8,12 +8,14 @@ from main import build_parser
 
 
 def test_no_subcommand_defaults_to_serve():
-    """No subcommand leaves command None; main() then defaults to serve.
-    无子命令时 command 为 None；main() 随后默认执行 serve。
+    """No subcommand defaults to serve with default host/port.
+    无子命令时默认 serve 并使用默认 host/port。
     """
 
     args = build_parser().parse_args([])
-    assert args.command is None
+    assert args.command == "serve"
+    assert args.host == "127.0.0.1"
+    assert args.port == 8000
 
 
 def test_config_default_is_repo_default_yaml():

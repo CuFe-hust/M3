@@ -203,6 +203,15 @@ python main.py --config configs/local.spark.yaml run-dataset \
   --task change_caption --run-id levir-cc-v1 --resume
 ```
 
+Verify every public command / 验证每个公开命令:
+
+```bash
+python main.py --help
+python main.py serve --help
+python main.py ask --help
+python main.py run-dataset --help
+```
+
 Safety notes / 安全说明:
 
 - The service listens on `127.0.0.1` by default; do not expose it to an untrusted network.

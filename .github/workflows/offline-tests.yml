@@ -10,16 +10,32 @@ permissions:
 jobs:
   offline-tests:
     runs-on: ubuntu-latest
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install development dependencies
         run: python -m pip install -e ".[dev]"
-      - name: Compile package
-        run: python -m compileall spacers_agent
+
+      - name: Compile package and root entry
+        run: python -m compileall main.py spacers_agent models
+
+      - name: Run entry tests
+        run: python -m pytest -q tests/entry
+
       - name: Run offline tests
         run: python -m pytest -q
-      - name: Verify CLI help
+
+      - name: Verify public main entry
+        run: |
+          python main.py --help
+          python main.py serve --help
+          python main.py ask --help
+          python main.py run-dataset --help
+
+      - name: Verify internal maintenance CLI
         run: python -m spacers_agent.cli --help

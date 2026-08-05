@@ -162,11 +162,15 @@ If a directory has not yet been created, the AI agent must not proactively creat
 
 `main.py` at the repository root is the only public runtime entry. It loads the YAML
 configuration (`--config`, default `configs/default.yaml`), creates one
-`RuntimeApplication`, and dispatches three commands — `serve`, `ask`, `run-dataset`
-(no subcommand defaults to `serve`).
+`RuntimeApplication`, and dispatches three commands — `serve`, `ask`, `run-dataset`.
+The root parser sets defaults `command=serve`, `host=127.0.0.1`, `port=8000`, so
+running with no subcommand (or only `--config`) starts the default HTTP service with
+no missing-attribute risk.
 根目录 `main.py` 是唯一公开运行入口。它加载 YAML 配置（`--config`，默认
 `configs/default.yaml`），创建唯一 `RuntimeApplication`，并分发三个命令 —
-`serve`、`ask`、`run-dataset`（无子命令时默认 `serve`）。
+`serve`、`ask`、`run-dataset`。根解析器设置默认值 `command=serve`、
+`host=127.0.0.1`、`port=8000`，因此无子命令（或仅 `--config`）时启动默认 HTTP
+服务，不存在缺失属性风险。
 
 - The local Qwen model is still constructed exactly once through
   `models.entry.create_model("qwen_transformers", ...)` and never reloaded by
@@ -175,10 +179,13 @@ configuration (`--config`, default `configs/default.yaml`), creates one
   `spacers_agent.bootstrap.assemble_runtime()`.
 - `ask` and `serve` execute exactly one primary Agent per request: no service-level
   fallback, no Judge, no evaluation, no report, and no model reload.
-- `run-dataset` delegates to the existing `DatasetRunner` workflow
-  (`get_adapter` → `RunStore` → `create_model` → `assemble_runtime` →
-  `build_dataset_runner`) and keeps SampleRunner fallback, Judge, Resume, Artifact,
-  and Report behavior.
+- `run-dataset` delegates to the shared public command
+  `spacers_agent.commands.run_dataset.run_dataset`, which reuses the existing
+  `DatasetRunner` workflow (`get_adapter` → `RunStore` → `create_model` →
+  `assemble_runtime` → `build_dataset_runner`) and keeps SampleRunner fallback,
+  Judge, Resume, Artifact, and Report behavior. The internal CLI
+  (`spacers_agent.cli._run_dataset` / `resume-run`) calls the same public function,
+  so there is exactly one dataset loop implementation.
 - `python -m spacers_agent.cli` remains only as the internal tool CLI for existing
   maintenance commands; it is no longer a public entry and new features are not
   added there.
@@ -186,9 +193,12 @@ configuration (`--config`, default `configs/default.yaml`), creates one
 构造一次，后续请求绝不重载；Agent Runtime 仍通过
 `spacers_agent.bootstrap.assemble_runtime()` 组装。`ask`/`serve` 每个请求只执行
 一个主 Agent：无服务层 fallback、无 Judge、无评测、无报告、无模型重载。
-`run-dataset` 委托现有 `DatasetRunner` 工作流（`get_adapter` → `RunStore` →
+`run-dataset` 委托共享的公开命令 `spacers_agent.commands.run_dataset.run_dataset`，
+该命令复用现有 `DatasetRunner` 工作流（`get_adapter` → `RunStore` →
 `create_model` → `assemble_runtime` → `build_dataset_runner`），保留
-SampleRunner fallback、Judge、Resume、Artifact 与 Report 行为。
+SampleRunner fallback、Judge、Resume、Artifact 与 Report 行为。内部 CLI
+（`spacers_agent.cli._run_dataset` / `resume-run`）调用同一公开函数，
+因此数据集循环只有一份实现。
 `python -m spacers_agent.cli` 仅保留为内部工具命令入口，不再是公开入口，
 新功能不添加到其中。
 
