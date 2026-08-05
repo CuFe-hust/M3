@@ -1,5 +1,5 @@
-"""Colab-ready commands for the Qwen3-VL-4B remote-sensing baseline.
-Qwen3-VL-4B 遥感基线的 Colab 可运行命令。
+"""Commands for remote-sensing multimodal baselines.
+遥感多模态基线命令。
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from data.loaders import DATASET_REPOS, download_datasets, load_samples
 from data.schema import CanonicalPrediction, CanonicalSample
 from eval.audit_report import AuditReportWriter, build_audit_report, report_dir_for_result, write_deepseek_audit
 from eval.metrics import evaluate_records
-from models.qwen3vl import Qwen3VLBaseline, Qwen3VLSettings
+from models.registry import CanonicalVisionModel, load_model_from_config
 
 
 EVALUATION_TARGETS = (
@@ -38,7 +38,7 @@ EVALUATION_TARGETS = (
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Qwen3-VL-4B remote-sensing baseline")
+    parser = argparse.ArgumentParser(description="Remote-sensing multimodal baseline")
     parser.add_argument("--config", type=Path, required=True, help="Path to a JSON experiment configuration.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -122,18 +122,8 @@ def main() -> None:
         print("Default audit report unavailable; run inference again with report.enabled=true.")
 
 
-def _load_model(config: dict[str, Any]) -> Qwen3VLBaseline:
-    model_config = config.get("model", {})
-    settings = Qwen3VLSettings(
-        model_id=model_config.get("id", "Qwen/Qwen3-VL-4B-Instruct"),
-        dtype=model_config.get("dtype", "auto"),
-        device_map=model_config.get("device_map", "auto"),
-        max_new_tokens=int(model_config.get("max_new_tokens", 256)),
-        min_pixels=model_config.get("min_pixels"),
-        max_pixels=model_config.get("max_pixels"),
-        local_files_only=bool(model_config.get("local_files_only", False)),
-    )
-    return Qwen3VLBaseline(settings)
+def _load_model(config: dict[str, Any]) -> CanonicalVisionModel:
+    return load_model_from_config(config.get("model", {}))
 
 
 def _inspect(dataset_name: str, data_root: Path, limit: int) -> None:
@@ -152,7 +142,7 @@ def _infer_target(
     dataset_name: str,
     data_root: Path,
     output_root: Path,
-    model: Qwen3VLBaseline,
+    model: CanonicalVisionModel,
     limit: int | None,
     overwrite: bool,
     config: dict[str, Any],

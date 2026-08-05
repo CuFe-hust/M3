@@ -1,10 +1,10 @@
 # M3
 
-## Qwen3-VL-4B Zero-Shot Baseline
+## Unified Multimodal Zero-Shot Baseline
 
-This repository provides a Colab-ready, zero-shot evaluation baseline built on
-`Qwen/Qwen3-VL-4B-Instruct`. It does not fine-tune the model or change its
-weights. The baseline evaluates each release independently and writes canonical
+This repository provides a zero-shot evaluation baseline with explicit wrappers for
+Qwen3-VL-4B, Qwen3.5-4B, Qwen3.5-9B, InternVL3.5-8B, MiniCPM-V-4.6, and Ovis2.5-2B.
+It does not fine-tune model weights. The baseline evaluates each release independently and writes canonical
 JSONL predictions plus separate metadata.
 
 Evaluation scope:
@@ -26,7 +26,7 @@ Enable a GPU runtime, then clone or upload this repository. Run the following ce
 the repository root:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-models.txt
 cp config/baseline.example.json config/local.baseline.json
 ```
 
@@ -37,6 +37,12 @@ Do not put API keys in this file.
 The default `report` settings generate a visual audit report for up to 200 samples per result.
 Increase `report.max_samples` only when the additional image and HTML size is acceptable, or set
 `report.enabled` to `false` to disable report artifacts for a particular local run.
+
+Select one explicit `model.type`: `qwen3vl`, `qwen35_4b`, `qwen35_9b`, `internvl35`,
+`minicpmv46`, or `ovis25`. Qwen3.5-4B and Qwen3.5-9B intentionally use separate types,
+classes, configurations, and output roots. Qwen3-VL and InternVL optionally accept standard
+PEFT LoRA fields (`adapter_id`, `adapter_revision`, and `merge_adapter`); the other wrappers do not.
+CUDA-matched PyTorch remains the server operator's responsibility, and mock tests download no weights.
 
 For a checkpoint that is already present on a local server, set `model.id` to that external
 directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
@@ -70,7 +76,7 @@ python main.py --config config/local.baseline.json infer --dataset all --overwri
 Each inference command prints the absolute path of its default HTML report. For a result named
 `outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
 `outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
-questions/prompts, Qwen raw and final answers, references, exact-match comparison, and per-sample
+questions/prompts, model raw and final answers, references, exact-match comparison, and per-sample
 inference duration. Each sample also records the actual Agent class, call entrypoint, route name,
 task type, and whether a Router was used. The direct baseline is reported truthfully as
 `models.qwen3vl.Qwen3VLBaseline` with `route=direct_baseline` and `router_used=false`; a future

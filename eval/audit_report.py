@@ -337,9 +337,9 @@ def _sample_card(
   </div>
   <div class="grid"><figure>{images}</figure><section><dl>
     <dt>实际问题</dt><dd>{_escape(sample.get('meta', {}).get('question', sample.get('prompt', '')))}</dd>
-    <dt>送入 Qwen 的提示</dt><dd>{_escape(sample.get('prompt', ''))}</dd>
-    <dt>Qwen 原始回复</dt><dd class="answer">{_escape(raw_text)}</dd>
-    <dt>Qwen 最终答案</dt><dd class="answer">{_escape(candidate)}</dd>
+    <dt>送入模型的提示</dt><dd>{_escape(sample.get('prompt', ''))}</dd>
+    <dt>模型原始回复</dt><dd class="answer">{_escape(raw_text)}</dd>
+    <dt>模型最终答案</dt><dd class="answer">{_escape(candidate)}</dd>
     <dt>标准答案</dt><dd class="reference">{_escape(references)}</dd>
     <dt>调用 Agent</dt><dd><code>{_escape(agent_trace.get('agent_class', '未记录'))}</code></dd>
     <dt>Agent 调用入口</dt><dd><code>{_escape(agent_trace.get('entrypoint', '未记录'))}</code></dd>
@@ -350,7 +350,7 @@ def _sample_card(
     <dt>YOLO profile and call evidence</dt><dd>{detector_details or 'YOLO was not called.'}</dd>
     {evidence_section}
     <dt>程序几何审计</dt><dd><pre>{_escape(json.dumps(agent_trace.get('geometry', {}), ensure_ascii=False, indent=2))}</pre></dd>
-    <dt>Qwen 单条推理耗时</dt><dd>{_escape(artifact.get('inference_seconds', ''))} 秒</dd>
+    <dt>模型单条推理耗时</dt><dd>{_escape(artifact.get('inference_seconds', ''))} 秒</dd>
     {deepseek_section}
   </dl>{details}</section></div>
 </article>"""
@@ -404,15 +404,15 @@ def _page(
 ) -> str:
     return f"""<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Qwen3-VL 逐样本审计报告</title><style>
+<title>多模态模型逐样本审计报告</title><style>
 :root{{--bg:#f4f6f8;--card:#fff;--text:#17202a;--muted:#5d6d7e;--line:#dfe6e9;--ok:#18794e;--okbg:#e8f7ef;--bad:#b42318;--badbg:#ffebe9;--accent:#2257a6}}*{{box-sizing:border-box}}body{{margin:0;background:var(--bg);color:var(--text);font:15px/1.6 system-ui,"Microsoft YaHei",sans-serif}}main{{max-width:1180px;margin:auto;padding:32px 20px 80px}}h1{{font-size:30px;margin:.2em 0}}h2{{font-size:19px;margin:0}}.lead{{color:var(--muted)}}.summary,.process,.card{{background:var(--card);border:1px solid var(--line);border-radius:14px;box-shadow:0 2px 8px #0000000a}}.summary,.process{{padding:20px;margin:20px 0}}.card{{padding:20px;margin:18px 0}}.card-head{{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:15px}}.badge{{padding:3px 9px;border-radius:99px;font-size:13px}}.ok{{background:var(--okbg);color:var(--ok)}}.bad{{background:var(--badbg);color:var(--bad)}}.neutral{{background:#eef2f7;color:var(--muted)}}.grid{{display:grid;grid-template-columns:minmax(280px,42%) 1fr;gap:22px}}figure{{margin:0}}img{{width:100%;max-height:520px;object-fit:contain;background:#111;border-radius:10px;margin-bottom:8px}}dl{{margin:0}}dt{{font-weight:700;color:var(--muted);margin-top:8px}}dd{{margin:2px 0 8px}}.answer,.reference{{font-size:17px}}.reference{{color:var(--ok)}}pre{{white-space:pre-wrap;word-break:break-word;background:#111827;color:#e5e7eb;padding:12px;border-radius:8px;font-size:12px}}code{{background:#eef2f7;padding:2px 5px;border-radius:4px}}a{{color:var(--accent)}}@media(max-width:760px){{.grid{{grid-template-columns:1fr}}}}
 </style></head><body><main>
-<h1>Qwen3-VL 逐样本审计报告</h1>
+<h1>多模态模型逐样本审计报告</h1>
 <p class="lead">结果文件：{_escape(result_path)}。共完成 {completed} 条，报告展示 {displayed} 条。{_escape(metric_summary)}</p>
-<section class="summary"><h2>运行信息</h2><p>模型：{_escape(model.get('id', ''))}；dtype：{_escape(model.get('dtype', ''))}；max_new_tokens：{_escape(model.get('max_new_tokens', ''))}；local_files_only：{_escape(model.get('local_files_only', False))}。</p><p>模型加载耗时：{_escape(metadata.get('model_load_seconds', ''))} 秒；推理总耗时：{_escape(metadata.get('inference_seconds', ''))} 秒。</p></section>
+<section class="summary"><h2>运行信息</h2><p>类型：{_escape(model.get('type', ''))}；模型：{_escape(model.get('id', ''))}；dtype：{_escape(model.get('dtype', ''))}；max_new_tokens：{_escape(model.get('max_new_tokens', ''))}；local_files_only：{_escape(model.get('local_files_only', ''))}；adapter_id：{_escape(model.get('adapter_id', ''))}。</p><p>模型加载耗时：{_escape(metadata.get('model_load_seconds', ''))} 秒；推理总耗时：{_escape(metadata.get('inference_seconds', ''))} 秒。</p></section>
 {f'<section class="summary"><h2>Standard evaluation</h2><p>{_escape(standard_summary)}</p></section>' if standard_summary else ''}
 <section class="summary"><h2>Detector usage summary</h2><p>{_escape(detector_summary)}</p></section>
-<section class="process"><h2>可审计运行过程</h2><ol><li>加载配置指定的 Qwen3-VL 权重和 processor。</li><li>逐条校验规范样本，记录实际 Agent 类、入口和路由，再将图片与提示交给模型确定性生成。</li><li>保存 Qwen 原始回复、最终答案、标准答案、图片和单条耗时。</li><li>评测命令计算原有指标；启用 DeepSeek 时，它只接收问题、参考答案和候选答案，不查看图片。</li></ol><p>本报告不保存、生成或推测隐藏思维链。DeepSeek 逐条审查：{'已保存' if has_deepseek else '未运行'}。<a href="samples.csv">打开 CSV 对照表</a></p></section>
+<section class="process"><h2>可审计运行过程</h2><ol><li>加载配置指定的模型权重和处理器。</li><li>逐条校验规范样本，记录实际 Agent 类、入口和路由，再将图片与提示交给模型确定性生成。</li><li>保存模型原始回复、最终答案、标准答案、图片和单条耗时。</li><li>评测命令计算原有指标；启用 DeepSeek 时，它只接收问题、参考答案和候选答案，不查看图片。</li></ol><p>本报告不保存、生成或推测隐藏思维链。DeepSeek 逐条审查：{'已保存' if has_deepseek else '未运行'}。<a href="samples.csv">打开 CSV 对照表</a></p></section>
 {''.join(cards)}
 </main></body></html>"""
 

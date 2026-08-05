@@ -72,65 +72,22 @@ def test_local_files_only_is_forwarded_to_model_and_processor(monkeypatch) -> No
     ]
 
 
-def test_qwen35_uses_native_model_class(monkeypatch) -> None:
-    model_calls: list[tuple[str, dict[str, object]]] = []
-
+def test_qwen35_checkpoint_is_rejected(monkeypatch) -> None:
     torch_module = ModuleType("torch")
-    torch_module.float16 = object()
-    torch_module.bfloat16 = object()
-    torch_module.float32 = object()
-
-    class FakeConfigFactory:
-        @classmethod
-        def from_pretrained(cls, model_id: str, **kwargs: object) -> object:
-            assert model_id == "/external/models/Qwen3.5-9B"
-            assert kwargs == {"local_files_only": True}
-            return type("FakeConfig", (), {"model_type": "qwen3_5"})()
-
-    class FakeLoadedModel:
-        config = type("FakeConfig", (), {"model_type": "qwen3_5"})()
-
-        def eval(self) -> None:
-            return None
-
-    class FakeQwen35Factory:
-        @classmethod
-        def from_pretrained(cls, model_id: str, **kwargs: object) -> FakeLoadedModel:
-            model_calls.append((model_id, kwargs))
-            return FakeLoadedModel()
-
-    class FakeProcessorFactory:
-        @classmethod
-        def from_pretrained(cls, model_id: str, **kwargs: object) -> object:
-            return object()
-
     transformers_module = ModuleType("transformers")
-    transformers_module.AutoConfig = FakeConfigFactory
-    transformers_module.AutoProcessor = FakeProcessorFactory
-    transformers_module.Qwen3_5ForConditionalGeneration = FakeQwen35Factory
+    transformers_module.AutoConfig = type("Config", (), {"from_pretrained": classmethod(lambda cls, *args, **kwargs: type("C", (), {"model_type": "qwen3_5"})())})
+    transformers_module.AutoProcessor = object
+    transformers_module.Qwen3VLForConditionalGeneration = object
     monkeypatch.setitem(sys.modules, "torch", torch_module)
     monkeypatch.setitem(sys.modules, "transformers", transformers_module)
-
-    Qwen3VLBaseline(
-        Qwen3VLSettings(
-            model_id="/external/models/Qwen3.5-9B",
-            dtype="bfloat16",
-            local_files_only=True,
-        )
-    )
-
-    assert model_calls[0][0] == "/external/models/Qwen3.5-9B"
-    assert model_calls[0][1]["dtype"] is torch_module.bfloat16
+    import pytest
+    with pytest.raises(RuntimeError, match="model.type=qwen35_4b"):
+        Qwen3VLBaseline(Qwen3VLSettings(model_id="/external/models/Qwen3.5-9B"))
 
 
 def test_baseline_config_enables_local_files_only(monkeypatch) -> None:
-    captured: list[Qwen3VLSettings] = []
-
-    class FakeBaseline:
-        def __init__(self, settings: Qwen3VLSettings) -> None:
-            captured.append(settings)
-
-    monkeypatch.setattr(baseline_main, "Qwen3VLBaseline", FakeBaseline)
+    captured: list[dict[str, object]] = []
+    monkeypatch.setattr(baseline_main, "load_model_from_config", lambda config: captured.append(config) or object())
     baseline_main._load_model(
         {
             "model": {
@@ -141,5 +98,5 @@ def test_baseline_config_enables_local_files_only(monkeypatch) -> None:
     )
 
     assert len(captured) == 1
-    assert captured[0].model_id == "/external/models/qwen3-vl"
-    assert captured[0].local_files_only is True
+    assert captured[0]["id"] == "/external/models/qwen3-vl"
+    assert captured[0]["local_files_only"] is True

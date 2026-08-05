@@ -94,7 +94,8 @@ def test_audit_report_persists_images_html_csv_and_deepseek_details(tmp_path: Pa
 
     assert html_path is not None and html_path.is_file()
     report_html = html_path.read_text(encoding="utf-8")
-    assert "Qwen 原始回复" in report_html
+    assert "多模态模型逐样本审计报告" in report_html
+    assert "模型原始回复" in report_html
     assert "DeepSeek 完整原始 API 响应" in report_html
     assert "models.qwen3vl.Qwen3VLBaseline" in report_html
     assert "direct_baseline" in report_html
