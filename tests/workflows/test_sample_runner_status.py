@@ -1,4 +1,4 @@
-﻿"""Phase 5 — SampleRunner partial/failed status propagation.
+"""Phase 5 — SampleRunner partial/failed status propagation.
 Phase 5 — SampleRunner partial/failed 状态传播。
 """
 
@@ -12,7 +12,7 @@ from spacers_agent.agents.base import Agent, AgentContext, AgentExecution, Agent
 from spacers_agent.agents.registry import AgentRegistry
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudgetFactory, TaskRouter
-from spacers_agent.schemas import CountingResult, ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import CountingResult, AgentResult, ImageRef, UnifiedSample
 from spacers_agent.settings import AppSettings
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
 from spacers_agent.workflows.judge_service import JudgeService
@@ -30,8 +30,8 @@ class _PartialPayloadAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="vqa", answer="partial answer", status="partial"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="partial answer", status="partial"),
+            result_filename="agent_result.json",
             trace={},
         )
 
@@ -43,8 +43,8 @@ class _FailedPayloadAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="vqa", answer="failed", status="failed"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="failed", status="failed"),
+            result_filename="agent_result.json",
             trace={},
         )
 

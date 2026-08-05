@@ -1,9 +1,0 @@
-{
-  "sample_id": "test_sample_001",
-  "task": "general_vqa",
-  "state": "succeeded",
-  "error_code": null,
-  "error_message": null,
-  "result_path": "samples/test_sample_001/expert_result.json",
-  "updated_at": "2026-07-25T18:00:00Z"
-}

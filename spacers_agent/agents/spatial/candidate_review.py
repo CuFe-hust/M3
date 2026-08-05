@@ -1,10 +1,8 @@
 """Spatial candidate review — independent localization completeness pass.
 空间候选复查 — 独立的定位完整性复核。
 
-Extracted from ``workflow.SpatialExpert._review_candidates`` and
-``workflow.SpatialExpert.run`` review logic. Not a top-level Agent.
-从 ``workflow.SpatialExpert._review_candidates`` 和
-``workflow.SpatialExpert.run`` 复查逻辑中提取。不是顶层 Agent。
+Provides the concrete spatial Agent's candidate-review logic. Not a top-level Agent.
+提供具体空间 Agent 的候选复查逻辑，不是顶层 Agent。
 """
 
 from __future__ import annotations
@@ -18,7 +16,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash, image_to_data_url
-from spacers_agent.schemas import ExpertResult, UnifiedSample, VisualEvidence
+from spacers_agent.schemas import AgentResult, UnifiedSample, VisualEvidence
 from spacers_agent.vqa_geometry import vrsbench_answer_vocabulary, vrsbench_question_subtype
 from spacers_agent.agents.spatial.evidence_merge import (
     is_corner_anchored_box,
@@ -120,15 +118,15 @@ class SpatialCandidateReviewer:
         self._grid_review_prompt_version = grid_review_prompt_version
         self._review_max_tokens = review_max_tokens
 
-    def needs_review(self, sample: UnifiedSample, result: ExpertResult) -> bool:
+    def needs_review(self, sample: UnifiedSample, result: AgentResult) -> bool:
         """Return whether a spatial result requires candidate review.
         返回空间结果是否需要候选复查。
         """
         return needs_candidate_review(sample, result)
 
     async def review(
-        self, sample: UnifiedSample, first_result: ExpertResult, artifact_dir: Path
-    ) -> ExpertResult:
+        self, sample: UnifiedSample, first_result: AgentResult, artifact_dir: Path
+    ) -> AgentResult:
         """Run candidate review and merge evidence into the final result.
         运行候选复查并将证据合并到最终结果。
         """
@@ -258,7 +256,7 @@ class SpatialCandidateReviewer:
                 request_hash=request_hash,
                 prompt_version=version,
                 sample_id=sample.sample_id,
-                artifact_dir=artifact_dir / "spatial_expert_candidate_review",
+                artifact_dir=artifact_dir / "spatial_agent_candidate_review",
             ),
             max_tokens=self._review_max_tokens,
         )

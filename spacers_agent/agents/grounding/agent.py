@@ -21,7 +21,7 @@ class GroundingAgent(VisualAgentBase):
         super().__init__(
             client,
             model,
-            agent_name="grounding_expert",  # persisted external name / 持久化外部名称
+            agent_name=self.name,
             default_prompt=prompt,
         )
         self._client_ref = client
@@ -31,7 +31,7 @@ class GroundingAgent(VisualAgentBase):
         return AgentExecution(
             agent_name=self.name,
             payload=result,
-            result_filename="expert_result.json",
+            result_filename="agent_result.json",
             trace={
                 "agent_class": "spacers_agent.agents.grounding.agent.GroundingAgent",
                 "route": f"GroundingAgent.run -> VisualAgentBase.run -> {type(self._client_ref).__name__}.complete_json",

@@ -41,7 +41,7 @@ class RecordingFakeQwen:
                 "artifact_dir": relative_artifact_dir(request_meta.artifact_dir, self.run_root),
             }
         )
-        if request_meta.sample_id == "primary_qwen_failure" and model_name == "ExpertResult":
+        if request_meta.sample_id == "primary_qwen_failure" and model_name == "AgentResult":
             raise RuntimeError("deterministic primary Qwen failure")
         if request_meta.sample_id == "counting_one_failed_tile" and request_meta.tile_id == "r000_c000":
             raise RuntimeError("deterministic tile failure")
@@ -174,7 +174,7 @@ def response_payload(
         }
     if model_name == "_CountProposalResult":
         return {
-            "expert": "general_vqa_expert",
+            "agent_name": "general_vqa_agent",
             "answer": "2",
             "boxes": [[100, 100, 220, 220]],
             "evidence": ["one proposal box intentionally omitted"],
@@ -188,11 +188,11 @@ def response_payload(
             ],
             "complete": True,
         }
-    if model_name != "ExpertResult":
+    if model_name != "AgentResult":
         raise KeyError(f"No deterministic response for {sample_id}|{model_name}|{request_id}")
     if request_id.endswith(":count-localizer"):
         return expert_payload(
-            "counting_expert",
+            "counting_agent",
             "2",
             evidence_items=[
                 visual_box("large-vehicle", [100, 100, 220, 220]),
@@ -201,7 +201,7 @@ def response_payload(
         )
     if request_id.endswith(":spatial-candidate-review"):
         return expert_payload(
-            "spatial_expert",
+            "spatial_agent",
             "small vehicle",
             evidence_items=[
                 visual_box("small-vehicle", [100, 100, 220, 220]),
@@ -210,29 +210,29 @@ def response_payload(
             geometry={"review": "complete"},
         )
     if sample_id == "partial_expert":
-        return expert_payload("general_vqa_expert", "partial answer", status="partial")
+        return expert_payload("general_vqa_agent", "partial answer", status="partial")
     if sample_id == "failed_expert":
-        return expert_payload("general_vqa_expert", "failed answer", status="failed")
-    if "spatial_expert" in request_id:
+        return expert_payload("general_vqa_agent", "failed answer", status="failed")
+    if "spatial_agent" in request_id:
         if sample_id == "vrsbench_extreme_category":
-            return expert_payload("spatial_expert", "partial", status="partial")
+            return expert_payload("spatial_agent", "partial", status="partial")
         return expert_payload(
-            "spatial_expert",
+            "spatial_agent",
             "top-left",
             evidence_items=[visual_box("position-target", [100, 100, 240, 240])],
             geometry={"source": "deterministic spatial evidence"},
         )
-    if "grounding_expert" in request_id:
+    if "grounding_agent" in request_id:
         return expert_payload(
-            "grounding_expert",
+            "grounding_agent",
             "located",
             evidence_items=[visual_box("target", [200, 200, 400, 400])],
         )
-    if "change_expert" in request_id:
-        return expert_payload("change_expert", "a building appeared", geometry={"temporal_order": ["t1", "t2"]})
-    if "caption_expert" in request_id:
-        return expert_payload("caption_expert", "a concise remote-sensing caption")
-    return expert_payload("general_vqa_expert", "yes")
+    if "change_agent" in request_id:
+        return expert_payload("change_agent", "a building appeared", geometry={"temporal_order": ["t1", "t2"]})
+    if "caption_agent" in request_id:
+        return expert_payload("caption_agent", "a concise remote-sensing caption")
+    return expert_payload("general_vqa_agent", "yes")
 
 
 def expert_payload(
@@ -243,13 +243,13 @@ def expert_payload(
     geometry: dict[str, Any] | None = None,
     status: str = "completed",
 ) -> dict[str, Any]:
-    """Build one deterministic ExpertResult payload.
-    构建一条确定性的 ExpertResult 载荷。
+    """Build one deterministic AgentResult payload.
+    构建一条确定性的 AgentResult 载荷。
     """
 
     items = evidence_items or []
     return {
-        "expert": expert,
+        "agent_name": expert,
         "answer": answer,
         "boxes": [item["box"] for item in items if item.get("box") is not None],
         "evidence": ["deterministic evidence"] if items else [],

@@ -1,7 +1,7 @@
 {
   "error_code": null,
   "error_message": null,
-  "result_path": "<RUN_ROOT>/samples/grounding/expert_result.json",
+  "result_path": "<RUN_ROOT>/samples/grounding/agent_result.json",
   "sample_id": "grounding",
   "state": "succeeded",
   "task": "grounding"

@@ -1,11 +1,8 @@
 """Lazy public exports for the counting Agent package.
 计数 Agent 包的延迟公共导出。
 
-Keeping package initialization side-effect free lets the legacy
-``spacers_agent.counting`` module re-export the point pipeline without a
-runtime import cycle.
-保持包初始化无副作用，使旧 ``spacers_agent.counting`` 模块可以在不产生运行时循环导入的情况下
-重新导出点式计数流水线。
+Keeping package initialization side-effect free avoids runtime import cycles.
+保持包初始化无副作用，避免运行时循环导入。
 """
 
 from __future__ import annotations
@@ -32,8 +29,8 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Resolve compatibility exports only when a caller requests them.
-    仅在调用方请求时解析兼容导出。
+    """Resolve lazy public exports only when a caller requests them.
+    仅在调用方请求时解析延迟公共导出。
     """
 
     if name == "CountingAgent":

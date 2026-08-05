@@ -48,7 +48,7 @@ router:
   use_router_agent_when_task_missing: true
   high_confidence_threshold: 0.80
   medium_confidence_threshold: 0.60
-  max_total_experts: 3
+  max_total_agents: 3
   repair_attempts: 1
   enable_rule_fallback: true
 # Default counting backend selection. / 默认计数后端选择。

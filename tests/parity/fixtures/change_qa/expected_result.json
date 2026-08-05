@@ -3,7 +3,7 @@
   "boxes": [],
   "evidence": [],
   "evidence_items": [],
-  "expert": "change_expert",
+  "agent_name": "change_agent",
   "geometry": {
     "temporal_order": [
       "t1",

@@ -15,7 +15,7 @@ from spacers_agent.agents.registry import AgentRegistry
 from models.base import VisionLanguageClient
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudget, CallBudgetFactory, TaskRouter
-from spacers_agent.routing.schemas import RoutingDecision, normalize_agent_name
+from spacers_agent.routing.schemas import RoutingDecision
 from spacers_agent.schemas import CountingResult, SampleRunStatus, UnifiedSample
 from spacers_agent.settings import AppSettings
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
@@ -149,9 +149,7 @@ class SampleRunner:
         fallback_used = False
         primary_reason: str | None = None
         try:
-            execution = await self.agent_registry.get(
-                normalize_agent_name(decision.primary_agent)
-            ).run(sample, context)
+            execution = await self.agent_registry.get(decision.primary_agent).run(sample, context)
         except Exception as error:
             if decision.execution_mode != "fallback" or not decision.fallback_agents:
                 raise
@@ -210,9 +208,7 @@ class SampleRunner:
         last_error = primary_reason
         for fallback_name in decision.fallback_agents:
             try:
-                return await self.agent_registry.get(
-                    normalize_agent_name(fallback_name)
-                ).run(sample, context)
+                return await self.agent_registry.get(fallback_name).run(sample, context)
             except Exception as error:
                 last_error = f"{type(error).__name__}: {error}"
         raise RuntimeError(

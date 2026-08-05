@@ -18,7 +18,7 @@ from spacers_agent.agents.errors import (
     OptionalDependencyMissingError,
 )
 from spacers_agent.imaging import read_normalized_image
-from spacers_agent.schemas import CountTargetSpec, CountingResult, ExpertResult, IssueRecord, VisualEvidence
+from spacers_agent.schemas import AgentResult, CountTargetSpec, CountingResult, IssueRecord, VisualEvidence
 from spacers_agent.vqa_geometry import vrsbench_count_target
 
 
@@ -93,7 +93,7 @@ class CountingAgent:
                                 "status": "completed_with_warnings" if outcome.counting.status == "completed" else outcome.counting.status,
                                 "warnings": [*outcome.counting.warnings, warning],
                             }),
-                            expert_result=outcome.expert_result,
+                            agent_result=outcome.agent_result,
                             trace=outcome.trace,
                         )
         executed = attempted[-1]
@@ -121,14 +121,14 @@ class CountingAgent:
             trace["yolo"] = yolo_trace
         else:
             trace["yolo"] = {"attempted": False, "used_for_final": False}
-        if is_vrsbench_quantity(sample) and outcome.expert_result is None:
+        if is_vrsbench_quantity(sample) and outcome.agent_result is None:
             outcome = CountingBackendOutcome(
                 counting=outcome.counting,
-                expert_result=self._vrsbench_expert_result(outcome.counting, sample.images[0].image_id),
+                agent_result=self._vrsbench_agent_result(outcome.counting, sample.images[0].image_id),
                 trace=outcome.trace,
             )
-        if outcome.expert_result is not None:
-            return AgentExecution(agent_name=self.name, payload=outcome.expert_result, result_filename="expert_result.json", additional_results={"counting_result.json": outcome.counting}, trace=trace)
+        if outcome.agent_result is not None:
+            return AgentExecution(agent_name=self.name, payload=outcome.agent_result, result_filename="agent_result.json", additional_results={"counting_result.json": outcome.counting}, trace=trace)
         return AgentExecution(agent_name=self.name, payload=outcome.counting, result_filename="counting_result.json", trace=trace)
 
     async def _target(self, sample, context: AgentContext) -> CountTargetSpec:
@@ -153,7 +153,7 @@ class CountingAgent:
         return getattr(backend, "name", "") not in {"qwen_point", "vrsbench_qwen_count"}
 
     @staticmethod
-    def _vrsbench_expert_result(counting: CountingResult, image_id: str) -> ExpertResult:
+    def _vrsbench_agent_result(counting: CountingResult, image_id: str) -> AgentResult:
         """Adapt detector points to the canonical VQA result required by reports and Judge.
         将检测器点适配为报告和审评所需的标准 VQA 结果。
         """
@@ -168,8 +168,8 @@ class CountingAgent:
             for point in accepted
         ]
         status = "failed" if counting.status == "failed" else "partial" if counting.status == "partial" else "completed"
-        return ExpertResult(
-            expert="counting_expert",
+        return AgentResult(
+            agent_name="counting_agent",
             answer=str(counting.final_count),
             evidence=[point.short_evidence for point in accepted],
             evidence_items=evidence,

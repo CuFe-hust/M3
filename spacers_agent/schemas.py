@@ -98,12 +98,24 @@ class VisualEvidence(BaseModel):
         return self
 
 
-class ExpertResult(BaseModel):
-    """Uniform non-counting expert result with verifiable evidence. / 含可验证证据的统一非计数专家结果。"""
+AgentName = Literal[
+    "counting_agent",
+    "change_agent",
+    "grounding_agent",
+    "spatial_agent",
+    "general_vqa_agent",
+    "caption_agent",
+]
+
+
+class AgentResult(BaseModel):
+    """Uniform non-counting Agent result with verifiable evidence.
+    含可验证证据的统一非计数 Agent 结果。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    expert: str
+    agent_name: AgentName
     answer: str
     boxes: list[list[float]] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list, max_length=12)
@@ -200,9 +212,9 @@ class ExpertResult(BaseModel):
         return data
 
     @model_validator(mode="after")
-    def retain_evidence_boxes(self) -> "ExpertResult":
-        """Retain labeled evidence boxes in the legacy canonical box list.
-        将带标签证据框同步保留到旧版统一框列表中。
+    def retain_evidence_boxes(self) -> "AgentResult":
+        """Retain labeled evidence boxes in the canonical box list.
+        将带标签证据框同步保留到统一框列表中。
         """
 
         labeled_boxes = [list(item.box) for item in self.evidence_items if item.box is not None]

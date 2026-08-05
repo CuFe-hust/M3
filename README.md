@@ -1,10 +1,10 @@
 # M3
 
-## Qwen3-VL-4B Zero-Shot Baseline
+## Unified Multimodal Zero-Shot Baseline
 
-This repository provides a Colab-ready, zero-shot evaluation baseline built on
-`Qwen/Qwen3-VL-4B-Instruct`. It does not fine-tune the model or change its
-weights. The baseline evaluates each release independently and writes canonical
+This repository provides a zero-shot evaluation baseline with explicit wrappers for
+Qwen3-VL-4B, Qwen3.5-4B, Qwen3.5-9B, InternVL3.5-8B, MiniCPM-V-4.6, and Ovis2.5-2B.
+It does not fine-tune model weights. The baseline evaluates each release independently and writes canonical
 JSONL predictions plus separate metadata.
 
 Evaluation scope:
@@ -26,7 +26,7 @@ Enable a GPU runtime, then clone or upload this repository. Run the following ce
 the repository root:
 
 ```bash
-pip install -r requirements.txt
+pip install -r requirements-models.txt
 cp config/baseline.example.json config/local.baseline.json
 ```
 
@@ -37,6 +37,15 @@ Do not put API keys in this file.
 The default `report` settings generate a visual audit report for up to 200 samples per result.
 Increase `report.max_samples` only when the additional image and HTML size is acceptable, or set
 `report.enabled` to `false` to disable report artifacts for a particular local run.
+
+Main-flow models are constructed only through the unified entry
+`models.entry.create_model(name, ...)`: `qwen3_vl_baseline` (the sync baseline in
+`models/qwen3_vl/baseline.py`) and `qwen_transformers` (the shared local Transformers client in
+`models/qwen_transformers.py`). Each model folder keeps its wrapper and weights under `weights/`;
+adding a model means adding one `@register` builder in `models/entry.py`. The remote vLLM client
+has been removed, and `spacers_agent/clients/` keeps only the test/training
+`DeepSeekJudgeClient` and `MockVisionClient`. CUDA-matched PyTorch remains the server operator's
+responsibility, and mock tests download no weights.
 
 For a checkpoint that is already present on a local server, set `model.id` to that external
 directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
@@ -80,7 +89,7 @@ python main.py --config config/local.baseline.json infer --dataset all --overwri
 Each inference command prints the absolute path of its default HTML report. For a result named
 `outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
 `outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
-questions/prompts, Qwen raw and final answers, references, exact-match comparison, and per-sample
+questions/prompts, model raw and final answers, references, exact-match comparison, and per-sample
 inference duration. Each sample also records the actual Agent class, call entrypoint, route name,
 task type, and whether a Router was used. The direct baseline is reported truthfully as
 `models.qwen3vl.Qwen3VLBaseline` with `route=direct_baseline` and `router_used=false`; a future
@@ -187,7 +196,7 @@ C:\Users\TZDEZACR\miniconda3\envs\m3\python.exe -m spacers_agent.cli inspect-dat
 
 ## Point Counting Orchestration (Phase 4)
 
-`spacers_agent.counting.PointCountingOrchestrator` is an additive, async workflow for one
+`spacers_agent.agents.counting.point_pipeline.PointCountingOrchestrator` is an additive, async workflow for one
 normalized image and a caller-supplied `CountTargetSpec`. It sends one crop at a time through
 an injected structured client, uses non-overlapping owner cores with halo context, converts only
 validated `0..999` local points to global pixels, and derives `final_count` solely from accepted
@@ -206,9 +215,9 @@ a live client after authorization.
 
 `spacers_agent.routing.TaskRouter` uses fixed rule routes for declared tasks and does not make a
 model call in that case. Only `route_unknown` uses an injected, text-only client; it requires and
-consumes a `CallBudget` entry before the call. `CountingExpert` is a thin display wrapper around
-the existing point pipeline: complete answers are derived from accepted global points, while partial
-results explicitly report completed tiles and remain non-final.
+consumes a `CallBudget` entry before the call. `CountingAgent` runs the existing point pipeline:
+complete answers are derived from accepted global points, while partial results explicitly report
+completed tiles and remain non-final.
 
 Every prompt is an independent versioned file in `prompts/` and `run-init` snapshots all of them.
 The included Phase 5 tests use Mock clients only; no live routing, visual critic, or DeepSeek judge
@@ -260,9 +269,9 @@ python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 
 `run-dataset`, `resume-run`, and `count-image` all enter the same composed runtime:
 `assemble_runtime` → `build_dataset_runner` (dataset commands) or `SampleRunner` (one image) →
-`TaskRouter` → `AgentRegistry` → concrete Agent → counting/VRSBench backend →
-`ArtifactWriter` and optional `JudgeService`. `workflow.py`, `counting.py`, and `experts.py` remain
-only as import-compatible shims; they do not provide a second business path.
+`TaskRouter` → `RoutingDecision` → `AgentRegistry` → concrete `Agent.run(UnifiedSample, AgentContext)` →
+`AgentExecution` → `ArtifactWriter` and optional `JudgeService`. The runtime has no deprecated
+workflow, counting, or expert-module compatibility path.
 
 ## Optional YOLO OBB Counting
 

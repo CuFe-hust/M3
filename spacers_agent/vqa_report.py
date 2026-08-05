@@ -10,7 +10,7 @@ from typing import Any
 
 from data.schema import CanonicalPrediction, CanonicalSample
 from eval.audit_report import AuditReportWriter, build_audit_report, write_deepseek_audit
-from spacers_agent.schemas import ExpertResult, UnifiedSample
+from spacers_agent.schemas import AgentResult, UnifiedSample
 from spacers_agent.settings import QwenSettings
 
 
@@ -38,7 +38,7 @@ def build_multiagent_vqa_report(
     with AuditReportWriter(result_path, max_samples=max_samples) as writer:
         for sample_dir in sample_dirs:
             sample = UnifiedSample.model_validate_json((sample_dir / "sample.json").read_text(encoding="utf-8"))
-            result = ExpertResult.model_validate_json((sample_dir / "expert_result.json").read_text(encoding="utf-8"))
+            result = AgentResult.model_validate_json((sample_dir / "agent_result.json").read_text(encoding="utf-8"))
             trace = _read_json(sample_dir / "agent_trace.json")
             evaluation = _read_json(sample_dir / "vqa_evaluation.json")
             references = sample.ground_truth.answers if sample.ground_truth is not None else []
@@ -118,7 +118,7 @@ def build_multiagent_vqa_report(
             "pipeline": [
                 "VRSBenchVQAAdapter",
                 "TaskRouter.route_vrsbench_vqa",
-                "CountingExpert | SpatialExpert | GeneralVQAExpert",
+                "CountingAgent | SpatialAgent | GeneralVQAAgent",
                 "QwenTransformersClient",
                 "DeepSeekJudgeClient",
                 "AuditReportWriter",
@@ -136,7 +136,7 @@ def _successful_vqa_sample_dirs(run_dir: Path) -> list[Path]:
         if status.get("state") not in {"succeeded", "partial"} or not sample_path.is_file():
             continue
         sample = _read_json(sample_path)
-        if sample.get("task") == "general_vqa" and (status_path.parent / "expert_result.json").is_file():
+        if sample.get("task") == "general_vqa" and (status_path.parent / "agent_result.json").is_file():
             directories.append(status_path.parent)
     return sorted(directories, key=lambda path: _sample_sort_key(path.name))
 
@@ -151,7 +151,7 @@ def _sample_sort_key(value: str) -> tuple[int, int | str]:
 def _deepseek_audit_record(
     sample_dir: Path,
     sample: UnifiedSample,
-    result: ExpertResult,
+    result: AgentResult,
     evaluation: dict[str, Any],
 ) -> dict[str, Any]:
     judge_dir = sample_dir / "deepseek_vqa_judge"
@@ -173,7 +173,7 @@ def _deepseek_audit_record(
     }
 
 
-def _read_raw_qwen(sample_dir: Path, result: ExpertResult) -> str:
+def _read_raw_qwen(sample_dir: Path, result: AgentResult) -> str:
     """Collect Qwen raw responses for either one-shot or point-counting routes.
     收集单次视觉路由或点计数路由产生的 Qwen 原始响应。
     """

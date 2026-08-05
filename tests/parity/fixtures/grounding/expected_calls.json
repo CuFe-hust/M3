@@ -1,23 +1,22 @@
 {
-  "deepseek": [],
   "qwen": [
     {
-      "artifact_dir": "samples/grounding/grounding_expert",
+      "match_key": "grounding|AgentResult|grounding:grounding_agent",
+      "response_model": "AgentResult",
+      "request_id": "grounding:grounding_agent",
+      "request_hash": "cf5e9d5ca882a95fc512d7d9fcfec6bc2a749510270bfc701ddece1e31be4b6e",
+      "prompt_version": "general-vqa-v2",
+      "sample_id": "grounding",
+      "image_sha256": null,
+      "messages_sha256": "f4c7b758dfdc323ac5b134777d7135800bd2f013dd6c9a7c5b9450501dea42b1",
       "image_inputs": [
         {
-          "byte_length": 78,
+          "type": "image_url",
           "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
-          "type": "image_url"
+          "byte_length": 78
         }
       ],
-      "image_sha256": null,
-      "match_key": "grounding|ExpertResult|grounding:grounding_expert",
-      "messages_sha256": "46ebd6fd52ed6c56793d039681df38c911db9c127ab7c7563d377d9690578a3a",
-      "prompt_version": "general-vqa-v2",
-      "request_hash": "4f9ae9db84e2d797e3ed0c43d3e1af3517eaefee095085105188d8d53813e019",
-      "request_id": "grounding:grounding_expert",
-      "response_model": "ExpertResult",
-      "sample_id": "grounding"
+      "artifact_dir": "samples/grounding/grounding_agent"
     }
   ]
 }

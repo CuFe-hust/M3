@@ -1,5 +1,9 @@
-<!-- name: router; version: v1; schema: RoutingDecision -->
+<!-- name: router; version: v2; schema: RoutingDecision -->
 
-Classify only an unknown remote-sensing task. Do not inspect an image, solve the task, or provide hidden reasoning. Return JSON only with one supported task, the exact fixed expert set, normalized weights, a tiling flag, and short discrete reason codes.
+Classify only an unknown remote-sensing task. Do not inspect an image or solve the task. Return JSON only with task, primary_agent, fallback_agents, execution_mode, requires_tiling, reason_codes, and router_source.
 
-仅分类未知遥感任务。不要看图、不要解答任务、不要输出隐藏推理。只返回 JSON：一个受支持任务、精确固定的专家集合、归一化权重、切片标志和简短离散原因代码。
+Allowed agent names: counting_agent, change_agent, grounding_agent, spatial_agent, general_vqa_agent, caption_agent. Do not return experts, weights, legacy names, or hidden reasoning.
+
+仅对未知遥感任务进行分类。不要看图，也不要解答任务。只返回 task、primary_agent、fallback_agents、execution_mode、requires_tiling、reason_codes 和 router_source。
+
+只允许使用 counting_agent、change_agent、grounding_agent、spatial_agent、general_vqa_agent、caption_agent。不得返回 experts、权重、旧名称或隐藏推理。

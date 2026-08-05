@@ -9,6 +9,9 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel
 
+from spacers_agent.agents.base import AgentContext
+from spacers_agent.agents.general_vqa.agent import GeneralVQAAgent
+from spacers_agent.agents.spatial.agent import SpatialAgent
 from models.base import RequestMeta, image_to_data_url
 from spacers_agent.clients.mock import MockVisionClient
 from models.qwen_transformers import (
@@ -22,7 +25,9 @@ from models.qwen_transformers import (
 from spacers_agent.bootstrap import assemble_runtime, build_dataset_runner
 from spacers_agent.dataset_adapters import get_adapter
 from spacers_agent.evaluation import VQAAnswerJudgeResult
-from spacers_agent.schemas import ExpertResult
+from spacers_agent.schemas import AgentResult
+from spacers_agent.prompt_catalog import PromptAsset
+from spacers_agent.routing.budget import CallBudget
 from spacers_agent.settings import AppSettings, PathSettings, QwenSettings, RunSettings
 from spacers_agent.vqa_report import _successful_vqa_sample_dirs, build_multiagent_vqa_report
 
@@ -39,6 +44,33 @@ def _dataset_runner(settings, adapter, run_dir: Path, client, judge_client, judg
         run_dir=run_dir,
         settings=settings,
         judge_policy=judge_policy,
+    )
+
+
+def _agent_context(artifact_dir: Path, client: object) -> AgentContext:
+    """Create the minimal real Agent context. / 创建最小的真实 Agent 上下文。"""
+    return AgentContext(
+        artifact_dir=artifact_dir,
+        settings=None,
+        qwen_client=client,
+        call_budget=CallBudget(max_qwen_calls=20, max_deepseek_calls=0),
+    )
+
+
+def _prompt(key: str, text: str) -> PromptAsset:
+    """Build a deterministic test prompt asset. / 构造确定性的测试提示词资源。"""
+    return PromptAsset(key, Path(f"{key}.md"), f"{key}-test-v1", text)
+
+
+def _spatial_agent(client: object) -> SpatialAgent:
+    """Build the concrete spatial Agent with deterministic prompt assets. / 构造具体空间 Agent。"""
+    return SpatialAgent(
+        client,
+        _prompt("spatial", "spatial"),
+        "local-qwen",
+        grid_prompt=_prompt("spatial_grid", "grid"),
+        review_prompt=_prompt("spatial_review", "review"),
+        grid_review_prompt=_prompt("spatial_grid_review", "grid-review"),
     )
 
 
@@ -127,12 +159,12 @@ class _CapturingClient:
         self,
         *,
         messages: list[dict[str, Any]],
-        response_model: type[ExpertResult],
+        response_model: type[AgentResult],
         request_meta: RequestMeta,
-    ) -> ExpertResult:
+    ) -> AgentResult:
         self.messages = messages
         return response_model(
-            expert="general_vqa_expert",
+            agent_name="general_vqa_agent",
             answer="Yes",
             boxes=[],
             evidence=[],
@@ -191,7 +223,7 @@ def _official_vrsbench(root: Path) -> None:
 async def test_transformers_client_runs_local_model_and_persists_trace(tmp_path: Path) -> None:
     raw = json.dumps(
         {
-            "expert": "general_vqa_expert",
+            "agent_name": "general_vqa_agent",
             "answer": "Yes",
             "boxes": [],
             "evidence": [],
@@ -211,9 +243,9 @@ async def test_transformers_client_runs_local_model_and_persists_trace(tmp_path:
             {"role": "system", "content": "answer"},
             {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url}}]},
         ],
-        response_model=ExpertResult,
+        response_model=AgentResult,
         request_meta=RequestMeta(
-            request_id="7:general_vqa_expert",
+            request_id="7:general_vqa_agent",
             request_hash="a" * 64,
             prompt_version="general-vqa-v1",
             artifact_dir=artifact_dir,
@@ -232,7 +264,7 @@ async def test_transformers_client_runs_local_model_and_persists_trace(tmp_path:
 async def test_qwen35_transformers_client_disables_thinking_for_json(tmp_path: Path) -> None:
     raw = json.dumps(
         {
-            "expert": "general_vqa_expert",
+            "agent_name": "general_vqa_agent",
             "answer": "Yes",
             "boxes": [],
             "evidence": [],
@@ -248,7 +280,7 @@ async def test_qwen35_transformers_client_disables_thinking_for_json(tmp_path: P
 
     result = await client.complete_json(
         messages=[{"role": "system", "content": "answer"}],
-        response_model=ExpertResult,
+        response_model=AgentResult,
         request_meta=RequestMeta(
             request_id="qwen35",
             request_hash="9" * 64,
@@ -390,7 +422,7 @@ def test_qwen35_kernel_cache_view_exposes_state_zero_and_delegates_updates() -> 
 async def test_transformers_client_repairs_invalid_json_without_resending_image(tmp_path: Path) -> None:
     repaired = json.dumps(
         {
-            "expert": "spatial_expert",
+            "agent_name": "spatial_agent",
             "answer": "small-vehicle",
             "boxes": [[100, 100, 200, 200]],
             "evidence": [],
@@ -400,7 +432,7 @@ async def test_transformers_client_repairs_invalid_json_without_resending_image(
             "status": "completed",
         }
     )
-    processor = _FakeProcessor(['{"expert":"spatial_expert",', repaired])
+    processor = _FakeProcessor(['{"agent_name":"spatial_agent",', repaired])
     client = QwenTransformersClient(
         QwenSettings(model="local", max_tokens=32),
         repair_prompt="Repair JSON without adding evidence.",
@@ -415,7 +447,7 @@ async def test_transformers_client_repairs_invalid_json_without_resending_image(
             {"role": "system", "content": "answer"},
             {"role": "user", "content": [{"type": "image_url", "image_url": {"url": image_url}}]},
         ],
-        response_model=ExpertResult,
+        response_model=AgentResult,
         request_meta=RequestMeta(
             request_id="repair",
             request_hash="b" * 64,
@@ -439,7 +471,7 @@ async def test_transformers_client_repairs_invalid_json_without_resending_image(
 @pytest.mark.asyncio
 async def test_transformers_client_prunes_only_incomplete_truncated_evidence_tail(tmp_path: Path) -> None:
     raw = (
-        '{"expert":"spatial_expert","answer":"yes","boxes":[[10,10,20,20]],'
+        '{"agent_name":"spatial_agent","answer":"yes","boxes":[[10,10,20,20]],'
         '"evidence_items":['
         '{"label":"small-vehicle","box":[10,10,20,20],"confidence":0.9},'
         '{"label":"small-vehicle","box":[30,30,40,40],"confidence'
@@ -455,7 +487,7 @@ async def test_transformers_client_prunes_only_incomplete_truncated_evidence_tai
 
     result = await client.complete_json(
         messages=[{"role": "system", "content": "answer"}],
-        response_model=ExpertResult,
+        response_model=AgentResult,
         request_meta=RequestMeta(
             request_id="truncated",
             request_hash="c" * 64,
@@ -499,8 +531,8 @@ async def test_vrsbench_runs_router_expert_judge_and_html_report(tmp_path: Path)
     run_dir.mkdir()
     client = MockVisionClient(
         {
-            "7:general_vqa_expert": {
-                "expert": "general_vqa_expert",
+            "7:general_vqa_agent": {
+                "agent_name": "general_vqa_agent",
                 "answer": "Yes",
                 "boxes": [[100, 100, 200, 200]],
                 "evidence": ["vehicle visible"],
@@ -563,7 +595,7 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
     client = MockVisionClient(
         {
             "9:count-proposal": {
-                "expert": "general_vqa_expert",
+                "agent_name": "general_vqa_agent",
                 "answer": "1",
                 "boxes": [[400, 400, 600, 600]],
                 "evidence": [],
@@ -581,8 +613,8 @@ async def test_vrsbench_quantity_uses_accepted_point_count(tmp_path: Path) -> No
     ).run(split="validation", task="general_vqa", limit=1)
 
     assert summary.succeeded == 1
-    result = json.loads((run_dir / "samples" / "9" / "expert_result.json").read_text(encoding="utf-8"))
-    assert result["expert"] == "counting_expert"
+    result = json.loads((run_dir / "samples" / "9" / "agent_result.json").read_text(encoding="utf-8"))
+    assert result["agent_name"] == "counting_agent"
     assert result["answer"] == "1"
     assert result["geometry"]["final_count"] == len(result["evidence_items"]) == 1
     point = result["evidence_items"][0]["point"]
@@ -618,14 +650,14 @@ async def test_vrsbench_quantity_localizes_missing_boxes_and_drops_border_fragme
     client = MockVisionClient(
         {
             "4:count-proposal": {
-                "expert": "general_vqa_expert",
+                "agent_name": "general_vqa_agent",
                 "answer": "3",
                 "boxes": [],
                 "evidence": [],
                 "status": "completed",
             },
             "4:count-localizer": {
-                "expert": "counting_localizer",
+                "agent_name": "counting_agent",
                 "answer": "4",
                 "boxes": [],
                 "evidence": [],
@@ -649,7 +681,7 @@ async def test_vrsbench_quantity_localizes_missing_boxes_and_drops_border_fragme
     ).run(split="validation", task="general_vqa", limit=1)
 
     assert summary.succeeded == 1
-    result = json.loads((run_dir / "samples" / "4" / "expert_result.json").read_text(encoding="utf-8"))
+    result = json.loads((run_dir / "samples" / "4" / "agent_result.json").read_text(encoding="utf-8"))
     counting = json.loads((run_dir / "samples" / "4" / "counting_result.json").read_text(encoding="utf-8"))
     assert result["answer"] == "3"
     assert len(result["boxes"]) == len(result["evidence_items"]) == 3
@@ -664,12 +696,15 @@ def test_count_header_recovery_and_border_fragment_filter_are_conservative() -> 
     仅恢复完整答案头，并且只排除中心位于图外的边界残片。
     """
 
-    from spacers_agent.workflow import _is_tiny_border_fragment, _recover_count_proposal_header
+    from spacers_agent.agents.counting.evidence import (
+        is_tiny_border_fragment,
+        recover_count_proposal_header,
+    )
 
-    assert _recover_count_proposal_header('{"answer":"3","boxes":[[1,2') == 3
-    assert _recover_count_proposal_header('{"answer":"') is None
-    assert _is_tiny_border_fragment([680, 970, 740, 999]) is True
-    assert _is_tiny_border_fragment([0, 388, 100, 600]) is False
+    assert recover_count_proposal_header('{"answer":"3","boxes":[[1,2') == 3
+    assert recover_count_proposal_header('{"answer":"') is None
+    assert is_tiny_border_fragment([680, 970, 740, 999]) is True
+    assert is_tiny_border_fragment([0, 388, 100, 600]) is False
 
 
 def test_count_deduplication_retains_adjacent_overlapping_vehicle_boxes() -> None:
@@ -678,7 +713,7 @@ def test_count_deduplication_retains_adjacent_overlapping_vehicle_boxes() -> Non
     """
 
     from spacers_agent.schemas import VisualEvidence
-    from spacers_agent.workflow import _accepted_count_evidence
+    from spacers_agent.agents.counting.evidence import accepted_count_evidence
 
     evidence = [
         VisualEvidence(label="large-vehicle", box=[750, 585, 880, 935]),
@@ -687,7 +722,7 @@ def test_count_deduplication_retains_adjacent_overlapping_vehicle_boxes() -> Non
         VisualEvidence(label="large-vehicle", box=[880, 585, 980, 935]),
     ]
 
-    points, boxes, dropped = _accepted_count_evidence(evidence, "large-vehicle", "image.png")
+    points, boxes, dropped = accepted_count_evidence(evidence, "large-vehicle", "image.png")
 
     assert len(points) == len(boxes) == 4
     assert dropped == 0
@@ -701,9 +736,9 @@ async def test_general_vqa_contract_retains_labeled_boxes(tmp_path: Path) -> Non
     sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
     client = _CapturingClient()
 
-    from spacers_agent.workflow import GeneralVQAExpert
-
-    await GeneralVQAExpert(client, "answer", "local-qwen").run(sample, artifact_dir=tmp_path / "artifacts")
+    await GeneralVQAAgent(client, _prompt("general", "answer"), "local-qwen").run(
+        sample, _agent_context(tmp_path / "artifacts", client)
+    )
 
     system_prompt = str(client.messages[0]["content"])
     assert "retain relevant labeled boxes or points" in system_prompt
@@ -728,11 +763,8 @@ async def test_mislabeled_scene_question_keeps_open_general_vqa_vocabulary(tmp_p
     )
     client = _CapturingClient()
 
-    from spacers_agent.workflow import GeneralVQAExpert
-
-    await GeneralVQAExpert(client, "answer", "local-qwen").run(
-        sample,
-        artifact_dir=tmp_path / "artifacts",
+    await GeneralVQAAgent(client, _prompt("general", "answer"), "local-qwen").run(
+        sample, _agent_context(tmp_path / "artifacts", client)
     )
 
     payload = json.loads(client.messages[1]["content"][-1]["text"])
@@ -741,7 +773,7 @@ async def test_mislabeled_scene_question_keeps_open_general_vqa_vocabulary(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Path) -> None:
+async def test_spatial_agent_reviews_incomplete_extreme_candidates(tmp_path: Path) -> None:
     dataset_root = tmp_path / "dataset"
     dataset_root.mkdir()
     _official_vrsbench(dataset_root)
@@ -754,8 +786,8 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
     )
     client = _MessageMockClient(
         {
-            "7:spatial_expert": {
-                "expert": "spatial_expert",
+            "7:spatial_agent": {
+                "agent_name": "spatial_agent",
                 "answer": "bus",
                 "evidence_items": [
                     {"label": "large-vehicle", "box": [0, 400, 100, 600], "confidence": 0.8}
@@ -771,14 +803,10 @@ async def test_spatial_expert_reviews_incomplete_extreme_candidates(tmp_path: Pa
         }
     )
 
-    from spacers_agent.workflow import SpatialExpert
-    from spacers_agent.vqa_geometry import apply_vrsbench_geometry
-
-    raw = await SpatialExpert(client, "spatial", "local-qwen", "review").run(
-        sample,
-        artifact_dir=tmp_path / "artifacts",
-    )
-    result = apply_vrsbench_geometry(sample.question, "object category", raw)
+    raw = (await _spatial_agent(client).run(
+        sample, _agent_context(tmp_path / "artifacts", client)
+    )).payload
+    result = raw
 
     assert len(raw.evidence_items) == 2
     assert raw.geometry["candidate_review_used"] is True
@@ -811,8 +839,8 @@ async def test_grid_position_uses_unanchored_target_box_without_candidate_review
     )
     client = _MessageMockClient(
         {
-            "7:spatial_expert": {
-                "expert": "spatial_expert",
+            "7:spatial_agent": {
+                "agent_name": "spatial_agent",
                 "answer": "The bus is at the left edge.",
                 "evidence_items": [
                     {"label": "large-vehicle", "box": [0, 384, 107, 600], "confidence": 0.9}
@@ -821,12 +849,9 @@ async def test_grid_position_uses_unanchored_target_box_without_candidate_review
         }
     )
 
-    from spacers_agent.workflow import SpatialExpert
-
-    result = await SpatialExpert(client, "spatial", "local-qwen", "review", "grid", "grid-review").run(
-        sample,
-        artifact_dir=tmp_path / "artifacts",
-    )
+    result = (await _spatial_agent(client).run(
+        sample, _agent_context(tmp_path / "artifacts", client)
+    )).payload
 
     assert result.evidence_items[0].box == [0, 384, 107, 600]
     assert len(client.message_history) == 1
@@ -854,8 +879,8 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
     )
     client = _MessageMockClient(
         {
-            "7:spatial_expert": {
-                "expert": "spatial_expert",
+            "7:spatial_agent": {
+                "agent_name": "spatial_agent",
                 "answer": "top-left",
                 "evidence_items": [
                     {"label": "small-vehicle", "box": [0, 0, 100, 100], "confidence": 0.9}
@@ -868,14 +893,10 @@ async def test_grid_position_review_replaces_corner_region_placeholder(tmp_path:
         }
     )
 
-    from spacers_agent.vqa_geometry import apply_vrsbench_geometry
-    from spacers_agent.workflow import SpatialExpert
-
-    raw = await SpatialExpert(client, "spatial", "local-qwen", "review", "grid", "grid-review").run(
-        sample,
-        artifact_dir=tmp_path / "artifacts",
-    )
-    result = apply_vrsbench_geometry(sample.question, "object position", raw)
+    raw = (await _spatial_agent(client).run(
+        sample, _agent_context(tmp_path / "artifacts", client)
+    )).payload
+    result = raw
 
     assert [item.box for item in raw.evidence_items] == [[840, 273, 925, 312]]
     assert raw.geometry["candidate_review_replaced"] == 1
@@ -905,8 +926,8 @@ async def test_grid_position_review_recovers_generic_target_from_top_level_box(t
     )
     client = _MessageMockClient(
         {
-            "7:spatial_expert": {
-                "expert": "spatial_expert",
+            "7:spatial_agent": {
+                "agent_name": "spatial_agent",
                 "answer": "partial",
                 "boxes": [],
                 "evidence_items": [],
@@ -919,16 +940,12 @@ async def test_grid_position_review_recovers_generic_target_from_top_level_box(t
         }
     )
 
-    from spacers_agent.vqa_geometry import apply_vrsbench_geometry
-    from spacers_agent.workflow import SpatialExpert
+    raw = (await _spatial_agent(client).run(
+        sample, _agent_context(tmp_path / "artifacts", client)
+    )).payload
+    result = raw
 
-    raw = await SpatialExpert(client, "spatial", "local-qwen", "review", "grid", "grid-review").run(
-        sample,
-        artifact_dir=tmp_path / "artifacts",
-    )
-    result = apply_vrsbench_geometry(sample.question, "object position", raw)
-
-    assert raw.answer == "partial"
+    assert raw.answer == "bottom-middle"
     assert raw.evidence_items[0].label == "position-target"
     assert raw.evidence_items[0].box == [420, 670, 520, 770]
     assert result.answer == "bottom-middle"
@@ -938,7 +955,7 @@ async def test_grid_position_review_recovers_generic_target_from_top_level_box(t
 
 def test_spatial_evidence_merge_deduplicates_points_and_prefers_boxes() -> None:
     from spacers_agent.schemas import VisualEvidence
-    from spacers_agent.workflow import _merge_visual_evidence
+    from spacers_agent.agents.spatial.evidence_merge import merge_visual_evidence
 
     first = [VisualEvidence(label="small-vehicle", point=[500, 500], confidence=0.7)]
     second = [
@@ -946,7 +963,7 @@ def test_spatial_evidence_merge_deduplicates_points_and_prefers_boxes() -> None:
         VisualEvidence(label="small-vehicle", box=[480, 480, 530, 530], confidence=0.8),
     ]
 
-    merged = _merge_visual_evidence(first, second)
+    merged = merge_visual_evidence(first, second)
 
     assert len(merged) == 1
     assert merged[0].box == [480, 480, 530, 530]
@@ -962,8 +979,8 @@ async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path
     sample_dir.mkdir(parents=True)
     sample = next(get_adapter("VRSBench").iter_samples(dataset_root, "validation", "general_vqa"))
     (sample_dir / "sample.json").write_text(sample.model_dump_json(), encoding="utf-8")
-    (sample_dir / "expert_result.json").write_text(
-        ExpertResult(expert="general_vqa_expert", answer="Yes", status="completed").model_dump_json(),
+    (sample_dir / "agent_result.json").write_text(
+        AgentResult(agent_name="general_vqa_agent", answer="Yes", status="completed").model_dump_json(),
         encoding="utf-8",
     )
     (sample_dir / "status.json").write_text(
@@ -974,7 +991,7 @@ async def test_resume_retries_failed_judge_without_reissuing_qwen(tmp_path: Path
                 "state": "succeeded",
                 "error_code": None,
                 "error_message": None,
-                "result_path": str(sample_dir / "expert_result.json"),
+                "result_path": str(sample_dir / "agent_result.json"),
                 "updated_at": "2026-07-22T00:00:00+00:00",
             }
         ),
@@ -1015,8 +1032,8 @@ async def test_judge_vqa_run_reuses_persisted_qwen_result_and_rebuilds_report(tm
     sample_dir = run_dir / "samples" / sample.sample_id
     sample_dir.mkdir(parents=True)
     (sample_dir / "sample.json").write_text(sample.model_dump_json(), encoding="utf-8")
-    (sample_dir / "expert_result.json").write_text(
-        ExpertResult(expert="general_vqa_expert", answer="Yes", status="completed").model_dump_json(),
+    (sample_dir / "agent_result.json").write_text(
+        AgentResult(agent_name="general_vqa_agent", answer="Yes", status="completed").model_dump_json(),
         encoding="utf-8",
     )
     (sample_dir / "status.json").write_text(
@@ -1061,6 +1078,6 @@ def test_partial_vqa_artifacts_remain_visible_to_report(tmp_path: Path) -> None:
     sample_dir.mkdir(parents=True)
     (sample_dir / "status.json").write_text(json.dumps({"state": "partial"}), encoding="utf-8")
     (sample_dir / "sample.json").write_text(json.dumps({"task": "general_vqa"}), encoding="utf-8")
-    (sample_dir / "expert_result.json").write_text("{}", encoding="utf-8")
+    (sample_dir / "agent_result.json").write_text("{}", encoding="utf-8")
 
     assert _successful_vqa_sample_dirs(tmp_path) == [sample_dir]

@@ -8,13 +8,11 @@ from PIL import Image
 
 from models.base import RequestMeta
 from spacers_agent.clients.mock import MockVisionClient
-from spacers_agent.counting import PointCountingOrchestrator
+from spacers_agent.agents.counting.point_pipeline import PointCountingOrchestrator
 from spacers_agent.routing import (
     CallBudget,
     CallBudgetExceeded,
-    CountingExpert,
     TaskRouter,
-    attach_qwen_budget,
 )
 from spacers_agent.schemas import CountTargetSpec, TileCountResponse
 from spacers_agent.settings import CountingSettings, QwenSettings
@@ -102,9 +100,12 @@ async def test_unknown_task_uses_one_text_router_call_and_budget(tmp_path: Path)
         {
             "sample:router": {
                 "task": "general_vqa",
-                "experts": [{"name": "general_vqa_expert", "weight": 1.0}],
+                "primary_agent": "general_vqa_agent",
+                "fallback_agents": [],
+                "execution_mode": "single",
                 "requires_tiling": False,
                 "reason_codes": ["free_form_question"],
+                "router_source": "router_agent",
             }
         }
     )
@@ -129,7 +130,7 @@ async def test_unknown_task_refuses_to_call_when_budget_is_exhausted() -> None:
 
 
 @pytest.mark.asyncio
-async def test_counting_expert_uses_global_points_and_shared_budget(tmp_path: Path) -> None:
+async def test_counting_pipeline_uses_global_points_and_resume(tmp_path: Path) -> None:
     client = TileClient(
         {
             "target": "building",
@@ -147,20 +148,15 @@ async def test_counting_expert_uses_global_points_and_shared_budget(tmp_path: Pa
             "reported_count": 1,
         }
     )
-    budget = CallBudget(max_qwen_calls=1, max_deepseek_calls=0)
-    expert = CountingExpert(attach_qwen_budget(_pipeline(client, tmp_path), budget))
-
-    result = await expert.answer(
+    result = await _pipeline(client, tmp_path).count_image(
         Image.new("RGB", (16, 16)), sample_id="sample", question="count buildings", target=_target()
     )
 
-    assert result.complete
-    assert result.counting_result.final_count == 1
-    assert "1 accepted global instance points" in result.answer
-    assert budget.qwen_calls_used == 1
+    assert result.final_count == 1
+    assert len(result.global_points) == 1
 
-    resumed = await expert.answer(
+    resumed = await _pipeline(client, tmp_path).count_image(
         Image.new("RGB", (16, 16)), sample_id="sample", question="count buildings", target=_target()
     )
-    assert resumed.complete
+    assert resumed.final_count == 1
     assert len(client.calls) == 1

@@ -34,7 +34,7 @@
   "prompts.snapshot/spatial_v5.md",
   "prompts.snapshot/target_parse_v1.md",
   "samples/failed_expert/agent_trace.json",
-  "samples/failed_expert/expert_result.json",
+  "samples/failed_expert/agent_result.json",
   "samples/failed_expert/routing_decision.json",
   "samples/failed_expert/sample.json",
   "samples/failed_expert/status.json",

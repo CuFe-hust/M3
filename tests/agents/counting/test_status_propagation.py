@@ -1,4 +1,4 @@
-﻿"""Phase 4 - status propagation and sample_state_from_payload tests.
+"""Phase 4 - status propagation and sample_state_from_payload tests.
 Phase 4 - 状态传播与 sample_state_from_payload 测试。
 """
 
@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import pytest
 
-from spacers_agent.schemas import CountingResult, ExpertResult, GlobalPointObservation
+from spacers_agent.schemas import CountingResult, AgentResult, GlobalPointObservation
 from spacers_agent.workflows.sample_runner import sample_state_from_payload
 
 
@@ -20,9 +20,9 @@ def _counting(**kwargs) -> CountingResult:
     return CountingResult(**{**defaults, **kwargs})
 
 
-def _expert(**kwargs) -> ExpertResult:
-    defaults = dict(expert="test", answer="yes", status="completed")
-    return ExpertResult(**{**defaults, **kwargs})
+def _expert(**kwargs) -> AgentResult:
+    defaults = dict(agent_name="general_vqa_agent", answer="yes", status="completed")
+    return AgentResult(**{**defaults, **kwargs})
 
 
 def test_counting_completed_maps_to_succeeded():
@@ -54,7 +54,7 @@ def test_expert_failed_maps_to_failed():
 
 
 def test_counting_isinstance_check_distinguishes_from_expert():
-    """CountingResult and ExpertResult must map through separate branches."""
+    """CountingResult and AgentResult must map through separate branches."""
     counting = _counting(status="completed")
     expert = _expert(status="completed")
     assert sample_state_from_payload(counting) == "succeeded"

@@ -1,4 +1,4 @@
-﻿"""Phase 5 — SampleRunner fallback behavior.
+"""Phase 5 — SampleRunner fallback behavior.
 Phase 5 — SampleRunner fallback 行为。
 """
 
@@ -13,7 +13,7 @@ from spacers_agent.agents.registry import AgentRegistry
 from spacers_agent.prompt_catalog import PromptCatalog
 from spacers_agent.routing import CallBudgetFactory, TaskRouter
 from spacers_agent.routing.schemas import RoutingDecision
-from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import AgentResult, ImageRef, UnifiedSample
 from spacers_agent.settings import AppSettings
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
 from spacers_agent.workflows.judge_service import JudgeService
@@ -39,8 +39,8 @@ class _FallbackSucceedingAgent:
     async def run(self, sample, context: AgentContext) -> AgentExecution:
         return AgentExecution(
             agent_name=self.name,
-            payload=ExpertResult(expert="vqa", answer="fallback answer", status="completed"),
-            result_filename="expert_result.json",
+            payload=AgentResult(agent_name="general_vqa_agent", answer="fallback answer", status="completed"),
+            result_filename="agent_result.json",
             trace={"fallback": True},
         )
 

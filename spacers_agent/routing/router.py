@@ -5,22 +5,15 @@ TaskRouter — 确定性 + 基于文本的路由，统一入口。
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Literal
-
-from PIL import Image
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
 
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash
-from spacers_agent.agents.counting.point_pipeline import PointCountingOrchestrator
 from spacers_agent.routing.budget import CallBudget
 from spacers_agent.routing.policies import ROUTES, needs_tiling
 from spacers_agent.routing.schemas import (
-    AgentName,
     RoutableTask,
     RoutingDecision,
-    normalize_agent_name,
 )
-from spacers_agent.schemas import CountTargetSpec, CountingResult
 from spacers_agent.vqa_geometry import execution_task_for_vrsbench
 
 
@@ -95,7 +88,6 @@ class TaskRouter:
             reason_codes=[f"task_{task_str}"] + (["high_resolution"] if high_resolution else []),
             router_source="dataset_task",
         )
-
     # ── VRSBench / VRSBench ─────────────────────────────────────────────
 
     def route_vrsbench_vqa(
@@ -156,42 +148,3 @@ class TaskRouter:
             + (["high_resolution"] if high_resolution else []),
             router_source="rule_fallback",
         )
-
-
-# ── legacy CountingExpert (preserved for backward compat) / 保留 CountingExpert 向后兼容 ──
-
-class CountingExpertAnswer(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    answer: str
-    complete: bool
-    counting_result: CountingResult
-
-
-class CountingExpert:
-    def __init__(self, pipeline: PointCountingOrchestrator) -> None:
-        self.pipeline = pipeline
-
-    async def answer(self, image: Image.Image, *, sample_id: str, question: str,
-                     target: CountTargetSpec, minimum_scan_depth: int = 0,
-                     review_empty: bool = False, upscale_max_side: int | None = None,
-                     ) -> CountingExpertAnswer:
-        result = await self.pipeline.count_image(
-            image, sample_id=sample_id, question=question, target=target,
-            minimum_scan_depth=minimum_scan_depth, review_empty=review_empty,
-            upscale_max_side=upscale_max_side,
-        )
-        total = len(result.succeeded_tiles) + len(result.failed_tiles)
-        if result.status in {"partial", "failed"}:
-            return CountingExpertAnswer(
-                answer=f"Completed {len(result.succeeded_tiles)}/{total} tiles and confirmed {result.final_count} instances; the result is incomplete.",
-                complete=False, counting_result=result,
-            )
-        return CountingExpertAnswer(
-            answer=f"Based on {result.final_count} accepted global instance points, the image contains {result.final_count} {target.canonical_label}(s).",
-            complete=True, counting_result=result,
-        )
-
-
-def attach_qwen_budget(pipeline: PointCountingOrchestrator, budget: CallBudget) -> PointCountingOrchestrator:
-    pipeline.before_qwen_call = budget.reserve_qwen
-    return pipeline

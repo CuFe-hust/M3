@@ -1,7 +1,7 @@
 {
   "error_code": null,
   "error_message": null,
-  "result_path": "<RUN_ROOT>/samples/missing_judge_resume/expert_result.json",
+  "result_path": "<RUN_ROOT>/samples/missing_judge_resume/agent_result.json",
   "sample_id": "missing_judge_resume",
   "state": "succeeded",
   "task": "general_vqa"

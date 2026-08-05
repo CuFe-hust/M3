@@ -7,7 +7,7 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from spacers_agent.schemas import CountTargetSpec, ExpertResult, VisualEvidence
+from spacers_agent.schemas import AgentResult, CountTargetSpec, VisualEvidence
 
 
 ExecutionTask = Literal["counting", "spatial_relation", "general_vqa"]
@@ -188,8 +188,8 @@ def vrsbench_count_target(question: str) -> CountTargetSpec | None:
 def apply_vrsbench_geometry(
     question: str,
     question_type: str,
-    result: ExpertResult,
-) -> ExpertResult:
+    result: AgentResult,
+) -> AgentResult:
     """Apply only reproducible answer rules supported by labeled evidence geometry.
     仅应用由带标签证据几何支持且可复现的答案规则。
     """
@@ -453,11 +453,11 @@ def vrsbench_vehicle_class(label: str) -> str:
 
 
 def _finalize_vrsbench_answer(
-    result: ExpertResult,
+    result: AgentResult,
     question_type: str,
     audit: dict[str, Any],
     answer: str,
-) -> ExpertResult:
+) -> AgentResult:
     raw_answer = result.answer
     normalized = normalize_vrsbench_answer(question_type, answer)
     placeholder_token = re.sub(r"[^a-z]+", "", normalized.casefold())

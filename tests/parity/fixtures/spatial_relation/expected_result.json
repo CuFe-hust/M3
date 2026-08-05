@@ -26,7 +26,7 @@
       "point": null
     }
   ],
-  "expert": "spatial_expert",
+  "agent_name": "spatial_agent",
   "geometry": {
     "evidence_quality": [
       "trusted_box"

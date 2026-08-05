@@ -9,7 +9,7 @@ import pytest
 from spacers_agent.agents.grounding.agent import GroundingAgent
 from spacers_agent.agents.base import AgentContext
 from spacers_agent.prompt_catalog import PromptAsset
-from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import AgentResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
@@ -22,7 +22,7 @@ class _FakeClient:
 
     async def complete_json(self, *, messages, response_model, request_meta):
         self.calls.append({"request_meta": request_meta})
-        return ExpertResult(expert="grounding_expert", answer="box at [100,200,300,400]", status="completed")
+        return AgentResult(agent_name="grounding_agent", answer="box at [100,200,300,400]", status="completed")
 
 
 def _sample() -> UnifiedSample:
@@ -45,4 +45,4 @@ async def test_grounding_result_filename():
     agent = GroundingAgent(client, GROUNDING_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
-    assert exec_result.result_filename == "expert_result.json"
+    assert exec_result.result_filename == "agent_result.json"

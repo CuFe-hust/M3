@@ -5,7 +5,7 @@ from pathlib import Path
 
 from spacers_agent.agents.base import AgentExecution
 from spacers_agent.routing.schemas import RoutingDecision
-from spacers_agent.schemas import DatasetRunSummary, ExpertResult, ImageRef, SampleRunStatus, UnifiedSample
+from spacers_agent.schemas import DatasetRunSummary, AgentResult, ImageRef, SampleRunStatus, UnifiedSample
 from spacers_agent.workflows.artifact_writer import ArtifactWriter
 
 
@@ -36,11 +36,11 @@ def test_artifact_writer_persists_declared_artifacts(tmp_path: Path) -> None:
     )
     execution = AgentExecution(
         agent_name="general_vqa_agent",
-        payload=ExpertResult(expert="general_vqa_expert", answer="yes", status="completed"),
-        result_filename="expert_result.json",
+        payload=AgentResult(agent_name="general_vqa_agent", answer="yes", status="completed"),
+        result_filename="agent_result.json",
     )
     final = running.model_copy(
-        update={"state": "succeeded", "result_path": sample_dir / "expert_result.json"}
+        update={"state": "succeeded", "result_path": sample_dir / "agent_result.json"}
     )
     summary = DatasetRunSummary(
         run_id="run",
@@ -71,7 +71,7 @@ def test_artifact_writer_persists_declared_artifacts(tmp_path: Path) -> None:
 
     assert json.loads((sample_dir / "status.json").read_text(encoding="utf-8"))["state"] == "succeeded"
     assert json.loads((sample_dir / "routing_decision.json").read_text(encoding="utf-8"))["primary_agent"] == "general_vqa_agent"
-    assert json.loads((sample_dir / "expert_result.json").read_text(encoding="utf-8"))["answer"] == "yes"
+    assert json.loads((sample_dir / "agent_result.json").read_text(encoding="utf-8"))["answer"] == "yes"
     prediction = json.loads((run_dir / "predictions.jsonl").read_text(encoding="utf-8"))
     assert prediction["status"] == "succeeded"
     assert json.loads((run_dir / "dataset_summary.json").read_text(encoding="utf-8"))["succeeded"] == 1

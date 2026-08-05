@@ -113,7 +113,7 @@ class RouterSettings(BaseModel):
     use_router_agent_when_task_missing: bool = True
     high_confidence_threshold: float = Field(default=0.8, ge=0, le=1)
     medium_confidence_threshold: float = Field(default=0.6, ge=0, le=1)
-    max_total_experts: int = Field(default=3, ge=1)
+    max_total_agents: int = Field(default=3, ge=1)
     repair_attempts: int = Field(default=1, ge=0, le=1)
     enable_rule_fallback: bool = True
 

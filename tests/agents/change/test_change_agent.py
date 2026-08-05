@@ -10,11 +10,11 @@ import pytest
 from spacers_agent.agents.change.agent import ChangeAgent
 from spacers_agent.agents.base import AgentContext
 from spacers_agent.prompt_catalog import PromptAsset
-from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import AgentResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
-CHANGE_PROMPT = PromptAsset("change", Path("change_v1.md"), "change-expert-v1", "prompt")
+CHANGE_PROMPT = PromptAsset("change", Path("change_v1.md"), "change-agent-v1", "prompt")
 
 
 class _FakeClient:
@@ -23,7 +23,7 @@ class _FakeClient:
 
     async def complete_json(self, *, messages, response_model, request_meta):
         self.calls.append({"messages": messages, "request_meta": request_meta})
-        return ExpertResult(expert="change_expert", answer="A building appeared.", status="completed")
+        return AgentResult(agent_name="change_agent", answer="A building appeared.", status="completed")
 
 
 def _sample() -> UnifiedSample:
@@ -50,7 +50,7 @@ async def test_change_agent_result_filename():
     agent = ChangeAgent(client, CHANGE_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
-    assert exec_result.result_filename == "expert_result.json"
+    assert exec_result.result_filename == "agent_result.json"
 
 
 @pytest.mark.asyncio
@@ -59,7 +59,7 @@ async def test_change_agent_prompt_version_in_trace():
     agent = ChangeAgent(client, CHANGE_PROMPT, "model")
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
-    assert exec_result.trace["prompt_version"] == "change-expert-v1"
+    assert exec_result.trace["prompt_version"] == "change-agent-v1"
 
 
 @pytest.mark.asyncio

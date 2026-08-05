@@ -9,7 +9,7 @@ import pytest
 from spacers_agent.agents.spatial.agent import SpatialAgent
 from spacers_agent.agents.base import AgentContext
 from spacers_agent.prompt_catalog import PromptAsset
-from spacers_agent.schemas import ExpertResult, ImageRef, UnifiedSample
+from spacers_agent.schemas import AgentResult, ImageRef, UnifiedSample
 
 FIXTURES = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "legacy"
 TEST_IMAGE = FIXTURES / "test_image.png"
@@ -23,7 +23,7 @@ class _FakeClient:
 
     async def complete_json(self, *, messages, response_model, request_meta):
         self.calls.append({"request_meta": request_meta, "messages": messages})
-        return ExpertResult(expert="spatial_expert", answer="top-left", status="completed")
+        return AgentResult(agent_name="spatial_agent", answer="top-left", status="completed")
 
 
 def _sample(question: str = "Where is the car?") -> UnifiedSample:
@@ -47,7 +47,7 @@ async def test_spatial_result_filename():
     agent = SpatialAgent(client, SPATIAL_PROMPT, "model", grid_prompt=GRID_PROMPT)
     ctx = AgentContext(artifact_dir=Path("/tmp"), settings=None, qwen_client=None, call_budget=None)
     exec_result = await agent.run(_sample(), ctx)
-    assert exec_result.result_filename == "expert_result.json"
+    assert exec_result.result_filename == "agent_result.json"
 
 
 @pytest.mark.asyncio

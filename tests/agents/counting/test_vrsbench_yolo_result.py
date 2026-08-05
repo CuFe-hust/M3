@@ -2,7 +2,7 @@ from spacers_agent.agents.counting.agent import CountingAgent
 from spacers_agent.schemas import CountingResult, GlobalPointObservation, PointProvenance
 
 
-def test_vrsbench_yolo_count_adapts_to_reportable_expert_result() -> None:
+def test_vrsbench_yolo_count_adapts_to_reportable_agent_result() -> None:
     point = GlobalPointObservation(
         global_id="s:t:p", target="small-vehicle", source_tile_id="t", local_id="p",
         local_x_norm=500, local_y_norm=600, local_radius_norm=10,
@@ -23,8 +23,9 @@ def test_vrsbench_yolo_count_adapts_to_reportable_expert_result() -> None:
         succeeded_tiles=["t"], failed_tiles=[], global_points=[point], merged_groups=[],
         unresolved_conflicts=[], warnings=[], final_count=1, status="completed",
     )
-    result = CountingAgent._vrsbench_expert_result(counting, "image.png")
+    result = CountingAgent._vrsbench_agent_result(counting, "image.png")
     assert result.answer == "1"
+    assert result.agent_name == "counting_agent"
     assert result.status == "completed"
     assert result.evidence_items[0].point == [500, 600]
     assert result.evidence_items[0].label == "small vehicle"

@@ -201,9 +201,9 @@ class JudgeService:
             evaluation = json.loads(evaluation_path.read_text(encoding="utf-8"))
             if evaluation.get("judge_status") == "succeeded":
                 return evaluation
-        result_path = sample_dir / "expert_result.json"
+        result_path = sample_dir / "agent_result.json"
         if not result_path.is_file():
-            raise FileNotFoundError(f"expert_result.json missing for resume judge: {sample_dir}")
+            raise FileNotFoundError(f"agent_result.json missing for resume judge: {sample_dir}")
         result = json.loads(result_path.read_text(encoding="utf-8"))
         saved_answer = str(result.get("answer", ""))
         return await self.judge_vqa(
