@@ -53,6 +53,9 @@ The directory structure is a weak constraint. The canonical sample format, evalu
 
 The AI agent must not create shell files, empty classes, empty directories, meaningless wrappers, or excessive abstraction layers merely to match a recommended structure in `DETAILS.md`. A directory should be created or expanded only when it already has a clearly defined responsibility and actual code.
 
+The root `main.py` is the only public runtime entry (`serve` / `ask` / `run-dataset`, default `serve`). AI agents must not add a second public CLI, and new user-facing features must not be added only to `spacers_agent.cli`.
+根目录 `main.py` 是唯一公开运行入口（`serve` / `ask` / `run-dataset`，默认 `serve`）。AI 代理不得新增第二个公开 CLI，新用户功能不得只添加到 `spacers_agent.cli`。
+
 
 ## 3. Mandatory Rules for the Canonical Sample Format
 
@@ -742,3 +745,14 @@ The following rules apply when implementing or modifying the remote-sensing mult
 - Geometry logic must not depend on a model.
 - Follow this order: implementation → unit tests → Mock integration → live smoke when necessary and explicitly authorized → documentation update → issue report.
 - The user’s local-only and no-cloud restriction remains in force. A live smoke test, server connection, or cloud API call requires explicit user authorization after the code is complete.
+
+### 18.3 Single `main.py` Entry Rules
+
+1. `main.py` must not contain model business logic (no Transformers classes, `AutoConfig`/`AutoProcessor`/`from_pretrained`, `model.generate()`, Base64 encoding, Prompt text, Agent registration, Router rules, counting-backend selection, YOLO weights, dataset field mapping, Judge, metrics, HTML reports, or retry/fallback logic). It only parses arguments, loads settings, creates the application, and dispatches.
+2. The model must always be constructed through `models.entry.create_model`; the runtime must always be assembled through `spacers_agent.bootstrap.assemble_runtime`. Never bypass either entry.
+3. Service/manual requests (`ask` / `serve`) execute exactly one primary Agent and must never automatically run fallback Agents, a second Router call, Judge, evaluation, or a model reload. Failures propagate to the caller.
+4. Dataset runs continue to use `DatasetRunner` via `get_adapter` / `RunStore` / `create_model` / `assemble_runtime` / `build_dataset_runner`; the manual entry never re-implements the dataset loop.
+5. `main.py` 禁止包含模型业务逻辑（不得有 Transformers 类、`AutoConfig`/`AutoProcessor`/`from_pretrained`、`model.generate()`、Base64 编码、Prompt 正文、Agent 注册、Router 规则、计数后端选择、YOLO 权重、数据集字段映射、Judge、评测指标、HTML 报告或重试/fallback 逻辑），只负责参数解析、加载配置、创建应用与分发。
+6. 模型必须始终经 `models.entry.create_model` 构造，运行时必须始终经 `spacers_agent.bootstrap.assemble_runtime` 组装，不得绕过任一入口。
+7. 服务/手动请求（`ask` / `serve`）只执行一个主 Agent，绝不允许自动执行 fallback Agent、第二次 Router 调用、Judge、评测或模型重载；失败原样向调用方传播。
+8. 数据集运行继续使用 `DatasetRunner`（`get_adapter` / `RunStore` / `create_model` / `assemble_runtime` / `build_dataset_runner`），手动入口绝不重写数据集循环。

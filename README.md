@@ -181,11 +181,45 @@ python -m spacers_agent.cli summarize-evaluations --input .\evaluation_records.j
 
 The overlay renders owner cores, accepted points, and rejected points; the summary keeps deterministic benchmark metrics separate from optional DeepSeek quality metrics. See [the local runbook](C:\Users\TZDEZACR\Desktop\spacers-agent\code\docs\runbook.md) for required interpreter paths, safeguards, and commands.
 
+## Quick Start — Single `main.py` Entry
+
+`main.py` at the repository root is the only public runtime entry. It loads the YAML
+configuration, loads the local Qwen model once, and assembles the existing Agent Runtime
+(`models.entry.create_model` → `spacers_agent.bootstrap.assemble_runtime`).
+
+```bash
+# Start the local HTTP service on 127.0.0.1:8000 (default command, model loaded once)
+python main.py --config configs/local.spark.yaml
+
+# One-shot question against a local image directory
+python main.py --config configs/local.spark.yaml ask \
+  --images-dir /home/user/questions/sample1 \
+  --question "图中有什么？" \
+  --task general_vqa
+
+# Dataset run through the existing DatasetRunner workflow
+python main.py --config configs/local.spark.yaml run-dataset \
+  --dataset LEVIR-CC --root /home/user/data/LEVIR-CC --split test \
+  --task change_caption --run-id levir-cc-v1 --resume
+```
+
+Safety notes / 安全说明:
+
+- The service listens on `127.0.0.1` by default; do not expose it to an untrusted network.
+- The service only reads image directories local to the server; it does not accept image uploads.
+- Bi-temporal change tasks read the two images in natural filename order
+  (e.g. `01_t1.png`, `02_t2.png`); the directory's natural file order is the temporal order.
+- 服务默认监听 `127.0.0.1`，不要将其暴露到不受信任的网络；
+- 服务只读取服务器本地图片目录，不接受图片上传；
+- 双时相变化任务按文件名的自然顺序读取两张图片（例如 `01_t1.png`、`02_t2.png`），
+  目录中文件的自然顺序即时序顺序。
+
 ## Runnable Qwen Agent and Dataset Commands
 
-The legacy Colab baseline CLI (`main.py`) has been removed. All operations use
-`python -m spacers_agent.cli` and make network calls only for commands explicitly marked
-`--live` or requiring inference:
+The legacy Colab baseline CLI (`main.py`) has been removed, and `main.py` is now the single
+public entry (see Quick Start above). The internal tool CLI `python -m spacers_agent.cli`
+remains available for existing maintenance commands and makes network calls only for
+commands explicitly marked `--live` or requiring inference:
 
 ```powershell
 python -m spacers_agent.cli health qwen --live

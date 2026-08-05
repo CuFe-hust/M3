@@ -158,15 +158,39 @@ Directory evolution must comply with the following:
 This section explains the responsibilities that directories should assume once they exist.
 If a directory has not yet been created, the AI agent must not proactively create it merely because it is mentioned in this section; it should first determine whether the current task genuinely requires that directory.
 
-### 3.1 Removed Colab Baseline CLI (`main.py`)
+### 3.1 Single Public Entry (`main.py`)
 
-The Colab-ready baseline CLI `main.py` and its JSON config
-`config/baseline.example.json` have been removed. The active command-line entry is
-`python -m spacers_agent.cli`, which loads `configs/default.yaml` (or an ignored
-`configs/local*.yaml`) and is the only supported runtime entry.
-Colab 基线 CLI `main.py` 及其 JSON 配置 `config/baseline.example.json` 已删除；
-当前唯一命令行入口为 `python -m spacers_agent.cli`，使用 `configs/default.yaml`
-（或忽略的 `configs/local*.yaml`）。
+`main.py` at the repository root is the only public runtime entry. It loads the YAML
+configuration (`--config`, default `configs/default.yaml`), creates one
+`RuntimeApplication`, and dispatches three commands — `serve`, `ask`, `run-dataset`
+(no subcommand defaults to `serve`).
+根目录 `main.py` 是唯一公开运行入口。它加载 YAML 配置（`--config`，默认
+`configs/default.yaml`），创建唯一 `RuntimeApplication`，并分发三个命令 —
+`serve`、`ask`、`run-dataset`（无子命令时默认 `serve`）。
+
+- The local Qwen model is still constructed exactly once through
+  `models.entry.create_model("qwen_transformers", ...)` and never reloaded by
+  subsequent requests.
+- The Agent Runtime is still assembled through
+  `spacers_agent.bootstrap.assemble_runtime()`.
+- `ask` and `serve` execute exactly one primary Agent per request: no service-level
+  fallback, no Judge, no evaluation, no report, and no model reload.
+- `run-dataset` delegates to the existing `DatasetRunner` workflow
+  (`get_adapter` → `RunStore` → `create_model` → `assemble_runtime` →
+  `build_dataset_runner`) and keeps SampleRunner fallback, Judge, Resume, Artifact,
+  and Report behavior.
+- `python -m spacers_agent.cli` remains only as the internal tool CLI for existing
+  maintenance commands; it is no longer a public entry and new features are not
+  added there.
+本地 Qwen 模型仍只通过 `models.entry.create_model("qwen_transformers", ...)`
+构造一次，后续请求绝不重载；Agent Runtime 仍通过
+`spacers_agent.bootstrap.assemble_runtime()` 组装。`ask`/`serve` 每个请求只执行
+一个主 Agent：无服务层 fallback、无 Judge、无评测、无报告、无模型重载。
+`run-dataset` 委托现有 `DatasetRunner` 工作流（`get_adapter` → `RunStore` →
+`create_model` → `assemble_runtime` → `build_dataset_runner`），保留
+SampleRunner fallback、Judge、Resume、Artifact 与 Report 行为。
+`python -m spacers_agent.cli` 仅保留为内部工具命令入口，不再是公开入口，
+新功能不添加到其中。
 
 ### 3.2 `config/`
 
@@ -722,6 +746,24 @@ Judge, Writer, and budget factory. `cli.py` uses this composition for all datase
 `resume-run` reconstructs the same graph through `_run_dataset()`. `count-image` also calls
 `assemble_runtime()` and executes its canonical one-image `UnifiedSample` via the injected
 `SampleRunner`. There is no runtime branch to the former DatasetRunner or CountingWorkflow.
+
+The single-entry facade `spacers_agent.application.RuntimeApplication` wraps the same graph for
+the manual path: `create()` calls `create_model()` and `assemble_runtime()` exactly once, and
+`ask()`/the HTTP service execute only the primary Agent from
+`TaskRouter.route_known()` or one `route_unknown()` call. Manual requests never run
+fallback Agents, Judge, evaluation, reports, or a second router call, and they never reload the
+model. Service requests write only `request.json`, `result.json`, and the Agent's own artifacts
+below `outputs/runs/service/requests/<request-id>/`; they never write run manifests, prompt
+snapshots, dataset summaries, HTML reports, Judge results, or prediction JSONL. The serial
+`HTTPServer` exposes only `GET /health` and `POST /ask` and listens on `127.0.0.1` by default.
+单一入口门面 `spacers_agent.application.RuntimeApplication` 为手动路径包装同一对象图：
+`create()` 只调用一次 `create_model()` 与 `assemble_runtime()`；`ask()`/HTTP 服务只执行
+`TaskRouter.route_known()` 或一次 `route_unknown()` 给出的主 Agent。手动请求绝不运行
+fallback Agent、Judge、评测、报告或第二次路由调用，也绝不重载模型。服务请求只在
+`outputs/runs/service/requests/<request-id>/` 下写入 `request.json`、`result.json` 与
+Agent 自身产物；绝不写入 run manifest、Prompt 快照、数据集汇总、HTML 报告、Judge
+结果或 prediction JSONL。串行 `HTTPServer` 只暴露 `GET /health` 与 `POST /ask`，
+默认监听 `127.0.0.1`。
 
 `AgentContext` contains the canonical `PromptCatalog` rather than a second mutable Prompt mapping.
 Each logical Prompt key resolves to a frozen `PromptAsset` containing its source path, request
