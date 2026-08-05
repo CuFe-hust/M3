@@ -24,7 +24,9 @@
   SampleRunner fallback, Judge, Resume, Artifact, and Report preserved.
 - CI: the offline-tests workflow compiles `main.py`/`spacers_agent`/`models`, runs
   `tests/entry`, runs the full pytest suite, and verifies `main.py --help` plus the
-  internal maintenance CLI; `numpy` is declared in the `dev` extra for test collection.
+  internal maintenance CLI; the `dev` extra declares `numpy`, `huggingface_hub`, and
+  `transformers` for test collection. GitHub Actions is green on `try_yolo`
+  (run `30981096087`, all steps passed).
 - Validation: `tests/entry/` covers the parser, `main()` execution, image collection, task
   rules, artifact contents, HTTP status codes, and the model-loads-once architecture
   acceptance with fake clients; the full offline pytest suite passes except one

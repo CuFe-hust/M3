@@ -99,8 +99,11 @@ No new file types or output directories were introduced.
 
 ## Risks and Follow-up TODOs
 
-- GitHub Actions must be confirmed green on the remote `try_yolo` push; local results do
-  not substitute for the remote run.
+- GitHub Actions: confirmed green on the remote `try_yolo` push — run
+  `30981096087` (commit `163fa72`), job `offline-tests`, conclusion success, all six
+  steps passed (install dev deps, compile, entry tests, offline tests, public main
+  entry help, internal CLI help). A prior push (`70010c0`) failed only because
+  `huggingface_hub` was missing from the `dev` extra; it is now declared.
 - Spark real-model verification (default start without AttributeError, `/health`,
   three consecutive `/ask` requests, PID/model-object/memory stability) remains to be
   executed on the server with a local checkpoint; it is not claimed here.
