@@ -59,7 +59,7 @@ def test_prompt_catalog_binds_active_files_and_request_versions() -> None:
         "zero_review": ("missing_point_review_v3.md", "missing-point-review-v3"),
         "vrsbench_proposal": ("general_vqa_v1.md", "general-vqa-v1-count-proposal"),
         "vrsbench_localizer": ("count_localize_v1.md", "count-localize-v1"),
-        "change": ("change_v1.md", "change-expert-v1"),
+        "change": ("change_dual_path_v1.md", "change-dual-path-v1"),
         "spatial": ("spatial_v4.md", "spatial-v4"),
         "spatial_grid": ("spatial_v5.md", "spatial-v5"),
         "spatial_review": ("spatial_candidate_review_v4.md", "spatial-candidate-review-v4"),

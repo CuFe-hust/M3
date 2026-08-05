@@ -61,6 +61,32 @@ router:
 agents:
   counting:
     default_backend: auto
+  change:
+    dual_path_enabled: true
+    input_mode: dual_path
+    harmonization:
+      enabled: true
+      version: pif_lab_midpoint_v1
+      retain_raw_images: true
+      save_artifacts: true
+      calibration_file: null
+      reject_when_pif_mad_worse: true
+      max_pif_mad_degradation_ratio: 1.05
+      match_sharpness: true
+      max_blur_sigma: 1.5
+      min_retained_lapvar_ratio: 0.65
+    proposals:
+      enabled: true
+      rgb_weight: 0.50
+      edge_weight: 0.25
+      structure_weight: 0.25
+      threshold_quantile: 0.90
+      min_component_area_ratio: 0.0005
+      max_component_area_ratio: 0.50
+      max_proposals: 6
+    review:
+      enabled: true
+      require_proposal_evidence: true
 
 # Optional YOLO OBB counting backend. / 可选 YOLO OBB 计数后端。
 # Repository defaults stay disabled and never download weights. / 仓库默认保持关闭，绝不下载权重。

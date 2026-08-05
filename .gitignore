@@ -30,3 +30,6 @@ weights/
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Temporary local scratch space (test scripts, outputs, venv) — never commit
+tmp/

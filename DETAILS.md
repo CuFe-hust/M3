@@ -581,7 +581,7 @@ non-final. `CallBudget` also exposes a separate DeepSeek reservation method. No 
 DeepSeek, and any future judge must receive only text and structured evidence rather than image data.
 
 The active versioned prompt assets are `router_v1.md`, `target_parse_v1.md`, `count_tile_v4.md`,
-`count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_v1.md`,
+`count_repair_v1.md`, `seam_verify_v1.md`, `missing_point_review_v1.md`, `change_dual_path_v1.md`,
 `missing_point_review_v3.md`, `spatial_v4.md`, `spatial_v5.md`,
 `spatial_candidate_review_v4.md`, `spatial_candidate_review_v5.md`, and
 `general_vqa_v2.md`. Superseded prompt versions remain in Git for reproducibility. `run-init`
@@ -743,8 +743,8 @@ adapters. `workflow.py` defines no DatasetRunner or count flow, and `counting.py
 only re-export public compatibility symbols.
 
 Non-counting Agents receive frozen `PromptAsset` values resolved from `PromptCatalog`, rather than
-maintaining a second mutable Prompt dictionary. Observable request contracts remain unchanged:
-change uses request version `change-expert-v1`, grounding and general VQA use `general-vqa-v2`,
+maintaining a second mutable Prompt dictionary. The change request contract intentionally advances:
+change uses request version `change-dual-path-v1`, grounding and general VQA use `general-vqa-v2`,
 spatial uses `spatial-v4` or grid `spatial-v5`, review uses compact v4/v5, and caption uses its dedicated
 `caption-v1` asset. Caption was a frozen unsupported gap in the legacy multi-Agent DatasetRunner;
 the standalone CaptionAgent now closes that gap with one `ExpertResult` request and the unchanged
@@ -767,3 +767,10 @@ including `isolated_vehicle`, `target vehicle`, and `reference-vehicle`, may als
 vehicle class. Small shifted boxes are duplicates only when either IoU is at least 0.7 or smaller-box
 coverage is at least 0.45 and normalized centre distance is at most 0.40. Adjacent boxes below the
 coverage guard remain distinct. An explicit class label and a box at least 15% tighter are preferred.
+## ChangeAgent dual-path preprocessing contract
+
+`spacers_agent/agents/change/` owns the read-only change preprocessing path: `PairValidator` normalizes EXIF orientation and RGB decoding without implicit stretching; `PairHarmonizer` estimates PIF once from the raw pair, performs LAB 5/50/95 midpoint mapping, optionally reduces only the sharper side, and applies a typed quality gate; `difference_proposal` produces deterministic RGB/edge/structure candidate boxes; `preprocess` publishes sample-scoped artifacts; and `reviewer` adds non-destructive evidence warnings to `ExpertResult.geometry`.
+
+This does not change `UnifiedSample`, `ExpertResult`, `AgentExecution`, routing names, or CLI dataset execution. Ratios in change schemas always use `0..1`. Every preprocessing attempt has one of `applied`, `skipped`, `rejected`, or `failed`; all non-applied decisions retain raw images, set `used_for_proposal=false`, and include `RAW_FALLBACK_USED`. Generated files live under the sample's `change_preprocess/` directory. Harmonized images and PIF masks are written only for accepted transforms; validation/report, raw-based difference map, overlay, proposals, and raw crops remain auditable on fallback.
+
+`AppSettings.agents.change` is a strict Pydantic configuration group. Old YAML files that omit it receive defaults. `input_mode` selects `raw_only`, `harmonized_only`, or `dual_path`; when harmonization is unavailable, all modes safely use the raw pair. The active change prompt is `change_dual_path_v1.md` (`change-dual-path-v1`). The offline evaluator is `python -m scripts.evaluate_levir_harmonization`; it never calls Qwen and never infers absent label paths.

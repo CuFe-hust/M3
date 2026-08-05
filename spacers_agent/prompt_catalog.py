@@ -51,7 +51,7 @@ class PromptCatalog:
         "count_localize": ("count_localize_v1.md", "count-localize-v1"),
         "target": ("target_parse_v1.md", "target-parse-v1"),
         "target_parse": ("target_parse_v1.md", "target-parse-v1"),
-        "change": ("change_v1.md", "change-expert-v1"),
+        "change": ("change_dual_path_v1.md", "change-dual-path-v1"),
         "spatial": ("spatial_v4.md", "spatial-v4"),
         "spatial_grid": ("spatial_v5.md", "spatial-v5"),
         "spatial_review": ("spatial_candidate_review_v4.md", "spatial-candidate-review-v4"),

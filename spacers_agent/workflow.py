@@ -127,7 +127,7 @@ class WorkflowService:
     def __init__(self, client: VisionLanguageClient, prompts: dict[str, str], model: str) -> None:
         self._client = client
         self._registry = AgentRegistry()
-        self._registry.register(ChangeAgent(client, _prompt_asset("change", prompts["change"], "change-expert-v1"), model))
+        self._registry.register(ChangeAgent(client, _prompt_asset("change", prompts["change"], "change-dual-path-v1"), model))
         self._registry.register(GroundingAgent(client, _prompt_asset("grounding", prompts.get("grounding", prompts["general"]), "general-vqa-v2"), model))
         self._registry.register(SpatialAgent(
             client, _prompt_asset("spatial", prompts["spatial"], "spatial-v4"), model,
