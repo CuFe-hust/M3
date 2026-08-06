@@ -172,6 +172,7 @@ tests/architecture/test_no_new_to_legacy_imports.py
 tests/contracts/test_adapter_contract.py
 tests/contracts/test_agent_result_contract.py
 tests/contracts/test_data_schema_contract.py
+tests/contracts/test_routing_contract.py
 tests/data/test_adapter_integration.py
 tests/data/test_levir_cc_adapter.py
 tests/data/test_mme_realworld_adapter.py
@@ -183,6 +184,10 @@ tests/data/test_vrsbench_adapter.py
 tests/data/test_vrsbench_task_normalizer.py
 tests/data/test_xlrs_adapter.py
 tests/parity/test_baseline_golden_fixtures.py
+
+# === Routing tests ===
+tests/routing/test_policies.py
+tests/routing/test_router.py
 
 # === Models tests ===
 tests/models/test_model_entry.py
