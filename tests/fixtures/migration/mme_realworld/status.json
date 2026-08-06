@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/mme_realworld/agent_result.json",
+  "sample_id": "mme_realworld",
+  "state": "succeeded",
+  "task": "general_vqa"
+}

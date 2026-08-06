@@ -1,0 +1,11 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "spatial_agent",
+  "reason_codes": [
+    "task_spatial_relation"
+  ],
+  "requires_tiling": false,
+  "router_source": "dataset_task",
+  "task": "spatial_relation"
+}

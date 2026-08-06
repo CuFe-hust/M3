@@ -1,0 +1,36 @@
+{
+  "agent_class": "spacers_agent.agents.counting.agent.CountingAgent",
+  "attempted_backends": [
+    "qwen_point"
+  ],
+  "backend": "qwen_point",
+  "entrypoint": "run",
+  "executed_backend": "qwen_point",
+  "execution_mode": "single",
+  "execution_task": "counting",
+  "fallback_agents": [],
+  "fallback_kind": null,
+  "fallback_reason": null,
+  "fallback_triggered": false,
+  "fallback_used": false,
+  "judge_status": "not_requested",
+  "primary_backend": "qwen_point",
+  "qwen_backend": "transformers",
+  "requested_backend_mode": "auto",
+  "route": "CountingAgent.run -> BackendSelector.plan -> qwen_point",
+  "router_used": true,
+  "routing_source": "dataset_task",
+  "selection_reason": [
+    "no_supported_yolo_detector_qwen"
+  ],
+  "status": "completed",
+  "target": "building",
+  "target_classes": [
+    "building"
+  ],
+  "task_type": "counting",
+  "yolo": {
+    "attempted": false,
+    "used_for_final": false
+  }
+}

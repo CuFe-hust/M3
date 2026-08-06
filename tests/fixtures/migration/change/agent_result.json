@@ -1,0 +1,24 @@
+{
+  "agent_name": "change_agent",
+  "answer": "a building appeared",
+  "boxes": [],
+  "evidence": [],
+  "evidence_items": [],
+  "geometry": {
+    "change_review": {
+      "proposal_ids": [
+        "change_000"
+      ],
+      "warnings": []
+    },
+    "evidence_path_types": [
+      "raw_crop",
+      "harmonized_crop"
+    ],
+    "temporal_order": [
+      "t1",
+      "t2"
+    ]
+  },
+  "status": "completed"
+}

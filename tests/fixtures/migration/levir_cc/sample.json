@@ -1,0 +1,36 @@
+{
+  "dataset": "LEVIR-CC",
+  "ground_truth": {
+    "answers": [
+      "yes"
+    ],
+    "boxes": [],
+    "count": null,
+    "labels": [],
+    "points": [],
+    "raw": {}
+  },
+  "images": [
+    {
+      "height": 32,
+      "image_id": "t1-image",
+      "path": "image_t1.png",
+      "role": "t1",
+      "sha256": null,
+      "width": 32
+    },
+    {
+      "height": 32,
+      "image_id": "t2-image",
+      "path": "image_t2.png",
+      "role": "t2",
+      "sha256": null,
+      "width": 32
+    }
+  ],
+  "metadata": {},
+  "question": "Describe the change.",
+  "sample_id": "levir_cc",
+  "split": "validation",
+  "task": "change_caption"
+}

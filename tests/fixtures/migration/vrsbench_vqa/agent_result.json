@@ -1,0 +1,22 @@
+{
+  "agent_name": "general_vqa_agent",
+  "answer": "yes",
+  "boxes": [],
+  "evidence": [],
+  "evidence_items": [],
+  "geometry": {
+    "answer_normalization_version": "vrsbench-answer-v2",
+    "answer_source": "qwen_visual_answer",
+    "coordinate_frame": "normalized_0_999_top_left",
+    "evidence_valid": false,
+    "normalized_answer": "yes",
+    "question_type": "",
+    "raw_answer": "yes",
+    "rule": "no_deterministic_override",
+    "semantic_subtype": "existence",
+    "status_answer_placeholder_removed": false,
+    "version": "vrsbench-evidence-geometry-v4",
+    "workflow_status": "completed"
+  },
+  "status": "completed"
+}

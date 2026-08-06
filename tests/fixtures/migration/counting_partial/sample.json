@@ -1,0 +1,28 @@
+{
+  "dataset": "parity",
+  "ground_truth": {
+    "answers": [
+      "yes"
+    ],
+    "boxes": [],
+    "count": 4,
+    "labels": [],
+    "points": [],
+    "raw": {}
+  },
+  "images": [
+    {
+      "height": 4,
+      "image_id": "image-image",
+      "path": "image.png",
+      "role": "image",
+      "sha256": null,
+      "width": 4
+    }
+  ],
+  "metadata": {},
+  "question": "How many buildings are visible?",
+  "sample_id": "counting_one_failed_tile",
+  "split": "validation",
+  "task": "counting"
+}

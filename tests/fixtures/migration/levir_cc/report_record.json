@@ -1,0 +1,83 @@
+{
+  "sample_id": "levir_cc",
+  "task": "change_caption",
+  "dataset": "LEVIR-CC",
+  "split": "validation",
+  "state": "succeeded",
+  "route": "change_agent",
+  "agent": "change_agent",
+  "result_file": "agent_result.json",
+  "result": {
+    "agent_name": "change_agent",
+    "answer": "a building appeared",
+    "boxes": [],
+    "evidence": [],
+    "evidence_items": [],
+    "geometry": {
+      "change_review": {
+        "proposal_ids": [
+          "change_000"
+        ],
+        "warnings": []
+      },
+      "evidence_path_types": [
+        "raw_crop",
+        "harmonized_crop"
+      ],
+      "temporal_order": [
+        "t1",
+        "t2"
+      ]
+    },
+    "status": "completed"
+  },
+  "trace": {
+    "agent_class": "spacers_agent.agents.change.agent.ChangeAgent",
+    "execution_mode": "single",
+    "execution_task": "change_caption",
+    "fallback_agents": [],
+    "fallback_used": false,
+    "harmonization_reason_codes": [
+      "CALIBRATION_NOT_AVAILABLE",
+      "APPLIED_OK"
+    ],
+    "harmonization_status": "applied",
+    "harmonization_version": "pif_lab_midpoint_v1",
+    "image_roles": [
+      "t1",
+      "t2"
+    ],
+    "input_mode": "dual_path",
+    "judge_status": "not_requested",
+    "mad_pif_after": 54.52345657348633,
+    "mad_pif_before": 54.63703536987305,
+    "pif_ratio": 0.3955078125,
+    "preprocess_artifacts": {
+      "difference_map": "change_preprocess/difference_map.png",
+      "harmonization_report": "change_preprocess/harmonization_report.json",
+      "harmonized_t1": "change_preprocess/harmonized_t1.png",
+      "harmonized_t2": "change_preprocess/harmonized_t2.png",
+      "pif_mask": "change_preprocess/pif_mask.png",
+      "proposal_overlay": "change_preprocess/proposal_overlay.png",
+      "proposals": "change_preprocess/proposals.json",
+      "validation_report": "change_preprocess/validation_report.json"
+    },
+    "prompt_version": "change-dual-path-v1",
+    "proposal_count": 1,
+    "proposal_source": "difference_map_v1",
+    "qwen_backend": "transformers",
+    "raw_fallback_used": false,
+    "review_used": true,
+    "review_warnings": [],
+    "route": "ChangeAgent.run -> preprocess_pair -> RecordingFakeQwen.complete_json",
+    "router_used": true,
+    "routing_source": "dataset_task",
+    "sharpness_adjustment_used": true,
+    "task_type": "change_caption"
+  },
+  "evaluation": null,
+  "errors": {
+    "error_code": null,
+    "error_message": null
+  }
+}

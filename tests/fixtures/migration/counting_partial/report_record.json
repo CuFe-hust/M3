@@ -1,0 +1,152 @@
+{
+  "sample_id": "counting_one_failed_tile",
+  "task": "counting",
+  "dataset": "parity",
+  "split": "validation",
+  "state": "partial",
+  "route": "counting_agent",
+  "agent": null,
+  "result_file": "counting_result.json",
+  "result": {
+    "failed_tiles": [
+      "r000_c000"
+    ],
+    "final_count": 3,
+    "global_points": [
+      {
+        "accepted": true,
+        "confidence": 0.9,
+        "global_id": "counting_one_failed_tile:r000_c001:p1",
+        "global_x_norm": 999,
+        "global_x_px": 3,
+        "global_x_was_clamped": false,
+        "global_y_norm": 333,
+        "global_y_px": 1,
+        "global_y_was_clamped": false,
+        "local_id": "p1",
+        "local_radius_norm": 10,
+        "local_x_norm": 500,
+        "local_y_norm": 500,
+        "near_core_boundary": false,
+        "ownership_valid": true,
+        "provenance": null,
+        "radius_px": 0.02002002002002002,
+        "rejection_reason": null,
+        "short_evidence": "deterministic visible building",
+        "source_tile_id": "r000_c001",
+        "target": "building"
+      },
+      {
+        "accepted": true,
+        "confidence": 0.9,
+        "global_id": "counting_one_failed_tile:r001_c000:p1",
+        "global_x_norm": 333,
+        "global_x_px": 1,
+        "global_x_was_clamped": false,
+        "global_y_norm": 999,
+        "global_y_px": 3,
+        "global_y_was_clamped": false,
+        "local_id": "p1",
+        "local_radius_norm": 10,
+        "local_x_norm": 500,
+        "local_y_norm": 500,
+        "near_core_boundary": false,
+        "ownership_valid": true,
+        "provenance": null,
+        "radius_px": 0.02002002002002002,
+        "rejection_reason": null,
+        "short_evidence": "deterministic visible building",
+        "source_tile_id": "r001_c000",
+        "target": "building"
+      },
+      {
+        "accepted": true,
+        "confidence": 0.9,
+        "global_id": "counting_one_failed_tile:r001_c001:p1",
+        "global_x_norm": 999,
+        "global_x_px": 3,
+        "global_x_was_clamped": false,
+        "global_y_norm": 999,
+        "global_y_px": 3,
+        "global_y_was_clamped": false,
+        "local_id": "p1",
+        "local_radius_norm": 10,
+        "local_x_norm": 500,
+        "local_y_norm": 500,
+        "near_core_boundary": false,
+        "ownership_valid": true,
+        "provenance": null,
+        "radius_px": 0.02002002002002002,
+        "rejection_reason": null,
+        "short_evidence": "deterministic visible building",
+        "source_tile_id": "r001_c001",
+        "target": "building"
+      }
+    ],
+    "initial_tile_count": 4,
+    "leaf_tile_count": 4,
+    "merged_groups": [],
+    "question": "How many buildings are visible?",
+    "sample_id": "counting_one_failed_tile",
+    "source_height": 4,
+    "source_width": 4,
+    "status": "partial",
+    "succeeded_tiles": [
+      "r000_c001",
+      "r001_c000",
+      "r001_c001"
+    ],
+    "target": "building",
+    "tile_count": 4,
+    "unresolved_conflicts": [],
+    "warnings": [
+      {
+        "code": "TILE_WARNING",
+        "message": "r000_c000: RuntimeError",
+        "point_ids": [],
+        "tile_ids": []
+      }
+    ]
+  },
+  "trace": {
+    "agent_class": "spacers_agent.agents.counting.agent.CountingAgent",
+    "attempted_backends": [
+      "qwen_point"
+    ],
+    "backend": "qwen_point",
+    "entrypoint": "run",
+    "executed_backend": "qwen_point",
+    "execution_mode": "single",
+    "execution_task": "counting",
+    "fallback_agents": [],
+    "fallback_kind": null,
+    "fallback_reason": null,
+    "fallback_triggered": false,
+    "fallback_used": false,
+    "judge_status": "not_requested",
+    "primary_backend": "qwen_point",
+    "qwen_backend": "transformers",
+    "requested_backend_mode": "auto",
+    "route": "CountingAgent.run -> BackendSelector.plan -> qwen_point",
+    "router_used": true,
+    "routing_source": "dataset_task",
+    "selection_reason": [
+      "no_supported_yolo_detector_qwen"
+    ],
+    "status": "partial",
+    "target": "building",
+    "target_classes": [
+      "building"
+    ],
+    "task_type": "counting",
+    "yolo": {
+      "attempted": false,
+      "used_for_final": false
+    }
+  },
+  "evaluation": null,
+  "errors": {
+    "error_code": null,
+    "error_message": null
+  }
+}

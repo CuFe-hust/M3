@@ -1,0 +1,68 @@
+{
+  "sample_id": "spatial",
+  "task": "spatial_relation",
+  "dataset": "parity",
+  "split": "validation",
+  "state": "succeeded",
+  "route": "spatial_agent",
+  "agent": "spatial_agent",
+  "result_file": "agent_result.json",
+  "result": {
+    "agent_name": "spatial_agent",
+    "answer": "top-left",
+    "boxes": [
+      [
+        100.0,
+        100.0,
+        240.0,
+        240.0
+      ]
+    ],
+    "evidence": [
+      "deterministic evidence"
+    ],
+    "evidence_items": [
+      {
+        "box": [
+          100,
+          100,
+          240,
+          240
+        ],
+        "confidence": 0.9,
+        "coordinate_frame": "normalized_0_999_top_left",
+        "image_id": "legacy-image",
+        "label": "position-target",
+        "point": null
+      }
+    ],
+    "geometry": {
+      "evidence_quality": [
+        "trusted_box"
+      ],
+      "repair_severity": "none",
+      "source": "deterministic spatial evidence"
+    },
+    "status": "completed"
+  },
+  "trace": {
+    "agent_class": "spacers_agent.agents.spatial.agent.SpatialAgent",
+    "candidate_review_used": false,
+    "execution_mode": "single",
+    "execution_task": "spatial_relation",
+    "fallback_agents": [],
+    "fallback_used": false,
+    "judge_status": "not_requested",
+    "prompt_version": "spatial-v5",
+    "qwen_backend": "transformers",
+    "route": "SpatialAgent.run -> VisualAgentBase.run -> RecordingFakeQwen.complete_json",
+    "router_used": true,
+    "routing_source": "dataset_task",
+    "task_type": "spatial_relation"
+  },
+  "evaluation": null,
+  "errors": {
+    "error_code": null,
+    "error_message": null
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "agent_class": "spacers_agent.agents.general_vqa.agent.GeneralVQAAgent",
+  "execution_mode": "single",
+  "execution_task": "general_vqa",
+  "fallback_agents": [],
+  "fallback_used": false,
+  "judge_status": "succeeded",
+  "prompt_version": "general-vqa-v2",
+  "qwen_backend": "transformers",
+  "route": "GeneralVQAAgent.run -> VisualAgentBase.run -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "routing_source": "vrsbench_semantic_rule",
+  "task_type": "general_vqa"
+}
