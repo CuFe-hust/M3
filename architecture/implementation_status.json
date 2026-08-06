@@ -1,8 +1,20 @@
 {
-  "completed_tasks": [0, 1, 2, 3],
+  "completed_tasks": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
   "implemented_files": [
     "data/__init__.py",
-    "data/schema.py"
+    "data/schema.py",
+    "data/validation.py",
+    "data/selection.py",
+    "data/adapters/__init__.py",
+    "data/adapters/base.py",
+    "data/registry.py",
+    "data/adapters/levir_cc.py",
+    "data/adapters/mme_realworld.py",
+    "data/adapters/vrsbench/__init__.py",
+    "data/adapters/vrsbench/ontology.py",
+    "data/adapters/vrsbench/task_normalizer.py",
+    "data/adapters/vrsbench/adapter.py",
+    "data/adapters/xlrs.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
