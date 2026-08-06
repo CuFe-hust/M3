@@ -1,0 +1,37 @@
+name: Foundation tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install foundation dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Compile implemented code
+        run: python -m compileall data tests scripts/generate_migration_fixtures.py
+
+      - name: Architecture guards
+        run: python -m pytest -q tests/architecture
+
+      - name: Data contracts
+        run: python -m pytest -q tests/contracts/test_data_schema_contract.py
+
+      - name: Golden fixtures
+        run: python -m pytest -q tests/parity/test_baseline_golden_fixtures.py
+
+      - name: Full offline test suite
+        run: python -m pytest -q

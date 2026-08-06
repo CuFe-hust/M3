@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m3"
+version = "0.1.0"
+description = "Remote-sensing multimodal agent evaluation system."
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2.8",
+  "Pillow>=10.0",
+  "typing-extensions>=4.12",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+include = ["data*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = [
+  "live_qwen: requires an explicitly authorized live Qwen service",
+  "live_deepseek: requires an explicitly authorized live DeepSeek API",
+  "live_dataset: requires an explicitly authorized local dataset",
+]
