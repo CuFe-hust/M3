@@ -58,7 +58,11 @@
     "agents/base.py",
     "agents/registry.py",
     "agents/errors.py",
-    "agents/visual_base.py"
+    "agents/visual_base.py",
+    "routing/__init__.py",
+    "routing/schema.py",
+    "routing/policies.py",
+    "routing/router.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
