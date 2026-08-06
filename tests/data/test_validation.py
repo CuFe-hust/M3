@@ -308,9 +308,13 @@ def test_audit_damaged_image_outside_sample_is_not_missed_in_full_mode(tmp_path:
     root = tmp_path / "audit_damaged_late"
     _make_image(root / "images" / "ok1.png", seed=1, size=4)
     _make_image(root / "images" / "ok2.png", seed=2, size=4)
-    (root / "images" / "zz_bad.png").write_bytes(b"not a png")  # sorts last / 排序靠后
-    quick = audit_dataset_root(root, image_sample_limit=1)
-    assert "zz_bad.png" not in " ".join(quick.damaged_images)
+    (root / "images" / "zz_bad.png").write_bytes(b"not a png")
+    # limit=0 scans nothing in quick mode; the damaged file is only found in
+    # full mode. This avoids any dependency on directory iteration order.
+    # limit=0 使 quick 模式不扫描任何图片；损坏文件仅在 full 模式被发现。
+    quick = audit_dataset_root(root, image_sample_limit=0)
+    assert quick.images_scanned == 0
+    assert quick.damaged_images == []
     full = audit_dataset_root(root, scan_mode="full")
     assert any("zz_bad.png" in item for item in full.damaged_images)
 
