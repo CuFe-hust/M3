@@ -166,6 +166,7 @@ class DatasetAuditReport(BaseModel):
     missing_referenced_images: list[str]
     unresolved_referenced_images: list[str]
     ambiguous_referenced_images: list[str]
+    escaped_referenced_images: list[str]
     records_scanned: int
     record_scan_truncated: bool
     manifest_record_counts: dict[str, int]
@@ -189,10 +190,21 @@ def audit_dataset_root(
         raise ValueError(f"scan_mode must be 'quick' or 'full', got {scan_mode!r}")
     if not root.is_dir():
         raise FileNotFoundError(f"Dataset root does not exist: {root}")
-    files = [path for path in root.rglob("*") if path.is_file()]
+    # Deterministic ordering: audit results must not depend on directory
+    # iteration order. 确定性排序：审计结果不依赖目录迭代顺序。
+    files = sorted(
+        (path for path in root.rglob("*") if path.is_file()),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
     extension_counts = Counter(path.suffix.lower() or "<none>" for path in files)
-    manifests = [path for path in files if path.suffix.lower() in MANIFEST_SUFFIXES]
-    images = [path for path in files if path.suffix.lower() in IMAGE_SUFFIXES]
+    manifests = sorted(
+        (path for path in files if path.suffix.lower() in MANIFEST_SUFFIXES),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
+    images = sorted(
+        (path for path in files if path.suffix.lower() in IMAGE_SUFFIXES),
+        key=lambda path: path.relative_to(root).as_posix(),
+    )
 
     full = scan_mode == "full"
     image_limit = None if full else image_sample_limit
@@ -202,7 +214,7 @@ def audit_dataset_root(
     )
     (
         fields, split_hints, duplicate_ids, encoding_errors,
-        missing, unresolved, ambiguous, records_scanned, manifest_counts,
+        missing, unresolved, ambiguous, escaped, records_scanned, manifest_counts,
     ) = _inspect_json_records(root, manifests, record_limit)
     return DatasetAuditReport(
         root=str(root),
@@ -221,6 +233,7 @@ def audit_dataset_root(
         missing_referenced_images=sorted(missing),
         unresolved_referenced_images=sorted(unresolved),
         ambiguous_referenced_images=sorted(ambiguous),
+        escaped_referenced_images=sorted(escaped),
         records_scanned=records_scanned,
         record_scan_truncated=full is False and records_scanned < sum(manifest_counts.values()),
         manifest_record_counts=dict(sorted(manifest_counts.items())),
@@ -260,12 +273,12 @@ def _inspect_json_records(
     manifests: list[Path],
     limit: int | None,
 ) -> tuple[
-    set[str], set[str], set[str], list[str], set[str], set[str], set[str], int, dict[str, int]
+    set[str], set[str], set[str], list[str], set[str], set[str], set[str], set[str], int, dict[str, int]
 ]:
     """Collect field names, split hints, duplicate ids (grouped by field
-    semantics), encoding errors, and missing/unresolved/ambiguous referenced
-    images. 收集字段名、split 提示、按字段语义分组的重复 id、编码错误，
-    以及缺失/未决/歧义的引用图片。"""
+    semantics), encoding errors, and missing/unresolved/ambiguous/escaped
+    referenced images. 收集字段名、split 提示、按字段语义分组的重复 id、
+    编码错误，以及缺失/未决/歧义/逃逸的引用图片。"""
     fields: set[str] = set()
     split_hints: set[str] = set()
     duplicate_ids: set[str] = set()
@@ -273,6 +286,7 @@ def _inspect_json_records(
     missing: set[str] = set()
     unresolved: set[str] = set()
     ambiguous: set[str] = set()
+    escaped: set[str] = set()
     seen_ids: dict[str, dict[str, str]] = {}
     manifest_counts: dict[str, int] = {}
     records_scanned = 0
@@ -314,10 +328,12 @@ def _inspect_json_records(
                         )
                     if not isinstance(candidate, str) or not candidate:
                         continue
-                    _classify_image_reference(root, candidate, missing, unresolved, ambiguous)
+                    _classify_image_reference(
+                        root, candidate, missing, unresolved, ambiguous, escaped
+                    )
     return (
         fields, split_hints, duplicate_ids, encoding_errors,
-        missing, unresolved, ambiguous, records_scanned, manifest_counts,
+        missing, unresolved, ambiguous, escaped, records_scanned, manifest_counts,
     )
 
 
@@ -327,26 +343,30 @@ def _classify_image_reference(
     missing: set[str],
     unresolved: set[str],
     ambiguous: set[str],
+    escaped: set[str],
 ) -> None:
-    """Classify a referenced image: missing (explicit root-relative path with
-    no candidate), unresolved (bare name requiring adapter semantics), or
-    ambiguous (multiple distinct candidates exist).
-    将引用图片分类：missing（明确 root 相对路径且无候选）、unresolved（纯
-    basename，需 Adapter 语义）、ambiguous（多个不同候选存在）。"""
+    """Classify a referenced image with a fixed priority: escaped, ambiguous,
+    resolved, missing, unresolved. A reference belongs to exactly one class.
+    按固定优先级分类引用图片：escaped、ambiguous、resolved、missing、
+    unresolved；一条引用只属于一个类别。"""
     normalized = reference.replace("\\", "/")
-    candidates = {
-        (root / normalized).resolve(),
-    }
-    for base in ("images", "Images_val"):
+    root_resolved = root.resolve()
+    if _is_absolute_like(reference) or ".." in normalized.split("/"):
+        escaped.add(reference)
+        return
+    resolved_candidates: set[Path] = set()
+    for base in ("", "images", "Images_val"):
         candidate = (root / base / normalized).resolve()
+        if not candidate.is_relative_to(root_resolved):
+            escaped.add(reference)
+            return
         if candidate.is_file():
-            candidates.add(candidate)
-    existing = {candidate for candidate in candidates if candidate.is_file()}
-    if len(existing) > 1:
+            resolved_candidates.add(candidate)
+    if len(resolved_candidates) > 1:
         ambiguous.add(reference)
         return
-    if existing:
-        return
+    if resolved_candidates:
+        return  # resolved / 已解析
     if "/" in normalized:
         missing.add(reference)
     else:
