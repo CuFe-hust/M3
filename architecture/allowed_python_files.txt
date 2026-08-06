@@ -164,6 +164,7 @@ tests/__init__.py
 tests/conftest.py
 tests/agents/test_agent_registry.py
 tests/agents/test_visual_base.py
+tests/agents/general_vqa/test_agent.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
@@ -183,6 +184,7 @@ tests/data/test_validation.py
 tests/data/test_vrsbench_adapter.py
 tests/data/test_vrsbench_task_normalizer.py
 tests/data/test_xlrs_adapter.py
+tests/integration/test_general_vqa_vertical_slice.py
 tests/parity/test_baseline_golden_fixtures.py
 
 # === Routing tests ===
