@@ -407,6 +407,60 @@ def test_stable_sample_id_hashes_unsafe_source_ids() -> None:
     ) == "bc17b5837ee4ae633c39"
 
 
+def test_stable_sample_id_backslash_and_posix_forms_agree() -> None:
+    """The same logical sample must yield the same ID for backslash and forward
+    slash path spellings on every platform.
+    同一逻辑样本在反斜杠与正斜杠写法下必须得到相同 ID（跨平台稳定）。"""
+    posix = stable_sample_id(
+        dataset="LEVIR-CC", split="test", source_id=None,
+        relative_image_paths=["A/01_t1.png", "B/02_t2.png"],
+        question="Describe the change.", source_index=1,
+    )
+    windows = stable_sample_id(
+        dataset="LEVIR-CC", split="test", source_id=None,
+        relative_image_paths=[r"A\01_t1.png", r"B\02_t2.png"],
+        question="Describe the change.", source_index=1,
+    )
+    assert posix == windows == "21401c92a969e878c2cd"
+
+
+def test_stable_sample_id_accepts_path_and_str_inputs() -> None:
+    a = stable_sample_id(
+        dataset="D", split="s", source_id=None,
+        relative_image_paths=[Path("x/y.png")], question="q", source_index=0,
+    )
+    b = stable_sample_id(
+        dataset="D", split="s", source_id=None,
+        relative_image_paths=["x/y.png"], question="q", source_index=0,
+    )
+    assert a == b
+
+
+def test_stable_sample_id_rejects_absolute_paths() -> None:
+    """Machine-specific absolute paths must never enter the sample ID.
+    机器相关绝对路径不得进入样本 ID。"""
+    for bad in ("C:/data/a.png", r"C:\data\a.png", "/abs/a.png", r"\\server\share\a.png", "/"):
+        with pytest.raises(ValueError, match="relative"):
+            stable_sample_id(
+                dataset="D", split="s", source_id=None,
+                relative_image_paths=[bad], question="q", source_index=0,
+            )
+    with pytest.raises(ValueError, match="relative"):
+        stable_sample_id(
+            dataset="D", split="s", source_id=None,
+            relative_image_paths=[Path("ok.png"), "/abs/b.png"],
+            question="q", source_index=0,
+        )
+
+
+def test_stable_sample_id_rejects_empty_paths() -> None:
+    with pytest.raises(ValueError, match="empty"):
+        stable_sample_id(
+            dataset="D", split="s", source_id=None,
+            relative_image_paths=[""], question="q", source_index=0,
+        )
+
+
 # ── data package exports / data 包导出 ──────────────────────────────────────
 
 

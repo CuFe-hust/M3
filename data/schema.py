@@ -274,30 +274,58 @@ def stable_sample_id(
     dataset: str,
     split: str,
     source_id: str | None,
-    relative_image_paths: Sequence[Path],
+    relative_image_paths: Sequence[Path | str],
     question: str,
     source_index: int,
 ) -> str:
     """Return the source ID when it is a safe directory name, otherwise a stable
-    20-character digest over dataset, split, source ID, ordered image paths,
-    question, and source index. The original unsafe source ID is not returned;
-    adapters that need it must preserve it in sample metadata.
-    源 ID 可作为安全目录名时直接返回；否则返回覆盖 dataset/split/源 ID/有序图片
-    路径/question/索引的稳定 20 字符摘要。不安全源 ID 不返回原值，需要保留时由
-    适配器放入 sample metadata。"""
+    20-character digest.
 
+    Hash input fields (in order): dataset, split, source ID, ordered relative
+    image paths (POSIX form), question, source index. Encoding is UTF-8; the
+    digest is the first 20 hex characters of SHA-256.
+    哈希输入字段（按序）：dataset、split、源 ID、有序相对图片路径（POSIX 形式）、
+    question、源索引。编码 UTF-8；摘要为 SHA-256 前 20 个十六进制字符。
+
+    Path normalization: every image path is rendered with forward slashes
+    (backslashes are converted), so the same logical sample yields the same ID
+    on Windows and POSIX. Absolute paths are rejected because machine-specific
+    paths must never enter the ID.
+    路径规范化：所有图片路径统一为正斜杠（反斜杠被转换），同一逻辑样本在
+    Windows/POSIX 下得到相同 ID。绝对路径被拒绝——机器相关路径不得进入 ID。
+
+    The original unsafe source ID is not returned; adapters that need it must
+    preserve it in sample metadata.
+    不安全源 ID 不返回原值，需要保留时由适配器放入 sample metadata。
+    """
     if _source_id_is_safe(source_id):
         return source_id  # type: ignore[return-value]
+    posix_paths = []
+    for value in relative_image_paths:
+        text = str(value)
+        if not text.strip():
+            raise ValueError("relative_image_paths must not be empty")
+        if _is_absolute_like(text):
+            raise ValueError(f"relative_image_paths must be relative, got {text!r}")
+        posix_paths.append(text.replace("\\", "/"))
     parts = [
         dataset,
         split,
         source_id or "",
-        "\n".join(path.as_posix() for path in relative_image_paths),
+        "\n".join(posix_paths),
         question,
         str(source_index),
     ]
     payload = "\n".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:20]
+
+
+def _is_absolute_like(value: str) -> bool:
+    """Detect absolute paths on both Windows and POSIX spellings.
+    同时识别 Windows 与 POSIX 写法的绝对路径。"""
+    if value.startswith(("/", "\\")):
+        return True
+    return len(value) >= 3 and value[1] == ":" and value[2] in "/\\"
 
 
 def _source_id_is_safe(source_id: str | None) -> bool:
