@@ -22,13 +22,28 @@ jobs:
         run: python -m pip install -e ".[dev,migration]"
 
       - name: Compile implemented code
-        run: python -m compileall data tests scripts/generate_migration_fixtures.py
+        run: python -m compileall data models agents tests scripts/generate_migration_fixtures.py
 
       - name: Architecture guards
         run: python -m pytest -q tests/architecture
 
       - name: Data contracts
         run: python -m pytest -q tests/contracts/test_data_schema_contract.py
+
+      - name: Model and agent contracts
+        run: |
+          python -m pytest -q tests/models
+          python -m pytest -q tests/agents
+          python -m pytest -q tests/contracts/test_agent_result_contract.py
+
+      - name: Build and verify wheel
+        run: |
+          python -m build
+          python -m venv /tmp/m3-wheel-test
+          /tmp/m3-wheel-test/bin/python -m pip install --upgrade pip
+          /tmp/m3-wheel-test/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/m3-wheel-test/bin/python -c "import data, models, agents"
 
       - name: Golden fixtures
         run: python -m pytest -q tests/parity/test_baseline_golden_fixtures.py

@@ -3,16 +3,18 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–03 完成）
+## 当前状态（Task 00–15 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
 - 架构守卫（文件白名单 / import 依赖 DAG / 旧包禁止）：`tests/architecture/`
-- 数据层统一样本契约：`data/schema.py`（TaskName、ImageRef、GroundTruth、
-  TaskNormalization、UnifiedSample、ValidationIssue、stable_sample_id）
+- 数据层：`data/`（统一样本契约、4 个数据集 Adapter、校验/选择/审计）
+- 模型层基础：`models/`（协议/缓存/图像工具/配置声明、统一 entry、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装）
+- Agent 通用契约：`agents/`（AgentResult/VisualEvidence、AgentContext/AgentExecution、Registry、错误类型、数据集无关 VisualAgentBase）
 
-**尚未实现**：模型、Agent、Router、Workflow、Evaluation、Reporting、
-Application 与 CLI（`main.py`）。请勿将其当作可用功能使用。
+**尚未实现**：具体领域 Agents（counting/spatial/change/grounding/caption/general_vqa）、
+routing、workflows、evaluation、reporting、application 与 CLI（`main.py`）。
+请勿将其当作可用功能使用。
 
 ## 安装与测试
 

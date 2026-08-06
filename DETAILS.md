@@ -12,7 +12,18 @@
 
 | 模块 | 拥有类型/函数 | 说明 |
 |---|---|---|
-| `data/schema.py` | `TaskName` | 10 个公开任务名（Literal） |
+| `models/base.py` | `RequestMeta`、`VisionLanguageClient`、`build_request_hash`、`sanitize_messages` | 模型客户端协议与请求哈希/脱敏 |
+| `models/cache.py` | `CacheEntry`、`JsonResponseCache`、`ModelCacheError`、`CorruptCacheEntryError` | 原子文件缓存；损坏条目稳定错误 |
+| `models/images.py` | `read_normalized_image`、`guess_image_mime`、`image_to_data_url`、`image_sha256` | 模型输入图像工具 |
+| `models/settings.py` | `QwenSettings`、`DeepSeekSettings`、`ModelSettings` | 配置声明；默认离线（allow_download=False） |
+| `models/entry.py` | `create_model`、`register`、`list_models` | 统一惰性模型工厂 |
+| `models/qwen_transformers.py` | `QwenTransformersClient`、`QWEN_CLIENT_VERSION` | 本地 Transformers Qwen 客户端（一次加载/结构化 JSON/修复/缓存/产物/并发锁） |
+| `models/qwen3_vl/baseline.py` | `Qwen3VLBaseline`、`Qwen3VLSettings` | Qwen3-VL 多模态文本基线封装 |
+| `agents/schema.py` | `AgentName`、`VisualEvidence`、`AgentResult` | 通用 Agent 输出契约 |
+| `agents/base.py` | `AgentContext`、`AgentExecution`、`Agent`、`CallBudget` | 执行上下文（含 data_root）与严格执行校验 |
+| `agents/registry.py` | `AgentRegistry` | 纯注册/查询/supports/coverage |
+| `agents/errors.py` | 9 个稳定错误类型 | 重复/未注册/任务不匹配/执行失败/检测器/可选依赖 |
+| `agents/visual_base.py` | `VisualAgentBase`、`PromptBinding` | 数据集无关视觉 Agent 基类（返回 AgentExecution） |
 | `data/schema.py` | `ImageRef` | 不可变图像引用；path 统一 posix 序列化；sha256 严格 64 位 hex |
 | `data/schema.py` | `GroundTruth` | answers/count/boxes(4|8)/points(2)/labels/raw/coordinate_frame |
 | `data/schema.py` | `TaskNormalization` | 一等规范化字段（结构化 spatial_query/answer_constraints/count_target_hint） |
@@ -32,7 +43,15 @@
 - `UnifiedSample.normalization.normalized_task` 必须等于 `sample.task`。
 - 依赖方向：`data` 不依赖任何其他业务包；新代码不得 import `spacers_agent`/`eval`。
 
+## 依赖方向
+
+- `data` 不依赖任何其他业务包；`models` 不依赖 data/agents；`agents` 可依赖
+  `data.schema` 与 `models`；`VisualAgentBase` 返回 `AgentExecution`（payload 为
+  `AgentResult`）。
+- 新代码不得 import `spacers_agent`/`eval`。
+
 ## 尚未实现
 
-`models`、`agents`、`routing`、`workflows`、`evaluation`、`reporting`、
-`application`、`main.py` 及对应目录尚未创建/实现；任务推进时逐层创建并更新本文件。
+具体领域 Agents（counting/spatial/change/grounding/caption/general_vqa）、
+`routing`、`workflows`、`evaluation`、`reporting`、`application`、`main.py`
+及对应目录尚未创建/实现；任务推进时逐层创建并更新本文件。
