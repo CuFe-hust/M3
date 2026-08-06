@@ -138,10 +138,10 @@ def test_execution_accepts_valid_filename_and_trace() -> None:
 
 
 def test_execution_rejects_absolute_and_parent_filenames() -> None:
-    with pytest.raises(ValueError, match="plain basename"):
-        _execution(result_filename="/etc/passwd")
-    with pytest.raises(ValueError, match="not contain '..'"):
-        _execution(result_filename="../agent_result.json")
+    for bad in ("/etc/passwd", r"C:\temp\result.json", "C:/temp/result.json",
+                "sub/result.json", r"..\result.json", "../agent_result.json", ".", ".."):
+        with pytest.raises(ValueError, match="plain basename"):
+            _execution(result_filename=bad)
 
 
 def test_execution_rejects_sensitive_trace_keys() -> None:
@@ -158,13 +158,38 @@ def test_execution_rejects_nested_sensitive_trace_keys() -> None:
 
 
 def test_execution_rejects_non_json_serializable_trace() -> None:
-    with pytest.raises(ValueError, match="JSON-serializable"):
+    with pytest.raises(ValueError, match="non-string key"):
         _execution(trace={b"binary": 1})
+    with pytest.raises(ValueError, match="bytes"):
+        _execution(trace={"x": b"bytes"})
+    with pytest.raises(ValueError, match="Path"):
+        _execution(trace={"path": Path("/tmp/x")})
+    with pytest.raises(ValueError, match="set"):
+        _execution(trace={"s": {1, 2}})
+    with pytest.raises(ValueError, match="non-finite"):
+        _execution(trace={"n": float("nan")})
 
 
-def test_execution_validates_additional_result_filenames() -> None:
-    with pytest.raises(ValueError, match="safe plain basename"):
+def test_execution_rejects_sensitive_value_prefixes() -> None:
+    for value in ("sk-secret-key", "Bearer abc123", "-----BEGIN PRIVATE KEY-----"):
+        with pytest.raises(ValueError, match="sensitive value"):
+            _execution(trace={"answer": value})
+    with pytest.raises(ValueError, match="sensitive value"):
+        _execution(trace={"items": [{"raw": "data:image/png;base64,AAAA"}]})
+
+
+def test_execution_payload_agent_name_must_match() -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        _execution(agent_name="spatial_agent")
+
+
+def test_execution_additional_results_must_not_collide() -> None:
+    with pytest.raises(ValueError, match="collides"):
+        _execution(additional_results={"agent_result.json": {"a": 1}})
+    with pytest.raises(ValueError, match="plain basename"):
         _execution(additional_results={"../evil.json": None})
+    execution = _execution(additional_results={"extra.json": {"x": 1}})
+    assert execution.additional_results == {"extra.json": {"x": 1}}
 
 
 def test_validate_agent_execution_standalone() -> None:
