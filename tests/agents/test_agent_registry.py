@@ -195,3 +195,80 @@ def test_execution_additional_results_must_not_collide() -> None:
 def test_validate_agent_execution_standalone() -> None:
     execution = _execution()
     validate_agent_execution(execution)  # no exception / 无异常
+
+
+# ── 安全校验补齐 / safety hardening (E) ────────────────────────────────────
+
+
+def test_context_rejects_sensitive_request_context_keys() -> None:
+    for bad in ({"api_key": "sk-1"}, {"authorization": "Bearer x"},
+                {"nested": {"access_token": "x"}}):
+        with pytest.raises(ValueError, match="sensitive key"):
+            AgentContext(
+                artifact_dir=Path("/tmp/run"),
+                qwen_client=_FakeClient(),
+                call_budget=_FakeBudget(),
+                request_context=bad,
+            )
+
+
+def test_context_rejects_sensitive_request_context_values() -> None:
+    for bad in ({"note": "sk-secret"}, {"note": "  Bearer abc"},
+                {"note": "Data:Image/png;base64,AAAA"}):
+        with pytest.raises(ValueError, match="sensitive value"):
+            AgentContext(
+                artifact_dir=Path("/tmp/run"),
+                qwen_client=_FakeClient(),
+                call_budget=_FakeBudget(),
+                request_context=bad,
+            )
+
+
+def test_context_accepts_plain_request_context() -> None:
+    context = AgentContext(
+        artifact_dir=Path("/tmp/run"),
+        qwen_client=_FakeClient(),
+        call_budget=_FakeBudget(),
+        request_context={"split": "test", "items": [1, 2, {"k": "v"}]},
+    )
+    assert context.request_context["split"] == "test"
+
+
+def test_execution_rejects_sensitive_additional_result_keys() -> None:
+    with pytest.raises(ValueError, match="sensitive key"):
+        _execution(additional_results={"debug.json": {"api_key": "sk-1"}})
+    with pytest.raises(ValueError, match="sensitive key"):
+        _execution(additional_results={"debug.json": {"nested": {"authorization": "x"}}})
+
+
+def test_execution_rejects_case_space_sensitive_values() -> None:
+    for value in ("SK-ABC", "  Bearer abc", "  sk-secret", "Data:Image/png;base64,AAAA"):
+        with pytest.raises(ValueError, match="sensitive value"):
+            _execution(trace={"answer": value})
+        with pytest.raises(ValueError, match="sensitive value"):
+            _execution(additional_results={"debug.json": {"answer": value}})
+
+
+def test_execution_accepts_plain_additional_results() -> None:
+    execution = _execution(additional_results={"debug.json": {"notes": ["a", "b"], "n": 2}})
+    assert execution.additional_results["debug.json"]["n"] == 2
+
+
+class _DomainResult:
+    """Future domain result with its own agent_name attribute.
+    带自身 agent_name 属性的未来域专用结果。"""
+
+    def __init__(self, agent_name: str) -> None:
+        self.agent_name = agent_name
+
+
+def test_execution_validates_any_payload_with_agent_name() -> None:
+    with pytest.raises(ValueError, match="does not match"):
+        _execution(payload=_DomainResult("counting_agent"))
+    execution = _execution(payload=_DomainResult("general_vqa_agent"))
+    assert execution.payload.agent_name == "general_vqa_agent"
+
+
+def test_execution_accepts_payload_without_agent_name() -> None:
+    execution = _execution(payload={"answer": "ok"})
+    assert execution.payload == {"answer": "ok"}

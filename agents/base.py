@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol, runtime_checkable
 
 from models.base import VisionLanguageClient
-from agents.schema import AgentName, AgentResult
+from agents.schema import AgentName
 
 
 class CallBudget(Protocol):
@@ -54,6 +54,7 @@ class AgentContext:
         if self.data_root is not None and not isinstance(self.data_root, Path):
             raise TypeError("data_root must be a pathlib.Path or None")
         _assert_json_safe(self.request_context, "request_context")
+        _check_no_sensitive_keys(self.request_context, "request_context")
         _check_no_sensitive_values(self.request_context)
 
 
@@ -96,12 +97,14 @@ _SENSITIVE_TRACE_KEYS = frozenset({
     "api_key", "apikey", "authorization", "secret", "token", "password",
     "base64", "credential", "private_key",
 })
-# High-risk sensitive value prefixes. / 高风险敏感值前缀。
+# High-risk sensitive value prefixes, checked after lstrip().lower() so case
+# and leading whitespace cannot bypass the guard.
+# 高风险敏感值前缀；在 lstrip().lower() 后检查，使大小写与前导空格无法绕过。
 _SENSITIVE_VALUE_PREFIXES = (
     "sk-",
-    "Bearer ",
+    "bearer ",
     "data:image/",
-    "-----BEGIN PRIVATE KEY-----",
+    "-----begin private key-----",
 )
 
 
@@ -132,13 +135,17 @@ def validate_agent_execution(execution: AgentExecution) -> None:
         if filename in seen_additional:
             raise ValueError(f"duplicate additional result filename {filename!r}")
         seen_additional.add(filename)
+        _check_no_sensitive_keys(value, f"additional_results[{filename!r}]")
         _check_no_sensitive_values(value)
         _assert_json_safe(value, f"additional_results[{filename!r}]")
 
-    payload = execution.payload
-    if isinstance(payload, AgentResult) and payload.agent_name != execution.agent_name:
+    # Any payload exposing an agent_name must match the execution agent name;
+    # payloads without one are accepted. / 任何暴露 agent_name 的载荷都必须与
+    # 执行 agent 名一致；没有该字段的普通载荷不强制失败。
+    payload_agent_name = getattr(execution.payload, "agent_name", None)
+    if payload_agent_name is not None and payload_agent_name != execution.agent_name:
         raise ValueError(
-            f"payload agent_name {payload.agent_name!r} does not match "
+            f"payload agent_name {payload_agent_name!r} does not match "
             f"execution agent_name {execution.agent_name!r}"
         )
 
@@ -162,7 +169,7 @@ def _check_no_sensitive_keys(value: Any, path: str = "trace") -> None:
             key_lower = str(key).lower().replace("-", "_").replace(" ", "_")
             for sensitive in _SENSITIVE_TRACE_KEYS:
                 if sensitive in key_lower:
-                    raise ValueError(f"trace contains sensitive key {key!r} at {path}")
+                    raise ValueError(f"{path} contains sensitive key {key!r}")
             _check_no_sensitive_keys(val, f"{path}.{key}")
     elif isinstance(value, list):
         for index, item in enumerate(value):
@@ -170,11 +177,13 @@ def _check_no_sensitive_keys(value: Any, path: str = "trace") -> None:
 
 
 def _check_no_sensitive_values(value: Any) -> None:
-    """Reject high-risk sensitive value prefixes in any string.
-    拒绝字符串中的高风险敏感值前缀。"""
+    """Reject high-risk sensitive value prefixes in any string; case and
+    leading whitespace cannot bypass the guard.
+    拒绝字符串中的高风险敏感值前缀；大小写与前导空格无法绕过。"""
     if isinstance(value, str):
+        normalized = value.lstrip().lower()
         for prefix in _SENSITIVE_VALUE_PREFIXES:
-            if value.startswith(prefix):
+            if normalized.startswith(prefix):
                 raise ValueError("trace contains a sensitive value prefix")
         return
     if isinstance(value, dict):

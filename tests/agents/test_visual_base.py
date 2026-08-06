@@ -20,6 +20,7 @@ from agents.registry import AgentRegistry
 from agents.schema import AgentName, AgentResult
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import GroundTruth, ImageRef, TaskNormalization, UnifiedSample
+from models.base import ModelCacheIdentity
 
 
 class _FakeBudget:
@@ -38,9 +39,26 @@ class _RecordingClient:
     """Records messages and request meta; returns a stable AgentResult.
     记录消息与请求元数据；返回稳定的 AgentResult。"""
 
-    def __init__(self, agent_name: str = "general_vqa_agent") -> None:
+    def __init__(
+        self,
+        agent_name: str = "general_vqa_agent",
+        *,
+        revision: str | None = None,
+        max_tokens: int = 128,
+    ) -> None:
         self.agent_name = agent_name
+        self._revision = revision
+        self._max_tokens = max_tokens
         self.calls: list[dict[str, Any]] = []
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return ModelCacheIdentity(
+            model="fake-model",
+            generation={"temperature": 0.0, "do_sample": False, "max_tokens": self._max_tokens},
+            client_version="1",
+            revision=self._revision,
+        )
 
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         self.calls.append(
@@ -75,7 +93,6 @@ def _sample(root: Path, *, task: str = "general_vqa", images=None, normalization
 def _base(client, agent_name: str = "general_vqa_agent") -> VisualAgentBase:
     return VisualAgentBase(
         client,
-        "fake-model",
         agent_name=agent_name,
         supported_tasks=frozenset({"general_vqa", "spatial_relation"}),
         prompt=PromptBinding(text="Answer the question.", version="test-v1"),
@@ -267,7 +284,9 @@ def test_path_escape_is_rejected(tmp_path: Path) -> None:
     # The ImageRef schema already rejects '..'; the base guard is defensive.
     # ImageRef schema 已拒绝 '..'；基类防护为防御层。
     with __import__("pytest").raises(AgentExecutionError, match="escape"):
-        VisualAgentBase._read_image(Path("../outside.png"), context)
+        _base(_RecordingClient())._read_image(
+            Path("../outside.png"), context, sample_id="s1"
+        )
 
 
 def test_missing_image_raises_agent_error(tmp_path: Path) -> None:
@@ -287,3 +306,128 @@ def test_visual_base_has_no_dataset_branch() -> None:
     )
     assert "VRSBench" not in source
     assert "sample.dataset" not in source
+
+
+# ── cache identity 集成 / identity integration (A) ─────────────────────────
+
+
+def test_request_hash_changes_with_client_revision(tmp_path: Path) -> None:
+    """Different client revision must change the hash end-to-end through run().
+    不同客户端 revision 必须端到端（经 run()）改变哈希。"""
+    root = tmp_path / "data"
+    sample = _sample(root)
+    client_a = _RecordingClient(revision="rev-a")
+    client_b = _RecordingClient(revision="rev-b")
+    asyncio.run(_base(client_a).run(sample, _context(root)))
+    asyncio.run(_base(client_b).run(sample, _context(root)))
+    assert client_a.calls[0]["request_hash"] != client_b.calls[0]["request_hash"]
+
+
+def test_request_hash_changes_with_client_max_tokens(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    sample = _sample(root)
+    client_a = _RecordingClient(max_tokens=64)
+    client_b = _RecordingClient(max_tokens=128)
+    asyncio.run(_base(client_a).run(sample, _context(root)))
+    asyncio.run(_base(client_b).run(sample, _context(root)))
+    assert client_a.calls[0]["request_hash"] != client_b.calls[0]["request_hash"]
+
+
+def test_missing_cache_identity_fails_before_budget_and_model(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    budget = _FakeBudget()
+
+    class _NoIdentityClient:
+        """Client without the cache_identity attribute.
+        无 cache_identity 属性的客户端。"""
+
+        def __init__(self) -> None:
+            self.agent_name = "general_vqa_agent"
+            self.calls: list[Any] = []
+
+        async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
+            self.calls.append(1)
+            return response_model.model_validate(
+                {"agent_name": self.agent_name, "answer": "yes", "status": "completed"}
+            )
+
+    client = _NoIdentityClient()
+    with __import__("pytest").raises(AgentExecutionError, match="cache_identity"):
+        asyncio.run(_base(client).run(_sample(root), _context(root, budget)))
+    assert budget.qwen_calls == 0
+    assert client.calls == []
+
+
+# ── 图片读取错误 / image read errors (F) ───────────────────────────────────
+
+
+def test_image_read_oserror_becomes_agent_error(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "data"
+    _make_image(root / "img.png")
+    sample = _sample(root)
+
+    def _broken_read_bytes(self):
+        raise PermissionError("access denied")
+
+    monkeypatch.setattr(Path, "read_bytes", _broken_read_bytes)
+    with __import__("pytest").raises(AgentExecutionError, match="image_read_failed") as info:
+        asyncio.run(_base(_RecordingClient()).run(sample, _context(root)))
+    # The machine absolute path must not leak into the error message.
+    # 机器绝对路径不得泄漏进错误消息。
+    assert str(tmp_path) not in str(info.value)
+
+
+def test_image_read_generic_oserror_becomes_agent_error(tmp_path: Path, monkeypatch) -> None:
+    root = tmp_path / "data"
+    _make_image(root / "img.png")
+    sample = _sample(root)
+
+    def _broken_read_bytes(self):
+        raise OSError("disk gone")
+
+    monkeypatch.setattr(Path, "read_bytes", _broken_read_bytes)
+    with __import__("pytest").raises(AgentExecutionError, match="OSError"):
+        asyncio.run(_base(_RecordingClient()).run(sample, _context(root)))
+
+
+# ── MIME 覆盖 / MIME coverage (G) ──────────────────────────────────────────
+
+
+def test_images_mime_covers_png_jpeg_webp_tiff(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _make_image(root / "img.png")
+    _make_image(root / "img.jpg", seed=5, suffix=".jpg")
+    (root / "img.webp").write_bytes(_real_webp_bytes())
+    (root / "img.tif").write_bytes(_real_tiff_bytes())
+    client = _RecordingClient()
+    sample = _sample(
+        root,
+        images=[
+            ImageRef(image_id="a", path="img.png", role="image"),
+            ImageRef(image_id="b", path="img.jpg", role="context"),
+            ImageRef(image_id="c", path="img.webp", role="context"),
+            ImageRef(image_id="d", path="img.tif", role="context"),
+        ],
+    )
+    asyncio.run(_base(client).run(sample, _context(root)))
+    content = client.calls[0]["messages"][1]["content"]
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert content[2]["image_url"]["url"].startswith("data:image/webp;base64,")
+    assert content[3]["image_url"]["url"].startswith("data:image/tiff;base64,")
+
+
+def _real_webp_bytes() -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), (10, 20, 30)).save(buffer, format="WEBP")
+    return buffer.getvalue()
+
+
+def _real_tiff_bytes() -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), (40, 50, 60)).save(buffer, format="TIFF")
+    return buffer.getvalue()

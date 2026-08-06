@@ -45,12 +45,10 @@ class VisualAgentBase:
     def __init__(
         self,
         client: VisionLanguageClient,
-        model: str,
         *,
         agent_name: AgentName,
         supported_tasks: frozenset[str],
         prompt: PromptBinding,
-        model_revision: str | None = None,
     ) -> None:
         if not supported_tasks:
             raise ValueError("supported_tasks must not be empty")
@@ -60,9 +58,7 @@ class VisualAgentBase:
         self.name = agent_name
         self.supported_tasks = frozenset(supported_tasks)
         self._client = client
-        self._model = model
         self._prompt = prompt
-        self._model_revision = model_revision
 
     # ── hooks / hook ─────────────────────────────────────────────────────
 
@@ -105,11 +101,25 @@ class VisualAgentBase:
         if sample.task not in self.supported_tasks:
             raise AgentTaskMismatchError(self.name, sample.task, supported=self.supported_tasks)
 
+        # The client's own cache identity is the only hash source; fail before
+        # reading images, consuming budget, or calling the model when it is
+        # missing. 客户端自身的缓存身份是唯一哈希来源；缺失时在读图、消费
+        # budget、调用模型之前显式失败。
+        identity = getattr(self._client, "cache_identity", None)
+        if identity is None:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause="model client does not expose cache_identity",
+            )
+
         # Read images and build content / 读取图像并构建内容
         content: list[dict[str, Any]] = []
         image_hashes: list[str] = []
         for image_ref in sample.images:
-            candidate_path, data = self._read_image(image_ref.path, context)
+            candidate_path, data = self._read_image(
+                image_ref.path, context, sample_id=sample.sample_id
+            )
             mime = guess_image_mime(candidate_path)
             content.append(
                 {"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}}
@@ -132,7 +142,7 @@ class VisualAgentBase:
             {"role": "system", "content": structured_prompt},
             {"role": "user", "content": content},
         ]
-        request_hash = self._build_hash(messages, prompt_sel.version, image_hashes)
+        request_hash = self._build_hash(messages, prompt_sel.version, image_hashes, identity)
 
         # Consume exactly one Qwen budget entry before the call.
         # 调用前恰好消费一次 Qwen budget。
@@ -167,7 +177,7 @@ class VisualAgentBase:
                 "prompt_version": prompt_sel.version,
                 "request_hash": request_hash,
                 "image_sha256": image_hashes,
-                "model": self._model,
+                "model": identity.model,
             },
         )
 
@@ -176,50 +186,62 @@ class VisualAgentBase:
         messages: list[dict[str, Any]],
         prompt_version: str,
         image_hashes: list[str],
+        identity: Any,
     ) -> str:
-        """Build a cache hash covering the full inference semantics. The
-        generation config comes from the client's own stable attribute so the
-        hash and the actual call cannot drift.
-        构建覆盖完整推理语义的缓存哈希。生成配置取自客户端自身的稳定属性，
-        使哈希与实际调用不会漂移。"""
-        from models.qwen_transformers import QWEN_CLIENT_VERSION
-
-        generation = getattr(self._client, "cache_generation_config", None)
-        if generation is None:
-            generation = {"temperature": 0.0, "do_sample": False, "max_tokens": 0}
+        """Build a cache hash covering the full inference semantics. Model
+        name, generation config, client version, and revision all come from
+        the client's own cache identity so the hash and the actual call can
+        never drift.
+        构建覆盖完整推理语义的缓存哈希。模型名、生成配置、客户端版本与
+        revision 全部取自客户端自身的缓存身份，使哈希与实际调用不会漂移。"""
         return build_request_hash(
-            model=self._model,
-            generation=generation,
+            model=identity.model,
+            generation=identity.generation,
             prompt_version=prompt_version,
             messages=messages,
             image_sha256="|".join(image_hashes),
             response_schema=AgentResult.model_json_schema(),
-            client_version=QWEN_CLIENT_VERSION,
-            model_revision=self._model_revision,
+            client_version=identity.client_version,
+            model_revision=identity.revision,
         )
 
-    @staticmethod
-    def _read_image(path: Path, context: AgentContext) -> tuple[Path, bytes]:
+    def _read_image(
+        self,
+        path: Path,
+        context: AgentContext,
+        *,
+        sample_id: str,
+    ) -> tuple[Path, bytes]:
         """Resolve an ImageRef path against context.data_root, guarding against
         escape; returns (candidate_path, bytes). Never reads relative to the
-        current working directory when data_root is absent.
+        current working directory when data_root is absent. I/O failures are
+        converted to AgentExecutionError without leaking machine paths.
         按 context.data_root 解析 ImageRef 路径并防逃逸；返回（路径、字节）。
-        data_root 缺失时不相对当前工作目录静默读取。"""
+        data_root 缺失时不相对当前工作目录静默读取。I/O 失败统一转换为
+        AgentExecutionError，且不泄漏机器路径。"""
         if context.data_root is None:
             raise AgentExecutionError(
-                "visual_base", "image",
+                self.name, sample_id,
                 cause="data_root is required to resolve relative ImageRef paths",
             )
         root = context.data_root.resolve()
         candidate = (root / path).resolve()
         if not candidate.is_relative_to(root):
             raise AgentExecutionError(
-                "visual_base", "image",
+                self.name, sample_id,
                 cause=f"image path escapes data root: {path.as_posix()}",
             )
         if not candidate.is_file():
             raise AgentExecutionError(
-                "visual_base", "image",
+                self.name, sample_id,
                 cause=f"image file does not exist: {path.as_posix()}",
             )
-        return candidate, candidate.read_bytes()
+        try:
+            data = candidate.read_bytes()
+        except OSError as error:
+            raise AgentExecutionError(
+                self.name,
+                sample_id,
+                cause=f"image_read_failed:{type(error).__name__}",
+            ) from error
+        return candidate, data
