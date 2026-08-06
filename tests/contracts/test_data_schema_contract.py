@@ -1,7 +1,9 @@
 """Contract tests for the final data-layer unified sample models.
 
-data.schema 统一样本契约测试：合法任务、时相顺序、路径序列化、
-extra=forbid、PIL 对象拒绝，以及旧 Golden fixture 到新 Schema 的无损映射。
+data.schema 统一样本契约测试：合法任务、时相顺序、JSON-safe 值、路径规范化、
+frozen ImageRef、结构化 normalization、几何校验、question 语义，
+以及旧 Golden fixture 到新 Schema 的无损映射。所有用例通过构造器或
+model_validate 构造输入，不使用 model_copy 绕过校验。
 """
 
 from __future__ import annotations
@@ -44,15 +46,30 @@ def _image(role: str = "image", image_id: str = "img") -> ImageRef:
     return ImageRef(image_id=image_id, path="image.png", role=role, width=4, height=4)
 
 
-def _sample(task: str = "general_vqa", images: list[ImageRef] | None = None) -> UnifiedSample:
-    return UnifiedSample(
-        sample_id="sample-1",
-        dataset="VRSBench",
-        split="validation",
-        task=task,
-        images=images if images is not None else [_image()],
-        question="Is the statement correct?",
-    )
+def _sample(task: str = "general_vqa", images: list[ImageRef] | None = None, **overrides) -> UnifiedSample:
+    payload = {
+        "sample_id": "sample-1",
+        "dataset": "VRSBench",
+        "split": "validation",
+        "task": task,
+        "images": [item.model_dump() for item in images] if images is not None else [_image().model_dump()],
+        "question": "Is the statement correct?",
+    }
+    payload.update(overrides)
+    return UnifiedSample.model_validate(payload)
+
+
+def _valid_payload(**overrides) -> dict:
+    payload = {
+        "sample_id": "sample-1",
+        "dataset": "VRSBench",
+        "split": "validation",
+        "task": "general_vqa",
+        "images": [_image().model_dump()],
+        "question": "Is the statement correct?",
+    }
+    payload.update(overrides)
+    return payload
 
 
 # ── TaskName / 任务名 ──────────────────────────────────────────────────────
@@ -67,16 +84,7 @@ def test_all_public_task_names_are_accepted() -> None:
 
 def test_unknown_task_is_rejected() -> None:
     with pytest.raises(ValidationError):
-        UnifiedSample.model_validate(
-            {
-                "sample_id": "s",
-                "dataset": "VRSBench",
-                "split": "validation",
-                "task": "detection",
-                "images": [_image().model_dump()],
-                "question": "q",
-            }
-        )
+        UnifiedSample.model_validate(_valid_payload(task="detection"))
 
 
 # ── ImageRef / 图像引用 ─────────────────────────────────────────────────────
@@ -113,16 +121,39 @@ def test_image_ref_rejects_empty_image_id() -> None:
         ImageRef(image_id="", path="a.png", role="image")
 
 
+def test_image_ref_is_frozen() -> None:
+    ref = _image()
+    with pytest.raises(ValidationError):
+        ref.path = Path("other.png")
+
+
+# ── sha256 / 摘要校验 ───────────────────────────────────────────────────────
+
+
+def test_sha256_accepts_hex_digests_and_lowercases() -> None:
+    upper = "A" * 64
+    ref = ImageRef(image_id="i", path="a.png", role="image", sha256=upper)
+    assert ref.sha256 == "a" * 64
+    ref = ImageRef(image_id="i", path="a.png", role="image", sha256="a" * 64)
+    assert ref.sha256 == "a" * 64
+
+
+def test_sha256_rejects_wrong_length_or_chars() -> None:
+    with pytest.raises(ValidationError):
+        ImageRef(image_id="i", path="a.png", role="image", sha256="a" * 63)
+    with pytest.raises(ValidationError):
+        ImageRef(image_id="i", path="a.png", role="image", sha256="z" * 64)
+
+
 # ── Path serialization / 路径序列化 ─────────────────────────────────────────
 
 
 def test_path_serializes_with_forward_slashes() -> None:
     ref = ImageRef(image_id="i", path=Path("dir") / "sub" / "image.png", role="image")
-    dumped = ref.model_dump(mode="json")
-    assert dumped["path"] == "dir/sub/image.png"
+    assert ref.model_dump(mode="json")["path"] == "dir/sub/image.png"
 
 
-def test_windows_style_path_input_serializes_as_posix() -> None:
+def test_windows_style_path_input_normalizes_on_any_platform() -> None:
     ref = ImageRef(image_id="i", path=r"C:\data\images\a.png", role="image")
     assert ref.model_dump(mode="json")["path"] == "C:/data/images/a.png"
 
@@ -145,6 +176,58 @@ def test_ground_truth_defaults() -> None:
     assert truth.answers == [] and truth.count is None and truth.raw == {}
 
 
+def test_ground_truth_box_length_must_be_4_or_8() -> None:
+    GroundTruth(boxes=[[1, 2, 3, 4]])
+    GroundTruth(boxes=[[1, 2, 3, 4, 5, 6, 7, 8]])
+    with pytest.raises(ValidationError, match="4 or 8"):
+        GroundTruth(boxes=[[1, 2, 3]])
+    with pytest.raises(ValidationError, match="4 or 8"):
+        GroundTruth(boxes=[[1, 2, 3, 4, 5]])
+
+
+def test_ground_truth_point_length_must_be_2() -> None:
+    GroundTruth(points=[[1.0, 2.0]])
+    with pytest.raises(ValidationError, match="2 coordinates"):
+        GroundTruth(points=[[1.0, 2.0, 3.0]])
+
+
+def test_ground_truth_rejects_non_finite_coordinates() -> None:
+    with pytest.raises(ValidationError, match="non-finite"):
+        GroundTruth(boxes=[[float("nan"), 1, 2, 3]])
+    with pytest.raises(ValidationError, match="non-finite"):
+        GroundTruth(boxes=[[float("inf"), 1, 2, 3]])
+    with pytest.raises(ValidationError, match="non-finite"):
+        GroundTruth(points=[[1.0, float("inf")]])
+
+
+def test_ground_truth_labels_match_boxes_plus_points() -> None:
+    GroundTruth(boxes=[[1, 2, 3, 4]], points=[[5.0, 6.0]], labels=["b", "p"])
+    with pytest.raises(ValidationError, match="labels must match"):
+        GroundTruth(boxes=[[1, 2, 3, 4]], labels=["a", "b"])
+
+
+# ── JSON-safe metadata/raw / JSON 安全值 ────────────────────────────────────
+
+
+def test_metadata_accepts_json_values() -> None:
+    sample = _sample(metadata={"question_type": "quantity", "nested": {"a": 1}, "flags": [True, None, 2.5]})
+    assert sample.metadata["nested"]["a"] == 1
+
+
+def test_metadata_rejects_non_json_values() -> None:
+    for bad in (Path("x.png"), object(), lambda: 1, {1, 2}, b"bytes", {"k": {1, 2}}):
+        with pytest.raises(ValidationError):
+            _sample(metadata={"bad": bad})
+    with pytest.raises(ValidationError, match="non-finite"):
+        _sample(metadata={"bad": float("nan")})
+
+
+def test_ground_truth_raw_rejects_non_json_values() -> None:
+    for bad in (Path("x.png"), object(), lambda: 1, {1, 2}, b"bytes"):
+        with pytest.raises(ValidationError):
+            GroundTruth(raw={"bad": bad})
+
+
 # ── UnifiedSample / 统一样本 ────────────────────────────────────────────────
 
 
@@ -160,35 +243,58 @@ def test_change_task_requires_ordered_t1_t2() -> None:
         _sample(task="change_caption", images=[_image("t2"), _image("t1")])
     with pytest.raises(ValidationError, match="t1 before t2"):
         _sample(task="change_qa", images=[_image("image")])
-    # Extra context after the ordered pair remains valid. / 有序时相图像后的额外 context 仍合法。
-    extra = _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("context")])
-    assert len(extra.images) == 3
+    with pytest.raises(ValidationError, match="t1 before t2"):
+        _sample(task="change_caption", images=[_image("t1")])
 
 
-def test_non_change_tasks_allow_single_image() -> None:
-    sample = _sample(task="general_vqa", images=[_image("image")])
-    assert sample.task == "general_vqa"
+def test_change_extra_roles_must_be_context() -> None:
+    _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("context")])
+    _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("context"), _image("context")])
+    with pytest.raises(ValidationError, match="only context"):
+        _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("t1")])
+    with pytest.raises(ValidationError, match="only context"):
+        _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("t2")])
+    with pytest.raises(ValidationError, match="only context"):
+        _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("image")])
+
+
+def test_non_change_tasks_reject_temporal_roles() -> None:
+    _sample(task="general_vqa", images=[_image("image")])
+    _sample(task="general_vqa", images=[_image("image"), _image("context")])
+    with pytest.raises(ValidationError, match="start with an image"):
+        _sample(task="general_vqa", images=[_image("t1")])
+    with pytest.raises(ValidationError, match="start with an image"):
+        _sample(task="counting", images=[_image("t1"), _image("t2")])
+    with pytest.raises(ValidationError, match="only context"):
+        _sample(task="general_vqa", images=[_image("image"), _image("image")])
 
 
 def test_unified_sample_rejects_extra_fields() -> None:
-    payload = _sample().model_dump()
-    payload["sample_id"] = "s"
-    payload["router"] = "extra"
+    payload = _valid_payload(router="extra")
     with pytest.raises(ValidationError):
         UnifiedSample.model_validate(payload)
 
 
-def test_metadata_preserves_arbitrary_json_values() -> None:
-    sample = _sample()
-    sample = sample.model_copy(update={"metadata": {"question_type": "quantity", "nested": {"a": 1}}})
-    assert sample.metadata["question_type"] == "quantity"
-    assert sample.metadata["nested"]["a"] == 1
+# ── Question semantics / question 语义 ──────────────────────────────────────
+
+
+def test_caption_tasks_allow_empty_question() -> None:
+    _sample(task="caption", question="")
+    _sample(task="change_caption", images=[_image("t1"), _image("t2")], question="  ")
+
+
+def test_other_tasks_require_nonempty_question() -> None:
+    for task in ("general_vqa", "counting", "spatial_relation", "change_qa",
+                 "grounding", "multiple_choice_vqa", "fine_grained_counting"):
+        images = [_image("t1"), _image("t2")] if task == "change_qa" else [_image()]
+        with pytest.raises(ValidationError, match="non-empty question"):
+            _sample(task=task, images=images, question="   ")
 
 
 # ── TaskNormalization / 任务规范化 ──────────────────────────────────────────
 
 
-def test_task_normalization_contract() -> None:
+def test_task_normalization_uses_structured_fields() -> None:
     norm = TaskNormalization(
         source_task="vrsbench_vqa",
         normalized_task="counting",
@@ -197,13 +303,14 @@ def test_task_normalization_contract() -> None:
         normalizer="vrsbench_task_normalizer",
         version="1",
         reason_codes=["quantity_question"],
-        spatial_query="target",
-        answer_constraints=["0..999"],
-        count_target_hint="building",
+        spatial_query={"target": "vehicle"},
+        answer_constraints={"vocabulary": ["0..999"], "closed": False},
+        count_target_hint={"canonical_label": "small_vehicle"},
     )
     assert norm.normalized_task == "counting"
-    assert norm.confidence == 0.95
-    assert norm.answer_constraints == ["0..999"]
+    assert norm.spatial_query == {"target": "vehicle"}
+    assert norm.answer_constraints == {"vocabulary": ["0..999"], "closed": False}
+    assert norm.count_target_hint == {"canonical_label": "small_vehicle"}
 
 
 def test_task_normalization_rejects_invalid_task_and_confidence() -> None:
@@ -211,6 +318,34 @@ def test_task_normalization_rejects_invalid_task_and_confidence() -> None:
         TaskNormalization(source_task="x", normalized_task="detection", normalizer="n", version="1")
     with pytest.raises(ValidationError):
         TaskNormalization(source_task="x", normalized_task="counting", normalizer="n", version="1", confidence=1.5)
+
+
+def test_task_normalization_rejects_non_json_structured_values() -> None:
+    with pytest.raises(ValidationError):
+        TaskNormalization(
+            source_task="x", normalized_task="counting", normalizer="n", version="1",
+            count_target_hint={"label": Path("x")},
+        )
+
+
+# ── Normalization first-class field / 一等规范化字段 ────────────────────────
+
+
+def test_normalization_is_first_class_and_must_match_task() -> None:
+    norm = TaskNormalization(
+        source_task="vrsbench_vqa", normalized_task="counting",
+        normalizer="vrsbench_task_normalizer", version="1",
+    )
+    sample = _sample(task="counting", normalization=norm.model_dump())
+    assert sample.normalization is not None
+    assert sample.normalization.normalized_task == "counting"
+    with pytest.raises(ValidationError, match="does not match sample task"):
+        _sample(task="general_vqa", normalization=norm.model_dump())
+
+
+def test_normalization_absent_is_allowed() -> None:
+    sample = _sample(task="counting")
+    assert sample.normalization is None
 
 
 # ── ValidationIssue / 校验问题 ──────────────────────────────────────────────
@@ -228,9 +363,48 @@ def test_validation_issue_contract() -> None:
 # ── stable_sample_id / 稳定样本 ID ──────────────────────────────────────────
 
 
-def test_stable_sample_id_matches_baseline_digest() -> None:
-    assert stable_sample_id("", Path("img.png"), "How many buildings?", 3) == "dc7c628994b424e07336"
-    assert stable_sample_id("qid-42", Path("img.png"), "q", 0) == "qid-42"
+def test_stable_sample_id_returns_safe_source_id() -> None:
+    assert stable_sample_id(
+        dataset="VRSBench", split="validation", source_id="qid-42",
+        relative_image_paths=[Path("images/a.png")], question="Q?", source_index=0,
+    ) == "qid-42"
+
+
+def test_stable_sample_id_digest_anchors() -> None:
+    assert stable_sample_id(
+        dataset="VRSBench", split="validation", source_id=None,
+        relative_image_paths=[Path("images/a.png")],
+        question="How many buildings?", source_index=3,
+    ) == "84f0286d7b7b7fd2d476"
+    assert stable_sample_id(
+        dataset="LEVIR-CC", split="test", source_id="",
+        relative_image_paths=[Path("A/01_t1.png"), Path("B/02_t2.png")],
+        question="Describe the change.", source_index=1,
+    ) == "21401c92a969e878c2cd"
+
+
+def test_stable_sample_id_is_order_sensitive() -> None:
+    a = stable_sample_id(dataset="D", split="s", source_id=None,
+                         relative_image_paths=[Path("x.png"), Path("y.png")],
+                         question="q", source_index=0)
+    b = stable_sample_id(dataset="D", split="s", source_id=None,
+                         relative_image_paths=[Path("y.png"), Path("x.png")],
+                         question="q", source_index=0)
+    assert a != b
+
+
+def test_stable_sample_id_hashes_unsafe_source_ids() -> None:
+    for unsafe in ("../evil", "a/b", "a\\b", ".", "..", "has..dots", "line\nbreak", "x" * 121):
+        result = stable_sample_id(
+            dataset="D", split="s", source_id=unsafe,
+            relative_image_paths=[Path("a.png")], question="q", source_index=0,
+        )
+        assert result != unsafe
+        assert len(result) == 20
+    assert stable_sample_id(
+        dataset="VRSBench", split="validation", source_id="../evil",
+        relative_image_paths=[Path("images/a.png")], question="Q?", source_index=0,
+    ) == "bc17b5837ee4ae633c39"
 
 
 # ── data package exports / data 包导出 ──────────────────────────────────────
@@ -241,6 +415,8 @@ def test_data_init_only_exports_stable_types() -> None:
         "GroundTruth",
         "ImageRef",
         "ImageRole",
+        "JsonScalar",
+        "JsonValue",
         "TaskName",
         "TaskNormalization",
         "UnifiedSample",
@@ -288,7 +464,7 @@ def test_schema_imports_only_data_and_stdlib() -> None:
 
 
 def test_golden_fixtures_map_losslessly_into_new_schema() -> None:
-    case_dirs = [p for p in FIXTURE_ROOT.iterdir() if p.is_dir()]
+    case_dirs = [p for p in FIXTURE_ROOT.iterdir() if p.is_dir() and p.name != "adapters"]
     assert len(case_dirs) >= 9, "migration golden fixtures missing"
     for case_dir in sorted(case_dirs):
         sample_json = json.loads((case_dir / "sample.json").read_text(encoding="utf-8"))
@@ -306,7 +482,6 @@ def test_golden_fixtures_map_losslessly_into_new_schema() -> None:
         if sample_json.get("ground_truth") is not None:
             assert sample.ground_truth is not None
             assert sample.ground_truth.answers == sample_json["ground_truth"]["answers"]
-        # Re-dump must preserve the fixture's stable fields. / 重新序列化必须保留稳定字段。
         redump = sample.model_dump(mode="json")
         assert redump["task"] == sample_json["task"]
         assert [item["path"] for item in redump["images"]] == [

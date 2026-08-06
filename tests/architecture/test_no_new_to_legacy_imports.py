@@ -1,7 +1,8 @@
-"""New code must never import the legacy packages (spacers_agent, eval).
+"""New code must never import the legacy packages (spacers_agent, eval), and the
+legacy directories themselves must not exist on this from-zero branch.
 
-新代码（新顶层包、main.py、tests）不得导入旧包；旧包自身内部不受此约束。
-迁移期旧包允许存在，但新包不得反向依赖旧包。
+新代码（新顶层包、main.py、tests）不得导入旧包；本分支从零重建，旧包目录
+spacers_agent/ 与 eval/ 必须直接不存在。
 """
 
 from __future__ import annotations
@@ -36,7 +37,10 @@ def _iter_imports(tree: ast.AST):
 
 
 def _scan_files() -> list[Path]:
-    files = [REPO_ROOT / "main.py"]
+    files = []
+    main = REPO_ROOT / "main.py"
+    if main.is_file():
+        files.append(main)
     for directory in SCAN_DIRS:
         root = REPO_ROOT / directory
         if not root.is_dir():
@@ -45,6 +49,13 @@ def _scan_files() -> list[Path]:
             if not any(part in SKIP_DIRS for part in path.relative_to(root).parts):
                 files.append(path)
     return sorted(files)
+
+
+def test_legacy_directories_do_not_exist() -> None:
+    for legacy in LEGACY_TOP_LEVEL:
+        assert not (REPO_ROOT / legacy).exists(), (
+            f"{legacy}/ must not exist on the from-zero branch"
+        )
 
 
 def test_new_code_never_imports_legacy_packages() -> None:

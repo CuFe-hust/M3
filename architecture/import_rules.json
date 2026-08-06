@@ -8,9 +8,7 @@
     "routing",
     "workflows",
     "evaluation",
-    "reporting",
-    "spacers_agent",
-    "eval"
+    "reporting"
   ],
   "packages": {
     "data": {
@@ -20,19 +18,43 @@
       "allow": ["models"]
     },
     "agents": {
-      "allow": ["agents", "data", "models"]
+      "allow": ["agents", "data.schema", "models"]
     },
     "routing": {
       "allow": ["routing", "data.schema", "agents.schema"]
     },
     "evaluation": {
-      "allow": ["evaluation", "data", "agents.schema", "models"]
+      "allow": [
+        "evaluation",
+        "data.schema",
+        "agents.schema",
+        "agents.counting.schema",
+        "models.base",
+        "models.cache",
+        "models.settings"
+      ]
     },
     "reporting": {
-      "allow": ["reporting", "data", "agents.schema", "evaluation"]
+      "allow": [
+        "reporting",
+        "data.schema",
+        "agents.schema",
+        "agents.counting.schema",
+        "agents.change.schema",
+        "routing.schema",
+        "workflows.schema",
+        "evaluation"
+      ]
     },
     "workflows": {
-      "allow": ["workflows", "data", "agents", "routing", "evaluation", "models"]
+      "allow": [
+        "workflows",
+        "data",
+        "agents",
+        "routing",
+        "evaluation",
+        "models"
+      ]
     },
     "application": {
       "allow": [
@@ -50,6 +72,15 @@
       "allow": ["application"]
     }
   },
-  "final_mode_env": "M3_ARCH_FINAL",
-  "legacy_packages": ["spacers_agent", "eval"]
+  "forbidden_patterns": {
+    "reporting": [
+      "agents.*.agent",
+      "models.qwen_transformers",
+      "workflows.sample_runner"
+    ],
+    "evaluation": ["application"],
+    "agents": ["application", "workflows"],
+    "models": ["data"],
+    "routing": ["models", "data.adapters"]
+  }
 }

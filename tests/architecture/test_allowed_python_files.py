@@ -1,11 +1,11 @@
-"""Enforce the Python file whitelist and the final-mode legacy deletion.
+"""Enforce the Python file whitelist; the from-zero branch forbids legacy dirs.
 
-清单外新增 .py 必须失败；最终模式（M3_ARCH_FINAL=1）下旧包目录必须不存在。
+清单外新增 .py 必须失败；本分支从零重建，旧包目录必须直接不存在
+（无需环境开关）。
 """
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 
@@ -13,7 +13,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WHITELIST = REPO_ROOT / "architecture" / "allowed_python_files.txt"
 SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", "build", "dist", "tmp"}
 LEGACY_DIRS = ("spacers_agent", "eval")
-FINAL_MODE_ENV = "M3_ARCH_FINAL"
 
 
 def _pattern_to_regex(pattern: str) -> re.Pattern:
@@ -47,7 +46,7 @@ def _repository_py_files() -> list[str]:
 
 def test_whitelist_file_exists_and_is_nonempty() -> None:
     assert WHITELIST.is_file(), "missing architecture/allowed_python_files.txt"
-    assert len(_whitelist_patterns()) > 10, "whitelist looks empty"
+    assert len(_whitelist_patterns()) > 5, "whitelist looks empty"
 
 
 def test_every_python_file_matches_the_whitelist() -> None:
@@ -59,18 +58,16 @@ def test_every_python_file_matches_the_whitelist() -> None:
     assert not violations, "Python files outside the whitelist:\n" + "\n".join(violations)
 
 
-def test_whitelist_contains_legacy_globs_during_migration() -> None:
+def test_whitelist_never_contains_legacy_packages() -> None:
     patterns = _whitelist_patterns()
-    for legacy in LEGACY_DIRS:
-        assert any(pattern == f"{legacy}/**/*.py" for pattern in patterns), (
-            f"whitelist must keep {legacy}/**/*.py during migration"
+    for pattern in patterns:
+        assert not pattern.startswith("spacers_agent") and not pattern.startswith("eval/"), (
+            f"whitelist must not contain legacy pattern {pattern}"
         )
 
 
-def test_final_mode_requires_legacy_directories_absent() -> None:
-    if os.environ.get(FINAL_MODE_ENV) != "1":
-        return
+def test_legacy_directories_do_not_exist() -> None:
     for legacy in LEGACY_DIRS:
         assert not (REPO_ROOT / legacy).exists(), (
-            f"final mode: {legacy}/ must be deleted (M3_ARCH_FINAL=1)"
+            f"{legacy}/ must not exist on the from-zero branch"
         )
