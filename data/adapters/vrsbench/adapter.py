@@ -81,6 +81,29 @@ def _parse_box(value: Any) -> list[float]:
     return box
 
 
+def _normalize_vrsbench_split(split: str) -> str:
+    """Canonical split: validation/val normalize to validation; others fail.
+    split 规范化：validation/val 统一为 validation；其他失败。"""
+    canonical = {"validation": "validation", "val": "validation"}.get(split.strip().lower())
+    if canonical is None:
+        raise DatasetProbeError(
+            f"VRSBench supports split 'validation' (alias 'val') only, got {split!r}"
+        )
+    return canonical
+
+
+def _image_id_for_row(row: dict[str, Any], source_image_ref: str, index: int) -> str:
+    """Stable, non-empty, unique-in-sample image id for ImageRef.image_id.
+    供 ImageRef.image_id 使用的稳定、非空、样本内唯一的图片 ID。"""
+    explicit = row.get("image_id")
+    if explicit not in (None, ""):
+        return str(explicit)
+    basename = Path(source_image_ref).name
+    if basename:
+        return basename
+    return f"vrsbench-image-{index}"
+
+
 class VRSBenchAdapter:
     """Read-only adapter over the official VRSBench evaluation releases.
     只读加载官方 VRSBench 评测发布的适配器。"""
@@ -146,10 +169,7 @@ class VRSBenchAdapter:
     def iter_samples(self, root: Path, split: str, task: str) -> Iterator[UnifiedSample]:
         """Yield schema-validated unified samples in source order.
         按源顺序产出具 schema 校验的统一样本。"""
-        if split not in {"validation", "val"}:
-            raise DatasetProbeError(
-                f"Official VRSBench annotations support split='validation' only, got {split!r}"
-            )
+        canonical_split = _normalize_vrsbench_split(split)
         if task not in SUPPORTED_TASKS:
             raise DatasetProbeError(
                 f"VRSBench does not support task={task!r}; supported={sorted(SUPPORTED_TASKS)}"
@@ -162,16 +182,20 @@ class VRSBenchAdapter:
             )
         self._validate_fields(task, rows, annotation)
         for index, row in enumerate(rows):
-            image_id = _first_value(row, _IMAGE_FIELD_KEYS)
-            if image_id is None:
+            image_value = _first_value(row, _IMAGE_FIELD_KEYS)
+            if image_value is None:
                 raise DatasetProbeError(f"VRSBench {task} row {index} has no image field")
-            image_path = self._image_path(root, annotation.parent, str(image_id))
+            source_image_ref = str(image_value)
+            image_path = self._image_path(root, annotation.parent, source_image_ref)
             if task == "general_vqa":
-                yield self._vqa_sample(root, split, row, image_path, index)
+                yield self._vqa_sample(root, canonical_split, row, image_path, index,
+                                       source_image_ref=source_image_ref)
             elif task == "caption":
-                yield self._caption_sample(root, split, row, image_path, index)
+                yield self._caption_sample(root, canonical_split, row, image_path, index,
+                                           source_image_ref=source_image_ref)
             else:
-                yield from self._grounding_samples(root, split, row, image_path, index)
+                yield from self._grounding_samples(root, canonical_split, row, image_path, index,
+                                                   source_image_ref=source_image_ref)
 
     # ── per-task mapping / 分任务映射 ───────────────────────────────────────
 
@@ -182,8 +206,10 @@ class VRSBenchAdapter:
         row: dict[str, Any],
         image_path: Path,
         index: int,
+        *,
+        source_image_ref: str,
     ) -> UnifiedSample:
-        image_id = str(row["image_id"]) if "image_id" in row else str(row["image"])
+        image_id = _image_id_for_row(row, source_image_ref, index)
         question = str(row["question"])
         answer_value = _first_value(row, ("ground_truth", "answer"))
         question_id = str(row["question_id"]) if "question_id" in row else str(index)
@@ -232,8 +258,10 @@ class VRSBenchAdapter:
         row: dict[str, Any],
         image_path: Path,
         index: int,
+        *,
+        source_image_ref: str,
     ) -> UnifiedSample:
-        image_id = str(row["image_id"]) if "image_id" in row else str(row["image"])
+        image_id = _image_id_for_row(row, source_image_ref, index)
         answer_value = _first_value(row, _CAPTION_ANSWER_KEYS)
         if answer_value is None:
             raise DatasetProbeError(f"VRSBench caption row {index} has no caption field")
@@ -274,8 +302,10 @@ class VRSBenchAdapter:
         row: dict[str, Any],
         image_path: Path,
         index: int,
+        *,
+        source_image_ref: str,
     ) -> Iterator[UnifiedSample]:
-        image_id = str(row["image_id"]) if "image_id" in row else str(row["image"])
+        image_id = _image_id_for_row(row, source_image_ref, index)
         if "objects" in row:
             items = row["objects"]
             text_keys = ("referring", "question", "text")
@@ -300,6 +330,9 @@ class VRSBenchAdapter:
                 )
             label = _first_text(obj, _GROUNDING_CLASS_KEYS)
             question_id = row.get("question_id")
+            base_question_id = str(
+                row.get("question_id") or row.get("id") or index
+            )
             # Nested boxes=[[...]] are split explicitly; each box is one sample.
             # 嵌套 boxes=[[...]] 显式拆分；每个框一条样本。
             if isinstance(box_value, list) and box_value and isinstance(box_value[0], (list, tuple)):
@@ -310,14 +343,17 @@ class VRSBenchAdapter:
                 question = text or (
                     f"Locate the {label}." if label else "Locate the target object."
                 )
+                object_source_id = (
+                    f"{base_question_id}-obj-{object_index}-box-{box_position}"
+                )
                 yield UnifiedSample(
                     sample_id=stable_sample_id(
                         dataset=self.name,
                         split=split,
-                        source_id=None,
+                        source_id=object_source_id,
                         relative_image_paths=[image_path.relative_to(root)],
                         question=question,
-                        source_index=index * 1000 + object_index * 10 + box_position,
+                        source_index=index,
                     ),
                     dataset=self.name,
                     split="validation",

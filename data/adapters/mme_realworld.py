@@ -54,12 +54,22 @@ class MMERealWorldAdapter:
     name = "MME-RealWorld"
     supported_tasks = SUPPORTED_TASKS
 
-    def probe(self, root: Path) -> AdapterProbe:
-        """Locate and validate the unique official annotation before execution.
-        运行前定位并校验唯一的官方标注。"""
+    def probe(self, root: Path, task: str | None = None) -> AdapterProbe:
+        """Validate the local MME release; zero remote-sensing records fail.
+        task-aware: only multiple_choice_vqa is supported.
+        校验本地 MME 发布；零 RS 记录失败。task 感知：仅支持 multiple_choice_vqa。"""
+        if task is not None and task not in SUPPORTED_TASKS:
+            raise DatasetProbeError(
+                f"MME-RealWorld does not support task={task!r}; "
+                f"supported={sorted(SUPPORTED_TASKS)}"
+            )
         annotation = self._annotation_path(root)
         rows = read_json_rows(annotation)
         rs_rows = [row for row in rows if self._is_remote_sensing(row)]
+        if not rs_rows:
+            raise DatasetProbeError(
+                f"zero remote-sensing records in {ANNOTATION_NAME} under {root}"
+            )
         for index, row in enumerate(rows):
             if not self._is_remote_sensing(row):
                 continue
@@ -71,6 +81,8 @@ class MMERealWorldAdapter:
             sample_file=annotation,
             observed_fields=observed,
             sample_count=len(rs_rows),
+            task=task,
+            available_tasks=tuple(sorted(SUPPORTED_TASKS)),
         )
 
     def iter_samples(self, root: Path, split: str, task: str) -> Iterator[UnifiedSample]:
@@ -90,9 +102,15 @@ class MMERealWorldAdapter:
                 continue
             self._validate_row(row, index)
             question = _first_text(row, ("Text", "text", "question"))
+            if question is None:
+                raise DatasetProbeError(f"MME-RealWorld RS row {index} has no question text")
             choices = row.get("Answer choices", row.get("answer_choices", []))
             ground_truth = _first_text(row, ("Ground truth", "ground_truth", "answer"))
+            if ground_truth is None:
+                raise DatasetProbeError(f"MME-RealWorld RS row {index} has no ground truth")
             image_value = _first_value(row, _IMAGE_KEYS)
+            if image_value is None:
+                raise DatasetProbeError(f"MME-RealWorld RS row {index} has no image field")
             image_path = self._image_path(root, annotation.parent, str(image_value))
             subtask = self._subtask(row)
             allow_multiple = _as_bool(
