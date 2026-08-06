@@ -9,6 +9,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
+
 from models import (
     ModelT,
     RequestMeta,
@@ -17,6 +19,7 @@ from models import (
     sanitize_messages,
 )
 from models.images import image_sha256, image_to_data_url
+from pydantic import ValidationError
 
 IMAGE_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
 
@@ -124,10 +127,6 @@ def test_request_hash_changes_with_image_digest_and_order() -> None:
 
 
 def test_request_meta_rejects_credentials() -> None:
-    from pydantic import ValidationError
-
-    import pytest
-
     with pytest.raises(ValidationError):
         RequestMeta.model_validate(
             {"request_id": "r", "request_hash": "a" * 64, "prompt_version": "v",
@@ -154,3 +153,62 @@ def test_vision_language_client_protocol_is_structural() -> None:
     # isinstance (protocols are not runtime-checkable by default).
     # 协议为结构化；直接验证异步方法形态（协议默认不可 isinstance 检查）。
     assert inspect.iscoroutinefunction(FakeClient.complete_json)
+
+
+# ── ModelCacheIdentity / 缓存身份 (A) ──────────────────────────────────────
+
+
+def test_cache_identity_rejects_empty_model_and_version() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from models.base import ModelCacheIdentity
+
+    with pytest.raises(ValueError, match="model"):
+        ModelCacheIdentity(model="", generation={}, client_version="1")
+    with pytest.raises(ValueError, match="client_version"):
+        ModelCacheIdentity(model="m", generation={}, client_version="")
+
+
+def test_cache_identity_rejects_non_json_safe_generation() -> None:
+    from models.base import ModelCacheIdentity
+
+    with pytest.raises(ValueError, match="non-finite"):
+        ModelCacheIdentity(model="m", generation={"t": float("nan")}, client_version="1")
+    with pytest.raises(ValueError, match="Path"):
+        ModelCacheIdentity(model="m", generation={"p": Path("/tmp/x")}, client_version="1")
+    with pytest.raises(ValueError, match="set"):
+        ModelCacheIdentity(model="m", generation={"s": {1}}, client_version="1")
+    with pytest.raises(ValueError, match="bytes"):
+        ModelCacheIdentity(model="m", generation={"b": b"x"}, client_version="1")
+    with pytest.raises(ValueError, match="callable"):
+        ModelCacheIdentity(model="m", generation={"c": lambda: None}, client_version="1")
+
+
+def test_cache_identity_rejects_sensitive_generation() -> None:
+    from models.base import ModelCacheIdentity
+
+    with pytest.raises(ValueError, match="sensitive key"):
+        ModelCacheIdentity(model="m", generation={"api_key": "sk-1"}, client_version="1")
+    with pytest.raises(ValueError, match="sensitive value"):
+        ModelCacheIdentity(model="m", generation={"max_tokens": "Bearer x"}, client_version="1")
+
+
+def test_cache_identity_is_frozen_and_stable() -> None:
+    from dataclasses import FrozenInstanceError
+
+    from models.base import ModelCacheIdentity
+
+    identity = ModelCacheIdentity(
+        model="m", generation={"max_tokens": 1}, client_version="1", revision="r"
+    )
+    with pytest.raises(FrozenInstanceError):
+        identity.model = "other"  # type: ignore[misc]
+    assert identity == ModelCacheIdentity(
+        model="m", generation={"max_tokens": 1}, client_version="1", revision="r"
+    )
+    assert identity != ModelCacheIdentity(
+        model="m", generation={"max_tokens": 2}, client_version="1", revision="r"
+    )
+    assert identity != ModelCacheIdentity(
+        model="m", generation={"max_tokens": 1}, client_version="1", revision="r2"
+    )

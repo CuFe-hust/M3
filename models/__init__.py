@@ -6,13 +6,15 @@ Importing this package must not import transformers or torch.
 """
 
 from models.base import (
+    CacheIdentifiedClient,
+    ModelCacheIdentity,
     ModelT,
     RequestMeta,
     VisionLanguageClient,
     build_request_hash,
     sanitize_messages,
 )
-from models.cache import CacheEntry, JsonResponseCache
+from models.cache import CacheEntry, CacheWriteError, JsonResponseCache, ModelCacheError
 from models.images import (
     guess_image_mime,
     image_sha256,
@@ -23,8 +25,12 @@ from models.settings import DeepSeekSettings, ModelSettings, QwenSettings
 
 __all__ = [
     "CacheEntry",
+    "CacheIdentifiedClient",
+    "CacheWriteError",
     "DeepSeekSettings",
     "JsonResponseCache",
+    "ModelCacheError",
+    "ModelCacheIdentity",
     "ModelSettings",
     "ModelT",
     "QwenSettings",

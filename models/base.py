@@ -9,13 +9,99 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol, TypeVar
 
 from pydantic import BaseModel, ConfigDict
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+# Sensitive key names and high-risk value prefixes that must never appear in a
+# cache identity. Keys are matched after normalization; values after
+# lstrip().lower(). / 缓存身份中绝不能出现的敏感键名与高风险值前缀；键在
+# 归一化后精确匹配，值在 lstrip().lower() 后检查前缀。
+_SENSITIVE_IDENTITY_KEYS = frozenset({
+    "api_key", "apikey", "authorization", "access_token", "refresh_token",
+    "private_key", "password", "credential",
+})
+_IDENTITY_VALUE_PREFIXES = (
+    "sk-",
+    "bearer ",
+    "data:image/",
+    "-----begin private key-----",
+)
+
+
+@dataclass(frozen=True)
+class ModelCacheIdentity:
+    """Stable, JSON-safe identity of one model client for cache keying.
+
+    The visual agent builds its request hash exclusively from this object so
+    the hashed model name, generation parameters, client version, and revision
+    can never drift from the client that actually runs the call.
+    单个模型客户端用于缓存键的稳定、JSON 安全身份。视觉 Agent 只从该对象
+    构建请求哈希，使参与哈希的模型名、生成参数、客户端版本与 revision 永远
+    不会与实际执行调用的客户端漂移。"""
+
+    model: str
+    generation: Mapping[str, Any]
+    client_version: str
+    revision: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.model:
+            raise ValueError("model must not be empty")
+        if not self.client_version:
+            raise ValueError("client_version must not be empty")
+        _validate_identity_value(self.generation, "generation")
+
+
+class CacheIdentifiedClient(Protocol):
+    """A model client exposing its stable cache identity.
+    暴露其稳定缓存身份的模型客户端。"""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity: ...
+
+
+def _validate_identity_value(value: Any, where: str) -> None:
+    """Require JSON-safe, finite, secret-free identity content.
+    要求身份内容 JSON 安全、数值有限、不含密钥。"""
+    if value is None or isinstance(value, bool):
+        return
+    if isinstance(value, str):
+        normalized = value.lstrip().lower()
+        for prefix in _IDENTITY_VALUE_PREFIXES:
+            if normalized.startswith(prefix):
+                raise ValueError(f"{where} contains a sensitive value prefix")
+        return
+    if isinstance(value, int):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError(f"{where} contains a non-finite number")
+        return
+    if isinstance(value, Path):
+        raise ValueError(f"{where} contains a Path object")
+    if isinstance(value, (set, bytes, bytearray)):
+        raise ValueError(f"{where} contains a {type(value).__name__}")
+    if callable(value):
+        raise ValueError(f"{where} contains a callable")
+    if isinstance(value, list):
+        for item in value:
+            _validate_identity_value(item, where)
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized_key = str(key).lower().replace("-", "_").replace(" ", "_")
+            if normalized_key in _SENSITIVE_IDENTITY_KEYS:
+                raise ValueError(f"{where} contains a sensitive key {key!r}")
+            _validate_identity_value(item, where)
+        return
+    raise ValueError(f"{where} contains unsupported type {type(value).__name__}")
 
 
 class RequestMeta(BaseModel):
