@@ -145,7 +145,7 @@ def test_missing_required_field_fails(tmp_path: Path) -> None:
     rows = _vqa_rows()
     del rows[0]["ground_truth"]
     _write_json(root / "VRSBench_EVAL_vqa.json", rows)
-    with pytest.raises(DatasetProbeError, match="misses fields"):
+    with pytest.raises(DatasetProbeError, match="misses one of fields"):
         list(VRSBenchAdapter().iter_samples(root, "validation", "general_vqa"))
 
 

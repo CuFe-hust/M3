@@ -1,0 +1,23 @@
+[
+  {
+    "image_id": "img_1.png",
+    "question": "How many small vehicles are in the image?",
+    "ground_truth": "3",
+    "question_id": "vq_1",
+    "type": "quantity"
+  },
+  {
+    "image_id": "img_1.png",
+    "question": "What category is the topmost vehicle?",
+    "ground_truth": "small-vehicle",
+    "question_id": "vq_2",
+    "type": "object"
+  },
+  {
+    "image_id": "img_1.png",
+    "question": "What color is the building?",
+    "ground_truth": "red",
+    "question_id": "vq_3",
+    "type": "attribute"
+  }
+]

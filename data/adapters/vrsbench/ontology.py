@@ -48,21 +48,27 @@ def canonical_vehicle_class(label: str) -> str | None:
 
 def count_target_hint(question: str) -> dict[str, Any] | None:
     """Return the audited vehicle count-target hint without any model call.
-    不调用模型，返回经审计的车辆计数目标提示。"""
+    不调用模型，返回经审计的车辆计数目标提示（含 inclusion/exclusion 规则）。"""
     lowered = _lowered(question)
     if "small vehicle" in lowered:
         return {
             "canonical_label": SMALL_VEHICLE_CLASS,
             "aliases": list(SMALL_VEHICLE_ALIASES),
+            "inclusion_rule": "Count each visible car, passenger car, motorcycle, or small vehicle as one small vehicle.",
+            "exclusion_rule": "Exclude trucks, buses, trailers, large vehicles, and non-vehicle objects.",
         }
     if "large vehicle" in lowered:
         return {
             "canonical_label": LARGE_VEHICLE_CLASS,
             "aliases": list(LARGE_VEHICLE_ALIASES),
+            "inclusion_rule": "Count each visible truck, bus, trailer, semi-truck, or large vehicle as one large vehicle.",
+            "exclusion_rule": "Exclude cars, motorcycles, small vehicles, and non-vehicle objects.",
         }
     if re.search(r"\bvehicles?\b", lowered):
         return {
             "canonical_label": GENERIC_VEHICLE_CLASS,
             "aliases": list(SMALL_VEHICLE_ALIASES) + list(LARGE_VEHICLE_ALIASES),
+            "inclusion_rule": "Count each visible small or large vehicle exactly once.",
+            "exclusion_rule": "Exclude non-vehicle objects; never count the same vehicle more than once.",
         }
     return None

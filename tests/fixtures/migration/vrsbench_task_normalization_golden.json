@@ -1,0 +1,323 @@
+[
+  {
+    "question": "How many small vehicles are in the image?",
+    "expected": {
+      "semantic_subtype": "counting",
+      "normalized_task": "counting",
+      "confidence": 1.0,
+      "reason_codes": [
+        "quantity_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": {
+        "canonical_label": "small-vehicle",
+        "aliases": [
+          "small vehicle",
+          "small-vehicle",
+          "car",
+          "automobile",
+          "passenger car",
+          "motorcycle"
+        ],
+        "inclusion_rule": "Count each visible car, passenger car, motorcycle, or small vehicle as one small vehicle.",
+        "exclusion_rule": "Exclude trucks, buses, trailers, large vehicles, and non-vehicle objects."
+      }
+    }
+  },
+  {
+    "question": "How many large vehicles are visible?",
+    "expected": {
+      "semantic_subtype": "counting",
+      "normalized_task": "counting",
+      "confidence": 1.0,
+      "reason_codes": [
+        "quantity_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": {
+        "canonical_label": "large-vehicle",
+        "aliases": [
+          "large vehicle",
+          "large-vehicle",
+          "truck",
+          "bus",
+          "trailer",
+          "semi-truck"
+        ],
+        "inclusion_rule": "Count each visible truck, bus, trailer, semi-truck, or large vehicle as one large vehicle.",
+        "exclusion_rule": "Exclude cars, motorcycles, small vehicles, and non-vehicle objects."
+      }
+    }
+  },
+  {
+    "question": "How many vehicles are there?",
+    "expected": {
+      "semantic_subtype": "counting",
+      "normalized_task": "counting",
+      "confidence": 1.0,
+      "reason_codes": [
+        "quantity_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": {
+        "canonical_label": "vehicle",
+        "aliases": [
+          "small vehicle",
+          "small-vehicle",
+          "car",
+          "automobile",
+          "passenger car",
+          "motorcycle",
+          "large vehicle",
+          "large-vehicle",
+          "truck",
+          "bus",
+          "trailer",
+          "semi-truck"
+        ],
+        "inclusion_rule": "Count each visible small or large vehicle exactly once.",
+        "exclusion_rule": "Exclude non-vehicle objects; never count the same vehicle more than once."
+      }
+    }
+  },
+  {
+    "question": "How many buildings are there?",
+    "expected": {
+      "semantic_subtype": "counting",
+      "normalized_task": "counting",
+      "confidence": 1.0,
+      "reason_codes": [
+        "quantity_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "Are there any small vehicles?",
+    "expected": {
+      "semantic_subtype": "existence",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "existence_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "yes",
+          "no"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "Is the topmost vehicle a truck?",
+    "expected": {
+      "semantic_subtype": "extreme_existence",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "extreme_existence_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "yes",
+          "no"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "What category is the topmost vehicle?",
+    "expected": {
+      "semantic_subtype": "extreme_category",
+      "normalized_task": "spatial_relation",
+      "confidence": 1.0,
+      "reason_codes": [
+        "extreme_category_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "small-vehicle",
+          "large-vehicle"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "Where is the large vehicle located in the image?",
+    "expected": {
+      "semantic_subtype": "grid_position",
+      "normalized_task": "spatial_relation",
+      "confidence": 1.0,
+      "reason_codes": [
+        "grid_position_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "top-left",
+          "top-middle",
+          "top-right",
+          "middle-left",
+          "middle-middle",
+          "middle-right",
+          "bottom-left",
+          "bottom-middle",
+          "bottom-right"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "What is the orientation of the plane?",
+    "expected": {
+      "semantic_subtype": "orientation",
+      "normalized_task": "spatial_relation",
+      "confidence": 1.0,
+      "reason_codes": [
+        "orientation_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "north-south",
+          "east-west"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "How are the vehicles arranged?",
+    "expected": {
+      "semantic_subtype": "arrangement",
+      "normalized_task": "spatial_relation",
+      "confidence": 1.0,
+      "reason_codes": [
+        "arrangement_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "in rows",
+          "clustered",
+          "scattered"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "Is there a ship near the plane?",
+    "expected": {
+      "semantic_subtype": "proximity",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "proximity_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "yes",
+          "no"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "What color is the building?",
+    "expected": {
+      "semantic_subtype": "color",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "color_question"
+      ],
+      "answer_constraints": {
+        "type": "closed_vocabulary",
+        "values": [
+          "black",
+          "blue",
+          "brown",
+          "gray",
+          "green",
+          "orange",
+          "red",
+          "white",
+          "yellow"
+        ],
+        "closed": true
+      },
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "What type of vehicle is it?",
+    "expected": {
+      "semantic_subtype": "category",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "category_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "Describe the scene.",
+    "expected": {
+      "semantic_subtype": "general",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "general_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "Is the building red or blue?",
+    "expected": {
+      "semantic_subtype": "general",
+      "normalized_task": "general_vqa",
+      "confidence": 1.0,
+      "reason_codes": [
+        "general_question"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": null
+    }
+  },
+  {
+    "question": "",
+    "expected": {
+      "semantic_subtype": null,
+      "normalized_task": "general_vqa",
+      "confidence": 0.5,
+      "reason_codes": [
+        "empty_question_fallback"
+      ],
+      "answer_constraints": {},
+      "count_target_hint": null
+    }
+  }
+]

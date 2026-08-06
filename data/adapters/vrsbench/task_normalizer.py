@@ -132,6 +132,30 @@ def classify_question_subtype(
     return "general"
 
 
+# Audited closed vocabularies per semantic subtype. / 各语义子类型的审计封闭词表。
+_CLOSED_VOCABULARIES: dict[str, list[str]] = {
+    "existence": ["yes", "no"],
+    "extreme_existence": ["yes", "no"],
+    "proximity": ["yes", "no"],
+    "extreme_category": ["small-vehicle", "large-vehicle"],
+    "grid_position": [
+        "top-left", "top-middle", "top-right",
+        "middle-left", "middle-middle", "middle-right",
+        "bottom-left", "bottom-middle", "bottom-right",
+    ],
+    "orientation": ["north-south", "east-west"],
+    "arrangement": ["in rows", "clustered", "scattered"],
+    "color": ["black", "blue", "brown", "gray", "green", "orange", "red", "white", "yellow"],
+}
+
+
+def _closed_vocabulary(subtype: str) -> dict[str, object] | None:
+    values = _CLOSED_VOCABULARIES.get(subtype)
+    if values is None:
+        return None
+    return {"type": "closed_vocabulary", "values": values, "closed": True}
+
+
 def normalize_task(
     question: str,
     question_type: str | None = None,
@@ -157,15 +181,11 @@ def normalize_task(
 
     spatial_query = {"operation": subtype} if task == "spatial_relation" else None
     answer_constraints: dict = {}
-    if subtype in {"existence", "extreme_existence", "proximity"} and _is_yes_no_question(
-        question.casefold()
-    ):
-        answer_constraints = {"vocabulary": ["yes", "no"], "closed": True}
-    elif subtype == "extreme_category":
-        answer_constraints = {
-            "vocabulary": [ontology.SMALL_VEHICLE_CLASS, ontology.LARGE_VEHICLE_CLASS],
-            "closed": True,
-        }
+    if subtype in {"existence", "extreme_existence", "proximity"}:
+        if _is_yes_no_question(question.casefold()):
+            answer_constraints = _closed_vocabulary(subtype) or {}
+    elif subtype in _CLOSED_VOCABULARIES:
+        answer_constraints = _closed_vocabulary(subtype) or {}
     count_target_hint = ontology.count_target_hint(question) if task == "counting" else None
 
     return TaskNormalization(

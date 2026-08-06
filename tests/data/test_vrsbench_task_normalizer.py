@@ -142,13 +142,34 @@ def test_spatial_query_is_structured_and_task_scoped() -> None:
 
 def test_answer_constraints_for_yes_no_and_extreme() -> None:
     existence = normalize_task("Are there any small vehicles?")
-    assert existence.answer_constraints == {"vocabulary": ["yes", "no"], "closed": True}
+    assert existence.answer_constraints == {
+        "type": "closed_vocabulary", "values": ["yes", "no"], "closed": True,
+    }
     extreme = normalize_task("What category is the topmost vehicle?")
     assert extreme.answer_constraints == {
-        "vocabulary": ["small-vehicle", "large-vehicle"], "closed": True,
+        "type": "closed_vocabulary", "values": ["small-vehicle", "large-vehicle"], "closed": True,
     }
     general = normalize_task("What color is the building?")
-    assert general.answer_constraints == {}
+    assert general.answer_constraints == {
+        "type": "closed_vocabulary",
+        "values": ["black", "blue", "brown", "gray", "green", "orange", "red", "white", "yellow"],
+        "closed": True,
+    }
+    scene = normalize_task("Describe the scene.")
+    assert scene.answer_constraints == {}
+
+
+def test_spatial_closed_vocabularies() -> None:
+    grid = normalize_task("Where is the large vehicle located in the image?")
+    assert grid.answer_constraints["values"] == [
+        "top-left", "top-middle", "top-right",
+        "middle-left", "middle-middle", "middle-right",
+        "bottom-left", "bottom-middle", "bottom-right",
+    ]
+    orientation = normalize_task("What is the orientation of the plane?")
+    assert orientation.answer_constraints["values"] == ["north-south", "east-west"]
+    arrangement = normalize_task("How are the vehicles arranged?")
+    assert arrangement.answer_constraints["values"] == ["in rows", "clustered", "scattered"]
 
 
 def test_count_target_hint_from_ontology() -> None:
@@ -186,7 +207,56 @@ def test_count_target_hint_question_matching() -> None:
     assert count_target_hint("How many buildings?") is None
 
 
-# ── Architecture boundaries / 架构边界 ──────────────────────────────────────
+# ── Frozen Golden / 冻结 Golden (B8) ────────────────────────────────────────
+
+
+def test_frozen_task_normalization_golden() -> None:
+    """16 representative questions locked against the legacy-derived golden.
+
+    The legacy semantics (try_yolo @ ec962eb87c3ad0b8c1502efcbd08db0daec48868,
+    vqa_geometry.vrsbench_question_subtype / execution_task_for_vrsbench) are
+    frozen in tests/fixtures/migration/vrsbench_task_normalization_golden.json;
+    the legacy modules are not importable from the new branch, so this golden
+    is the long-term parity record.
+    16 条代表性问题与源自 legacy 的冻结 Golden 对齐。legacy 语义冻结于
+    vrsbench_task_normalization_golden.json（legacy 模块不可从新分支导入，
+    以该 Golden 作为长期 parity 记录）。"""
+    golden = json.loads(
+        (REPO_ROOT / "tests" / "fixtures" / "migration" / "vrsbench_task_normalization_golden.json")
+        .read_text(encoding="utf-8")
+    )
+    assert len(golden) == 16
+    for record in golden:
+        norm = normalize_task(record["question"])
+        expected = record["expected"]
+        assert norm.semantic_subtype == expected["semantic_subtype"], record["question"]
+        assert norm.normalized_task == expected["normalized_task"], record["question"]
+        assert norm.confidence == expected["confidence"], record["question"]
+        assert norm.reason_codes == expected["reason_codes"], record["question"]
+        assert norm.answer_constraints == expected["answer_constraints"], record["question"]
+        assert norm.count_target_hint == expected["count_target_hint"], record["question"]
+
+
+def test_golden_count_target_hints_are_complete() -> None:
+    golden = json.loads(
+        (REPO_ROOT / "tests" / "fixtures" / "migration" / "vrsbench_task_normalization_golden.json")
+        .read_text(encoding="utf-8")
+    )
+    hints = {
+        record["question"]: record["expected"]["count_target_hint"]
+        for record in golden
+        if record["expected"]["count_target_hint"] is not None
+    }
+    small = hints["How many small vehicles are in the image?"]
+    assert small["canonical_label"] == "small-vehicle"
+    assert "car" in small["aliases"] and "motorcycle" in small["aliases"]
+    assert "truck" in small["exclusion_rule"]
+    large = hints["How many large vehicles are visible?"]
+    assert large["canonical_label"] == "large-vehicle"
+    assert "car" in large["exclusion_rule"]
+    all_vehicles = hints["How many vehicles are there?"]
+    assert all_vehicles["canonical_label"] == "vehicle"
+    assert "once" in all_vehicles["inclusion_rule"] or "once" in all_vehicles["exclusion_rule"]
 
 
 def test_normalizer_never_imports_agents_or_backends() -> None:
