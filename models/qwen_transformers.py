@@ -72,11 +72,12 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
     @property
     def cache_identity(self) -> ModelCacheIdentity:
         """Stable identity used by request hashing; the single source for
-        model name, generation parameters, client version, and revision.
-        供请求哈希使用的稳定身份；是模型名、生成参数、客户端版本与 revision
-        的唯一来源。"""
+        logical model id, generation parameters, client version, and revision.
+        The physical checkpoint path never enters the identity.
+        供请求哈希使用的稳定身份；是逻辑模型 ID、生成参数、客户端版本与
+        revision 的唯一来源。物理 checkpoint 路径绝不进入身份。"""
         return ModelCacheIdentity(
-            model=self.settings.model,
+            model=self.settings.effective_cache_model_id,
             generation={
                 "temperature": 0.0,
                 "do_sample": False,
@@ -258,16 +259,11 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         rendered_raw = _render_raw_responses(raw_responses)
         cache_write_error: str | None = None
         if self.cache:
-            try:
-                self.cache.save(
-                    request_meta.request_hash,
-                    CacheEntry(raw_response=rendered_raw, parsed=result.model_dump(mode="json")),
-                )
-            except ModelCacheError as error:
-                # A failed cache write must never drop a successful inference
-                # result; record it and continue. 缓存写失败绝不得丢弃成功的
-                # 推理结果；记录后继续。
-                cache_write_error = str(error)
+            cache_write_error = self._persist_cache_entry(
+                request_hash=request_meta.request_hash,
+                raw_response=rendered_raw,
+                parsed=result.model_dump(mode="json"),
+            )
         self._write_artifacts(
             request_meta,
             messages,
@@ -328,6 +324,29 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
             "completion_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
         }
+
+    def _persist_cache_entry(
+        self,
+        *,
+        request_hash: str,
+        raw_response: str,
+        parsed: dict[str, Any],
+    ) -> str | None:
+        """Persist one cache entry; both content rejection (ValidationError)
+        and persistence failures (ModelCacheError) are converted into a stable
+        error string so a successful inference result is never dropped.
+        持久化一条缓存条目；内容被拒（ValidationError）与持久化失败
+        （ModelCacheError）都转换为稳定错误字符串，成功推理结果绝不丢弃。"""
+        if self.cache is None:
+            return None
+        try:
+            entry = CacheEntry(raw_response=raw_response, parsed=parsed)
+            self.cache.save(request_hash, entry)
+        except ValidationError as error:
+            return _safe_cache_error("cache entry rejected", error)
+        except ModelCacheError as error:
+            return _safe_cache_error("cache write failed", error)
+        return None
 
     def _write_artifacts(
         self,
@@ -746,6 +765,12 @@ def _repair_messages(repair_prompt: str, raw_response: str, validation_error: st
             ),
         },
     ]
+
+
+def _safe_cache_error(prefix: str, error: Exception) -> str:
+    """Stable, path-free cache error label: only the stage and exception type.
+    稳定且不含路径的缓存错误标签：只记录阶段与异常类型。"""
+    return f"{prefix}: {type(error).__name__}"
 
 
 def _render_raw_responses(values: list[str]) -> str:

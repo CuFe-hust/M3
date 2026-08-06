@@ -187,7 +187,7 @@ def test_cleanup_error_does_not_mask_primary_write_error(
 
 
 def test_cache_entry_rejects_base64_raw_response() -> None:
-    with pytest.raises(ValidationError, match="blocked value"):
+    with pytest.raises(ValidationError, match="blocked marker"):
         CacheEntry(raw_response="data:image/png;base64,AAAA", parsed={})
 
 
@@ -215,3 +215,57 @@ def test_cache_entry_allows_plain_text_with_token_word() -> None:
         parsed={"answer": "the token count is 3", "count": 3},
     )
     assert entry.parsed["answer"] == "the token count is 3"
+
+
+# ── raw_response 内容安全 / raw response safety (B) ────────────────────────
+
+
+def test_cache_entry_rejects_sensitive_json_raw_response() -> None:
+    """Parseable raw JSON is checked recursively for keys and values.
+    可解析的 raw JSON 递归检查键与值。"""
+    with pytest.raises(ValidationError, match="blocked value"):
+        CacheEntry(raw_response='{"answer": "Bearer abc"}', parsed={})
+    with pytest.raises(ValidationError, match="blocked key"):
+        CacheEntry(raw_response='{"api_key": "x"}', parsed={})
+    with pytest.raises(ValidationError, match="blocked key"):
+        CacheEntry(raw_response='{"nested": {"access_token": "x"}}', parsed={})
+    with pytest.raises(ValidationError, match="blocked value"):
+        CacheEntry(raw_response='{"answer": "data:image/png;base64,AAAA"}', parsed={})
+
+
+def test_cache_entry_allows_plain_json_raw_response() -> None:
+    """Natural-language words must not be flagged inside parseable JSON.
+    可解析 JSON 中的自然语言单词不得误报。"""
+    entry = CacheEntry(
+        raw_response='{"answer": "token count is 3"}',
+        parsed={"answer": "token count is 3"},
+    )
+    assert entry.parsed["answer"] == "token count is 3"
+    entry2 = CacheEntry(
+        raw_response='{"answer": "the word bearer appears in a sentence"}',
+        parsed={"answer": "the word bearer appears in a sentence"},
+    )
+    assert "bearer" in entry2.parsed["answer"]
+
+
+def test_cache_entry_rejects_sensitive_repair_history() -> None:
+    """Any repair attempt carrying Base64 rejects the entry even when the
+    final attempt is safe. 任何修复尝试段携带 Base64 都会拒绝条目，即使
+    最后一段是安全的。"""
+    raw = (
+        "[response_attempt=1]\n"
+        '{"answer": "data:image/png;base64,AAAA"}\n\n'
+        "[response_attempt=2]\n"
+        '{"answer": "safe"}'
+    )
+    with pytest.raises(ValidationError, match="blocked value"):
+        CacheEntry(raw_response=raw, parsed={"answer": "safe"})
+
+
+def test_cache_entry_rejects_unstructured_raw_markers() -> None:
+    """Unparseable raw text is scanned for high-risk markers.
+    不可解析的 raw 文本扫描高风险标记。"""
+    with pytest.raises(ValidationError, match="blocked marker"):
+        CacheEntry(raw_response="garbage data:image/png;base64,AAAA", parsed={})
+    with pytest.raises(ValidationError, match="blocked marker"):
+        CacheEntry(raw_response='unstructured text "api_key" inside', parsed={})

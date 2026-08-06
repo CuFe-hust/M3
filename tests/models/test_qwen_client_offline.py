@@ -28,6 +28,14 @@ class _BoxResult(BaseModel):
     geometry: dict[str, Any] = {}
 
 
+class _BoxWithAnswer(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    box: list[float]
+    answer: str
+
+
 class _FakeOutput:
     """Fake tensor supporting slicing and shape reads. 支持切片与形状读取的假张量。"""
 
@@ -356,7 +364,7 @@ def test_cache_identity_is_stable() -> None:
     assert identity.model == "fake-model"
     assert identity.revision == "rev-1"
     assert identity.client_version == QWEN_CLIENT_VERSION
-    assert identity.generation == {
+    assert identity.generation_payload() == {
         "temperature": 0.0,
         "do_sample": False,
         "max_tokens": 64,
@@ -433,7 +441,82 @@ def test_successful_cache_write_records_no_error(tmp_path: Path) -> None:
     assert metadata["response_metadata"]["cache_write_recovered"] is False
 
 
+def test_cache_entry_rejection_does_not_drop_result(tmp_path: Path) -> None:
+    """A schema-valid result whose cached content is unsafe must still be
+    returned; the artifact records the stable rejection label.
+    Schema 校验通过但缓存内容不安全的合法结果仍必须返回；产物记录稳定的
+    拒绝标签。"""
+    cache = JsonResponseCache(tmp_path / "cache")
+    processor = _FakeProcessor([
+        '{"label": "a", "box": [1, 2, 3, 4], "answer": "Bearer abc"}'
+    ])
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=_FakeModel(),
+        processor=processor,
+        cache=cache,
+    )
+    import asyncio
+
+    meta = _meta(tmp_path / "artifacts")
+    result = asyncio.run(client.complete_json(
+        messages=[{"role": "user", "content": "Q"}],
+        response_model=_BoxWithAnswer,
+        request_meta=meta,
+    ))
+    assert result.label == "a"
+    assert result.answer == "Bearer abc"
+    # No unsafe cache entry was written. / 未写入不安全缓存条目。
+    assert list((tmp_path / "cache").glob("*.json")) == []
+    metadata = json.loads((tmp_path / "artifacts" / "validation.json").read_text(encoding="utf-8"))
+    assert metadata["response_metadata"]["cache_write_error"] == (
+        "cache entry rejected: ValidationError"
+    )
+    assert metadata["response_metadata"]["cache_write_recovered"] is True
+
+
+def test_cache_entry_rejection_data_url_does_not_drop_result(tmp_path: Path) -> None:
+    cache = JsonResponseCache(tmp_path / "cache")
+    processor = _FakeProcessor([
+        '{"label": "b", "box": [1, 2, 3, 4], "answer": "data:image/png;base64,AAAA"}'
+    ])
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=_FakeModel(),
+        processor=processor,
+        cache=cache,
+    )
+    import asyncio
+
+    meta = _meta(tmp_path / "artifacts")
+    result = asyncio.run(client.complete_json(
+        messages=[{"role": "user", "content": "Q"}],
+        response_model=_BoxWithAnswer,
+        request_meta=meta,
+    ))
+    assert result.label == "b"
+    assert list((tmp_path / "cache").glob("*.json")) == []
+    metadata = json.loads((tmp_path / "artifacts" / "validation.json").read_text(encoding="utf-8"))
+    assert metadata["response_metadata"]["cache_write_error"] == (
+        "cache entry rejected: ValidationError"
+    )
+
+
 # ── 离线默认 / offline defaults (I) ────────────────────────────────────────
+
+
+def test_absolute_checkpoint_requires_cache_model_id() -> None:
+    """A local absolute checkpoint path must carry an explicit logical id.
+    本地绝对 checkpoint 路径必须携带显式逻辑 ID。"""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="cache_model_id is required"):
+        QwenSettings(model="/models/Qwen3-VL-4B")
+    settings = QwenSettings(model="/models/Qwen3-VL-4B", cache_model_id="qwen3-vl-4b-local")
+    assert settings.effective_cache_model_id == "qwen3-vl-4b-local"
+    # Remote model names default to the declared name. / 远程模型名默认用声明名。
+    remote = QwenSettings(model="Qwen/Qwen3-VL-4B-Instruct")
+    assert remote.effective_cache_model_id == "Qwen/Qwen3-VL-4B-Instruct"
 
 
 def test_offline_defaults() -> None:
@@ -458,7 +541,7 @@ def test_cache_identity_generation_matches_max_tokens() -> None:
         model=_FakeModel(),
         processor=_FakeProcessor([]),
     )
-    assert client.cache_identity.generation == {
+    assert client.cache_identity.generation_payload() == {
         "temperature": 0.0,
         "do_sample": False,
         "max_tokens": 64,

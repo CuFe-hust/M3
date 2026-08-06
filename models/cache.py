@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -55,11 +57,75 @@ class CacheEntry(BaseModel):
 
     @model_validator(mode="after")
     def validate_no_secrets(self) -> "CacheEntry":
-        """Reject Base64 image data and credentials in either field.
-        拒绝 raw_response 与 parsed 中的 Base64 图像数据或凭据。"""
-        _check_cache_content_safe(self.raw_response, "raw_response")
+        """Reject Base64 image data and credentials in either field. raw
+        response JSON is checked recursively; unparseable text is scanned for
+        high-risk markers per repair attempt.
+        拒绝 raw_response 与 parsed 中的 Base64 图像数据或凭据。raw response
+        的 JSON 递归检查；不可解析文本按修复尝试逐段扫描高风险标记。"""
+        _check_raw_response_safe(self.raw_response)
         _check_cache_content_safe(self.parsed, "parsed")
         return self
+
+
+# Separator between rendered repair attempts, e.g. "[response_attempt=1]".
+# 渲染出的各修复尝试之间的分隔行，如 "[response_attempt=1]"。
+_ATTEMPT_SEPARATOR = re.compile(r"(?m)^\[response_attempt=\d+\]\s*$")
+
+# High-risk markers scanned in unparseable (non-JSON) raw responses.
+# 在不可解析（非 JSON）raw response 中扫描的高风险标记。
+_BLOCKED_RAW_MARKERS = (
+    "data:image/",
+    "-----begin private key-----",
+    '"api_key"',
+    '"apikey"',
+    '"authorization"',
+    '"access_token"',
+    '"refresh_token"',
+    '"private_key"',
+    '"password"',
+    '"credential"',
+)
+
+
+def _check_raw_response_safe(raw_response: str) -> None:
+    """Check the whole raw response; parseable JSON is checked recursively,
+    otherwise each repair attempt is checked separately so sensitive history
+    in any attempt rejects the entry.
+    检查整段 raw response；可解析 JSON 递归检查，否则逐修复尝试检查，任何
+    尝试段中的敏感历史都会拒绝该条目。"""
+    try:
+        parsed = json.loads(raw_response)
+    except json.JSONDecodeError:
+        for segment in re.split(_ATTEMPT_SEPARATOR, raw_response):
+            stripped = segment.strip()
+            if stripped:
+                _check_raw_response_segment(stripped)
+        return
+    _check_cache_content_safe(parsed, "raw_response_json")
+
+
+def _check_raw_response_segment(segment: str) -> None:
+    """Check one repair attempt: parse it when possible, otherwise scan markers.
+    检查单个修复尝试：可解析时递归检查，否则扫描高风险标记。"""
+    try:
+        parsed = json.loads(segment)
+    except json.JSONDecodeError:
+        _scan_unstructured_raw_response(segment)
+    else:
+        _check_cache_content_safe(parsed, "raw_response_json")
+
+
+def _scan_unstructured_raw_response(raw_response: str) -> None:
+    """Scan unparseable raw text for high-risk markers without flagging
+    ordinary natural-language words. 扫描不可解析原始文本中的高风险标记，
+    不误报普通自然语言单词。"""
+    normalized = raw_response.lower()
+    for marker in _BLOCKED_RAW_MARKERS:
+        if marker in normalized:
+            raise ValueError("cache raw_response contains a blocked marker")
+    stripped = raw_response.lstrip().lower()
+    if stripped.startswith("sk-") or stripped.startswith("bearer "):
+        raise ValueError("cache raw_response starts with a blocked prefix")
 
 
 def _normalize_cache_key(key: Any) -> str:
