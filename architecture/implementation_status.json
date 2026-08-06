@@ -62,7 +62,9 @@
     "routing/__init__.py",
     "routing/schema.py",
     "routing/policies.py",
-    "routing/router.py"
+    "routing/router.py",
+    "agents/general_vqa/__init__.py",
+    "agents/general_vqa/agent.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
