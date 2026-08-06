@@ -1,0 +1,22 @@
+{
+  "qwen": [
+    {
+      "match_key": "scene_classification|AgentResult|scene_classification:general_vqa_agent",
+      "response_model": "AgentResult",
+      "request_id": "scene_classification:general_vqa_agent",
+      "request_hash": "345e2f9ab2e3494ea13585c19db01cb95376ff0396bd59075e26c2802168d9e6",
+      "prompt_version": "general-vqa-v2",
+      "sample_id": "scene_classification",
+      "image_sha256": null,
+      "messages_sha256": "4c26c5e519219c49ac03d16c412a10559220328a4214523e1ba3e64c22e8d543",
+      "image_inputs": [
+        {
+          "type": "image_url",
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "byte_length": 78
+        }
+      ],
+      "artifact_dir": "samples/scene_classification/general_vqa_agent"
+    }
+  ]
+}

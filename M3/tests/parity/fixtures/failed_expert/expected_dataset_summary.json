@@ -1,0 +1,11 @@
+{
+  "dataset": "legacy-parity",
+  "failed": 1,
+  "partial": 0,
+  "run_id": "failed_expert",
+  "skipped": 0,
+  "split": "validation",
+  "succeeded": 0,
+  "task": "general_vqa",
+  "total": 1
+}

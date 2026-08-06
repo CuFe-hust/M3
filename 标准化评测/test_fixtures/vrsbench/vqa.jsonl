@@ -1,0 +1,2 @@
+{"id":"vqa-000001","split":"test","image":"../images/fixture.png","question":"Is this an airfield?","choices":["A. yes","B. no"],"answer":"A","vqa_category":"scene"}
+{"id":"vqa-000002","split":"test","image":"../images/fixture.png","question":"Is there a river?","choices":["A. yes","B. no"],"answer":"A","vqa_category":"presence"}

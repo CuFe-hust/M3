@@ -1,0 +1,11 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "general_vqa_agent",
+  "reason_codes": [
+    "task_scene_classification"
+  ],
+  "requires_tiling": false,
+  "router_source": "dataset_task",
+  "task": "scene_classification"
+}

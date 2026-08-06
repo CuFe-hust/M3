@@ -1,0 +1,10 @@
+{"id":"full-caption-en-000001","split":"public_test","variant":"full","language":"en","task":"caption","image":"../images/fixture.png","prompt":"Describe the image.","answer":"An airport."}
+{"id":"full-caption-zh-000001","split":"public_test","variant":"full","language":"zh","task":"caption","image":"../images/fixture.png","prompt":"描述图像。","answer":"一座机场。"}
+{"id":"full-grounding-en-000001","split":"public_test","variant":"full","language":"en","task":"grounding","image":"../images/fixture.png","prompt":"Locate the airport.","boxes":[[0,0,1,1]]}
+{"id":"full-grounding-zh-000001","split":"public_test","variant":"full","language":"zh","task":"grounding","image":"../images/fixture.png","prompt":"定位机场。","boxes":[[0,0,1,1]]}
+{"id":"lite-vqa-en-000001","split":"public_test","variant":"lite","language":"en","task":"vqa","image":"../images/fixture.png","prompt":"Is there an airport?","choices":["A. yes","B. no"],"answer":"A","l3":"overall_counting"}
+{"id":"lite-vqa-zh-000001","split":"public_test","variant":"lite","language":"zh","task":"vqa","image":"../images/fixture.png","prompt":"有机场吗？","choices":["A. 是","B. 否"],"answer":"A","l3":"overall_counting"}
+{"id":"lite-caption-en-000001","split":"public_test","variant":"lite","language":"en","task":"caption","image":"../images/fixture.png","prompt":"Describe the image.","answer":"An airport."}
+{"id":"lite-grounding-zh-000001","split":"public_test","variant":"lite","language":"zh","task":"grounding","image":"../images/fixture.png","prompt":"定位机场。","boxes":[[0,0,1,1]]}
+{"id":"lite-caption-zh-000001","split":"public_test","variant":"lite","language":"zh","task":"caption","image":"../images/fixture.png","prompt":"描述图像。","answer":"一座机场。"}
+{"id":"lite-grounding-en-000001","split":"public_test","variant":"lite","language":"en","task":"grounding","image":"../images/fixture.png","prompt":"Locate the airport.","boxes":[[0,0,1,1]]}

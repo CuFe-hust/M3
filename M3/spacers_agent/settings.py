@@ -1,0 +1,303 @@
+"""Validated local settings with environment overrides.
+带环境变量覆盖的本地校验配置。
+"""
+
+from __future__ import annotations
+
+import os
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Literal
+
+import yaml
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from spacers_agent.schemas import BackendConfig
+
+
+class QwenSettings(BaseModel):
+    """Settings for the local Transformers Qwen backend.
+    本地 Transformers Qwen 后端的配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = "qwen3-vl-4b-instruct"
+    max_tokens: int = Field(default=4096, gt=0)
+    spatial_review_max_tokens: int = Field(default=128, gt=0)
+    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+    device_map: str = "auto"
+    use_kernels: bool = False
+    local_files_only: bool = False
+    min_pixels: int | None = Field(default=None, gt=0)
+    max_pixels: int | None = Field(default=None, gt=0)
+
+
+class DeepSeekSettings(BaseModel):
+    """Settings for a future DeepSeek structured judge client.
+    未来 DeepSeek 结构化评估客户端的配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_url: str = "https://api.deepseek.com"
+    model: str = "deepseek-v4-flash"
+    api_key_env: str = "DEEPSEEK_API_KEY"
+    timeout_seconds: int = Field(default=120, gt=0)
+    max_retries: int = Field(default=3, ge=0)
+
+
+class ModelSettings(BaseModel):
+    """Group model settings without storing secret values.
+    聚合模型配置且不保存密钥值。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    qwen: QwenSettings = Field(default_factory=QwenSettings)
+    deepseek: DeepSeekSettings = Field(default_factory=DeepSeekSettings)
+
+
+class CountingSettings(BaseModel):
+    """Deterministic defaults shared by future point-counting components.
+    未来点式计数组件共用的确定性默认配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    tile_core_size: int = Field(default=896, gt=0)
+    halo_size: int = Field(default=128, ge=0)
+    model_max_side: int = Field(default=1280, gt=0)
+    max_pixels_without_tiling: int = Field(default=1_600_000, gt=0)
+    boundary_band_px: int = Field(default=32, ge=0)
+    min_confidence: float = Field(default=0.2, ge=0.0, le=1.0)
+    max_points_per_tile: int = Field(default=200, gt=0)
+    sequential: bool = True
+    concurrency: int = Field(default=1, ge=1)
+    seam_verify: bool = True
+    recursive_split_enabled: bool = True
+    max_recursive_depth: int = Field(default=2, ge=0)
+    min_core_size: int = Field(default=224, gt=0)
+    seam_crop_margin_px: int = Field(default=128, ge=0)
+    unresolved_conflict_policy: Literal["flag_for_review"] = "flag_for_review"
+    prompt_version: str = "count-point-v4"
+    vrsbench_min_scan_depth: int = Field(default=0, ge=0)
+    vrsbench_zero_review: bool = False
+    vrsbench_tile_upscale_max_side: int | None = Field(default=None, gt=0)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.sequential and self.concurrency != 1:
+            raise ValueError("sequential counting requires concurrency=1")
+        if self.vrsbench_min_scan_depth > self.max_recursive_depth:
+            raise ValueError("vrsbench_min_scan_depth cannot exceed max_recursive_depth")
+
+
+class RunSettings(BaseModel):
+    """Settings that determine durable local run artifacts.
+    决定本地可持久化运行产物的配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    root: Path = Path("outputs/runs")
+    save_tiles: bool = False
+    save_annotated_images: bool = True
+    save_raw_responses: bool = True
+
+class RouterSettings(BaseModel):
+    """Sparse router thresholds and safety limits. / 稀疏路由阈值和安全限制。"""
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool = True
+    trust_dataset_task_type: bool = True
+    use_router_agent_when_task_missing: bool = True
+    high_confidence_threshold: float = Field(default=0.8, ge=0, le=1)
+    medium_confidence_threshold: float = Field(default=0.6, ge=0, le=1)
+    max_total_agents: int = Field(default=3, ge=1)
+    repair_attempts: int = Field(default=1, ge=0, le=1)
+    enable_rule_fallback: bool = True
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.medium_confidence_threshold >= self.high_confidence_threshold:
+            raise ValueError("router medium threshold must be below high threshold")
+
+
+class PathSettings(BaseModel):
+    """Project-relative input locations.
+    项目相对输入位置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_root: Path = Path("dataset")
+
+
+class AppSettings(BaseModel):
+    """Top-level validated settings for the new local runtime.
+    新本地运行时的顶层校验配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    models: ModelSettings = Field(default_factory=ModelSettings)
+    counting: CountingSettings = Field(default_factory=CountingSettings)
+    runs: RunSettings = Field(default_factory=RunSettings)
+    router: RouterSettings = Field(default_factory=RouterSettings)
+    paths: PathSettings = Field(default_factory=PathSettings)
+    backend: BackendConfig = Field(default_factory=BackendConfig)
+    agents: "AgentsSettings" = Field(default_factory=lambda: AgentsSettings())
+
+
+class AgentsSettings(BaseModel):
+    """Per-agent configuration group. / Agent 级配置组。"""
+    model_config = ConfigDict(extra="forbid")
+    # Future: individual agent enable flags / 未来：各 Agent 启用标志
+    counting: "AgentCountingSettings" = Field(default_factory=lambda: AgentCountingSettings())
+    change: "AgentChangeSettings" = Field(default_factory=lambda: AgentChangeSettings())
+
+
+class AgentCountingSettings(BaseModel):
+    """Counting agent configuration. / 计数 Agent 配置。"""
+    model_config = ConfigDict(extra="forbid")
+    default_backend: Literal["auto", "qwen_point", "yolo_obb"] = "auto"
+
+
+class ChangeHarmonizationSettings(BaseModel):
+    """Conservative PIF/LAB harmonization limits. / 保守的 PIF/LAB 一致化限制。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    version: str = "pif_lab_midpoint_v1"
+    retain_raw_images: bool = True
+    save_artifacts: bool = True
+    calibration_file: Path | None = None
+    reject_when_pif_mad_worse: bool = True
+    max_pif_mad_degradation_ratio: float = Field(default=1.05, ge=1.0)
+    match_sharpness: bool = True
+    max_blur_sigma: float = Field(default=1.5, gt=0.0)
+    min_retained_lapvar_ratio: float = Field(default=0.65, gt=0.0, le=1.0)
+    sharpness_tolerance_ratio: float = Field(default=1.15, ge=1.0)
+    min_pif_ratio: float = Field(default=0.02, ge=0.0, le=1.0)
+    min_pif_pixels: int = Field(default=64, ge=1)
+    pif_blur_ksize: int = Field(default=21, ge=3)
+    pif_diff_k: float = Field(default=1.5, ge=0.0)
+    pif_grad_k: float = Field(default=1.5, ge=0.0)
+    max_abs_gain: float = Field(default=4.0, gt=0.0)
+    max_abs_offset: float = Field(default=160.0, gt=0.0)
+    max_clipped_pixel_ratio: float = Field(default=0.15, ge=0.0, le=1.0)
+
+
+class ChangeProposalSettings(BaseModel):
+    """Explainable difference proposal configuration. / 可解释差异候选配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    rgb_weight: float = Field(default=0.50, ge=0.0)
+    edge_weight: float = Field(default=0.25, ge=0.0)
+    structure_weight: float = Field(default=0.25, ge=0.0)
+    threshold_quantile: float = Field(default=0.90, gt=0.0, lt=1.0)
+    min_component_area_ratio: float = Field(default=0.0005, gt=0.0, lt=1.0)
+    max_component_area_ratio: float = Field(default=0.50, gt=0.0, le=1.0)
+    max_proposals: int = Field(default=6, ge=1, le=12)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.rgb_weight + self.edge_weight + self.structure_weight <= 0:
+            raise ValueError("change proposal weights must have a positive sum")
+
+
+class ChangeReviewSettings(BaseModel):
+    """Rule reviewer configuration. / 规则复核配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    require_proposal_evidence: bool = True
+
+
+class AgentChangeSettings(BaseModel):
+    """ChangeAgent dual-path configuration with legacy-safe defaults.
+    具有旧配置兼容默认值的 ChangeAgent 双路径配置。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dual_path_enabled: bool = True
+    input_mode: Literal["raw_only", "harmonized_only", "dual_path"] = "dual_path"
+    harmonization: ChangeHarmonizationSettings = Field(default_factory=ChangeHarmonizationSettings)
+    proposals: ChangeProposalSettings = Field(default_factory=ChangeProposalSettings)
+    review: ChangeReviewSettings = Field(default_factory=ChangeReviewSettings)
+
+
+class EnvironmentOverrides(BaseSettings):
+    """Read non-secret endpoint and path overrides from dotenv or process env.
+    从 dotenv 或进程环境读取非密钥端点与路径覆盖。
+    """
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    qwen_model: str | None = Field(default=None, validation_alias="QWEN_MODEL")
+    deepseek_base_url: str | None = Field(default=None, validation_alias="DEEPSEEK_BASE_URL")
+    deepseek_model: str | None = Field(default=None, validation_alias="DEEPSEEK_MODEL")
+    dataset_root: str | None = Field(default=None, validation_alias="DATASET_ROOT")
+    output_root: str | None = Field(default=None, validation_alias="OUTPUT_ROOT")
+
+
+def load_settings(path: Path | None = None, environ: Mapping[str, str] | None = None) -> AppSettings:
+    """Load YAML settings and apply documented environment overrides.
+    加载 YAML 配置并应用已文档化的环境变量覆盖。
+    """
+
+    payload: dict[str, Any] = {}
+    if path is not None:
+        with path.open(encoding="utf-8") as file:
+            loaded = yaml.safe_load(file) or {}
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Configuration root must be a mapping: {path}")
+        payload = loaded
+    environment = _environment_values(environ)
+    _apply_environment_overrides(payload, environment)
+    return AppSettings.model_validate(payload)
+
+
+def _environment_values(environ: Mapping[str, str] | None) -> dict[str, str]:
+    """Produce recognized environment overrides without loading API-key values.
+    生成已识别的环境变量覆盖且不加载 API 密钥值。
+    """
+
+    if environ is not None:
+        return dict(environ)
+    overrides = EnvironmentOverrides()
+    values = overrides.model_dump(exclude_none=True)
+    return {
+        "QWEN_MODEL": values.get("qwen_model", ""),
+        "DEEPSEEK_BASE_URL": values.get("deepseek_base_url", ""),
+        "DEEPSEEK_MODEL": values.get("deepseek_model", ""),
+        "DATASET_ROOT": values.get("dataset_root", ""),
+        "OUTPUT_ROOT": values.get("output_root", ""),
+    }
+
+
+def _apply_environment_overrides(payload: dict[str, Any], environ: Mapping[str, str]) -> None:
+    """Apply non-secret endpoint and path overrides without persisting secrets.
+    应用非密钥端点与路径覆盖且不持久化密钥。
+    """
+
+    models = payload.setdefault("models", {})
+    qwen = models.setdefault("qwen", {})
+    deepseek = models.setdefault("deepseek", {})
+    paths = payload.setdefault("paths", {})
+    runs = payload.setdefault("runs", {})
+    for key, destination in (
+        ("QWEN_MODEL", (qwen, "model")),
+        ("DEEPSEEK_BASE_URL", (deepseek, "base_url")),
+        ("DEEPSEEK_MODEL", (deepseek, "model")),
+        ("DATASET_ROOT", (paths, "dataset_root")),
+        ("OUTPUT_ROOT", (runs, "root")),
+    ):
+        value = environ.get(key)
+        # An explicit YAML run root scopes reproducible artifacts; dotenv must not redirect it.
+        # 显式 YAML 运行根目录限定可复现产物；dotenv 不得重定向它。
+        if value and not (key == "OUTPUT_ROOT" and destination[1] in destination[0]):
+            destination[0][destination[1]] = value

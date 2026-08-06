@@ -1,0 +1,121 @@
+models:
+  qwen:
+    model: qwen3-vl-4b-instruct
+    max_tokens: 4096
+    spatial_review_max_tokens: 128
+    dtype: auto
+    device_map: auto
+    use_kernels: false
+    local_files_only: false
+    min_pixels: null
+    max_pixels: null
+  deepseek:
+    base_url: https://api.deepseek.com
+    model: deepseek-v4-flash
+    api_key_env: DEEPSEEK_API_KEY
+    timeout_seconds: 120
+    max_retries: 3
+counting:
+  tile_core_size: 896
+  halo_size: 128
+  model_max_side: 1280
+  max_pixels_without_tiling: 1600000
+  boundary_band_px: 32
+  min_confidence: 0.2
+  max_points_per_tile: 200
+  sequential: true
+  concurrency: 1
+  seam_verify: true
+  recursive_split_enabled: true
+  max_recursive_depth: 2
+  min_core_size: 224
+  seam_crop_margin_px: 128
+  unresolved_conflict_policy: flag_for_review
+  prompt_version: count-point-v4
+  vrsbench_min_scan_depth: 0
+  vrsbench_zero_review: true
+  vrsbench_tile_upscale_max_side: 768
+runs:
+  root: outputs/runs
+  save_tiles: false
+  save_annotated_images: true
+  save_raw_responses: true
+paths:
+  dataset_root: dataset
+router:
+  enabled: true
+  trust_dataset_task_type: true
+  use_router_agent_when_task_missing: true
+  high_confidence_threshold: 0.80
+  medium_confidence_threshold: 0.60
+  max_total_agents: 3
+  repair_attempts: 1
+  enable_rule_fallback: true
+# Default counting backend selection. / 默认计数后端选择。
+agents:
+  counting:
+    default_backend: auto
+  change:
+    dual_path_enabled: true
+    input_mode: dual_path
+    harmonization:
+      enabled: true
+      version: pif_lab_midpoint_v1
+      retain_raw_images: true
+      save_artifacts: true
+      calibration_file: null
+      reject_when_pif_mad_worse: true
+      max_pif_mad_degradation_ratio: 1.05
+      match_sharpness: true
+      max_blur_sigma: 1.5
+      min_retained_lapvar_ratio: 0.65
+    proposals:
+      enabled: true
+      rgb_weight: 0.50
+      edge_weight: 0.25
+      structure_weight: 0.25
+      threshold_quantile: 0.90
+      min_component_area_ratio: 0.0005
+      max_component_area_ratio: 0.50
+      max_proposals: 6
+    review:
+      enabled: true
+      require_proposal_evidence: true
+
+# Optional YOLO OBB counting backend. / 可选 YOLO OBB 计数后端。
+# Repository defaults stay disabled and never download weights. / 仓库默认保持关闭，绝不下载权重。
+backend:
+  trust_empty_detection: false
+  yolo:
+    enabled: false
+    fallback_to_qwen_on_unavailable: true
+    fallback_to_qwen_on_error: true
+    verify_empty_with_qwen: true
+    detectors: []
+# Example only. Keep disabled in local repository defaults. / 仅为示例，仓库本地默认必须保持关闭。
+# backend:
+#   yolo:
+#     enabled: true
+#     fallback_to_qwen_on_unavailable: true
+#     fallback_to_qwen_on_error: true
+#     verify_empty_with_qwen: true
+#     detectors:
+#       - name: yolov5m_obb_csl_dotav20
+#         enabled: true
+#         weights: /home/user/models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+#         runtime: onnx_yolov5_obb
+#         task: obb
+#         model_id: YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m
+#         sha256: c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a
+#         source_dataset: DOTAv2.0
+#         priority: 100
+#         confidence: 0.20
+#         iou: 0.50
+#         image_size: 1024
+#         device: "0"
+#         max_detections: 1000
+#         boundary_duplicate_iou: 0.50
+#         boundary_duplicate_center_px: 16.0
+#         classes: [plane, ship, storage tank, baseball diamond, tennis court, basketball court, ground track field, harbor, bridge, large vehicle, small vehicle, helicopter, roundabout, soccer ball field, swimming pool]
+#         aliases: {airplane: plane, aeroplane: plane, vessel: ship, boat: ship, storage-tank: storage tank, oil tank: storage tank, large-vehicle: large vehicle, small-vehicle: small vehicle, football field: soccer ball field, soccer field: soccer ball field, swimming-pool: swimming pool}
+#         composite_targets: {vehicle: [small vehicle, large vehicle], aircraft: [plane, helicopter]}

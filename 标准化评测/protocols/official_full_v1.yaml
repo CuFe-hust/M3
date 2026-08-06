@@ -1,0 +1,79 @@
+protocol_id: official_full_v1
+protocol_version: 1
+mode: full
+metric_namespace: ../../指标字典/outputs/019fc7cf-aa6b-7143-b248-647f0db1037d/metrics.yaml
+canonical_storage:
+  bounded_rates: "0-1"
+  missing_values: "N/A, never zero"
+formal_run_eligibility:
+  required_mode: full
+  required_status: complete
+  protocol_validation: required
+failure_policy:
+  missing_prediction: failure
+  duplicate_prediction: failure
+  malformed_prediction: failure
+  unknown_sample_id: failure
+  timed_out_prediction: failure
+  explicit_error_prediction: failure
+  silent_exclusion: forbidden
+datasets:
+  levir_cc:
+    formal_split: test
+    complete_official_test: required
+    training_prohibition: "train and val may train models but never enter evaluation"
+    task_families: [caption, change_discrimination]
+    language_variants: [en]
+    required_metric_ids:
+      - levir.caption.all.bleu_4
+      - levir.caption.all.meteor
+      - levir.caption.all.rouge_l
+      - levir.caption.all.cider_d
+      - levir.discrimination.all.accuracy
+  vrsbench:
+    formal_split: test
+    complete_official_test: required
+    training_prohibition: "train and val may train or fine-tune models but never enter evaluation"
+    task_families: [caption, grounding, vqa]
+    language_variants: [en]
+    required_metric_ids:
+      - vrs.caption.bleu_4
+      - vrs.caption.meteor
+      - vrs.caption.rouge_l
+      - vrs.caption.cider
+      - vrs.grounding.hbb.all.acc_0_5
+      - vrs.vqa.acc.all
+  xlrs_bench:
+    formal_split: public_test
+    coverage: "all publicly available test tasks"
+    training_prohibition: "no public test task may be used for training"
+    task_families: [vqa, caption, grounding]
+    language_variants: [en, zh]
+    variants:
+      full:
+        must_remain_separate_from: [lite]
+        required_metric_ids:
+          - xlrs.vqa.en.paper_avg_l2
+          - xlrs.vqa.zh.paper_avg_l2
+          - xlrs.caption.en.bleu_4
+          - xlrs.caption.zh.bleu_4
+          - xlrs.grounding.en.all.acc_0_5
+          - xlrs.grounding.zh.all.acc_0_5
+      lite:
+        must_remain_separate_from: [full]
+        required_metric_ids:
+          - xlrs.vqa.en.lite.micro_acc
+          - xlrs.vqa.en.lite.macro_l3_acc
+    comparability: "Full/Lite and English/Chinese results must never be pooled or aliased"
+  mme_rs:
+    formal_domain: Remote_Sensing
+    complete_domain: required
+    training_prohibition: "the MME Remote Sensing domain may never be used for training"
+    task_families: [color, count, position]
+    language_variants: [en]
+    required_metric_ids:
+      - mme_rs.acc.color
+      - mme_rs.acc.count
+      - mme_rs.acc.position
+      - mme_rs.avg
+      - mme_rs.avg_c

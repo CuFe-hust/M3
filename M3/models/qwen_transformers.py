@@ -1,0 +1,755 @@
+"""In-process Qwen3-VL Transformers client with structured local artifacts.
+进程内 Qwen3-VL Transformers 客户端及结构化本地产物。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import functools
+import importlib
+import inspect
+import io
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any
+
+# Prevent HuggingFace Hub network access — this module is for local models only.
+# 阻止 HuggingFace Hub 网络访问 — 此模块仅用于本地模型。
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+from PIL import Image
+from pydantic import BaseModel, ValidationError
+
+from models.base import (
+    CacheEntry,
+    JsonResponseCache,
+    ModelT,
+    RequestMeta,
+    VisionLanguageClient,
+    sanitize_messages,
+)
+from spacers_agent.settings import QwenSettings
+
+
+class QwenTransformersError(RuntimeError):
+    """Report a visible local model loading, generation, or validation failure.
+    报告可见的本地模型加载、生成或校验失败。
+    """
+
+
+class QwenTransformersClient(VisionLanguageClient):
+    """Run the configured local checkpoint directly through Transformers.
+    通过 Transformers 直接运行配置的本地权重。
+    """
+
+    def __init__(
+        self,
+        settings: QwenSettings,
+        *,
+        repair_prompt: str | None = None,
+        cache: JsonResponseCache | None = None,
+        model: Any | None = None,
+        processor: Any | None = None,
+    ) -> None:
+        self.settings = settings
+        self.repair_prompt = repair_prompt
+        self.cache = cache
+        started = time.perf_counter()
+        if (model is None) != (processor is None):
+            raise ValueError("model and processor must be supplied together")
+        self.model, self.processor = (model, processor) if model is not None else self._load()
+        self.load_seconds = round(time.perf_counter() - started, 6)
+
+    def _load(self) -> tuple[Any, Any]:
+        """Load only the declared checkpoint without an endpoint or download fallback.
+        仅加载声明的权重，不使用端点或下载回退。
+        """
+
+        try:
+            import torch
+            import transformers
+            from transformers import AutoConfig, AutoProcessor
+        except ImportError as error:
+            raise QwenTransformersError("Install requirements.txt before loading local Qwen.") from error
+        dtype: Any = "auto"
+        if self.settings.dtype != "auto":
+            dtype = {
+                "float16": torch.float16,
+                "bfloat16": torch.bfloat16,
+                "float32": torch.float32,
+            }[self.settings.dtype]
+        processor_kwargs: dict[str, Any] = {}
+        if self.settings.min_pixels is not None:
+            processor_kwargs["min_pixels"] = self.settings.min_pixels
+        if self.settings.max_pixels is not None:
+            processor_kwargs["max_pixels"] = self.settings.max_pixels
+        config = AutoConfig.from_pretrained(
+            self.settings.model,
+            local_files_only=self.settings.local_files_only,
+            trust_remote_code=True,
+        )
+        model_factory = _qwen_model_factory(transformers, config.model_type)
+        model_load_kwargs = _model_load_kwargs(
+            self.settings, dtype=dtype, model_type=config.model_type
+        )
+        if config.model_type == "qwen3_5" and self.settings.use_kernels:
+            model_module = importlib.import_module(model_factory.__module__)
+            _expose_qwen35_gdn_forward_signature(
+                getattr(model_module, "Qwen3_5GatedDeltaNet")
+            )
+            _adapt_qwen35_gdn_cache_abi(model_load_kwargs["kernel_config"])
+        model = model_factory.from_pretrained(
+            self.settings.model,
+            **model_load_kwargs,
+        )
+        processor = AutoProcessor.from_pretrained(
+            self.settings.model,
+            local_files_only=self.settings.local_files_only,
+            trust_remote_code=True,
+            **processor_kwargs,
+        )
+        model.eval()
+        return model, processor
+
+    async def complete_json(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        response_model: type[ModelT],
+        request_meta: RequestMeta,
+        max_tokens: int | None = None,
+    ) -> ModelT:
+        """Generate once, validate JSON, and persist auditable local-call metadata.
+        生成一次、校验 JSON，并保存可审计的本地调用元数据。
+        """
+
+        cached = self.cache.load(request_meta.request_hash) if self.cache else None
+        if cached is not None:
+            result = response_model.model_validate(cached.parsed)
+            self._write_artifacts(
+                request_meta,
+                messages,
+                cached.raw_response,
+                result,
+                cache_hit=True,
+                validation_error=None,
+                metadata={"latency_seconds": 0.0, "token_usage": None},
+            )
+            return result
+        started = time.perf_counter()
+        raw_responses: list[str] = []
+        attempt_errors: list[dict[str, Any]] = []
+        token_usage: dict[str, int] | None = None
+        try:
+            raw_response, token_usage = await asyncio.to_thread(
+                self._generate, messages, response_model, max_tokens
+            )
+            raw_responses.append(raw_response)
+            try:
+                result = _validate_response(raw_response, response_model)
+            except (json.JSONDecodeError, ValidationError, ValueError) as error:
+                attempt_errors.append(_validation_attempt_error(1, error))
+                if self.repair_prompt is None:
+                    raise
+                repair_messages = _repair_messages(self.repair_prompt, raw_response, str(error))
+                repaired, repair_usage = await asyncio.to_thread(
+                    self._generate, repair_messages, response_model, max_tokens
+                )
+                raw_responses.append(repaired)
+                token_usage = _sum_token_usage(token_usage, repair_usage)
+                result = _validate_response(repaired, response_model)
+        except (json.JSONDecodeError, ValidationError, ValueError) as error:
+            if not attempt_errors or attempt_errors[-1]["error"] != str(error):
+                attempt_errors.append(_validation_attempt_error(len(raw_responses), error))
+            self._write_artifacts(
+                request_meta,
+                messages,
+                _render_raw_responses(raw_responses),
+                None,
+                cache_hit=False,
+                validation_error=f"{type(error).__name__}: {error}",
+                metadata={
+                    "latency_seconds": round(time.perf_counter() - started, 6),
+                    "token_usage": token_usage,
+                    "attempt_errors": attempt_errors,
+                    "repair_used": len(raw_responses) > 1,
+                },
+            )
+            raise QwenTransformersError(f"Local Qwen JSON validation failed after repair: {error}") from error
+        except Exception as error:
+            self._write_artifacts(
+                request_meta,
+                messages,
+                _render_raw_responses(raw_responses),
+                None,
+                cache_hit=False,
+                validation_error=f"{type(error).__name__}: {error}",
+                metadata={
+                    "latency_seconds": round(time.perf_counter() - started, 6),
+                    "token_usage": token_usage,
+                    "attempt_errors": attempt_errors,
+                    "repair_used": len(raw_responses) > 1,
+                },
+            )
+            raise QwenTransformersError(f"Local Qwen generation failed: {error}") from error
+        rendered_raw = _render_raw_responses(raw_responses)
+        if self.cache:
+            self.cache.save(
+                request_meta.request_hash,
+                CacheEntry(raw_response=rendered_raw, parsed=result.model_dump(mode="json")),
+            )
+        self._write_artifacts(
+            request_meta,
+            messages,
+            rendered_raw,
+            result,
+            cache_hit=False,
+            validation_error=None,
+            metadata={
+                "latency_seconds": round(time.perf_counter() - started, 6),
+                "token_usage": token_usage,
+                "attempt_errors": attempt_errors,
+                "repair_used": len(raw_responses) > 1,
+                "local_recoveries": _result_local_recoveries(result),
+            },
+        )
+        return result
+
+    def _generate(
+        self,
+        messages: list[dict[str, Any]],
+        response_model: type[BaseModel],
+        max_tokens: int | None = None,
+    ) -> tuple[str, dict[str, int]]:
+        """Convert data URLs to PIL images and run deterministic generation.
+        将数据 URL 转为 PIL 图像并执行确定性生成。
+        """
+
+        model_messages, images = _transformer_messages(messages, response_model)
+        template_kwargs: dict[str, Any] = {}
+        if _uses_qwen35_chat_template(self.model):
+            # Qwen3.5 thinking text would violate the JSON-only response contract.
+            # Qwen3.5 的思考文本会违反仅 JSON 响应契约。
+            template_kwargs["enable_thinking"] = False
+        text = self.processor.apply_chat_template(
+            model_messages,
+            tokenize=False,
+            add_generation_prompt=True,
+            **template_kwargs,
+        )
+        inputs = self.processor(text=[text], images=images or None, padding=True, return_tensors="pt")
+        inputs = _move_processor_inputs(inputs, self.model.device)
+        generated = self.model.generate(
+            **inputs,
+            max_new_tokens=max_tokens or self.settings.max_tokens,
+            do_sample=False,
+        )
+        input_tokens = int(inputs["input_ids"].shape[-1])
+        trimmed = [output[input_tokens:] for output in generated]
+        raw = self.processor.batch_decode(
+            trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0].strip()
+        output_tokens = int(trimmed[0].shape[-1])
+        return raw, {
+            "prompt_tokens": input_tokens,
+            "completion_tokens": output_tokens,
+            "total_tokens": input_tokens + output_tokens,
+        }
+    def _write_artifacts(
+        self,
+        request_meta: RequestMeta,
+        messages: list[dict[str, Any]],
+        raw_response: str,
+        result: BaseModel | None,
+        *,
+        cache_hit: bool,
+        validation_error: str | None,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Persist sanitized inputs, raw output, parsed output, timing, and tokens.
+        保存脱敏输入、原始输出、解析输出、耗时和 token 信息。
+        """
+
+        if request_meta.artifact_dir is None:
+            return
+        directory = request_meta.artifact_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        _write_json(directory / "request_meta.json", request_meta.model_dump(mode="json"))
+        _write_json(directory / "request.json", {"messages": sanitize_messages(messages)})
+        (directory / "raw_response.txt").write_text(raw_response, encoding="utf-8")
+        _write_json(
+            directory / "validation.json",
+            {
+                "backend": "transformers",
+                "cache_hit": cache_hit,
+                "valid": result is not None,
+                "validation_error": validation_error,
+                "response_metadata": metadata,
+            },
+        )
+        if result is not None:
+            _write_json(directory / "parsed.json", result.model_dump(mode="json"))
+
+
+def _qwen_model_factory(transformers: Any, model_type: str) -> Any:
+    """Select the native Transformers class without changing existing Qwen3-VL loading.
+    选择原生 Transformers 类，且不改变现有 Qwen3-VL 加载行为。
+    """
+
+    class_name = {
+        "qwen3_vl": "Qwen3VLForConditionalGeneration",
+        "qwen3_5": "Qwen3_5ForConditionalGeneration",
+    }.get(model_type)
+    if class_name is None or not hasattr(transformers, class_name):
+        raise QwenTransformersError(
+            f"Unsupported local Qwen model_type {model_type!r}; install a Transformers version "
+            "that provides the matching native model class."
+        )
+    return getattr(transformers, class_name)
+
+
+def _uses_qwen35_chat_template(model: Any) -> bool:
+    """Return whether non-thinking Qwen3.5 chat rendering is required.
+    返回是否需要使用非思考的 Qwen3.5 对话模板。
+    """
+
+    return getattr(getattr(model, "config", None), "model_type", None) == "qwen3_5"
+
+
+def _model_load_kwargs(settings: QwenSettings, *, dtype: Any, model_type: str) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "dtype": dtype,
+        "device_map": settings.device_map,
+        "local_files_only": settings.local_files_only,
+        "trust_remote_code": True,
+    }
+    if model_type == "qwen3_5" and settings.use_kernels:
+        kwargs["use_kernels"] = True
+        kwargs["kernel_config"] = _qwen35_gb10_kernel_config(
+            local_files_only=settings.local_files_only
+        )
+    return kwargs
+
+
+def _qwen35_gb10_kernel_config(*, local_files_only: bool) -> Any:
+    """Resolve the pinned Hub snapshot, then disable inherited kernel mappings.
+    解析固定版本的 Hub 快照，并关闭继承的默认 kernel 映射。
+    """
+
+    from huggingface_hub import snapshot_download
+    from transformers.utils.kernel_config import KernelConfig
+
+    class _PinnedLocalKernelConfig(KernelConfig):
+        """Bridge the local tuple format emitted by Transformers 5.14 registration.
+        兼容 Transformers 5.14 注册阶段产生的本地 tuple 格式。
+        """
+
+        def create_compatible_mapping(self, model: Any, compile: bool = False) -> None:
+            self.kernel_mapping = _local_kernel_paths_only(self.kernel_mapping)
+            super().create_compatible_mapping(model, compile=compile)
+
+    revision = "ef12347fc77d6ddf1cb72c0bd0af1c7d6cc69172"
+    kernel_path = snapshot_download(
+        repo_id="Atlas-Inference/gdn",
+        repo_type="kernel",
+        revision=revision,
+        local_files_only=local_files_only,
+    )
+    return _PinnedLocalKernelConfig(
+        kernel_mapping={
+            "Qwen3_5GatedDeltaNet": {
+                "cuda": f"{kernel_path}:Qwen3_5GatedDeltaNet"
+            }
+        },
+        # Transformers uses this flag both for repository type and for whether
+        # global defaults are inherited. The resolved snapshot keeps the exact
+        # revision while preventing unrelated kernels from being activated.
+        # Transformers 同时用此开关判断仓库类型和是否继承全局默认映射；先解析
+        # 固定快照可锁定版本，并防止无关 kernel 被意外启用。
+        use_local_kernel=True,
+    )
+
+
+def _local_kernel_paths_only(kernel_mapping: dict[Any, Any]) -> dict[Any, Any]:
+    """Drop remote-only metadata that Transformers reattaches to local paths.
+    删除 Transformers 重新附加到本地路径上的远端专用元数据。
+    """
+
+    normalized: dict[Any, Any] = {}
+    for layer_name, device_mapping in kernel_mapping.items():
+        if isinstance(device_mapping, tuple):
+            normalized[layer_name] = device_mapping[0]
+            continue
+        if isinstance(device_mapping, dict):
+            normalized[layer_name] = {
+                device: repo[0] if isinstance(repo, tuple) else repo
+                for device, repo in device_mapping.items()
+            }
+            continue
+        normalized[layer_name] = device_mapping
+    return normalized
+
+
+def _expose_qwen35_gdn_forward_signature(layer_class: Any) -> None:
+    """Restore the ABI hidden by Transformers' accelerate-hook decorator.
+    恢复被 Transformers accelerate-hook 装饰器隐藏的 ABI 签名。
+    """
+
+    def _pinned_gdn_forward(
+        self: Any,
+        hidden_states: Any,
+        cache_params: Any = None,
+        attention_mask: Any = None,
+        **kwargs: Any,
+    ) -> Any:
+        raise NotImplementedError
+
+    # kernels 0.15 validates parameter kinds before replacing the method. The
+    # fixed kernel has this exact ABI, while force_accelerate_hooks exposes only
+    # (*args, **kwargs) without functools.wraps on Transformers 5.14.1.
+    # kernels 0.15 会在替换方法前校验参数类型；固定 kernel 正是此 ABI，
+    # 而 Transformers 5.14.1 的装饰器只暴露 (*args, **kwargs)。
+    layer_class.forward.__signature__ = inspect.signature(_pinned_gdn_forward)
+
+
+def _move_processor_inputs(inputs: Any, device: Any) -> Any:
+    """Move either BatchFeature or the plain mapping returned by Qwen3.5.
+    将 BatchFeature 或 Qwen3.5 返回的普通映射移动到模型设备。
+    """
+
+    if hasattr(inputs, "to"):
+        return inputs.to(device)
+    if isinstance(inputs, dict):
+        return {
+            name: value.to(device) if hasattr(value, "to") else value
+            for name, value in inputs.items()
+        }
+    raise TypeError(f"Unsupported processor output type: {type(inputs).__name__}")
+
+
+class _KernelCacheLayerView:
+    """Expose state zero as expected by the pinned Atlas kernel.
+    按固定 Atlas kernel 的预期暴露第零号状态。
+    """
+
+    def __init__(self, layer: Any) -> None:
+        self._layer = layer
+
+    def __getattr__(self, name: str) -> Any:
+        value = getattr(self._layer, name)
+        if name in {"conv_states", "recurrent_states"} and isinstance(value, dict):
+            return value[0]
+        return value
+
+
+class _KernelCacheLayersView:
+    def __init__(self, layers: Any) -> None:
+        self._layers = layers
+
+    def __getitem__(self, index: int) -> _KernelCacheLayerView:
+        return _KernelCacheLayerView(self._layers[index])
+
+
+class _KernelCacheView:
+    """Delegate updates while adapting only the layer-state read shape.
+    保持更新方法原样转发，仅适配层状态的读取形状。
+    """
+
+    def __init__(self, cache: Any) -> None:
+        self._cache = cache
+        self.layers = _KernelCacheLayersView(cache.layers)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._cache, name)
+
+
+def _adapt_qwen35_gdn_cache_abi(kernel_config: Any) -> None:
+    """Bridge Transformers 5.14 state dictionaries without editing the snapshot.
+    不修改固定快照，兼容 Transformers 5.14 的状态字典。
+    """
+
+    from kernels import LocalLayerRepository
+
+    repository = kernel_config.kernel_mapping["Qwen3_5GatedDeltaNet"]["cuda"]
+    repo_path, separator, layer_name = repository.rpartition(":")
+    if not separator:
+        raise ValueError("Qwen3.5 kernel mapping must include a layer name")
+    kernel_class = LocalLayerRepository(
+        repo_path=Path(repo_path), layer_name=layer_name
+    ).load()
+    kernel_module = importlib.import_module(kernel_class.__module__)
+    original = kernel_module._gdn_run
+    if getattr(original, "_cooper_cache_abi_adapter", False):
+        return
+
+    @functools.wraps(original)
+    def _adapted_gdn_run(
+        host: Any,
+        hidden_states: Any,
+        cache_params: Any,
+        mixed_qkv: Any,
+        z: Any,
+        b: Any,
+        a: Any,
+    ) -> Any:
+        cache_view = _KernelCacheView(cache_params) if cache_params is not None else None
+        return original(host, hidden_states, cache_view, mixed_qkv, z, b, a)
+
+    _adapted_gdn_run._cooper_cache_abi_adapter = True
+    kernel_module._gdn_run = _adapted_gdn_run
+
+
+def _transformer_messages(
+    messages: list[dict[str, Any]],
+    response_model: type[BaseModel],
+) -> tuple[list[dict[str, Any]], list[Image.Image]]:
+    """Translate OpenAI-style local messages and append the exact response schema.
+    转换 OpenAI 风格的本地消息，并附加精确响应 Schema。
+    """
+
+    converted: list[dict[str, Any]] = []
+    images: list[Image.Image] = []
+    schema_instruction = (
+        "Return valid JSON only. The JSON must match this schema exactly: "
+        + json.dumps(response_model.model_json_schema(), ensure_ascii=False, separators=(",", ":"))
+    )
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, str):
+            text = content + ("\n\n" + schema_instruction if message.get("role") == "system" else "")
+            converted.append({"role": message.get("role", "user"), "content": text})
+            continue
+        converted_content: list[dict[str, Any]] = []
+        for item in content or []:
+            if item.get("type") == "image_url":
+                image = _decode_data_url(str(item.get("image_url", {}).get("url", "")))
+                images.append(image)
+                converted_content.append({"type": "image", "image": image})
+            elif item.get("type") == "text":
+                converted_content.append({"type": "text", "text": str(item.get("text", ""))})
+            else:
+                raise ValueError(f"Unsupported local message item: {item.get('type')!r}")
+        converted.append({"role": message.get("role", "user"), "content": converted_content})
+    if not any(message.get("role") == "system" for message in converted):
+        converted.insert(0, {"role": "system", "content": schema_instruction})
+    return converted, images
+
+
+def _decode_data_url(value: str) -> Image.Image:
+    """Decode one in-memory image URL without accepting remote URLs.
+    解码一条内存图像 URL，且不接受远程 URL。
+    """
+
+    if not value.startswith("data:image/") or ";base64," not in value:
+        raise ValueError("Transformers backend accepts only data:image Base64 URLs")
+    _, encoded = value.split(",", 1)
+    with Image.open(io.BytesIO(base64.b64decode(encoded, validate=True))) as opened:
+        return opened.convert("RGB")
+
+
+def _validate_response(raw_response: str, response_model: type[ModelT]) -> ModelT:
+    """Validate an optional fenced JSON object without accepting surrounding prose.
+    校验可选围栏 JSON 对象，不接受前后散文。
+    """
+
+    stripped = raw_response.strip()
+    if stripped.startswith("```"):
+        lines = stripped.splitlines()
+        if len(lines) < 2:
+            raise ValueError("Unterminated JSON fence")
+        stripped = "\n".join(lines[1:-1] if lines[-1].strip().startswith("```") else lines[1:]).strip()
+    recovery: str | None = None
+    try:
+        payload = json.loads(stripped)
+    except json.JSONDecodeError as error:
+        model_recover = getattr(response_model, "recover_json_payload", None)
+        model_payload = model_recover(stripped) if callable(model_recover) else None
+        if model_payload is not None:
+            payload = model_payload
+            recovery = "compact_candidate_sequence_recovered_locally"
+        else:
+            recovered = _recover_truncated_json(stripped, error)
+            if recovered is None:
+                raise
+            payload, recovery = recovered
+    if recovery is not None and isinstance(payload, dict) and "geometry" in response_model.model_fields:
+        geometry = dict(payload.get("geometry") or {})
+        normalizations = list(geometry.get("input_normalizations") or [])
+        normalizations.append(recovery)
+        geometry["input_normalizations"] = list(dict.fromkeys(normalizations))
+        payload["geometry"] = geometry
+    result = response_model.model_validate(payload)
+    if recovery is not None and hasattr(result, "_local_recoveries"):
+        result._local_recoveries.append(recovery)
+    return result
+
+
+def _recover_truncated_json(
+    value: str,
+    error: json.JSONDecodeError,
+) -> tuple[Any, str] | None:
+    """Close or prune only an incomplete JSON tail at end-of-output.
+    仅闭合或裁剪输出末尾不完整的 JSON 尾部。
+    """
+
+    stripped = value.rstrip()
+    if not stripped.startswith(("{", "[")):
+        return None
+    near_end = error.pos >= max(0, len(stripped) - 2)
+    if not near_end and not error.msg.startswith("Unterminated string"):
+        return None
+    frames, in_string, dangling_escape = _scan_json_frames(stripped)
+    if not frames:
+        return None
+
+    closed = stripped
+    if in_string:
+        if dangling_escape and closed.endswith("\\"):
+            closed = closed[:-1]
+        closed += '"'
+    closed = closed.rstrip()
+    if closed.endswith(","):
+        closed = closed[:-1].rstrip()
+    direct = _load_with_closed_frames(closed, frames)
+    if direct is not None:
+        return direct, "truncated_json_closed_locally"
+
+    deepest = frames[-1]
+    parent = frames[-2] if len(frames) > 1 else None
+    if deepest["kind"] == "{" and parent is not None and parent["kind"] == "[":
+        cut = int(deepest["open"])
+    else:
+        comma = deepest.get("last_comma")
+        if comma is None:
+            return None
+        cut = int(comma)
+    pruned = stripped[:cut].rstrip()
+    if pruned.endswith(","):
+        pruned = pruned[:-1].rstrip()
+    remaining, remaining_in_string, _ = _scan_json_frames(pruned)
+    if remaining_in_string or not remaining:
+        return None
+    recovered = _load_with_closed_frames(pruned, remaining)
+    if recovered is None:
+        return None
+    return recovered, "truncated_json_incomplete_tail_pruned"
+
+
+def _scan_json_frames(value: str) -> tuple[list[dict[str, int | str | None]], bool, bool]:
+    """Track open JSON containers and their last top-level commas.
+    跟踪未闭合 JSON 容器及各自最后一个顶层逗号。
+    """
+
+    frames: list[dict[str, int | str | None]] = []
+    in_string = False
+    escaped = False
+    for index, character in enumerate(value):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "{[":
+            frames.append({"kind": character, "open": index, "last_comma": None})
+        elif character in "}]":
+            if not frames:
+                return [], in_string, escaped
+            expected = "{" if character == "}" else "["
+            if frames[-1]["kind"] != expected:
+                return [], in_string, escaped
+            frames.pop()
+        elif character == "," and frames:
+            frames[-1]["last_comma"] = index
+    return frames, in_string, escaped
+
+
+def _load_with_closed_frames(value: str, frames: list[dict[str, int | str | None]]) -> Any | None:
+    """Close known containers and return decoded JSON when it is valid.
+    闭合已知容器，并在结果有效时返回解码后的 JSON。
+    """
+
+    suffix = "".join("}" if frame["kind"] == "{" else "]" for frame in reversed(frames))
+    try:
+        return json.loads(value + suffix)
+    except json.JSONDecodeError:
+        return None
+
+
+def _repair_messages(repair_prompt: str, raw_response: str, validation_error: str) -> list[dict[str, Any]]:
+    """Build a text-only format repair request that cannot inspect the image.
+    构建无法查看图像的纯文本格式修复请求。
+    """
+
+    return [
+        {"role": "system", "content": repair_prompt},
+        {
+            "role": "user",
+            "content": json.dumps(
+                {"validation_error": validation_error, "raw_output": raw_response},
+                ensure_ascii=False,
+            ),
+        },
+    ]
+
+
+def _render_raw_responses(values: list[str]) -> str:
+    return "\n\n".join(
+        f"[response_attempt={index}]\n{value}" for index, value in enumerate(values, start=1)
+    )
+
+
+def _result_local_recoveries(result: BaseModel) -> list[str]:
+    """Expose local truncation recovery markers in call metadata.
+    在调用元数据中公开本地截断恢复标记。
+    """
+
+    private_recoveries = list(getattr(result, "_local_recoveries", []))
+    geometry = getattr(result, "geometry", None)
+    if not isinstance(geometry, dict):
+        return private_recoveries
+    return private_recoveries + [
+        str(value)
+        for value in geometry.get("input_normalizations", [])
+        if str(value).startswith("truncated_json_")
+    ]
+
+
+def _validation_attempt_error(attempt: int, error: Exception) -> dict[str, Any]:
+    return {
+        "attempt": attempt,
+        "error_type": type(error).__name__,
+        "error": str(error),
+        "retryable": False,
+    }
+
+
+def _sum_token_usage(
+    first: dict[str, int] | None,
+    second: dict[str, int] | None,
+) -> dict[str, int] | None:
+    if first is None:
+        return second
+    if second is None:
+        return first
+    return {key: int(first.get(key, 0)) + int(second.get(key, 0)) for key in set(first) | set(second)}
+
+
+def _write_json(path: Path, value: Any) -> None:
+    """Atomically write one UTF-8 JSON artifact.
+    原子写入一份 UTF-8 JSON 产物。
+    """
+
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)

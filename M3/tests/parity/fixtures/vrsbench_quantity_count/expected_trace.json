@@ -1,0 +1,39 @@
+{
+  "entrypoint": "run",
+  "execution_task": "counting",
+  "geometry": {
+    "accepted_point_count": 2,
+    "coordinate_frame": "normalized_0_999_top_left",
+    "counting_status": "completed_with_warnings",
+    "evidence_quality": [
+      "trusted_point",
+      "trusted_point"
+    ],
+    "final_count": 2,
+    "localization_used": true,
+    "localizer_answer": 2,
+    "pipeline": "general_vqa_v1_proposal_then_grounded_localization",
+    "prompt_version": "vrsbench-count-hybrid-v1",
+    "proposal_count": 2,
+    "proposal_recovery": null,
+    "proposal_status": "completed",
+    "repair_severity": "none",
+    "rule": "final_count_equals_accepted_points",
+    "supporting_box_count": 2,
+    "version": "accepted-point-count-v3",
+    "warnings": [
+      {
+        "code": "COUNT_PROPOSAL_EVIDENCE_MISMATCH",
+        "message": "proposal=2, proposal_boxes=1",
+        "point_ids": [],
+        "tile_ids": []
+      }
+    ]
+  },
+  "judge_status": "not_requested",
+  "official_question_type": "quantity",
+  "prompt_version": "vrsbench-count-hybrid-v1",
+  "route": "SingleSampleAdapter -> TaskRouter.route_vrsbench_vqa -> vrsbench_count_target -> CountingAgent.run -> GeneralVQA count proposal -> RecordingFakeQwen.complete_json -> accepted points -> CountEvidenceLocalizer -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "task_type": "general_vqa"
+}

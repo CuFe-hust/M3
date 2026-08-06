@@ -1,0 +1,17 @@
+{
+  "deterministic_metrics": {
+    "absolute_error": 20,
+    "exact_match": 0,
+    "gold_count": 4,
+    "predicted_count": 24,
+    "relative_error": 4.0,
+    "smooth_error_score": 6.14421235332821e-06
+  },
+  "judge_error": null,
+  "judge_inconsistency": false,
+  "judge_parsed": null,
+  "judge_raw": null,
+  "judge_status": "not_requested",
+  "sample_id": "counting_one_failed_tile",
+  "task": "counting"
+}

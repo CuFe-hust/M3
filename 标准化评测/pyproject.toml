@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m3rs-eval"
+version = "0.1.0"
+description = "Standardized evaluation contracts for M3-RS"
+requires-python = ">=3.10"
+dependencies = [
+    "jsonschema>=4.18,<5",
+    "psutil>=5.9,<8",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

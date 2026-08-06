@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "M3-RS immutable run manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["run_id", "status", "mode", "protocol_id", "created_at", "config_hash", "request_manifest_hash", "eligible_for_history", "protocol_hash", "command_hash", "system_version_hash", "metadata"],
+  "properties": {
+    "run_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["created", "preflight_passed", "inference_running", "evaluating", "complete", "incomplete", "failed"]},
+    "mode": {"enum": ["smoke", "full"]},
+    "protocol_id": {"type": "string", "minLength": 1},
+    "created_at": {"type": "string", "minLength": 1},
+    "config_hash": {"type": "string", "minLength": 1},
+    "request_manifest_hash": {"type": "string", "minLength": 1},
+    "eligible_for_history": {"type": "boolean"},
+    "protocol_hash": {"type": "string", "minLength": 1},
+    "command_hash": {"type": "string", "minLength": 1},
+    "system_version_hash": {"type": "string", "minLength": 1},
+    "metadata": {"type": "object"}
+  }
+}

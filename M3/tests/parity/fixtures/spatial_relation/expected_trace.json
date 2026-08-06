@@ -1,0 +1,17 @@
+{
+  "entrypoint": "run",
+  "execution_task": "spatial_relation",
+  "geometry": {
+    "evidence_quality": [
+      "trusted_box"
+    ],
+    "repair_severity": "none",
+    "source": "deterministic spatial evidence"
+  },
+  "judge_status": "not_requested",
+  "official_question_type": null,
+  "prompt_version": "spatial-v5",
+  "route": "SingleSampleAdapter -> TaskRouter.route_known -> SpatialExpert.run -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "task_type": "spatial_relation"
+}

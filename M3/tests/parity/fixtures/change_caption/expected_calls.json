@@ -1,0 +1,27 @@
+{
+  "qwen": [
+    {
+      "match_key": "change_caption|AgentResult|change_caption:change_agent",
+      "response_model": "AgentResult",
+      "request_id": "change_caption:change_agent",
+      "request_hash": "a1fc6da9f0e59dddeed93b686a5a5c2156725b188633f54f28da65028c3c6267",
+      "prompt_version": "change-agent-v1",
+      "sample_id": "change_caption",
+      "image_sha256": null,
+      "messages_sha256": "5c7d1faf5008b8495a06616d9b3a17e524ff27f46c60b8089b8db42229841bcb",
+      "image_inputs": [
+        {
+          "type": "image_url",
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "byte_length": 78
+        },
+        {
+          "type": "image_url",
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "byte_length": 78
+        }
+      ],
+      "artifact_dir": "samples/change_caption/change_agent"
+    }
+  ]
+}

@@ -1,0 +1,17 @@
+# Local configuration may contain real paths, commands, and credentials.
+configs/server.local.yaml
+configs/*.local.yaml
+
+# Generated evaluation evidence and derived reporting output.
+runs/
+reports/
+history/
+
+# Python and test artifacts.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.venv/
+venv/

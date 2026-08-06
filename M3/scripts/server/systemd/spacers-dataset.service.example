@@ -1,0 +1,7 @@
+[Unit]
+Description=Spacers dataset runner
+[Service]
+Type=oneshot
+EnvironmentFile=%h/.config/spacers-agent/server.env
+WorkingDirectory=${PROJECT_ROOT}
+ExecStart=${PROJECT_ROOT}/scripts/server/run_dataset.sh

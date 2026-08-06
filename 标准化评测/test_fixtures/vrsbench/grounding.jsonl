@@ -1,0 +1,2 @@
+{"id":"grounding-000001","split":"test","image":"../images/fixture.png","question":"Locate the airfield.","boxes":[[0,0,1,1]],"grounding_slice":"unique"}
+{"id":"grounding-000002","split":"test","image":"../images/fixture.png","question":"Locate the river.","boxes":[[0,0,1,1]],"grounding_slice":"non_unique"}

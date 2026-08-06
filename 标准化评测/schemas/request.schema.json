@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "M3-RS evaluation request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sample_id", "dataset", "benchmark_version", "split", "task", "images", "prompt", "expected_output", "request_hash"],
+  "properties": {
+    "sample_id": {"type": "string", "minLength": 1},
+    "dataset": {"type": "string", "minLength": 1},
+    "benchmark_version": {"type": "string", "minLength": 1},
+    "split": {"type": "string", "minLength": 1},
+    "task": {"type": "string", "minLength": 1},
+    "images": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "prompt": {"type": "string", "minLength": 1},
+    "choices": {"type": ["array", "null"], "minItems": 1, "items": {"type": "string", "minLength": 1}},
+    "expected_output": {"type": "string", "minLength": 1},
+    "request_hash": {"type": "string", "minLength": 1},
+    "language": {"type": ["string", "null"], "minLength": 1},
+    "variant": {"type": ["string", "null"], "minLength": 1}
+  }
+}

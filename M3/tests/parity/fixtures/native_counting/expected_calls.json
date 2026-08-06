@@ -1,0 +1,467 @@
+{
+  "deepseek": [],
+  "qwen": [
+    {
+      "artifact_dir": "samples/native_counting/target_parse",
+      "image_inputs": [],
+      "image_sha256": null,
+      "match_key": "native_counting|CountTargetSpec|native_counting:target",
+      "messages_sha256": "bc65a8266d2ccc3e05f996acaf3e7a3df792425013aaca49eab0c1a0a777d8bb",
+      "prompt_version": "target-parse-v1",
+      "request_hash": "d9561e9dd4a19e9b1402647c1b448884c370a49f889dcb09a2f3f69322bce20e",
+      "request_id": "native_counting:target",
+      "response_model": "CountTargetSpec",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r000_c000",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r000_c000",
+      "messages_sha256": "ea215ee0b94c65b6525b6fd979f4b0b8dd820cfb7bcafca54662b84d5ed9adf6",
+      "prompt_version": "count-point-v4",
+      "request_hash": "32e4d0f867e4c2d4f964a367651d848f11726f297e38368a272a99335c64aea2",
+      "request_id": "native_counting:r000_c000",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r000_c001",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r000_c001",
+      "messages_sha256": "ad41b2f7f9390289eb3c40d81c78a919da927976cbd4b39f8c5c51e79800c76b",
+      "prompt_version": "count-point-v4",
+      "request_hash": "42d04b36349cf1a37809a46abf685eae66038e9bf1363a4befe33cd42cd6b62a",
+      "request_id": "native_counting:r000_c001",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r000_c002",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r000_c002",
+      "messages_sha256": "6c6f7f273050f9a404e1d4b08967d3547d4d98b23f69e6a0c487cad4ba7d9c2a",
+      "prompt_version": "count-point-v4",
+      "request_hash": "1aca6635b0cc476967838e845419562118fec8d89ad9b1d070174119064cad41",
+      "request_id": "native_counting:r000_c002",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r000_c003",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r000_c003",
+      "messages_sha256": "acee9a9f3e49cedce3705e20102acb147d2f70565ef1f9e33409ac49030e37b9",
+      "prompt_version": "count-point-v4",
+      "request_hash": "1c5d30085d5a4eb08bf7cf78edba935a29c4968e9df41820a72b5612a6d6c0bd",
+      "request_id": "native_counting:r000_c003",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r000_c004",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r000_c004",
+      "messages_sha256": "25af49e5a1cf38d8361002b45a09bb3734e21e7d32825e6d2e8c59e8ed4a4995",
+      "prompt_version": "count-point-v4",
+      "request_hash": "226f23ae6011bdbcba93faf4f64a1837388af259cc2e495fa04b6c01b4f0ac93",
+      "request_id": "native_counting:r000_c004",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r001_c000",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r001_c000",
+      "messages_sha256": "e4c79eec9d5cc7df2d8089935959df0e546c7b90ca75668b14febe260506bfb6",
+      "prompt_version": "count-point-v4",
+      "request_hash": "597138da64054124a792e1a92ef0bbaaa231d01f5d4e1b0fd319fe5af3452480",
+      "request_id": "native_counting:r001_c000",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r001_c001",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r001_c001",
+      "messages_sha256": "99ece17b106fe8cc96b679a08b5da1493290376c8a75758999bd4165f1a8af79",
+      "prompt_version": "count-point-v4",
+      "request_hash": "3ddfc5de2fb7a9697353f9100df99bd87cdcbe449dd32d7f03650392aacda06b",
+      "request_id": "native_counting:r001_c001",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r001_c002",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r001_c002",
+      "messages_sha256": "3bec9d526ea469144f276df23a8a936ceaef6d893c4ecac78b15e24e7bd5866c",
+      "prompt_version": "count-point-v4",
+      "request_hash": "39df3db0e05a15d388479d2d9c6abfceac11a175c71559826fefef050f5afc2e",
+      "request_id": "native_counting:r001_c002",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r001_c003",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r001_c003",
+      "messages_sha256": "0fd0d6989cf335d5cfe0a7a4760659652214361cba82a77defb5dc932846c665",
+      "prompt_version": "count-point-v4",
+      "request_hash": "b7fac941a16b2a6d1c5cf8c74c345e9909e45fe28bad7005f63f57b3d5e1abaf",
+      "request_id": "native_counting:r001_c003",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r001_c004",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r001_c004",
+      "messages_sha256": "4106853c2b381850c4e1d780e09109c42e9cda85bf57d9dd30aee34cb98fd7a9",
+      "prompt_version": "count-point-v4",
+      "request_hash": "5fd13e0f0f4505642c5ccea1a2cdfbc36f7704e35837763dae0970146d5235a7",
+      "request_id": "native_counting:r001_c004",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r002_c000",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r002_c000",
+      "messages_sha256": "b85a33e5a33cb2a7aa1d029824c83e8fc06b8a23c334a13851a560e7be613719",
+      "prompt_version": "count-point-v4",
+      "request_hash": "dc0f599d13652ab9719aabd78d3c6251c0a62da1e0728719548568925d0b4c0e",
+      "request_id": "native_counting:r002_c000",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r002_c001",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r002_c001",
+      "messages_sha256": "75594b47768614562abbaab6dc97608b4f35bb20c3ff236cd75f59c0a4a9e8eb",
+      "prompt_version": "count-point-v4",
+      "request_hash": "344ef6612b739676e2774432a15ea3d14b6199a2ff93c0c20fe07c246e99ad94",
+      "request_id": "native_counting:r002_c001",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r002_c002",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r002_c002",
+      "messages_sha256": "20f1f35c5480f782420260f37f0bf9ac0202796d4c2491ca67ad31f7a4bffc3a",
+      "prompt_version": "count-point-v4",
+      "request_hash": "1d973bba1ae595f8c49031b0c09f0794eb6fa16f7207da0aa28185cbca902754",
+      "request_id": "native_counting:r002_c002",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r002_c003",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r002_c003",
+      "messages_sha256": "928ea462ea7ec8a464d4cf34247afd1111ecd52e7e225eab03690dec7bb3d1b3",
+      "prompt_version": "count-point-v4",
+      "request_hash": "8e9c1fa87327b600a9daf874acde99f8fc6de15ac0330c89a02899333d90b8d9",
+      "request_id": "native_counting:r002_c003",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r002_c004",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r002_c004",
+      "messages_sha256": "aaaab9011d6285403869bca374b1fab89226875aa3f9848126fbe283ffd43047",
+      "prompt_version": "count-point-v4",
+      "request_hash": "8a138dced8aecbdaba8b0a55fe6b18b03f520d32494b2d9f05c06b48969b7214",
+      "request_id": "native_counting:r002_c004",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r003_c000",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r003_c000",
+      "messages_sha256": "581f333ba5289152df28eabc0caeb60fa8f661e467abd8e7ac44780edd56260c",
+      "prompt_version": "count-point-v4",
+      "request_hash": "398974945c5bb0151d8b791e175b8164bfec604a34f34229c851248d479341a8",
+      "request_id": "native_counting:r003_c000",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r003_c001",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r003_c001",
+      "messages_sha256": "ad7a05ccbbdc93aed93703a1517e6f63c893bfdce000340a31cac598b4ebd4fa",
+      "prompt_version": "count-point-v4",
+      "request_hash": "73e9076e8864358d9995c72bf4b9d862de9e25614e116e20395cb93f94c52719",
+      "request_id": "native_counting:r003_c001",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r003_c002",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r003_c002",
+      "messages_sha256": "65aa69c97a56f8e928c0a2991edbc15ad6be6a31e2fd43974f27203b4bae4754",
+      "prompt_version": "count-point-v4",
+      "request_hash": "cd1c1a14b33d6ae22b3daa9eedca237d8a6904d6aeef2d2bde77d07165792bd8",
+      "request_id": "native_counting:r003_c002",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r003_c003",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r003_c003",
+      "messages_sha256": "697178cd09a5d3dacc6c460b00dd6f3d28e7a442136d04d191c08878fe65ea1a",
+      "prompt_version": "count-point-v4",
+      "request_hash": "f0e15e45204c1aac2afad6011914d339a7d4493b5e6a6a35051bd8f288f5eab8",
+      "request_id": "native_counting:r003_c003",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r003_c004",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r003_c004",
+      "messages_sha256": "c12d5d0589a10e252ebf056b1be9a4377e745dd27a0aef5920615453d080eb89",
+      "prompt_version": "count-point-v4",
+      "request_hash": "7207b9da4052db8becf503bf1b506e6b98141544f1073be77487e754991ad571",
+      "request_id": "native_counting:r003_c004",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r004_c000",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r004_c000",
+      "messages_sha256": "c9d74b5e0be434897f70bf174d9e15ea51422746d06a5afca88d6de71e009023",
+      "prompt_version": "count-point-v4",
+      "request_hash": "0084463ddd65d044e3899b5bcf5f042e600dc69be17fd9c8a5b80adfd797f4e6",
+      "request_id": "native_counting:r004_c000",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r004_c001",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r004_c001",
+      "messages_sha256": "44978fec1d138d2b08596f0b9bf8da4772529dfa0055e044bd4b1cd7bbbf6014",
+      "prompt_version": "count-point-v4",
+      "request_hash": "f8925b36c5ceeaeeed33e6fcdd16e8101c3e03331ea7b4bc016ca62af38765ce",
+      "request_id": "native_counting:r004_c001",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r004_c002",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r004_c002",
+      "messages_sha256": "f876f48d97d7fbc830371217d9036e923fe561e45cd735e1afd6b045fa1b6828",
+      "prompt_version": "count-point-v4",
+      "request_hash": "d9d595b326dde8c40f40bc2b9fba31eea2019085efe177d8fc56d8616706a2a2",
+      "request_id": "native_counting:r004_c002",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r004_c003",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r004_c003",
+      "messages_sha256": "4bf120fe516380b8b24c7c1e914d57a50bd16397491d7d50fa2d24c0ca35f17b",
+      "prompt_version": "count-point-v4",
+      "request_hash": "152215bf73ac25848026ab2a621e3ce2f7632942f910fc062b4fc5fe7379650c",
+      "request_id": "native_counting:r004_c003",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    },
+    {
+      "artifact_dir": "samples/native_counting/tiles/r004_c004",
+      "image_inputs": [
+        {
+          "byte_length": 629,
+          "sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+          "type": "image_url"
+        }
+      ],
+      "image_sha256": "0f20753c97a7da6afc62d68e6fdd59ea0e1e26a16699a22186c70bc369e4eb8d",
+      "match_key": "native_counting|TileCountResponse|native_counting:r004_c004",
+      "messages_sha256": "7f52b90a0f23110a1704786647958dd3adb75db8ff906aea9f94a13fa06f8722",
+      "prompt_version": "count-point-v4",
+      "request_hash": "d80b8dc8b596cbc57062d7e9fc2132781e2caf6276c820b69165241afd32ff5f",
+      "request_id": "native_counting:r004_c004",
+      "response_model": "TileCountResponse",
+      "sample_id": "native_counting"
+    }
+  ]
+}

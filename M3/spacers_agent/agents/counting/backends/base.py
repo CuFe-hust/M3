@@ -1,0 +1,72 @@
+"""Counting backend protocol and shared types. / 计数后端协议与共享类型。"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Protocol
+
+from PIL import Image
+
+from spacers_agent.schemas import AgentResult, CountTargetSpec, CountingResult, UnifiedSample
+
+
+@dataclass(frozen=True)
+class CountingRequest:
+    """Immutable counting request for one sample. / 单条样本的不可变计数请求。"""
+    sample: UnifiedSample
+    image: Image.Image
+    target: CountTargetSpec
+    artifact_dir: Path
+
+
+@dataclass(frozen=True)
+class BackendSelection:
+    """Reason why a specific backend was chosen. / 选择特定后端的原因。"""
+    backend_name: str
+    reason_codes: tuple[str, ...]
+    target_classes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BackendPlan:
+    """Primary and fallback counting backends selected before execution.
+    在执行前选定的主计数后端与回退后端。
+    """
+
+    primary_backend_name: str
+    fallback_backend_names: tuple[str, ...] = ()
+    reason_codes: tuple[str, ...] = ()
+    target_classes: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CountingBackendOutcome:
+    """Validated backend result plus an optional VQA Agent result.
+    已校验的后端结果，以及可选的 VQA Agent 结果。
+    """
+
+    counting: CountingResult
+    agent_result: AgentResult | None = None
+    trace: dict[str, object] | None = None
+
+
+class CountingBackend(Protocol):
+    """Execution contract for a pluggable counting backend. / 可插拔计数后端的执行契约。"""
+
+    name: str
+    priority: int
+
+    def is_available(self) -> bool:
+        """Return whether the backend is ready (weights loaded, client alive). / 返回后端是否就绪。"""
+        ...
+
+    def supports(self, target: CountTargetSpec) -> bool:
+        """Return whether this backend can handle the target. / 返回后端能否处理目标。"""
+        ...
+
+    async def count(self, request: CountingRequest, context: object) -> CountingBackendOutcome:
+        """Execute counting and return one validated backend outcome.
+        执行计数并返回一个已校验的后端结果。
+        """
+        ...

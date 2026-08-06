@@ -1,0 +1,91 @@
+project_root: /home/user/heweiming/standard_test
+protocol_path: /home/user/heweiming/standard_test/protocols/official_xlrs_v1.yaml
+metric_registry_path: /home/user/heweiming/standard_test/标准化评测/registry/metrics.yaml
+output_root: /home/user/heweiming/standard_test/runs_micro
+system_version: qwen3vl-4b-lora-v1
+model_name: Qwen3-VL-4B-Instruct-LoRA
+model_weights: /home/user/models/Qwen3_vl_4b_instruct
+training_data_version: team-finetune-2026-07
+operator: M3-team
+system:
+  command:
+    - /home/user/miniconda3/envs/std_test_env/bin/python
+    - scripts/run_inference.py
+    - --model
+    - qwen3vl
+    - --input
+    - '{input_jsonl}'
+    - --output
+    - '{output_jsonl}'
+  working_directory: /home/user/heweiming/standard_test
+  timeout_seconds: 300
+  environment:
+    PYTHONPATH: /home/user/heweiming/standard_test
+datasets:
+  levir_cc:
+    root: /home/user/heweiming/standard_test/prep_micro/levir_cc
+    asset_root: /home/user/heweiming/standard_test/prep_micro/levir_cc
+    profile: official
+    official_scorer_command:
+      - /home/user/miniconda3/envs/std_test_env/bin/python
+      - scripts/score_all.py
+      - --dataset
+      - levir_cc
+      - --requests
+      - '{requests_jsonl}'
+      - --references
+      - '{references_jsonl}'
+      - --predictions
+      - '{predictions_jsonl}'
+      - --output
+      - '{output_json}'
+    official_scorer_working_directory: /home/user/heweiming/standard_test
+    official_scorer_timeout_seconds: 600
+    official_scorer_expected_version: m3rs-self-2026-08-05
+    official_scorer_expected_commit: m3rs-self-2026-08-05
+  vrsbench:
+    root: /home/user/heweiming/standard_test/prep_micro/vrsbench
+    asset_root: /home/user/heweiming/standard_test/prep_micro/vrsbench
+    profile: official
+    official_scorer_command:
+      - /home/user/miniconda3/envs/std_test_env/bin/python
+      - scripts/score_all.py
+      - --dataset
+      - vrsbench
+      - --requests
+      - '{requests_jsonl}'
+      - --references
+      - '{references_jsonl}'
+      - --predictions
+      - '{predictions_jsonl}'
+      - --output
+      - '{output_json}'
+    official_scorer_working_directory: /home/user/heweiming/standard_test
+    official_scorer_timeout_seconds: 600
+    official_scorer_expected_version: m3rs-self-2026-08-05
+    official_scorer_expected_commit: m3rs-self-2026-08-05
+  xlrs_bench:
+    root: /home/user/heweiming/standard_test/prep_micro/xlrs_bench
+    asset_root: /home/user/heweiming/standard_test/prep_micro/xlrs_bench
+    profile: official
+    official_scorer_command:
+      - /home/user/miniconda3/envs/std_test_env/bin/python
+      - scripts/score_all.py
+      - --dataset
+      - xlrs_bench
+      - --requests
+      - '{requests_jsonl}'
+      - --references
+      - '{references_jsonl}'
+      - --predictions
+      - '{predictions_jsonl}'
+      - --output
+      - '{output_json}'
+    official_scorer_working_directory: /home/user/heweiming/standard_test
+    official_scorer_timeout_seconds: 600
+    official_scorer_expected_version: m3rs-self-2026-08-05
+    official_scorer_expected_commit: m3rs-self-2026-08-05
+  mme_rs:
+    root: /home/user/heweiming/standard_test/prep_micro/mme_rs
+    asset_root: /home/user/heweiming/standard_test/prep_micro/mme_rs
+    profile: official

@@ -1,0 +1,11 @@
+{
+  "dataset": "legacy-parity",
+  "failed": 0,
+  "partial": 0,
+  "run_id": "native_counting",
+  "skipped": 0,
+  "split": "validation",
+  "succeeded": 1,
+  "task": "counting",
+  "total": 1
+}

@@ -1,0 +1,13 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "counting_agent",
+  "reason_codes": [
+    "task_counting",
+    "vrsbench_type_quantity",
+    "vrsbench_semantic_counting"
+  ],
+  "requires_tiling": true,
+  "router_source": "vrsbench_semantic_rule",
+  "task": "counting"
+}

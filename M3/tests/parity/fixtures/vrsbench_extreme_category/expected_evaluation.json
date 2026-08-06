@@ -1,0 +1,13 @@
+{
+  "candidate_answer": "small-vehicle",
+  "exact_match": false,
+  "judge_error": null,
+  "judge_parsed": null,
+  "judge_score": null,
+  "judge_status": "not_requested",
+  "question": "What object class is the top-most vehicle?",
+  "reference_answers": [
+    "yes"
+  ],
+  "sample_id": "vrsbench_extreme_category"
+}

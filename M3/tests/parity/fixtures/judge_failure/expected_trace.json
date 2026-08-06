@@ -1,0 +1,11 @@
+{
+  "entrypoint": "run",
+  "execution_task": "general_vqa",
+  "geometry": {},
+  "judge_status": "failed",
+  "official_question_type": null,
+  "prompt_version": "general-vqa-v2",
+  "route": "SingleSampleAdapter -> TaskRouter.route_known -> GeneralVQAExpert.run -> RecordingFakeQwen.complete_json -> DeepSeekJudgeClient.judge",
+  "router_used": true,
+  "task_type": "general_vqa"
+}

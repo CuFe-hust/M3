@@ -1,0 +1,81 @@
+{
+  "answer": "small-vehicle",
+  "boxes": [
+    [
+      100.0,
+      100.0,
+      220.0,
+      220.0
+    ],
+    [
+      500.0,
+      500.0,
+      650.0,
+      650.0
+    ]
+  ],
+  "evidence": [],
+  "evidence_items": [
+    {
+      "box": [
+        100,
+        100,
+        220,
+        220
+      ],
+      "confidence": 0.0,
+      "coordinate_frame": "normalized_0_999_top_left",
+      "image_id": null,
+      "label": "small-vehicle",
+      "point": null
+    },
+    {
+      "box": [
+        500,
+        500,
+        650,
+        650
+      ],
+      "confidence": 0.0,
+      "coordinate_frame": "normalized_0_999_top_left",
+      "image_id": null,
+      "label": "large-vehicle",
+      "point": null
+    }
+  ],
+  "agent_name": "spatial_agent",
+  "geometry": {
+    "answer_normalization_version": "vrsbench-answer-v2",
+    "answer_source": "deterministic_geometry",
+    "candidate_count": 2,
+    "candidate_review_added": 2,
+    "candidate_review_labeled_boxes": 0,
+    "candidate_review_replaced": 0,
+    "candidate_review_used": true,
+    "coordinate_frame": "normalized_0_999_top_left",
+    "evidence_complete": true,
+    "evidence_quality": [
+      "trusted_box",
+      "trusted_box"
+    ],
+    "evidence_valid": true,
+    "normalized_answer": "small-vehicle",
+    "question_type": "object",
+    "raw_answer": "partial",
+    "repair_severity": "none",
+    "rule": "top_most_box_center_y",
+    "selected_box": [
+      100,
+      100,
+      220,
+      220
+    ],
+    "selected_center_y": 160.0,
+    "selected_label": "small-vehicle",
+    "semantic_subtype": "extreme_category",
+    "status_answer_placeholder_removed": false,
+    "version": "vrsbench-evidence-geometry-v4",
+    "workflow_status": "completed"
+  },
+  "status": "completed"
+}

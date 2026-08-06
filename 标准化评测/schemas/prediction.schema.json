@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "M3-RS system prediction",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["sample_id", "status"],
+  "properties": {
+    "sample_id": {"type": "string", "minLength": 1},
+    "status": {"enum": ["ok", "error"]},
+    "prediction": {"type": ["string", "null"], "minLength": 1},
+    "boxes": {
+      "type": ["array", "null"],
+      "minItems": 1,
+      "items": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"type": "number"}}
+    },
+    "raw_output": {"type": ["string", "null"], "minLength": 1},
+    "latency_ms": {"type": ["number", "null"], "minimum": 0},
+    "error_code": {"enum": ["timeout", "inference_error", "parse_error", "cancelled", "unknown", null]},
+    "error": {"type": ["string", "null"], "minLength": 1},
+    "trace": {}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "ok"}}},
+      "then": {
+        "anyOf": [
+          {"required": ["prediction"], "properties": {"prediction": {"type": "string", "minLength": 1}}},
+          {"required": ["boxes"], "properties": {"boxes": {"type": "array", "minItems": 1}}}
+        ],
+        "properties": {"error_code": {"type": "null"}, "error": {"type": "null"}}
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "error"}}},
+      "then": {
+        "required": ["error_code", "error"],
+        "properties": {
+          "error_code": {"enum": ["timeout", "inference_error", "parse_error", "cancelled", "unknown"]},
+          "error": {"type": "string", "minLength": 1},
+          "prediction": {"type": "null"},
+          "boxes": {"type": "null"}
+        }
+      }
+    }
+  ]
+}

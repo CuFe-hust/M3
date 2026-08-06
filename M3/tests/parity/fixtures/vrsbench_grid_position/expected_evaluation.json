@@ -1,0 +1,13 @@
+{
+  "candidate_answer": "middle-middle",
+  "exact_match": false,
+  "judge_error": null,
+  "judge_parsed": null,
+  "judge_score": null,
+  "judge_status": "not_requested",
+  "question": "Where is the large vehicle located?",
+  "reference_answers": [
+    "yes"
+  ],
+  "sample_id": "vrsbench_grid_position"
+}

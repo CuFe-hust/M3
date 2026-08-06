@@ -1,0 +1,68 @@
+# Copy to server.local.yaml and replace every /srv/m3rs placeholder before use.
+project_root: /srv/m3rs/project
+protocol_path: /srv/m3rs/project/protocols/official_full_v1.yaml
+metric_registry_path: ../../指标字典/outputs/019fc7cf-aa6b-7143-b248-647f0db1037d/metrics.yaml
+output_root: /srv/m3rs/project/runs
+system_version: replace-with-system-version
+model_name: replace-with-model-name
+model_weights: /srv/m3rs/models/weights
+training_data_version: replace-with-training-data-version
+operator: replace-with-operator
+system:
+  command:
+    - python
+    - -m
+    - system_adapter
+  working_directory: /srv/m3rs/project
+  timeout_seconds: 3600
+  environment:
+    API_TOKEN: REPLACE_ME
+datasets:
+  levir_cc:
+    root: /srv/m3rs/datasets/LEVIR-CC
+    asset_root: /srv/m3rs/datasets
+    profile: official
+    official_scorer_command:
+      - python
+      - /srv/m3rs/scorers/levir/score.py
+      - "{references_jsonl}"
+      - "{predictions_jsonl}"
+      - "{output_json}"
+    official_scorer_working_directory: /srv/m3rs/scorers/levir
+    official_scorer_timeout_seconds: 600
+    official_scorer_expected_version: replace-with-levir-scorer-version
+    official_scorer_expected_commit: replace-with-levir-scorer-commit
+  vrsbench:
+    root: /srv/m3rs/datasets/VRSBench
+    asset_root: /srv/m3rs/datasets
+    profile: official
+    official_scorer_command:
+      - python
+      - /srv/m3rs/scorers/vrs/score.py
+      - "{requests_jsonl}"
+      - "{references_jsonl}"
+      - "{predictions_jsonl}"
+      - "{output_json}"
+    official_scorer_working_directory: /srv/m3rs/scorers/vrs
+    official_scorer_timeout_seconds: 600
+    official_scorer_expected_version: replace-with-vrs-scorer-version
+    official_scorer_expected_commit: replace-with-vrs-scorer-commit
+  xlrs_bench:
+    root: /srv/m3rs/datasets/XLRS-Bench
+    asset_root: /srv/m3rs/datasets
+    profile: official
+    official_scorer_command:
+      - python
+      - /srv/m3rs/scorers/xlrs/score.py
+      - "{requests_jsonl}"
+      - "{references_jsonl}"
+      - "{predictions_jsonl}"
+      - "{output_json}"
+    official_scorer_working_directory: /srv/m3rs/scorers/xlrs
+    official_scorer_timeout_seconds: 600
+    official_scorer_expected_version: replace-with-xlrs-scorer-version
+    official_scorer_expected_commit: replace-with-xlrs-scorer-commit
+  mme_rs:
+    root: /srv/m3rs/datasets/MME-RealWorld-RS
+    asset_root: /srv/m3rs/datasets
+    profile: official

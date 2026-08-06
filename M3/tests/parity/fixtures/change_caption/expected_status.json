@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/change_caption/agent_result.json",
+  "sample_id": "change_caption",
+  "state": "succeeded",
+  "task": "change_caption"
+}

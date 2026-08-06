@@ -1,0 +1,9 @@
+{
+  "scorer_version": "xlrs-caption-grounding-fixture-output-v1",
+  "metrics": [
+    {"metric_id": "xlrs.caption.en.bleu_4", "value_canonical": 0.4, "n_samples": 1, "n_failures": 0},
+    {"metric_id": "xlrs.caption.zh.bleu_4", "value_canonical": 0.42, "n_samples": 1, "n_failures": 0},
+    {"metric_id": "xlrs.grounding.en.all.acc_0_5", "value_canonical": 0.75, "n_samples": 1, "n_failures": 0},
+    {"metric_id": "xlrs.grounding.zh.all.acc_0_5", "value_canonical": 0.8, "n_samples": 1, "n_failures": 0}
+  ]
+}

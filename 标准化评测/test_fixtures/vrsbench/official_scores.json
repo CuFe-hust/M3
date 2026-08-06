@@ -1,0 +1,9 @@
+{
+  "scorer_version": "vrs-caption-fixture-output-v1",
+  "metrics": [
+    {"metric_id": "vrs.caption.bleu_4", "value_canonical": 0.45, "n_samples": 2, "n_failures": 0},
+    {"metric_id": "vrs.caption.meteor", "value_canonical": 0.35, "n_samples": 2, "n_failures": 0},
+    {"metric_id": "vrs.caption.rouge_l", "value_canonical": 0.55, "n_samples": 2, "n_failures": 0},
+    {"metric_id": "vrs.caption.cider", "value_canonical": 1.0, "n_samples": 2, "n_failures": 0}
+  ]
+}

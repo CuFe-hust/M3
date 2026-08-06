@@ -1,0 +1,40 @@
+{
+  "qwen": [
+    {
+      "match_key": "vrsbench_extreme_category|AgentResult|vrsbench_extreme_category:spatial_agent",
+      "response_model": "AgentResult",
+      "request_id": "vrsbench_extreme_category:spatial_agent",
+      "request_hash": "2e7244796b1be2e5dafbe9a1857b7018057d55586b134ca8d9e5899c82f438b5",
+      "prompt_version": "spatial-v4",
+      "sample_id": "vrsbench_extreme_category",
+      "image_sha256": null,
+      "messages_sha256": "5369a40a15df238e104fe27c0c6182af86c15e1ecf2d0e2a9d6e8c7fef9f063e",
+      "image_inputs": [
+        {
+          "type": "image_url",
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "byte_length": 78
+        }
+      ],
+      "artifact_dir": "samples/vrsbench_extreme_category/spatial_agent"
+    },
+    {
+      "match_key": "vrsbench_extreme_category|SpatialCandidateReviewResult|vrsbench_extreme_category:spatial-candidate-review",
+      "response_model": "SpatialCandidateReviewResult",
+      "request_id": "vrsbench_extreme_category:spatial-candidate-review",
+      "request_hash": "8e017709766806fb23cd285358c9c356bd45d1aade46ef922640d93de4e9a955",
+      "prompt_version": "spatial-candidate-review-v4",
+      "sample_id": "vrsbench_extreme_category",
+      "image_sha256": null,
+      "messages_sha256": "b7803cbbe82b96567056565eb06bebefc5a489a9c97bb2de4d194e5655a1010b",
+      "image_inputs": [
+        {
+          "type": "image_url",
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "byte_length": 78
+        }
+      ],
+      "artifact_dir": "samples/vrsbench_extreme_category/spatial_agent_candidate_review"
+    }
+  ]
+}

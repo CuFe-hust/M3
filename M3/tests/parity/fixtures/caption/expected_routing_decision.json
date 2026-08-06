@@ -1,0 +1,11 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "caption_agent",
+  "reason_codes": [
+    "task_caption"
+  ],
+  "requires_tiling": false,
+  "router_source": "dataset_task",
+  "task": "caption"
+}

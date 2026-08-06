@@ -1,0 +1,13 @@
+{
+  "execution_mode": "fallback",
+  "fallback_agents": [
+    "general_vqa_agent"
+  ],
+  "primary_agent": "change_agent",
+  "reason_codes": [
+    "task_change_qa"
+  ],
+  "requires_tiling": true,
+  "router_source": "dataset_task",
+  "task": "change_qa"
+}

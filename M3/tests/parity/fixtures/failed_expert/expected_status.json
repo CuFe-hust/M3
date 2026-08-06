@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/failed_expert/agent_result.json",
+  "sample_id": "failed_expert",
+  "state": "failed",
+  "task": "general_vqa"
+}

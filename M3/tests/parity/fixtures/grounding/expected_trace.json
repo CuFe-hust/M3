@@ -1,0 +1,16 @@
+{
+  "entrypoint": "run",
+  "execution_task": "grounding",
+  "geometry": {
+    "evidence_quality": [
+      "trusted_box"
+    ],
+    "repair_severity": "none"
+  },
+  "judge_status": "not_requested",
+  "official_question_type": null,
+  "prompt_version": "general-vqa-v2",
+  "route": "SingleSampleAdapter -> TaskRouter.route_known -> GroundingExpert.run -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "task_type": "grounding"
+}

@@ -1,0 +1,14 @@
+{
+  "answer": "a building appeared",
+  "boxes": [],
+  "evidence": [],
+  "evidence_items": [],
+  "agent_name": "change_agent",
+  "geometry": {
+    "temporal_order": [
+      "t1",
+      "t2"
+    ]
+  },
+  "status": "completed"
+}

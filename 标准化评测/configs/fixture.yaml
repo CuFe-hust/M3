@@ -1,0 +1,43 @@
+project_root: ..
+protocol_path: ../protocols/fixture_protocol.yaml
+metric_registry_path: ../../指标字典/outputs/019fc7cf-aa6b-7143-b248-647f0db1037d/metrics.yaml
+output_root: ../runs
+system_version: fixture-v1
+model_name: deterministic-fixture
+model_weights: ../test_fixtures/model.bin
+training_data_version: fixture-2026-08-04
+operator: automated-test
+system:
+  command:
+    - python
+    - tools/fake_system.py
+    - --input
+    - "{input_jsonl}"
+    - --output
+    - "{output_jsonl}"
+  working_directory: ..
+  timeout_seconds: 30
+  environment: {}
+datasets:
+  levir_cc:
+    root: ../test_fixtures/levir_cc
+    asset_root: ../test_fixtures
+    profile: fixture
+    official_scorer_output: ../test_fixtures/levir_cc/official_scores.json
+    official_scorer_expected_version: levir-caption-fixture-output-v1
+  vrsbench:
+    root: ../test_fixtures/vrsbench
+    asset_root: ../test_fixtures
+    profile: fixture
+    official_scorer_output: ../test_fixtures/vrsbench/official_scores.json
+    official_scorer_expected_version: vrs-caption-fixture-output-v1
+  xlrs_bench:
+    root: ../test_fixtures/xlrs_bench
+    asset_root: ../test_fixtures
+    profile: fixture
+    official_scorer_output: ../test_fixtures/xlrs_bench/official_scores.json
+    official_scorer_expected_version: xlrs-caption-grounding-fixture-output-v1
+  mme_rs:
+    root: ../test_fixtures/mme_rs
+    asset_root: ../test_fixtures
+    profile: fixture

@@ -1,0 +1,22 @@
+{
+  "qwen": [
+    {
+      "match_key": "grounding|AgentResult|grounding:grounding_agent",
+      "response_model": "AgentResult",
+      "request_id": "grounding:grounding_agent",
+      "request_hash": "cf5e9d5ca882a95fc512d7d9fcfec6bc2a749510270bfc701ddece1e31be4b6e",
+      "prompt_version": "general-vqa-v2",
+      "sample_id": "grounding",
+      "image_sha256": null,
+      "messages_sha256": "f4c7b758dfdc323ac5b134777d7135800bd2f013dd6c9a7c5b9450501dea42b1",
+      "image_inputs": [
+        {
+          "type": "image_url",
+          "sha256": "f18b6e26b689df26eb5257af279b26cd5e906c32c369a1443d96c00e7e142188",
+          "byte_length": 78
+        }
+      ],
+      "artifact_dir": "samples/grounding/grounding_agent"
+    }
+  ]
+}

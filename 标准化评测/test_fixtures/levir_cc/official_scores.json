@@ -1,0 +1,9 @@
+{
+  "scorer_version": "levir-caption-fixture-output-v1",
+  "metrics": [
+    {"metric_id": "levir.caption.all.bleu_4", "value_canonical": 0.5, "n_samples": 2, "n_failures": 0},
+    {"metric_id": "levir.caption.all.meteor", "value_canonical": 0.4, "n_samples": 2, "n_failures": 0},
+    {"metric_id": "levir.caption.all.rouge_l", "value_canonical": 0.6, "n_samples": 2, "n_failures": 0},
+    {"metric_id": "levir.caption.all.cider_d", "value_canonical": 1.1, "n_samples": 2, "n_failures": 0}
+  ]
+}

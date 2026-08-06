@@ -1,0 +1,6 @@
+{"id":"color-000001","domain":"Remote_Sensing","task":"color","image":"../images/fixture.png","question":"What color is the runway?","choices":["A. gray","B. blue"],"answer":"A"}
+{"id":"color-000002","domain":"Remote_Sensing","task":"color","image":"../images/fixture.png","question":"What color is the river?","choices":["A. blue","B. gray"],"answer":"A"}
+{"id":"count-000001","domain":"Remote_Sensing","task":"count","image":"../images/fixture.png","question":"How many runways are visible?","choices":["A. one","B. two"],"answer":"A"}
+{"id":"count-000002","domain":"Remote_Sensing","task":"count","image":"../images/fixture.png","question":"How many rivers are visible?","choices":["A. one","B. two"],"answer":"A"}
+{"id":"position-000001","domain":"Remote_Sensing","task":"position","image":"../images/fixture.png","question":"Is the runway beside the river?","choices":["A. yes","B. no"],"answer":"A"}
+{"id":"position-000002","domain":"Remote_Sensing","task":"position","image":"../images/fixture.png","question":"Is the airport north of the river?","choices":["A. yes","B. no"],"answer":"A"}

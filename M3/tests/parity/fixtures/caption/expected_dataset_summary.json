@@ -1,0 +1,11 @@
+{
+  "dataset": "legacy-parity",
+  "failed": 1,
+  "partial": 0,
+  "run_id": "caption",
+  "skipped": 0,
+  "split": "validation",
+  "succeeded": 0,
+  "task": "caption",
+  "total": 1
+}
