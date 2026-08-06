@@ -86,20 +86,23 @@ def test_missing_image_file_is_reported(tmp_path: Path) -> None:
     assert "missing.png" in issues[0].message
 
 
-def test_path_escape_is_reported(tmp_path: Path) -> None:
-    outside = tmp_path.parent / "outside.png"
-    _make_image(outside)
-    issues = validate_image_facts([_ref("../outside.png")], tmp_path)
-    assert len(issues) == 1
-    assert issues[0].code == "PATH_ESCAPES_DATA_ROOT"
-    assert "outside.png" in issues[0].message
+def test_path_escape_is_rejected_by_schema(tmp_path: Path) -> None:
+    """Escape segments are rejected at the ImageRef schema layer, so
+    validate_image_facts never receives them.
+    逃逸路径段在 ImageRef schema 层被拒绝，validate_image_facts 不会收到。"""
+    from pydantic import ValidationError
+
+    for bad in ("../outside.png", "images/../../outside.png"):
+        with pytest.raises(ValidationError):
+            _ref(bad)
 
 
-def test_absolute_path_is_reported_as_escape(tmp_path: Path) -> None:
+def test_absolute_path_is_rejected_by_schema(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
     for bad in ("C:/data/img.png", r"C:\data\img.png", "/abs/img.png", r"\\server\share\img.png"):
-        issues = validate_image_facts([_ref(bad)], tmp_path)
-        assert len(issues) == 1, bad
-        assert issues[0].code == "PATH_ESCAPES_DATA_ROOT", bad
+        with pytest.raises(ValidationError):
+            _ref(bad)
 
 
 def test_nested_relative_path_within_root_is_accepted(tmp_path: Path) -> None:
@@ -201,7 +204,22 @@ def test_audit_discovers_fields_split_hints_and_duplicate_ids(tmp_path: Path) ->
     assert "question" in report.discovered_field_names
     assert "id" in report.discovered_field_names
     assert "test" in report.split_hints and "train" in report.split_hints
-    assert report.duplicate_ids == ["dup"]
+    assert report.duplicate_ids == ["id:dup"]
+
+
+def test_audit_duplicate_ids_group_by_field_semantics(tmp_path: Path) -> None:
+    """question_id duplicates only compare with question_id; image_id is not a
+    sample-unique id and must not be reported.
+    question_id 只与 question_id 比较；image_id 不是样本唯一 ID，不报告。"""
+    root = tmp_path / "audit_semantics"
+    _write_json(root / "ann.json", [
+        {"image_id": "img1.png", "question_id": "q1", "question": "A"},
+        {"image_id": "img1.png", "question_id": "q2", "question": "B"},
+        {"image_id": "img2.png", "question_id": "q1", "question": "C"},
+    ])
+    report = audit_dataset_root(root)
+    assert report.duplicate_ids == ["question_id:q1"]
+    assert "image_id" not in " ".join(report.duplicate_ids)
 
 
 def test_audit_reports_missing_referenced_images(tmp_path: Path) -> None:
@@ -261,3 +279,74 @@ def test_audit_report_is_json_serializable(tmp_path: Path) -> None:
 def test_audit_missing_root_raises(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         audit_dataset_root(tmp_path / "nope")
+
+
+# ── 审计加固 / audit hardening (E2-E4) ─────────────────────────────────────
+
+
+def test_audit_scan_counts_and_truncation(tmp_path: Path) -> None:
+    root = tmp_path / "audit_counts"
+    for i in range(5):
+        _make_image(root / "images" / f"img{i}.png", seed=i, size=4)
+    _write_json(root / "ann.json", [{"id": f"s{i}", "image": f"images/img{i}.png"} for i in range(5)])
+    quick = audit_dataset_root(root, image_sample_limit=2, json_record_limit=2)
+    assert quick.images_scanned == 2
+    assert quick.image_scan_truncated is True
+    assert quick.records_scanned == 2
+    assert quick.record_scan_truncated is True
+    assert quick.manifest_record_counts == {"ann.json": 5}
+    assert quick.scan_mode == "quick"
+    full = audit_dataset_root(root, scan_mode="full")
+    assert full.images_scanned == 5
+    assert full.image_scan_truncated is False
+    assert full.records_scanned == 5
+    assert full.record_scan_truncated is False
+    assert full.scan_mode == "full"
+
+
+def test_audit_damaged_image_outside_sample_is_not_missed_in_full_mode(tmp_path: Path) -> None:
+    root = tmp_path / "audit_damaged_late"
+    _make_image(root / "images" / "ok1.png", seed=1, size=4)
+    _make_image(root / "images" / "ok2.png", seed=2, size=4)
+    (root / "images" / "zz_bad.png").write_bytes(b"not a png")  # sorts last / 排序靠后
+    quick = audit_dataset_root(root, image_sample_limit=1)
+    assert "zz_bad.png" not in " ".join(quick.damaged_images)
+    full = audit_dataset_root(root, scan_mode="full")
+    assert any("zz_bad.png" in item for item in full.damaged_images)
+
+
+def test_audit_missing_unresolved_ambiguous_images(tmp_path: Path) -> None:
+    root = tmp_path / "audit_classify"
+    _make_image(root / "images" / "a.png", seed=1, size=4)
+    _write_json(root / "ann.json", [
+        {"id": "s1", "image": "images/missing.png"},          # explicit path, absent -> missing
+        {"id": "s2", "image": "img_unknown.png"},             # bare name, absent -> unresolved
+        {"id": "s3", "image": "a.png"},                       # bare name, found -> ok
+        {"id": "s4", "image_A": "images/a.png"},              # change-style key, found -> ok
+        {"id": "s5", "before": "images/missing.png"},         # change-style key, absent -> missing
+    ])
+    report = audit_dataset_root(root)
+    assert "images/missing.png" in report.missing_referenced_images
+    assert "img_unknown.png" in report.unresolved_referenced_images
+    assert "a.png" not in report.missing_referenced_images
+    assert "a.png" not in report.unresolved_referenced_images
+
+
+def test_audit_ambiguous_reference_reported(tmp_path: Path) -> None:
+    root = tmp_path / "audit_ambiguous"
+    _make_image(root / "a.png", seed=1, size=4)
+    _make_image(root / "images" / "a.png", seed=2, size=4)
+    _write_json(root / "ann.json", [{"id": "s1", "image": "a.png"}])
+    report = audit_dataset_root(root)
+    assert "a.png" in report.ambiguous_referenced_images
+
+
+def test_audit_reports_nested_image_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "audit_nested"
+    _make_image(root / "images" / "a.png", seed=1, size=4)
+    _write_json(root / "ann.json", [
+        {"id": "s1", "image": [{"path": "images/a.png"}, {"file_name": "images/missing.png"}]},
+    ])
+    report = audit_dataset_root(root)
+    assert "images/a.png" not in report.missing_referenced_images
+    assert "images/missing.png" in report.missing_referenced_images

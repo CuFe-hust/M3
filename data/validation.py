@@ -1,8 +1,10 @@
-"""Sample-level input-fact validation for the data layer.
+"""Sample-level input-fact validation and read-only dataset audit.
 
-数据层样本级输入事实校验：图片存在、路径不逃逸数据根、角色唯一、
-change pair 数量检查。所有验证函数只读，不自动修复源数据，
-不做任何隐式图片猜测或全数据根扫描。
+数据层样本级输入事实校验与只读数据根审计：图片存在、路径不逃逸数据根、
+角色唯一、change pair 数量检查；只读目录审计（扩展名、候选标注、图片
+尺寸/损坏、字段、split、按字段语义分组的重复 ID、缺失/未决/歧义引用
+图片、扫描计数与截断标记）。所有验证与审计函数只读，不自动修复源数据，
+不做隐式图片猜测或全数据根扫描（除显式审计命令）。
 """
 
 from __future__ import annotations
@@ -10,7 +12,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import Sequence
+from typing import Literal, Sequence
 
 from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field
@@ -72,7 +74,10 @@ def validate_roles(task: TaskName, roles: Sequence[str]) -> list[ValidationIssue
 
 def validate_image_facts(images: Sequence[ImageRef], data_root: Path) -> list[ValidationIssue]:
     """Image existence and data-root escape checks, read-only and explicit.
-    图片存在与数据根逃逸检查；只读、只校验显式路径，不做隐式猜测。"""
+    ImageRef paths are already schema-guaranteed to be relative and
+    non-escape; resolution still verifies they stay inside the resolved root.
+    图片存在与数据根逃逸检查；只读、只校验显式路径，不做隐式猜测。
+    ImageRef 路径已由 Schema 保证相对且无逃逸段；解析仍验证其位于解析根内。"""
     issues: list[ValidationIssue] = []
     root = data_root.resolve()
     for ref in images:
@@ -126,9 +131,17 @@ def validate_sample(sample: UnifiedSample, data_root: Path) -> ValidationReport:
 
 MANIFEST_SUFFIXES = (".json", ".jsonl")
 IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".webp", ".bmp")
-_IMAGE_REF_KEYS = ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename", "image_id")
+# Image-reference fields recognized by the generic audit. / 通用审计识别的图片引用字段。
+_IMAGE_REF_KEYS = (
+    "image", "Image", "image_path", "img_path", "img", "image_name",
+    "file_name", "filename", "image_id", "images", "image_A", "image_B",
+    "before", "after",
+)
 _SPLIT_KEYS = ("split", "Split", "subset", "partition")
-_ID_KEYS = ("id", "ID", "question_id", "Question_id", "image_id", "sample_id")
+# Duplicate-ID fields grouped by semantics: ids only compare within their own
+# semantic field. image_id is not a sample-unique id and is never reported.
+# 重复 ID 字段按语义分组比较；image_id 不是样本唯一 ID，不报告。
+_DUPLICATE_ID_FIELDS = ("id", "ID", "question_id", "Question_id", "sample_id")
 
 
 class DatasetAuditReport(BaseModel):
@@ -142,6 +155,8 @@ class DatasetAuditReport(BaseModel):
     extension_counts: dict[str, int]
     candidate_manifests: list[str]
     image_count: int
+    images_scanned: int
+    image_scan_truncated: bool
     image_samples: list[dict[str, object]]
     damaged_images: list[str]
     discovered_field_names: list[str]
@@ -149,6 +164,12 @@ class DatasetAuditReport(BaseModel):
     duplicate_ids: list[str]
     encoding_errors: list[str]
     missing_referenced_images: list[str]
+    unresolved_referenced_images: list[str]
+    ambiguous_referenced_images: list[str]
+    records_scanned: int
+    record_scan_truncated: bool
+    manifest_record_counts: dict[str, int]
+    scan_mode: Literal["quick", "full"]
     notes: list[str] = Field(default_factory=list)
 
 
@@ -157,9 +178,15 @@ def audit_dataset_root(
     *,
     image_sample_limit: int = 10,
     json_record_limit: int = 200,
+    scan_mode: Literal["quick", "full"] = "quick",
 ) -> DatasetAuditReport:
-    """Inspect a local dataset root without mutating contents or annotations.
-    检查本地数据根而不修改任何内容或标注；全部输出可 JSON 序列化。"""
+    """Inspect a local dataset root without mutating contents or annotations;
+    all outputs are JSON-serializable. quick mode samples; full mode checks
+    every image and record and reports exact counts.
+    检查本地数据根而不修改任何内容或标注；全部输出可 JSON 序列化。
+    quick 模式抽样；full 模式检查全部图片与记录并报告精确计数。"""
+    if scan_mode not in {"quick", "full"}:
+        raise ValueError(f"scan_mode must be 'quick' or 'full', got {scan_mode!r}")
     if not root.is_dir():
         raise FileNotFoundError(f"Dataset root does not exist: {root}")
     files = [path for path in root.rglob("*") if path.is_file()]
@@ -167,23 +194,37 @@ def audit_dataset_root(
     manifests = [path for path in files if path.suffix.lower() in MANIFEST_SUFFIXES]
     images = [path for path in files if path.suffix.lower() in IMAGE_SUFFIXES]
 
-    image_samples, damaged_images = _inspect_images(root, images, image_sample_limit)
-    fields, split_hints, duplicate_ids, encoding_errors, missing_images = _inspect_json_records(
-        root, manifests, json_record_limit
+    full = scan_mode == "full"
+    image_limit = None if full else image_sample_limit
+    record_limit = None if full else json_record_limit
+    image_samples, damaged_images, images_scanned = _inspect_images(
+        root, images, image_limit
     )
+    (
+        fields, split_hints, duplicate_ids, encoding_errors,
+        missing, unresolved, ambiguous, records_scanned, manifest_counts,
+    ) = _inspect_json_records(root, manifests, record_limit)
     return DatasetAuditReport(
         root=str(root),
         file_count=len(files),
         extension_counts=dict(sorted(extension_counts.items())),
         candidate_manifests=[path.relative_to(root).as_posix() for path in manifests],
         image_count=len(images),
+        images_scanned=images_scanned,
+        image_scan_truncated=full is False and images_scanned < len(images),
         image_samples=image_samples,
         damaged_images=sorted(damaged_images),
         discovered_field_names=sorted(fields),
         split_hints=sorted(split_hints),
         duplicate_ids=sorted(duplicate_ids),
         encoding_errors=encoding_errors,
-        missing_referenced_images=sorted(missing_images),
+        missing_referenced_images=sorted(missing),
+        unresolved_referenced_images=sorted(unresolved),
+        ambiguous_referenced_images=sorted(ambiguous),
+        records_scanned=records_scanned,
+        record_scan_truncated=full is False and records_scanned < sum(manifest_counts.values()),
+        manifest_record_counts=dict(sorted(manifest_counts.items())),
+        scan_mode=scan_mode,
         notes=["Read-only audit; source dataset files were not modified."],
     )
 
@@ -191,13 +232,17 @@ def audit_dataset_root(
 def _inspect_images(
     root: Path,
     images: list[Path],
-    limit: int,
-) -> tuple[list[dict[str, object]], list[str]]:
+    limit: int | None,
+) -> tuple[list[dict[str, object]], list[str], int]:
     """Sample image dimensions; verify decodability without full loads.
-    抽样图片尺寸；在不整图加载的前提下校验可解码性。"""
+    Returns (samples, damaged, scanned_count).
+    抽样图片尺寸；在不整图加载的前提下校验可解码性。返回（样本、损坏、扫描数）。"""
     samples: list[dict[str, object]] = []
     damaged: list[str] = []
-    for path in images[:limit]:
+    scanned = 0
+    inspected = images if limit is None else images[:limit]
+    for path in inspected:
+        scanned += 1
         relative = path.relative_to(root).as_posix()
         try:
             with Image.open(path) as image:
@@ -207,42 +252,54 @@ def _inspect_images(
             samples.append({"path": relative, "width": width, "height": height})
         except Exception as error:  # noqa: BLE001 - audit records any decode failure
             damaged.append(f"{relative}: {type(error).__name__}: {error}")
-    return samples, damaged
+    return samples, damaged, scanned
 
 
 def _inspect_json_records(
     root: Path,
     manifests: list[Path],
-    limit: int,
-) -> tuple[set[str], set[str], set[str], list[str], set[str]]:
-    """Collect field names, split hints, duplicate ids, encoding errors, and
-    missing referenced images from annotation manifests (read-only).
-    从标注清单收集字段名、split 提示、重复 id、编码错误与缺失引用图片。"""
+    limit: int | None,
+) -> tuple[
+    set[str], set[str], set[str], list[str], set[str], set[str], set[str], int, dict[str, int]
+]:
+    """Collect field names, split hints, duplicate ids (grouped by field
+    semantics), encoding errors, and missing/unresolved/ambiguous referenced
+    images. 收集字段名、split 提示、按字段语义分组的重复 id、编码错误，
+    以及缺失/未决/歧义的引用图片。"""
     fields: set[str] = set()
     split_hints: set[str] = set()
     duplicate_ids: set[str] = set()
     encoding_errors: list[str] = []
-    missing_images: set[str] = set()
-    seen_ids: dict[str, str] = {}
+    missing: set[str] = set()
+    unresolved: set[str] = set()
+    ambiguous: set[str] = set()
+    seen_ids: dict[str, dict[str, str]] = {}
+    manifest_counts: dict[str, int] = {}
+    records_scanned = 0
     for manifest in manifests:
         try:
             rows = read_json_rows(manifest)
         except (DatasetProbeError, json.JSONDecodeError, UnicodeDecodeError) as error:
             encoding_errors.append(f"{manifest.name}: {type(error).__name__}: {error}")
+            manifest_counts[manifest.name] = 0
             continue
-        for row in rows[:limit]:
+        manifest_counts[manifest.name] = len(rows)
+        inspected = rows if limit is None else rows[:limit]
+        records_scanned += len(inspected)
+        for row in inspected:
             if not isinstance(row, dict):
                 continue
             fields.update(str(key) for key in row)
             for key in _SPLIT_KEYS:
                 if row.get(key) is not None:
                     split_hints.add(str(row[key]))
-            for key in _ID_KEYS:
+            for key in _DUPLICATE_ID_FIELDS:
                 if row.get(key) is not None:
                     value = str(row[key])
-                    if value in seen_ids:
-                        duplicate_ids.add(value)
-                    seen_ids[value] = manifest.name
+                    bucket = seen_ids.setdefault(key, {})
+                    if value in bucket:
+                        duplicate_ids.add(f"{key}:{value}")
+                    bucket[value] = manifest.name
             for key in _IMAGE_REF_KEYS:
                 value = row.get(key)
                 if value is None:
@@ -250,9 +307,47 @@ def _inspect_json_records(
                 candidates = value if isinstance(value, list) else [value]
                 for candidate in candidates:
                     if isinstance(candidate, dict):
-                        candidate = candidate.get("path") or candidate.get("file_name")
+                        candidate = (
+                            candidate.get("path")
+                            or candidate.get("file_name")
+                            or candidate.get("filename")
+                        )
                     if not isinstance(candidate, str) or not candidate:
                         continue
-                    if not (root / candidate).is_file():
-                        missing_images.add(candidate)
-    return fields, split_hints, duplicate_ids, encoding_errors, missing_images
+                    _classify_image_reference(root, candidate, missing, unresolved, ambiguous)
+    return (
+        fields, split_hints, duplicate_ids, encoding_errors,
+        missing, unresolved, ambiguous, records_scanned, manifest_counts,
+    )
+
+
+def _classify_image_reference(
+    root: Path,
+    reference: str,
+    missing: set[str],
+    unresolved: set[str],
+    ambiguous: set[str],
+) -> None:
+    """Classify a referenced image: missing (explicit root-relative path with
+    no candidate), unresolved (bare name requiring adapter semantics), or
+    ambiguous (multiple distinct candidates exist).
+    将引用图片分类：missing（明确 root 相对路径且无候选）、unresolved（纯
+    basename，需 Adapter 语义）、ambiguous（多个不同候选存在）。"""
+    normalized = reference.replace("\\", "/")
+    candidates = {
+        (root / normalized).resolve(),
+    }
+    for base in ("images", "Images_val"):
+        candidate = (root / base / normalized).resolve()
+        if candidate.is_file():
+            candidates.add(candidate)
+    existing = {candidate for candidate in candidates if candidate.is_file()}
+    if len(existing) > 1:
+        ambiguous.add(reference)
+        return
+    if existing:
+        return
+    if "/" in normalized:
+        missing.add(reference)
+    else:
+        unresolved.add(reference)
