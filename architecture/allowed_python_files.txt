@@ -165,6 +165,10 @@ tests/conftest.py
 tests/agents/test_agent_registry.py
 tests/agents/test_visual_base.py
 tests/agents/general_vqa/test_agent.py
+tests/agents/caption/__init__.py
+tests/agents/caption/test_agent.py
+tests/agents/grounding/__init__.py
+tests/agents/grounding/test_agent.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
