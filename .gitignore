@@ -1,0 +1,37 @@
+.DS_Store
+
+# Downloaded datasets and Hugging Face artifacts
+/datasets/
+model_cache/
+hf_cache/
+.cache/
+
+# Local editor and scratch artifacts
+.vscode/
+tmp/
+
+# Runtime outputs and run artifacts (never commit)
+outputs/
+runs/
+
+# Local configs and env files
+.env
+.env.local
+
+# Model weights (local only, never commit)
+weights/
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+*.bin
+*.onnx
+*.om
+*.engine
+models/*/weights/
+models/*.tgz
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
