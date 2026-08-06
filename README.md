@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–15 完成）
+## 当前状态（Task 00–15 完成，15.5/15.6 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -14,13 +14,18 @@
 
 **尚未实现**：具体领域 Agents（counting/spatial/change/grounding/caption/general_vqa）、
 routing、workflows、evaluation、reporting、application 与 CLI（`main.py`）。
-请勿将其当作可用功能使用。
+请勿将其当作可用功能使用。Task 16 尚未开始。
 
 ## 安装与测试
 
 ```bash
 python -m pip install -e ".[dev,migration]"
-python -m compileall data tests scripts/generate_migration_fixtures.py
+python -m compileall \
+  data \
+  models \
+  agents \
+  tests \
+  scripts/generate_migration_fixtures.py
 python -m pytest -q tests/architecture
 python -m pytest -q tests/contracts/test_data_schema_contract.py
 python -m pytest -q tests/parity/test_baseline_golden_fixtures.py
@@ -36,7 +41,11 @@ GitHub Actions（`.github/workflows/offline-tests.yml`，Ubuntu/Python 3.11）
   不得修改）；白名单中尚未创建的文件是已批准的未来路径，不代表已经实现
 - `architecture/implementation_status.json`：当前实际实现状态（implemented/pending）
 - `architecture/ALLOWLIST_CHANGE_POLICY.md`：白名单变更政策
-- `data/`：统一样本契约（仅此一层已实现）
+- `data/`：统一样本契约、Adapter、校验/选择/审计
+- `models/`：模型协议与请求哈希、响应缓存、图像工具、纯声明配置、
+  统一模型入口、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装
+- `agents/`：AgentResult/AgentExecution 契约、安全校验、Registry、
+  错误类型、数据集无关 VisualAgentBase
 - `tests/`：架构守卫 / 契约 / Golden parity 测试
 - `docs/migration/`：迁移基线、Golden 说明
 - `scripts/`：Golden fixture 生成器（离线可复现）

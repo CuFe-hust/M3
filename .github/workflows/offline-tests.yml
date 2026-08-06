@@ -43,7 +43,24 @@ jobs:
           /tmp/m3-wheel-test/bin/python -m pip install --upgrade pip
           /tmp/m3-wheel-test/bin/python -m pip install dist/*.whl
           cd /tmp
-          /tmp/m3-wheel-test/bin/python -c "import data, models, agents"
+          /tmp/m3-wheel-test/bin/python - <<'PY'
+          import data
+          import models
+          import agents
+          import models.qwen3_vl
+          import models.qwen3_5
+
+          from models.entry import list_models
+          from agents.registry import AgentRegistry
+
+          names = list_models()
+          assert "qwen_transformers" in names
+          assert "qwen3_vl_baseline" in names
+          assert "qwen3_5_transformers" in names
+          assert AgentRegistry is not None
+
+          print("wheel-import-contract: PASS")
+          PY
 
       - name: Golden fixtures
         run: python -m pytest -q tests/parity/test_baseline_golden_fixtures.py
