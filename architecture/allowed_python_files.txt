@@ -1,20 +1,164 @@
-# M3 migration file whitelist. 迁移期 Python 文件白名单。
-# Every .py inside the repository must match at least one line.
-# 仓库内每个 .py 必须匹配至少一行。
+# M3 final architecture Python file allowlist. 最终架构 Python 文件白名单。
 #
-# This branch is rebuilt from zero: the legacy packages spacers_agent/ and eval/
-# are permanently forbidden and never listed here.
-# 本分支从零重建：旧包 spacers_agent/ 与 eval/ 永久禁止，不列入本清单。
+# This file FREEZES the final approved Python paths of the whole new
+# architecture. It is NOT a list of currently existing files.
+# 本文件冻结整个新架构最终批准的 Python 路径，不是当前已存在文件清单。
 #
-# Files are added per task, together with their implementation. Empty shells are
-# not created in advance; implementation_status.json records what is implemented.
-# 文件随任务逐个加入并实现；不预先创建空壳；实施状态见 implementation_status.json。
+# - Files listed here but not yet created are APPROVED FUTURE PATHS.
+#   列出的但尚未创建的文件是“已批准的未来路径”。
+# - Current implementation state lives in architecture/implementation_status.json.
+#   当前实现状态以 architecture/implementation_status.json 为准。
+# - Ordinary implementation tasks MUST NOT modify this file.
+#   普通实施任务不得修改本文件（见 architecture/ALLOWLIST_CHANGE_POLICY.md）。
+# - The legacy packages spacers_agent/ and eval/ are permanently forbidden.
+#   旧包 spacers_agent/ 与 eval/ 永久禁止。
 
-# === Implemented top-level packages ===
+# === Public entry ===
+main.py
+
+# === data ===
 data/__init__.py
 data/schema.py
+data/registry.py
+data/selection.py
+data/validation.py
+data/adapters/__init__.py
+data/adapters/base.py
+data/adapters/levir_cc.py
+data/adapters/mme_realworld.py
+data/adapters/xlrs.py
+data/adapters/vrsbench/__init__.py
+data/adapters/vrsbench/adapter.py
+data/adapters/vrsbench/task_normalizer.py
+data/adapters/vrsbench/ontology.py
 
-# === Tests (explicit test files; extend in each task) ===
+# === models ===
+models/__init__.py
+models/base.py
+models/cache.py
+models/images.py
+models/settings.py
+models/entry.py
+models/qwen_transformers.py
+models/qwen3_5/__init__.py
+models/qwen3_5/model.py
+models/qwen3_vl/__init__.py
+models/qwen3_vl/baseline.py
+
+# === agents ===
+agents/__init__.py
+agents/schema.py
+agents/base.py
+agents/registry.py
+agents/errors.py
+agents/visual_base.py
+agents/counting/__init__.py
+agents/counting/schema.py
+agents/counting/settings.py
+agents/counting/agent.py
+agents/counting/target_parser.py
+agents/counting/geometry.py
+agents/counting/point_pipeline.py
+agents/counting/evidence.py
+agents/counting/backends/__init__.py
+agents/counting/backends/base.py
+agents/counting/backends/registry.py
+agents/counting/backends/selector.py
+agents/counting/backends/qwen_point.py
+agents/counting/backends/quantity_proposal.py
+agents/counting/backends/yolo_adapter.py
+agents/counting/backends/yolo_model_store.py
+agents/counting/backends/yolo_obb.py
+agents/counting/backends/yolov5_obb_onnx.py
+agents/spatial/__init__.py
+agents/spatial/schema.py
+agents/spatial/agent.py
+agents/spatial/geometry.py
+agents/spatial/candidate_review.py
+agents/spatial/evidence_merge.py
+agents/change/__init__.py
+agents/change/schema.py
+agents/change/settings.py
+agents/change/agent.py
+agents/change/pair_validator.py
+agents/change/harmonizer.py
+agents/change/difference_proposal.py
+agents/change/preprocess.py
+agents/change/reviewer.py
+agents/grounding/__init__.py
+agents/grounding/agent.py
+agents/caption/__init__.py
+agents/caption/agent.py
+agents/general_vqa/__init__.py
+agents/general_vqa/agent.py
+
+# === routing ===
+routing/__init__.py
+routing/schema.py
+routing/policies.py
+routing/router.py
+
+# === workflows ===
+workflows/__init__.py
+workflows/schema.py
+workflows/call_budget.py
+workflows/events.py
+workflows/run_store.py
+workflows/artifact_writer.py
+workflows/judge_service.py
+workflows/sample_runner.py
+workflows/dataset_runner.py
+
+# === evaluation ===
+evaluation/__init__.py
+evaluation/records.py
+evaluation/metrics/__init__.py
+evaluation/metrics/counting.py
+evaluation/metrics/vqa.py
+evaluation/metrics/grounding.py
+evaluation/metrics/caption.py
+evaluation/metrics/aggregate.py
+evaluation/judges/__init__.py
+evaluation/judges/base.py
+evaluation/judges/deepseek.py
+evaluation/standard/__init__.py
+evaluation/standard/adapter.py
+evaluation/datasets/__init__.py
+evaluation/datasets/vrsbench.py
+
+# === reporting ===
+reporting/__init__.py
+reporting/schema.py
+reporting/adapters.py
+reporting/builder.py
+reporting/html.py
+reporting/exporters.py
+reporting/visualization.py
+
+# === application ===
+application/__init__.py
+application/settings.py
+application/prompts.py
+application/runtime.py
+application/bootstrap.py
+application/commands/__init__.py
+application/commands/ask.py
+application/commands/serve.py
+application/commands/run_dataset.py
+application/commands/run_init.py
+application/commands/resume_run.py
+application/commands/evaluate_run.py
+application/commands/judge_vqa_run.py
+application/commands/standard_evaluate.py
+application/commands/inspect_data.py
+application/commands/render_count.py
+application/commands/health.py
+application/commands/list_datasets.py
+application/commands/smoke_qwen.py
+application/commands/summarize_evaluations.py
+application/commands/count_image.py
+
+# === Tests (explicit test files; future test paths require separate approval) ===
 tests/__init__.py
 tests/conftest.py
 tests/architecture/test_allowed_python_files.py

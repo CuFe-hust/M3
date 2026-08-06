@@ -139,6 +139,11 @@ def make_plain(path: Path, seed: int) -> None:
 
 
 def make_texture(path: Path, seed: int) -> None:
+    """Deterministic 32x32 texture. NumPy is a declared optional dependency
+    (migration extra) because the texture pixels feed the change-agent PIF/LAB
+    harmonizer; replacing the RNG would change frozen Golden bytes.
+    确定性的 32x32 纹理。NumPy 已声明为可选依赖（migration extra）——纹理像素
+    会输入 change-agent 的 PIF/LAB 一致化；更换 RNG 会改变已冻结的 Golden 字节。"""
     arr = np.random.default_rng(seed).integers(0, 256, size=(32, 32, 3), dtype=np.uint8)
     Image.fromarray(arr).save(path)
 
@@ -538,6 +543,17 @@ def _generate_normalization_golden(out_root: Path) -> None:
 # ── 主流程 ──────────────────────────────────────────────────────────────────
 
 
+def _verify_reference_clean(reference_root: Path) -> None:
+    """Refuse a reference checkout with uncommitted changes.
+    拒绝带未提交改动的参考 checkout。"""
+    status = subprocess.run(
+        ["git", "-C", str(reference_root), "status", "--porcelain"],
+        capture_output=True, text=True, check=False,
+    )
+    if status.returncode != 0 or status.stdout.strip():
+        raise SystemExit("reference checkout is dirty")
+
+
 def _verify_reference(reference_root: Path) -> None:
     if not (reference_root / ".git").exists():
         raise SystemExit(f"reference root has no .git: {reference_root}")
@@ -550,7 +566,8 @@ def _verify_reference(reference_root: Path) -> None:
         raise SystemExit(
             f"reference HEAD {head or '<unknown>'} != expected {EXPECTED_COMMIT}"
         )
-    print(f"[reference] verified HEAD {head}")
+    _verify_reference_clean(reference_root)
+    print(f"[reference] verified HEAD {head} and clean worktree")
 
 
 async def generate_once(reference_root: Path, ws_root: Path) -> Path:

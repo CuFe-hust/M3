@@ -4,6 +4,12 @@
 
 ## 当前模块所有权
 
+| 文件 | 职责 |
+|---|---|
+| `architecture/allowed_python_files.txt` | **最终架构批准路径**（冻结）：整个新架构最终允许出现的全部 Python 路径；未创建的未来路径不代表已实现 |
+| `architecture/implementation_status.json` | **当前实际实现状态**：implemented_files（存在且非空）与 pending_files；实际生产 .py 必须被精确声明 |
+| `architecture/ALLOWLIST_CHANGE_POLICY.md` | 白名单变更政策（普通任务禁止修改白名单） |
+
 | 模块 | 拥有类型/函数 | 说明 |
 |---|---|---|
 | `data/schema.py` | `TaskName` | 10 个公开任务名（Literal） |

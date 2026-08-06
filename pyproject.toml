@@ -18,6 +18,9 @@ dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
 ]
+migration = [
+  "numpy>=1.26",
+]
 
 [tool.setuptools.packages.find]
 include = ["data*"]
