@@ -75,6 +75,54 @@ def test_request_hash_never_contains_raw_base64() -> None:
     assert "base64" not in digest
 
 
+def _hash_kwargs() -> dict:
+    return dict(
+        model="qwen",
+        generation={"temperature": 0.0, "do_sample": False, "max_tokens": 128},
+        prompt_version="v1",
+        messages=[{"role": "user", "content": "Q"}],
+        image_sha256=None,
+    )
+
+
+def test_request_hash_changes_with_each_semantic_field() -> None:
+    """Every inference-semantic field must change the hash: generation,
+    response schema, client version, model revision, and model name.
+    每个推理语义字段都必须改变哈希：生成参数、响应 Schema、客户端版本、
+    模型 revision 与模型名。"""
+    base = _hash_kwargs()
+    digest = build_request_hash(**base)
+
+    assert digest != build_request_hash(**{**base, "generation": {
+        "temperature": 0.0, "do_sample": False, "max_tokens": 256}})
+    assert digest != build_request_hash(**{**base, "generation": {
+        "temperature": 0.7, "do_sample": True, "max_tokens": 128}})
+    assert digest != build_request_hash(**{**base, "response_schema": {
+        "type": "object", "properties": {"answer": {"type": "string"}}}})
+    assert digest != build_request_hash(**{**base, "client_version": "2"})
+    assert digest != build_request_hash(**{**base, "model_revision": "abc123"})
+    assert digest != build_request_hash(**{**base, "model": "qwen-other"})
+    assert digest != build_request_hash(**{**base, "prompt_version": "v2"})
+
+
+def test_request_hash_changes_with_image_digest_and_order() -> None:
+    """Different image bytes and different image order must change the hash.
+    图片内容不同与图片顺序不同都必须改变哈希。"""
+    import hashlib
+
+    img_a = hashlib.sha256(b"AAAA").hexdigest()
+    img_b = hashlib.sha256(b"BBBB").hexdigest()
+    base = _hash_kwargs()
+
+    h_a = build_request_hash(**{**base, "image_sha256": img_a})
+    h_b = build_request_hash(**{**base, "image_sha256": img_b})
+    assert h_a != h_b
+
+    h_ab = build_request_hash(**{**base, "image_sha256": "|".join([img_a, img_b])})
+    h_ba = build_request_hash(**{**base, "image_sha256": "|".join([img_b, img_a])})
+    assert h_ab != h_ba
+
+
 def test_request_meta_rejects_credentials() -> None:
     from pydantic import ValidationError
 

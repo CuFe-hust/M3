@@ -13,17 +13,24 @@ models lazily so ``import models.entry`` never loads transformers or torch.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
+
+ModelName = Literal[
+    "qwen_transformers",
+    "qwen3_vl_baseline",
+    "qwen3_5_transformers",
+]
+
+ModelBuilder = Callable[..., object]
+
+_REGISTRY: dict[str, ModelBuilder] = {}
 
 
-_REGISTRY: dict[str, Callable[..., Any]] = {}
-
-
-def register(name: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+def register(name: str) -> Callable[[ModelBuilder], ModelBuilder]:
     """Register one model builder under a stable name.
     以稳定名称注册一个模型构建函数。"""
 
-    def decorator(builder: Callable[..., Any]) -> Callable[..., Any]:
+    def decorator(builder: ModelBuilder) -> ModelBuilder:
         if name in _REGISTRY:
             raise ValueError(f"Model entry already registered: {name}")
         _REGISTRY[name] = builder
@@ -90,7 +97,7 @@ def create_model(name: str, **kwargs: Any) -> Any:
     return builder(**kwargs)
 
 
-def list_models() -> list[str]:
-    """Return registered model names in registration order.
-    按注册顺序返回已注册的模型名称。"""
-    return list(_REGISTRY)
+def list_models() -> tuple[str, ...]:
+    """Return registered model names in registration order as an immutable
+    tuple. 按注册顺序返回不可变的已注册模型名元组。"""
+    return tuple(_REGISTRY)

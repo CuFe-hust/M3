@@ -125,3 +125,123 @@ def test_baseline_and_client_contain_no_agent_logic(tmp_path: Path) -> None:
         source = (Path(__file__).resolve().parents[2] / relative).read_text(encoding="utf-8")
         assert "spacers_agent" not in source, relative
         assert "Agent" not in source or "Agent" in source and "AgentName" not in source, relative
+
+
+# ── 多模态模板 / multimodal template (E) ───────────────────────────────────
+
+
+class _RecordingProcessor:
+    """Fake processor that records the chat messages it was given.
+    记录收到的聊天消息的假 processor。"""
+
+    def __init__(self) -> None:
+        self.messages: list[dict] = []
+
+    def apply_chat_template(self, messages, **kwargs):
+        self.messages = messages
+        return "prompt"
+
+    def __call__(self, text=None, images=None, **kwargs):
+        class _Inputs:
+            shape = (1, 1)
+
+            def to(self, device):
+                return self
+
+        return {"input_ids": _Inputs()}
+
+    def batch_decode(self, *args, **kwargs):
+        return ["ok"]
+
+
+class _GeneratingModel:
+    device = "cpu"
+
+    def generate(self, **kwargs):
+        # Two tokens so trimming output[input_tokens:] keeps one token.
+        # 两个 token，使 output[input_tokens:] 保留一个 token。
+        return [[0, 0]]
+
+
+def _make_baseline(processor: _RecordingProcessor):
+    from models.qwen3_vl.baseline import Qwen3VLBaseline, Qwen3VLSettings
+
+    return Qwen3VLBaseline(
+        Qwen3VLSettings(model="fake"),
+        model=_GeneratingModel(),
+        processor=processor,
+    )
+
+
+@pytest.mark.parametrize("count", [0, 1, 2])
+def test_baseline_multimodal_content_shape(count: int) -> None:
+    """0/1/2 images must produce exactly that many image items followed by
+    one trailing text item. 0/1/2 张图必须产生对应数量的 image item，
+    且末尾固定一个 text item。"""
+    processor = _RecordingProcessor()
+    baseline = _make_baseline(processor)
+    images = [f"img-{i}" for i in range(count)] or None
+    baseline.generate_text(text="Q", images=images)
+
+    assert len(processor.messages) == 1
+    assert processor.messages[0]["role"] == "user"
+    content = processor.messages[0]["content"]
+    image_items = [item for item in content if item.get("type") == "image"]
+    assert len(image_items) == count
+    assert content[-1] == {"type": "text", "text": "Q"}
+
+
+def test_baseline_multimodal_preserves_image_order() -> None:
+    """Image items must keep the caller-provided order.
+    image item 必须保持调用方提供的顺序。"""
+    processor = _RecordingProcessor()
+    baseline = _make_baseline(processor)
+    baseline.generate_text(text="Q", images=["first", "second"])
+
+    content = processor.messages[0]["content"]
+    assert content[0] == {"type": "image", "image": "first"}
+    assert content[1] == {"type": "image", "image": "second"}
+    assert content[2] == {"type": "text", "text": "Q"}
+
+
+def test_baseline_offline_default() -> None:
+    """Baseline must default to local files only.
+    基线默认只使用本地文件。"""
+    from models.qwen3_vl.baseline import Qwen3VLSettings
+
+    settings = Qwen3VLSettings()
+    assert settings.allow_download is False
+    assert settings.effective_local_files_only() is True
+
+
+# ── 打包 / packaging (A) ───────────────────────────────────────────────────
+
+
+def test_pyproject_packages_include_data_models_agents() -> None:
+    """The wheel must ship data, models and agents and nothing else.
+    wheel 必须包含 data、models、agents，且不含其他包。"""
+    import tomllib
+
+    root = Path(__file__).resolve().parents[2]
+    with open(root / "pyproject.toml", "rb") as handle:
+        config = tomllib.load(handle)
+    include = config["tool"]["setuptools"]["packages"]["find"]["include"]
+    assert include == ["data*", "models*", "agents*"]
+
+
+# ── 注册表污染 / registry pollution (J) ────────────────────────────────────
+
+
+def test_failed_register_does_not_pollute_registry() -> None:
+    """A failed registration must not modify the registry.
+    失败的注册不得修改注册表。"""
+    import models.entry as entry
+
+    before = dict(entry._REGISTRY)
+    with pytest.raises(ValueError, match="already registered"):
+
+        @register("qwen_transformers")
+        def _duplicate_b(**kwargs):  # pragma: no cover
+            return None
+
+    assert entry._REGISTRY == before

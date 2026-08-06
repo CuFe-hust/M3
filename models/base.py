@@ -61,11 +61,17 @@ def build_request_hash(
     image_sha256: str | None,
     tile_geometry: Mapping[str, Any] | None = None,
     target_spec: Mapping[str, Any] | None = None,
+    response_schema: Mapping[str, Any] | None = None,
+    client_version: str | None = None,
+    model_revision: str | None = None,
 ) -> str:
     """Hash cache inputs while replacing data URLs with their digest and size.
     The sanitized payload makes the hash stable across machines and runs.
+    response_schema / client_version / model_revision are included so cache
+    keys cover the full inference semantics.
     对缓存输入计算哈希，同时以摘要和大小替换数据 URL；脱敏载荷使哈希
-    跨机器、跨运行稳定。"""
+    跨机器、跨运行稳定。response_schema / client_version / model_revision
+    参与哈希，使缓存键覆盖完整推理语义。"""
 
     payload = {
         "model": model,
@@ -75,6 +81,9 @@ def build_request_hash(
         "image_sha256": image_sha256,
         "tile_geometry": tile_geometry,
         "target_spec": target_spec,
+        "response_schema": response_schema,
+        "client_version": client_version,
+        "model_revision": model_revision,
     }
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
