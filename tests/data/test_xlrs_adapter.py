@@ -102,9 +102,9 @@ def test_vqa_lite_task_outputs_choices_and_multi_answer_hint(tmp_path: Path) -> 
     assert len(samples) == 2
     assert all(sample.task == "multiple_choice_vqa" for sample in samples)
     assert samples[0].metadata["choices"] == ["A", "B", "C", "D"]
-    assert samples[0].metadata["multi_answer"] is True
+    assert samples[0].metadata["allow_multiple"] is True
     assert samples[1].metadata["choices"] == ["x", "y", "z", "w"]  # A–E key fallback
-    assert samples[1].metadata["multi_answer"] is False
+    assert samples[1].metadata["allow_multiple"] is False
 
 
 def test_three_tasks_all_produce_unified_samples(tmp_path: Path) -> None:
@@ -120,8 +120,8 @@ def test_three_tasks_all_produce_unified_samples(tmp_path: Path) -> None:
 
     adapter = XLRSAdapter(dataset_loader=loader)
     total = 0
-    for task in ("caption", "grounding", "multiple_choice_vqa"):
-        samples = list(adapter.iter_samples(root, "train", task))
+    for task, split in (("caption", "train"), ("grounding", "test"), ("multiple_choice_vqa", "train")):
+        samples = list(adapter.iter_samples(root, split, task))
         assert samples, task
         total += len(samples)
     assert total == 4
