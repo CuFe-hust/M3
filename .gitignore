@@ -10,6 +10,10 @@ hf_cache/
 .vscode/
 tmp/
 
+# Python build artifacts (wheel verification)
+build/
+dist/
+
 # Runtime outputs and run artifacts (never commit)
 outputs/
 runs/

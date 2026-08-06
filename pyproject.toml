@@ -17,13 +17,18 @@ dependencies = [
 dev = [
   "pytest>=8.0",
   "pytest-asyncio>=0.23",
+  "build>=1.2",
 ]
 migration = [
   "numpy>=1.26",
 ]
 
 [tool.setuptools.packages.find]
-include = ["data*"]
+include = [
+  "data*",
+  "models*",
+  "agents*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
