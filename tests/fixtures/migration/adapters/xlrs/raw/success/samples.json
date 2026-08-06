@@ -1,0 +1,17 @@
+[
+  {
+    "id": "xlrs_1",
+    "split": "test",
+    "task": "general_vqa",
+    "question": "Is the statement correct?",
+    "images": [
+      "img_1.png"
+    ],
+    "image_roles": [
+      "image"
+    ],
+    "answers": [
+      "yes"
+    ]
+  }
+]

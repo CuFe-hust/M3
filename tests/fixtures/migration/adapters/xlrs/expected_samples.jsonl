@@ -1,0 +1,4 @@
+{"case": "success", "failure": null, "expected": {"dataset": "XLRS-Bench-lite", "task": "general_vqa", "split": "test", "question": "Is the statement correct?", "sample_id": "xlrs_1", "image_roles": ["image"], "image_paths": ["img_1.png"], "ground_truth": {"answers": ["yes"], "count": null, "boxes": [], "points": [], "labels": [], "raw": {"adapter_version": "1"}}, "metadata": {}}}
+{"case": "missing_image", "failure": "DatasetProbeError", "behavior": null, "expected": null}
+{"case": "missing_field", "failure": "DatasetProbeError", "behavior": null, "expected": null}
+{"case": "duplicate_candidates", "failure": null, "behavior": "decoy samples file is ignored by the reference manifest adapter", "expected": null}

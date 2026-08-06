@@ -1,0 +1,16 @@
+[
+  {
+    "id": "mme_1",
+    "split": "test",
+    "task": "general_vqa",
+    "images": [
+      "img_1.png"
+    ],
+    "image_roles": [
+      "image"
+    ],
+    "answers": [
+      "yes"
+    ]
+  }
+]

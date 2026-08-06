@@ -1,0 +1,98 @@
+[
+  {
+    "question": "How many small vehicles are in the image?",
+    "source_task": "vrsbench_vqa",
+    "normalized_task": "counting",
+    "semantic_subtype": "counting",
+    "confidence": 1.0,
+    "normalizer": "vrsbench_task_normalizer",
+    "version": "1",
+    "reason_codes": [
+      "quantity_question"
+    ],
+    "spatial_query": null,
+    "answer_constraints": {},
+    "count_target_hint": {
+      "canonical_label": "small_vehicle"
+    }
+  },
+  {
+    "question": "What category is the topmost vehicle?",
+    "source_task": "vrsbench_vqa",
+    "normalized_task": "spatial_relation",
+    "semantic_subtype": "extreme_category",
+    "confidence": 1.0,
+    "normalizer": "vrsbench_task_normalizer",
+    "version": "1",
+    "reason_codes": [
+      "extreme_category_question"
+    ],
+    "spatial_query": {
+      "operation": "extreme_category"
+    },
+    "answer_constraints": {},
+    "count_target_hint": null
+  },
+  {
+    "question": "Where is the large vehicle located in the image?",
+    "source_task": "vrsbench_vqa",
+    "normalized_task": "spatial_relation",
+    "semantic_subtype": "grid_position",
+    "confidence": 1.0,
+    "normalizer": "vrsbench_task_normalizer",
+    "version": "1",
+    "reason_codes": [
+      "grid_position_question"
+    ],
+    "spatial_query": {
+      "operation": "grid_position"
+    },
+    "answer_constraints": {},
+    "count_target_hint": null
+  },
+  {
+    "question": "Are there any small vehicles?",
+    "source_task": "vrsbench_vqa",
+    "normalized_task": "general_vqa",
+    "semantic_subtype": "existence",
+    "confidence": 1.0,
+    "normalizer": "vrsbench_task_normalizer",
+    "version": "1",
+    "reason_codes": [
+      "existence_question"
+    ],
+    "spatial_query": null,
+    "answer_constraints": {},
+    "count_target_hint": null
+  },
+  {
+    "question": "What color is the building?",
+    "source_task": "vrsbench_vqa",
+    "normalized_task": "general_vqa",
+    "semantic_subtype": "color",
+    "confidence": 1.0,
+    "normalizer": "vrsbench_task_normalizer",
+    "version": "1",
+    "reason_codes": [
+      "color_question"
+    ],
+    "spatial_query": null,
+    "answer_constraints": {},
+    "count_target_hint": null
+  },
+  {
+    "question": "Describe the scene.",
+    "source_task": "vrsbench_vqa",
+    "normalized_task": "general_vqa",
+    "semantic_subtype": "general",
+    "confidence": 1.0,
+    "normalizer": "vrsbench_task_normalizer",
+    "version": "1",
+    "reason_codes": [
+      "general_question"
+    ],
+    "spatial_query": null,
+    "answer_constraints": {},
+    "count_target_hint": null
+  }
+]

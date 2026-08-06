@@ -254,3 +254,32 @@ tests/workflows/test_sample_runner_fallback.py  tests/workflows/test_sample_runn
 - 迁移时目标结构（顶层 `data/models/agents/routing/workflows/evaluation/reporting/application`）
   必须保留上述产物文件名与公开导入契约；`spacers_agent/` 与旧 `eval/` 最终删除。
 - 477/478 的通过率以本机 Windows 环境为准；CI（ubuntu）预期 478/478（路径分隔符差异仅影响本机）。
+
+## 8. 分支关系与锁定参考（Task 03.5 补充）
+
+- `new_structure` 与 `try_yolo` **没有共同祖先**（本分支从空仓库重建），
+  功能是否遗漏必须依赖本清单、Golden fixtures 与行为测试判断，不能依赖 Git diff。
+- 参考提交：`ec962eb87c3ad0b8c1502efcbd08db0daec48868`
+  （`try_yolo` 分支后续可前进；如需锁定 checkout 可用
+  `git worktree add <tmp> ec962eb` 提供只读工作树）。
+- 本地绝对环境路径（如 `C:\Users\TZDEZACR\miniconda3\envs\m3`、`code/` 目录）
+  仅作为**非稳定生成环境备注**，不属于任何契约；可复现生成器见
+  `scripts/generate_migration_fixtures.py`。
+
+### 8.1 必须保持
+
+- 数据集原始字段转换后的关键事实（question、ground truth、图片顺序与角色）；
+- sample ID 稳定性；图片顺序；ground truth；
+- 最终任务专家选择（同一问题规范化到同一标准任务）；
+- 运行产物文件名与指标稳定字段（status/trace/evaluation/report record 形状）；
+- 三种样本状态（succeeded / partial / failed）的持久化语义。
+
+### 8.2 有意改变
+
+- VRSBench 语义任务判断从运行时 Router **前移到 Adapter**；
+  `router_source` 从 `vrsbench_semantic_rule` 改为 `normalized_task_policy`，
+  不再作为最终稳定契约锁定；
+- `CanonicalSample`/`CanonicalPrediction` 不再是内部主 Schema（仅外部兼容记录）；
+- 新代码不再保留 `spacers_agent` 兼容层（本分支从零重建，旧包目录永久禁止）；
+- `stable_sample_id` 升级为多图版（含 dataset/split/有序图片路径），
+  不安全源 ID 改由稳定摘要替代。

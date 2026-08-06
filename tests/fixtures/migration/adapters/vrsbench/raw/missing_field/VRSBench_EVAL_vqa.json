@@ -1,0 +1,8 @@
+[
+  {
+    "image_id": "img_1.png",
+    "question": "How many buildings are there?",
+    "question_id": "vq_1",
+    "type": "quantity"
+  }
+]

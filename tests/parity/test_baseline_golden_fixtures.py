@@ -136,6 +136,13 @@ def _read(case: str, filename: str) -> dict:
     return json.loads((FIXTURE_ROOT / case / filename).read_text(encoding="utf-8"))
 
 
+def _case_dirs() -> list[Path]:
+    return sorted(
+        p for p in FIXTURE_ROOT.iterdir()
+        if p.is_dir() and (p / "sample.json").is_file()
+    )
+
+
 def _walk_json():
     for case_dir in FIXTURE_ROOT.iterdir():
         if not case_dir.is_dir():
@@ -212,7 +219,11 @@ def test_routing_contract(case: str, fixture_root: Path) -> None:
     assert routing["task"] == expected["task"]
     assert routing["primary_agent"] == expected["route"]
     assert routing["execution_mode"] == "single"
-    assert routing["router_source"] in {"dataset_task", "vrsbench_semantic_rule"}
+    # The router_source value is intentionally NOT frozen as a stable contract:
+    # VRSBench semantic judgment moves from the runtime Router into the Adapter
+    # (see docs/migration/GOLDEN_FIXTURES.md, "Intentional changes").
+    # router_source 不锁定为最终契约：VRSBench 语义判断将从运行时 Router 前移到 Adapter。
+    assert isinstance(routing["router_source"], str) and routing["router_source"]
     assert isinstance(routing["reason_codes"], list) and routing["reason_codes"]
 
 
@@ -325,3 +336,110 @@ def test_states_cover_success_partial_failed(fixture_root: Path) -> None:
     fixture 集必须覆盖成功、部分、失败三种状态。"""
     states = {_read(case, "status.json")["state"] for case in CASES}
     assert {"succeeded", "partial", "failed"} <= states
+
+
+# ── Adapter raw fixtures / 适配器原始场景 ───────────────────────────────────
+
+
+def test_adapter_fixture_directories_are_complete() -> None:
+    """Every dataset ships four raw scenarios and an expected line per scenario.
+    每个数据集包含四个 raw 场景与每场景一条 expected 记录。"""
+    for dataset in ("vrsbench", "levir_cc", "mme_realworld", "xlrs"):
+        adapter_dir = FIXTURE_ROOT / "adapters" / dataset
+        assert (adapter_dir / "expected_samples.jsonl").is_file(), dataset
+        for scenario in ("success", "missing_image", "missing_field", "duplicate_candidates"):
+            assert (adapter_dir / "raw" / scenario).is_dir(), f"{dataset}/{scenario}"
+        lines = [
+            json.loads(line)
+            for line in (adapter_dir / "expected_samples.jsonl").read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [line["case"] for line in lines] == [
+            "success", "missing_image", "missing_field", "duplicate_candidates",
+        ], dataset
+
+
+def test_adapter_success_expected_fields_are_stable() -> None:
+    """The reference adapter outputs are locked through stable fields.
+    参考适配器输出通过稳定字段锁定。"""
+    expected_by_dataset = {
+        "vrsbench": ("VRSBench", "general_vqa", "validation"),
+        "levir_cc": ("LEVIR-CC", "change_caption", "test"),
+        "mme_realworld": ("MME-RealWorld", "general_vqa", "test"),
+        "xlrs": ("XLRS-Bench-lite", "general_vqa", "test"),
+    }
+    for dataset, (name, task, split) in expected_by_dataset.items():
+        lines = [
+            json.loads(line)
+            for line in (FIXTURE_ROOT / "adapters" / dataset / "expected_samples.jsonl")
+            .read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        success = next(line for line in lines if line["case"] == "success")
+        expected = success["expected"]
+        assert expected["dataset"] == name, dataset
+        assert expected["task"] == task, dataset
+        assert expected["split"] == split, dataset
+        assert expected["image_roles"], dataset
+        assert expected["ground_truth"]["answers"], dataset
+
+
+def test_adapter_failure_scenarios_record_failure_codes() -> None:
+    """Missing images and missing fields must be recorded as failures.
+    缺图与缺字段场景必须记录失败代码。"""
+    for dataset in ("vrsbench", "levir_cc", "mme_realworld", "xlrs"):
+        lines = [
+            json.loads(line)
+            for line in (FIXTURE_ROOT / "adapters" / dataset / "expected_samples.jsonl")
+            .read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        by_case = {line["case"]: line for line in lines}
+        assert by_case["missing_image"]["failure"] == "DatasetProbeError", dataset
+        assert by_case["missing_field"]["failure"] == "DatasetProbeError", dataset
+        if dataset == "vrsbench":
+            assert by_case["duplicate_candidates"]["failure"] == "DatasetProbeError"
+        else:
+            assert by_case["duplicate_candidates"]["failure"] is None
+            assert "decoy" in by_case["duplicate_candidates"]["behavior"], dataset
+
+
+def test_adapter_fixtures_contain_no_absolute_paths() -> None:
+    """Raw fixture JSONs must stay machine-independent. / raw 场景必须与机器无关。"""
+    for dataset in ("vrsbench", "levir_cc", "mme_realworld", "xlrs"):
+        for path in (FIXTURE_ROOT / "adapters" / dataset / "raw").rglob("*.json"):
+            text = path.read_text(encoding="utf-8")
+            assert "C:" not in text and "/Users" not in text, str(path)
+
+
+# ── VRSBench task normalization golden / 规范化 Golden ──────────────────────
+
+
+def test_vrsbench_normalization_golden_covers_all_three_tasks() -> None:
+    """The six questions lock counting, spatial_relation, and general_vqa.
+    六个问题锁定 counting / spatial_relation / general_vqa 三类任务。"""
+    records = json.loads((FIXTURE_ROOT / "vrsbench_normalization.json").read_text(encoding="utf-8"))
+    assert len(records) == 6
+    assert {record["normalized_task"] for record in records} == {
+        "counting", "spatial_relation", "general_vqa",
+    }
+    for record in records:
+        assert record["source_task"] == "vrsbench_vqa"
+        assert record["normalizer"] == "vrsbench_task_normalizer"
+        assert record["version"] == "1"
+        assert record["confidence"] == 1.0
+        assert isinstance(record["reason_codes"], list) and record["reason_codes"]
+        assert isinstance(record["answer_constraints"], dict)
+
+
+def test_vrsbench_normalization_question_to_task_mapping() -> None:
+    """The exact question-to-task mapping is part of the contract.
+    问题到任务的精确映射属于契约。"""
+    records = json.loads((FIXTURE_ROOT / "vrsbench_normalization.json").read_text(encoding="utf-8"))
+    mapping = {record["question"]: record["normalized_task"] for record in records}
+    assert mapping["How many small vehicles are in the image?"] == "counting"
+    assert mapping["What category is the topmost vehicle?"] == "spatial_relation"
+    assert mapping["Where is the large vehicle located in the image?"] == "spatial_relation"
+    assert mapping["Are there any small vehicles?"] == "general_vqa"
+    assert mapping["What color is the building?"] == "general_vqa"
+    assert mapping["Describe the scene."] == "general_vqa"

@@ -1,0 +1,9 @@
+[
+  {
+    "image_id": "img_1.png",
+    "question": "How many buildings are there?",
+    "ground_truth": "3",
+    "question_id": "vq_1",
+    "type": "quantity"
+  }
+]

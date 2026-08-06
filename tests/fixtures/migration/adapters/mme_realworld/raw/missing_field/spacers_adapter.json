@@ -1,0 +1,14 @@
+{
+  "dataset": "MME-RealWorld",
+  "version": "1",
+  "samples_file": "samples.json",
+  "fields": {
+    "id": "id",
+    "split": "split",
+    "task": "task",
+    "question": "question",
+    "images": "images",
+    "image_roles": "image_roles",
+    "answers": "answers"
+  }
+}
