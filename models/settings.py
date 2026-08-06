@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class QwenSettings(BaseModel):
@@ -23,29 +23,12 @@ class QwenSettings(BaseModel):
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     device_map: str = "auto"
     use_kernels: bool = False
+    # Single source of truth for online behaviour: offline by default.
+    # 联网行为的唯一来源：默认离线。
     allow_download: bool = False
-    local_files_only: bool | None = None
     min_pixels: int | None = Field(default=None, gt=0)
     max_pixels: int | None = Field(default=None, gt=0)
     revision: str | None = None
-
-    @model_validator(mode="after")
-    def validate_offline_flags(self) -> "QwenSettings":
-        """local_files_only and allow_download must not conflict. If
-        local_files_only is unset it follows allow_download.
-        local_files_only 与 allow_download 不得冲突；local_files_only 未设置
-        时跟随 allow_download。"""
-        if self.local_files_only is not None and self.allow_download and self.local_files_only:
-            raise ValueError(
-                "allow_download and local_files_only=True cannot both be set"
-            )
-        return self
-
-    def effective_local_files_only(self) -> bool:
-        """Resolved offline flag: local-first by default. / 解析后的离线开关。"""
-        if self.local_files_only is not None:
-            return self.local_files_only
-        return not self.allow_download
 
 
 class DeepSeekSettings(BaseModel):

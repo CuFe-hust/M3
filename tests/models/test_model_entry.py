@@ -211,7 +211,9 @@ def test_baseline_offline_default() -> None:
 
     settings = Qwen3VLSettings()
     assert settings.allow_download is False
-    assert settings.effective_local_files_only() is True
+    # Single-source offline config: no dual local_files_only field remains.
+    # 离线配置单源：不再保留 local_files_only 双字段。
+    assert not hasattr(settings, "local_files_only")
 
 
 # ── 打包 / packaging (A) ───────────────────────────────────────────────────

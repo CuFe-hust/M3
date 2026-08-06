@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 from models.qwen_transformers import QwenTransformersError
 
@@ -25,25 +25,10 @@ class Qwen3VLSettings(BaseModel):
     max_new_tokens: int = Field(default=128, gt=0)
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     device_map: str = "auto"
+    # Single source of truth for online behaviour: offline by default.
+    # 联网行为的唯一来源：默认离线。
     allow_download: bool = False
-    local_files_only: bool | None = None
     revision: str | None = None
-
-    @model_validator(mode="after")
-    def validate_offline_flags(self) -> "Qwen3VLSettings":
-        """local_files_only and allow_download must not conflict.
-        local_files_only 与 allow_download 不得冲突。"""
-        if self.local_files_only is not None and self.allow_download and self.local_files_only:
-            raise ValueError(
-                "allow_download and local_files_only=True cannot both be set"
-            )
-        return self
-
-    def effective_local_files_only(self) -> bool:
-        """Resolved offline flag: local-first by default. / 解析后的离线开关。"""
-        if self.local_files_only is not None:
-            return self.local_files_only
-        return not self.allow_download
 
 
 class Qwen3VLBaseline:
@@ -79,7 +64,7 @@ class Qwen3VLBaseline:
             raise QwenTransformersError(
                 "Install requirements.txt before loading local Qwen."
             ) from error
-        local_files_only = self.settings.effective_local_files_only()
+        local_files_only = not self.settings.allow_download
         revision = self.settings.revision
         dtype: Any = "auto"
         if self.settings.dtype != "auto":
