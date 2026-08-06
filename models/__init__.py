@@ -16,7 +16,8 @@ from models.base import (
 )
 from models.cache import CacheEntry, CacheWriteError, JsonResponseCache, ModelCacheError
 from models.images import (
-    guess_image_mime,
+    UnsupportedImageFormatError,
+    detect_image_mime,
     image_sha256,
     image_to_data_url,
     read_normalized_image,
@@ -35,9 +36,10 @@ __all__ = [
     "ModelT",
     "QwenSettings",
     "RequestMeta",
+    "UnsupportedImageFormatError",
     "VisionLanguageClient",
     "build_request_hash",
-    "guess_image_mime",
+    "detect_image_mime",
     "image_sha256",
     "image_to_data_url",
     "read_normalized_image",

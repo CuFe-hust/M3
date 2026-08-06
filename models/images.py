@@ -10,17 +10,20 @@ import base64
 import hashlib
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-_MIME_BY_SUFFIX = {
-    ".png": "image/png",
-    ".jpg": "image/jpeg",
-    ".jpeg": "image/jpeg",
-    ".webp": "image/webp",
-    ".bmp": "image/bmp",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
+_MIME_BY_FORMAT = {
+    "PNG": "image/png",
+    "JPEG": "image/jpeg",
+    "WEBP": "image/webp",
+    "TIFF": "image/tiff",
+    "BMP": "image/bmp",
 }
+
+
+class UnsupportedImageFormatError(ValueError):
+    """Raised when an image file cannot be identified as a supported format.
+    无法将图片文件识别为受支持格式时抛出。"""
 
 
 def read_normalized_image(path: Path) -> Image.Image:
@@ -30,10 +33,24 @@ def read_normalized_image(path: Path) -> Image.Image:
         return ImageOps.exif_transpose(source).convert("RGB")
 
 
-def guess_image_mime(path: Path) -> str:
-    """Guess the MIME type from the file suffix; defaults to image/jpeg.
-    根据文件后缀猜测 MIME 类型；未知时默认 image/jpeg。"""
-    return _MIME_BY_SUFFIX.get(path.suffix.lower(), "image/jpeg")
+def detect_image_mime(path: Path) -> str:
+    """Detect the MIME type from the real file content via Pillow; unknown or
+    corrupt files fail explicitly and are never masked as JPEG.
+    通过 Pillow 按真实文件内容检测 MIME 类型；未知或损坏文件显式失败，
+    绝不伪装成 JPEG。"""
+    try:
+        with Image.open(path) as image:
+            format_name = image.format
+    except (UnidentifiedImageError, OSError) as error:
+        raise UnsupportedImageFormatError(
+            f"cannot identify image format: {type(error).__name__}"
+        ) from error
+    mime = _MIME_BY_FORMAT.get(format_name)
+    if mime is None:
+        raise UnsupportedImageFormatError(
+            f"unsupported image format: {format_name or 'unknown'}"
+        )
+    return mime
 
 
 def image_to_data_url(image_bytes: bytes, mime: str = "image/jpeg") -> str:

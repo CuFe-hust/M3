@@ -19,7 +19,7 @@ from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentName, AgentResult
 from data.schema import UnifiedSample
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash
-from models.images import guess_image_mime, image_to_data_url
+from models.images import UnsupportedImageFormatError, detect_image_mime, image_to_data_url
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,14 @@ class VisualAgentBase:
             candidate_path, data = self._read_image(
                 image_ref.path, context, sample_id=sample.sample_id
             )
-            mime = guess_image_mime(candidate_path)
+            try:
+                mime = detect_image_mime(candidate_path)
+            except (UnsupportedImageFormatError, OSError) as error:
+                raise AgentExecutionError(
+                    self.name,
+                    sample.sample_id,
+                    cause=f"image_format_error:{type(error).__name__}",
+                ) from error
             content.append(
                 {"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}}
             )

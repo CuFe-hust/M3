@@ -8,6 +8,7 @@ truth、budget 消费、data_root 显式解析与逃逸防护、正确 MIME、Ag
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from typing import Any
 
@@ -431,3 +432,111 @@ def _real_tiff_bytes() -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (4, 4), (40, 50, 60)).save(buffer, format="TIFF")
     return buffer.getvalue()
+
+
+def _real_png_bytes() -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 4), (70, 80, 90)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+# ── MIME 内容检测 / content-based MIME (C) ─────────────────────────────────
+
+
+def test_image_mime_follows_real_content_not_suffix(tmp_path: Path) -> None:
+    """Suffix/content mismatch must resolve to the real content format.
+    后缀与内容不一致时必须使用真实内容格式。"""
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(root / "fake.jpg", format="PNG")
+    (root / "noext").write_bytes(_real_png_bytes())
+    client = _RecordingClient()
+    sample = _sample(
+        root,
+        images=[
+            ImageRef(image_id="a", path="fake.jpg", role="image"),
+            ImageRef(image_id="b", path="noext", role="context"),
+        ],
+    )
+    asyncio.run(_base(client).run(sample, _context(root)))
+    content = client.calls[0]["messages"][1]["content"]
+    assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
+    assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+def test_unknown_image_format_raises_agent_error(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "img.bin").write_bytes(b"not an image at all")
+    sample = _sample(
+        root,
+        images=[ImageRef(image_id="i1", path="img.bin", role="image")],
+    )
+    with __import__("pytest").raises(AgentExecutionError, match="image_format_error") as info:
+        asyncio.run(_base(_RecordingClient()).run(sample, _context(root)))
+    assert str(tmp_path) not in str(info.value)
+
+
+def test_corrupted_image_raises_agent_error(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "broken.jpg").write_bytes(b"\xff\xd8\xff\xe0" + b"\x00" * 8)
+    sample = _sample(
+        root,
+        images=[ImageRef(image_id="i1", path="broken.jpg", role="image")],
+    )
+    with __import__("pytest").raises(AgentExecutionError, match="image_format_error"):
+        asyncio.run(_base(_RecordingClient()).run(sample, _context(root)))
+
+
+# ── 模型逻辑身份 / logical model identity (E) ──────────────────────────────
+
+
+class _PathIdentityClient(_RecordingClient):
+    """Client whose identity model id differs from the physical path.
+    身份模型 ID 与物理路径不同的客户端。"""
+
+    def __init__(self, *, model: str, cache_model_id: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._model = model
+        self._cache_model_id = cache_model_id
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return ModelCacheIdentity(
+            model=self._cache_model_id,
+            generation={"temperature": 0.0, "do_sample": False, "max_tokens": self._max_tokens},
+            client_version="1",
+            revision=self._revision,
+        )
+
+
+def test_same_logical_id_different_paths_same_hash(tmp_path: Path) -> None:
+    """Different checkpoint paths with the same logical id must hash equally
+    and traces must never contain the machine path.
+    不同 checkpoint 路径 + 相同逻辑 ID 必须产生相同哈希，trace 绝不包含
+    机器路径。"""
+    root = tmp_path / "data"
+    sample = _sample(root)
+    client_a = _PathIdentityClient(model="/mnt/a/Qwen3-VL-4B", cache_model_id="qwen3-vl-4b-local")
+    client_b = _PathIdentityClient(model="/mnt/b/Qwen3-VL-4B", cache_model_id="qwen3-vl-4b-local")
+    execution_a = asyncio.run(_base(client_a).run(sample, _context(root)))
+    execution_b = asyncio.run(_base(client_b).run(sample, _context(root)))
+    assert execution_a.trace["request_hash"] == execution_b.trace["request_hash"]
+    assert execution_a.trace["model"] == "qwen3-vl-4b-local"
+    assert "/mnt/a" not in json.dumps(execution_a.trace, ensure_ascii=False)
+    assert "/mnt/b" not in json.dumps(execution_b.trace, ensure_ascii=False)
+
+
+def test_same_path_different_logical_ids_different_hash(tmp_path: Path) -> None:
+    """The same checkpoint path with different logical ids must hash differently.
+    同一 checkpoint 路径 + 不同逻辑 ID 必须产生不同哈希。"""
+    root = tmp_path / "data"
+    sample = _sample(root)
+    client_a = _PathIdentityClient(model="/mnt/a/Qwen3-VL-4B", cache_model_id="id-one")
+    client_b = _PathIdentityClient(model="/mnt/a/Qwen3-VL-4B", cache_model_id="id-two")
+    execution_a = asyncio.run(_base(client_a).run(sample, _context(root)))
+    execution_b = asyncio.run(_base(client_b).run(sample, _context(root)))
+    assert execution_a.trace["request_hash"] != execution_b.trace["request_hash"]
