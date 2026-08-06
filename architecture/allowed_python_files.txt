@@ -27,6 +27,7 @@ data/adapters/base.py
 data/adapters/levir_cc.py
 data/adapters/mme_realworld.py
 data/adapters/xlrs.py
+data/adapters/xlrs_image_cache.py
 data/adapters/vrsbench/__init__.py
 data/adapters/vrsbench/adapter.py
 data/adapters/vrsbench/task_normalizer.py
@@ -168,6 +169,7 @@ tests/architecture/test_init_side_effects.py
 tests/architecture/test_no_new_to_legacy_imports.py
 tests/contracts/test_adapter_contract.py
 tests/contracts/test_data_schema_contract.py
+tests/data/test_adapter_integration.py
 tests/data/test_levir_cc_adapter.py
 tests/data/test_mme_realworld_adapter.py
 tests/data/test_registry.py
