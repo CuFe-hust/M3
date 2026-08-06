@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–15 完成，15.5/15.6/15.7 hardening 完成）
+## 当前状态（Task 00–15 完成，15.5/15.6/15.7/15.8 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -33,7 +33,15 @@ python -m pytest -q
 ```
 
 GitHub Actions（`.github/workflows/offline-tests.yml`，Ubuntu/Python 3.11）
-执行上述 Foundation tests；不运行 live 模型、真实数据集或密钥相关测试。
+执行上述 Foundation tests；不运行 live 模型、真实数据集或密钥相关测试，
+也不下载真实模型权重、不运行 live GPU inference。
+
+## 模型身份配置说明
+
+- 本地 checkpoint 使用路径时必须显式设置稳定的 `cache_model_id`
+- `cache_model_id` 必须是逻辑标识符，不能是本地路径（POSIX 绝对、
+  Windows drive、UNC）或 `file://` URI；它用于 request hash 与 Agent trace，
+  物理 checkpoint 路径只传给 `from_pretrained`
 
 ## 目录职责（已实现部分）
 
