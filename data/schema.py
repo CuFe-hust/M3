@@ -42,6 +42,9 @@ CHANGE_TASKS = frozenset({"change_caption", "change_qa"})
 # Tasks whose question may be empty. / 允许 question 为空的任务。
 QUESTION_OPTIONAL_TASKS = frozenset({"caption", "change_caption"})
 
+# How GroundTruth.labels bind to geometry. / GroundTruth.labels 与几何的绑定方式。
+LabelBinding = Literal["boxes", "points", "all_geometry", "unbound"]
+
 # JSON-safe value types for free-form fields. / 自由字段的 JSON 安全类型。
 JsonScalar = str | int | float | bool | None
 JsonValue = TypeAliasType(
@@ -76,7 +79,12 @@ def _assert_json_safe(value: Any, where: str) -> None:
 
 class ImageRef(BaseModel):
     """One immutable image reference in a unified sample.
-    统一样本中一条不可变的图像引用。"""
+    统一样本中一条不可变的图像引用。
+
+    path must be a non-empty, relative, non-escape path resolved against the
+    dataset root; backslashes are normalized to forward slashes.
+    path 必须是相对 dataset root 的非空相对路径（禁止绝对路径与 .. 逃逸段）；
+    反斜杠统一规范化为正斜杠。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -90,10 +98,32 @@ class ImageRef(BaseModel):
     @field_validator("path", mode="before")
     @classmethod
     def normalize_path_input(cls, value: Any) -> Any:
-        """Normalize backslashes before Path construction so Windows and POSIX
-        inputs serialize identically. 构造 Path 前统一反斜杠，保证跨平台序列化一致。"""
+        """Normalize backslashes and reject escape segments before Path
+        construction (Path collapses '.' segments silently).
+        构造 Path 前统一反斜杠并拒绝逃逸段（Path 会静默折叠 '.' 段）。"""
         if isinstance(value, str):
-            return value.replace("\\", "/")
+            text = value.replace("\\", "/")
+            segments = text.split("/")
+            if any(segment in {".", ".."} for segment in segments):
+                raise ValueError(
+                    f"image path must not contain '.' or '..' segments, got {value!r}"
+                )
+            return text
+        return value
+
+    @field_validator("path")
+    @classmethod
+    def validate_relative_path(cls, value: Path) -> Path:
+        """Reject absolute paths and escape segments; file existence is not
+        checked here. 拒绝绝对路径与逃逸段；文件存在性不在此检查。"""
+        text = value.as_posix()
+        if not text.strip():
+            raise ValueError("image path must not be empty")
+        if _is_absolute_like(text):
+            raise ValueError(f"image path must be relative, got {text!r}")
+        segments = text.split("/")
+        if any(segment in {".", ".."} for segment in segments):
+            raise ValueError(f"image path must not contain '.' or '..' segments, got {text!r}")
         return value
 
     @field_validator("sha256")
@@ -122,6 +152,7 @@ class GroundTruth(BaseModel):
     labels: list[str] = Field(default_factory=list)
     raw: dict[str, JsonValue] = Field(default_factory=dict)
     coordinate_frame: str | None = None
+    label_binding: LabelBinding | None = None
 
     @field_validator("raw", mode="before")
     @classmethod
@@ -135,8 +166,10 @@ class GroundTruth(BaseModel):
     @model_validator(mode="after")
     def validate_geometry(self) -> "GroundTruth":
         """Boxes are length 4 (xyxy) or 8 (polygon); points are length 2;
-        coordinates must be finite; labels must match boxes+points one-to-one.
-        框长度为 4 或 8；点长度为 2；坐标必须有限；labels 与 boxes+points 一一对应。"""
+        coordinates must be finite; labels bind to geometry according to the
+        declared label_binding (or the unambiguous default).
+        框长度为 4 或 8；点长度为 2；坐标必须有限；labels 按声明的
+        label_binding（或无歧义默认）与几何绑定。"""
         for box in self.boxes:
             if len(box) not in (4, 8):
                 raise ValueError(f"ground-truth box must have 4 or 8 coordinates, got {len(box)}")
@@ -147,13 +180,60 @@ class GroundTruth(BaseModel):
                 raise ValueError(f"ground-truth point must have 2 coordinates, got {len(point)}")
             if not all(math.isfinite(float(value)) for value in point):
                 raise ValueError("ground-truth point contains a non-finite coordinate")
-        if self.labels and len(self.labels) != len(self.boxes) + len(self.points):
-            raise ValueError(
-                "ground-truth labels must match boxes+points count: "
-                f"{len(self.labels)} labels for {len(self.boxes)} boxes + {len(self.points)} points"
-            )
+        self._validate_label_binding()
         _assert_json_safe(self.raw, "ground_truth.raw")
         return self
+
+    def _validate_label_binding(self) -> None:
+        labels = self.labels
+        binding = self.label_binding
+        if not labels:
+            if binding not in (None, "unbound"):
+                raise ValueError(
+                    f"label_binding={binding!r} requires labels; got none"
+                )
+            return
+        if binding == "boxes":
+            if len(labels) != len(self.boxes):
+                raise ValueError(
+                    f"label_binding='boxes' requires len(labels)==len(boxes): "
+                    f"{len(labels)} labels for {len(self.boxes)} boxes"
+                )
+        elif binding == "points":
+            if len(labels) != len(self.points):
+                raise ValueError(
+                    f"label_binding='points' requires len(labels)==len(points): "
+                    f"{len(labels)} labels for {len(self.points)} points"
+                )
+        elif binding == "all_geometry":
+            if len(labels) != len(self.boxes) + len(self.points):
+                raise ValueError(
+                    f"label_binding='all_geometry' requires len(labels)==len(boxes)+len(points): "
+                    f"{len(labels)} labels for {len(self.boxes)}+{len(self.points)}"
+                )
+        elif binding == "unbound":
+            return
+        else:  # binding is None: accept only unambiguous defaults.
+            if self.boxes and self.points:
+                if len(labels) != len(self.boxes) + len(self.points):
+                    raise ValueError(
+                        "labels are ambiguous with both boxes and points; "
+                        "declare label_binding explicitly"
+                    )
+            elif self.boxes:
+                if len(labels) != len(self.boxes):
+                    raise ValueError(
+                        f"labels must match boxes count: {len(labels)} labels "
+                        f"for {len(self.boxes)} boxes"
+                    )
+            elif self.points:
+                if len(labels) != len(self.points):
+                    raise ValueError(
+                        f"labels must match points count: {len(labels)} labels "
+                        f"for {len(self.points)} points"
+                    )
+            else:
+                raise ValueError("labels require at least one box or point")
 
 
 class TaskNormalization(BaseModel):
@@ -268,6 +348,15 @@ class UnifiedSample(BaseModel):
         _assert_json_safe(self.metadata, "metadata")
         return self
 
+    @model_validator(mode="after")
+    def validate_unique_image_ids(self) -> "UnifiedSample":
+        """Image IDs must be unique within one sample. / 样本内 image_id 必须唯一。"""
+        ids = [image.image_id for image in self.images]
+        duplicates = sorted({value for value in ids if ids.count(value) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate image_id: {duplicates}")
+        return self
+
 
 def stable_sample_id(
     *,
@@ -298,6 +387,14 @@ def stable_sample_id(
     preserve it in sample metadata.
     不安全源 ID 不返回原值，需要保留时由适配器放入 sample metadata。
     """
+    if not dataset.strip():
+        raise ValueError("dataset must not be empty")
+    if not split.strip():
+        raise ValueError("split must not be empty")
+    if not relative_image_paths:
+        raise ValueError("relative_image_paths must contain at least one path")
+    if not isinstance(source_index, int) or source_index < 0:
+        raise ValueError(f"source_index must be a non-negative integer, got {source_index!r}")
     if _source_id_is_safe(source_id):
         return source_id  # type: ignore[return-value]
     posix_paths = []
@@ -307,6 +404,11 @@ def stable_sample_id(
             raise ValueError("relative_image_paths must not be empty")
         if _is_absolute_like(text):
             raise ValueError(f"relative_image_paths must be relative, got {text!r}")
+        segments = text.replace("\\", "/").split("/")
+        if any(segment in {".", ".."} for segment in segments):
+            raise ValueError(
+                f"relative_image_paths must not contain '.' or '..' segments, got {text!r}"
+            )
         posix_paths.append(text.replace("\\", "/"))
     parts = [
         dataset,
@@ -320,6 +422,14 @@ def stable_sample_id(
     return hashlib.sha256(payload).hexdigest()[:20]
 
 
+_WINDOWS_RESERVED_BASENAMES = frozenset(
+    {"con", "prn", "aux", "nul"}
+    | {f"com{i}" for i in range(1, 10)}
+    | {f"lpt{i}" for i in range(1, 10)}
+)
+_WINDOWS_FORBIDDEN_CHARS = frozenset('<>:"/\\|?*')
+
+
 def _is_absolute_like(value: str) -> bool:
     """Detect absolute paths on both Windows and POSIX spellings.
     同时识别 Windows 与 POSIX 写法的绝对路径。"""
@@ -329,16 +439,25 @@ def _is_absolute_like(value: str) -> bool:
 
 
 def _source_id_is_safe(source_id: str | None) -> bool:
-    """A safe source ID is non-empty, short, and usable as a directory name.
-    安全源 ID：非空、长度受限、可用作目录名。"""
+    """A safe source ID is non-empty, short, and usable as a directory name on
+    Windows and POSIX: no reserved device names, no forbidden characters, no
+    control characters, no dot/space suffix, no escape segments.
+    安全源 ID：非空、长度受限、Windows/POSIX 均可作为目录名：无保留设备名、
+    无非法字符、无控制字符、无尾随点/空格、无逃逸段。"""
     if not source_id:
         return False
     if len(source_id) > _MAX_SOURCE_ID_LENGTH:
         return False
     if any(ord(char) < 32 for char in source_id):
         return False
-    if "/" in source_id or "\\" in source_id:
+    if any(char in _WINDOWS_FORBIDDEN_CHARS for char in source_id):
         return False
     if source_id in {".", ".."} or ".." in source_id:
+        return False
+    if source_id.endswith((" ", ".")):
+        return False
+    basename = source_id.split("/")[-1].split("\\")[-1]
+    stem = basename.split(".")[0].casefold()
+    if stem in _WINDOWS_RESERVED_BASENAMES:
         return False
     return True

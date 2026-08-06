@@ -42,8 +42,14 @@ ALL_TASKS = (
 )
 
 
-def _image(role: str = "image", image_id: str = "img") -> ImageRef:
-    return ImageRef(image_id=image_id, path="image.png", role=role, width=4, height=4)
+def _image(role: str = "image", image_id: str | None = None) -> ImageRef:
+    return ImageRef(
+        image_id=image_id or f"img-{role}",
+        path="image.png",
+        role=role,
+        width=4,
+        height=4,
+    )
 
 
 def _sample(task: str = "general_vqa", images: list[ImageRef] | None = None, **overrides) -> UnifiedSample:
@@ -153,9 +159,15 @@ def test_path_serializes_with_forward_slashes() -> None:
     assert ref.model_dump(mode="json")["path"] == "dir/sub/image.png"
 
 
-def test_windows_style_path_input_normalizes_on_any_platform() -> None:
-    ref = ImageRef(image_id="i", path=r"C:\data\images\a.png", role="image")
-    assert ref.model_dump(mode="json")["path"] == "C:/data/images/a.png"
+def test_windows_style_path_input_is_rejected() -> None:
+    """Absolute machine paths are rejected by the schema; paths must be
+    dataset-root-relative. 绝对机器路径被 Schema 拒绝；路径必须相对 dataset root。"""
+    for bad in (r"C:\data\images\a.png", "C:/data/images/a.png", "/abs/a.png", r"\\server\share\a.png"):
+        with pytest.raises(ValidationError, match="relative"):
+            ImageRef(image_id="i", path=bad, role="image")
+    for bad in ("../outside.png", "images/../../outside.png", "a/./b.png"):
+        with pytest.raises(ValidationError, match="segment"):
+            ImageRef(image_id="i", path=bad, role="image")
 
 
 # ── GroundTruth / 真值 ──────────────────────────────────────────────────────
@@ -249,7 +261,9 @@ def test_change_task_requires_ordered_t1_t2() -> None:
 
 def test_change_extra_roles_must_be_context() -> None:
     _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("context")])
-    _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("context"), _image("context")])
+    _sample(task="change_caption", images=[
+        _image("t1"), _image("t2"), _image("context"), _image("context", image_id="ctx2"),
+    ])
     with pytest.raises(ValidationError, match="only context"):
         _sample(task="change_caption", images=[_image("t1"), _image("t2"), _image("t1")])
     with pytest.raises(ValidationError, match="only context"):
@@ -459,6 +473,75 @@ def test_stable_sample_id_rejects_empty_paths() -> None:
             dataset="D", split="s", source_id=None,
             relative_image_paths=[""], question="q", source_index=0,
         )
+
+
+def test_stable_sample_id_rejects_escape_segments() -> None:
+    with pytest.raises(ValueError, match="segments"):
+        stable_sample_id(
+            dataset="D", split="s", source_id=None,
+            relative_image_paths=["images/../a.png"], question="q", source_index=0,
+        )
+
+
+def test_stable_sample_id_parameter_validation() -> None:
+    kwargs = dict(dataset="D", split="s", source_id=None,
+                  relative_image_paths=["a.png"], question="q", source_index=0)
+    with pytest.raises(ValueError, match="dataset"):
+        stable_sample_id(**{**kwargs, "dataset": "  "})
+    with pytest.raises(ValueError, match="split"):
+        stable_sample_id(**{**kwargs, "split": ""})
+    with pytest.raises(ValueError, match="at least one"):
+        stable_sample_id(**{**kwargs, "relative_image_paths": []})
+    with pytest.raises(ValueError, match="source_index"):
+        stable_sample_id(**{**kwargs, "source_index": -1})
+
+
+def test_stable_sample_id_windows_reserved_names_fall_back_to_hash() -> None:
+    for unsafe in ("CON", "con.txt", "PRN", "AUX", "NUL", "COM1", "COM9",
+                   "LPT1", "LPT9", "a<b", "a>b", "a:b", 'a"b', "a|b", "a?b",
+                   "a*b", "trailing.", "trailing "):
+        result = stable_sample_id(
+            dataset="D", split="s", source_id=unsafe,
+            relative_image_paths=["a.png"], question="q", source_index=0,
+        )
+        assert result != unsafe
+        assert len(result) == 20
+
+
+def test_duplicate_image_ids_are_rejected() -> None:
+    with pytest.raises(ValidationError, match="duplicate image_id"):
+        UnifiedSample.model_validate(
+            {
+                "sample_id": "s",
+                "dataset": "VRSBench",
+                "split": "validation",
+                "task": "general_vqa",
+                "images": [
+                    {"image_id": "same", "path": "a.png", "role": "image"},
+                    {"image_id": "same", "path": "b.png", "role": "context"},
+                ],
+                "question": "Q",
+            }
+        )
+
+
+# ── GroundTruth label binding / 标签绑定 (A5) ───────────────────────────────
+
+
+def test_label_binding_boxes_and_points() -> None:
+    GroundTruth(boxes=[[1, 2, 3, 4]], labels=["a"], label_binding="boxes")
+    GroundTruth(points=[[1.0, 2.0]], labels=["a"], label_binding="points")
+    GroundTruth(boxes=[[1, 2, 3, 4]], points=[[5.0, 6.0]], labels=["a", "b"],
+                label_binding="all_geometry")
+    GroundTruth(labels=["a", "b", "c"], label_binding="unbound")
+    GroundTruth()  # no labels, no binding / 无 labels 无 binding
+    GroundTruth(labels=[], label_binding="unbound")
+    with pytest.raises(ValidationError, match="label_binding='boxes'"):
+        GroundTruth(boxes=[[1, 2, 3, 4]], labels=["a", "b"], label_binding="boxes")
+    with pytest.raises(ValidationError, match="ambiguous"):
+        GroundTruth(boxes=[[1, 2, 3, 4]], points=[[5.0, 6.0]], labels=["a"])
+    with pytest.raises(ValidationError, match="requires labels"):
+        GroundTruth(label_binding="boxes")
 
 
 # ── data package exports / data 包导出 ──────────────────────────────────────

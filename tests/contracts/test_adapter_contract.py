@@ -146,7 +146,7 @@ def test_read_json_rows_bad_suffix_raises(tmp_path: Path) -> None:
 def test_read_json_rows_rejects_non_dict_rows(tmp_path: Path) -> None:
     path = tmp_path / "rows.jsonl"
     path.write_text("[1, 2]\n", encoding="utf-8")
-    with pytest.raises(DatasetProbeError, match="JSON objects"):
+    with pytest.raises(DatasetProbeError, match="not a JSON object"):
         read_json_rows(path)
 
 
@@ -156,6 +156,49 @@ def test_read_json_rows_is_read_only(tmp_path: Path) -> None:
     path.write_text(content, encoding="utf-8")
     read_json_rows(path)
     assert path.read_text(encoding="utf-8") == content
+
+
+# ── read_json_rows 容器结构 / container structures (A1) ────────────────────
+
+
+def test_read_json_rows_all_container_keys(tmp_path: Path) -> None:
+    for key in ("samples", "data", "annotations", "items", "images"):
+        path = tmp_path / f"{key}.json"
+        path.write_text(json.dumps({key: [{"id": "1"}, {"id": "2"}]}), encoding="utf-8")
+        assert len(read_json_rows(path)) == 2, key
+
+
+def test_read_json_rows_unknown_dict_structure_fails(tmp_path: Path) -> None:
+    path = tmp_path / "unknown.json"
+    path.write_text(json.dumps({"records": [{"id": "1"}]}), encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match="no supported record container"):
+        read_json_rows(path)
+
+
+def test_read_json_rows_ambiguous_containers_fail(tmp_path: Path) -> None:
+    path = tmp_path / "ambiguous.json"
+    path.write_text(json.dumps({"samples": [{"id": "1"}], "images": [{"id": "2"}]}), encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match="ambiguous"):
+        read_json_rows(path)
+
+
+def test_read_json_rows_jsonl_reports_line_number(tmp_path: Path) -> None:
+    path = tmp_path / "bad.jsonl"
+    path.write_text('{"id": "1"}\n{not json\n{"id": "3"}\n', encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match=r"bad\.jsonl:2"):
+        read_json_rows(path)
+
+
+def test_read_json_rows_empty_containers_return_empty(tmp_path: Path) -> None:
+    path = tmp_path / "empty.json"
+    path.write_text(json.dumps({"samples": []}), encoding="utf-8")
+    assert read_json_rows(path) == []
+
+
+def test_read_json_rows_suffix_is_case_insensitive(tmp_path: Path) -> None:
+    path = tmp_path / "rows.JSON"
+    path.write_text(json.dumps([{"a": 1}]), encoding="utf-8")
+    assert read_json_rows(path) == [{"a": 1}]
 
 
 # ── validate_manifest_mapping / manifest 映射工具 ───────────────────────────

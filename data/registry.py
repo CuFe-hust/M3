@@ -70,9 +70,9 @@ class DatasetRegistry:
 REGISTRY = DatasetRegistry()
 
 
-def register_default_adapters(registry: DatasetRegistry = REGISTRY) -> None:
-    """Explicitly register the audited built-in adapters (call once at bootstrap).
-    显式注册经审计的内建适配器（在 bootstrap 阶段调用一次）。
+def register_default_adapters(registry: DatasetRegistry) -> None:
+    """Explicitly register the audited built-in adapters into the given registry.
+    将经审计的内建适配器显式注册到给定 registry（无默认全局对象修改）。
     延迟 import 避免模块加载副作用；不扫描模块、不使用 entry point。"""
     from data.adapters.levir_cc import LEVIRCCAdapter
     from data.adapters.mme_realworld import MMERealWorldAdapter
@@ -88,3 +88,11 @@ def register_default_adapters(registry: DatasetRegistry = REGISTRY) -> None:
         lambda: XLRSAdapter(name="XLRS-Bench-lite"),
         aliases=("XLRS-lite",),
     )
+
+
+def build_default_registry() -> DatasetRegistry:
+    """Return a brand-new registry with the default adapters registered.
+    返回注册了默认适配器的全新 Registry；每次调用互不影响。"""
+    registry = DatasetRegistry()
+    register_default_adapters(registry)
+    return registry
