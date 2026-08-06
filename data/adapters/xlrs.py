@@ -1,15 +1,13 @@
 """Offline-first XLRS-Bench adapter (caption / grounding / VQA-lite).
 
 离线优先的 XLRS-Bench 适配器（caption / grounding / VQA-lite）。
-- 官方 release 目录（XLRS-Bench-lite / XLRS-Bench_caption_en /
-  XLRS-Bench_visual_grounding_en）可从统一 XLRS 根解析，或直接传入单个
-  release 根；零候选失败、多候选歧义失败；
-- 官方 split 被强制（train/test 及明确 alias），不匹配在加载前失败；
-- 本地优先：HF disk 布局走 load_from_disk；仅 allow_download=True 才走
-  Hugging Face 下载；datasets 只在实际加载时延迟导入；
-- 图片特征（path/{path,bytes}/PIL）确定性物化到外部 cache，不写 dataset root；
-- source row 清洗为 JSON-safe，不保存 bytes/PIL；
-- XLRS-Bench-lite 注册项只声明 multiple_choice_vqa。
+- 官方 release 目录可从统一 XLRS 根解析；官方 split 被强制；
+- 本地优先：HF disk 布局走 load_from_disk；仅 allow_download=True 才走下载；
+  probe 绝不隐式下载、绝不使用假 sample_count；
+- 每行图片统一解析根：全部 path-backed → release root；任一图片需要物化 →
+  整行统一物化/复制到外部 cache（内容哈希命名、原子写、不写 dataset root）；
+- 每样本 metadata.image_root_kind 明确解析根，不依赖迭代器状态；
+- XLRS-Bench-lite 能力收窄；multi-answer 只认显式字段或审计类型。
 """
 
 from __future__ import annotations
@@ -21,7 +19,11 @@ from pathlib import Path
 from typing import Any
 
 from data.adapters.base import AdapterProbe, DatasetProbeError
-from data.adapters.xlrs_image_cache import ImageMaterializationError, materialize_image
+from data.adapters.xlrs_image_cache import (
+    ImageMaterializationError,
+    cache_existing_path,
+    materialize_image,
+)
 from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 
 ADAPTER_VERSION = "hf-disk-v1"
@@ -55,7 +57,12 @@ _CHOICE_KEYS = ("choices", "options", "answer_choices", "multi-choice options")
 _OPTION_LETTERS = ("A", "B", "C", "D", "E")
 _GROUNDING_BOX_KEYS = ("bbox", "box", "boxes", "polygon", "answer")
 _GROUNDING_LABEL_KEYS = ("name", "label", "class", "category")
+_EXPLICIT_MULTI_ANSWER_KEYS = ("allow_multiple", "multi_answer")
+# Values proven from the audited official release only; empty until proven.
+# 仅来自已审计官方发布的值；目前为空，直到有真实证据。
+_AUDITED_MULTI_ANSWER_TYPES = frozenset()
 _ANSWER_SEPARATOR = re.compile(r"[\s,，、]+")
+_CAPTION_TEXT_KEYS = ("caption", "text", "raw")
 
 RowLoader = Callable[[Path, str], list[dict[str, Any]]]
 
@@ -111,47 +118,6 @@ class XLRSAdapter:
             frozenset(supported_tasks) if supported_tasks is not None else SUPPORTED_TASKS
         )
 
-    # ── probe / 探测 ────────────────────────────────────────────────────────
-
-    def probe(self, root: Path, task: str | None = None) -> AdapterProbe:
-        """Report the local release layout; never touches the network.
-        报告本地 release 布局；绝不触网。"""
-        if task is not None:
-            if task not in self.supported_tasks:
-                raise DatasetProbeError(
-                    f"XLRS-Bench does not support task={task!r}; "
-                    f"supported={sorted(self.supported_tasks)}"
-                )
-            release_root = self._resolve_release_root(root, task)
-            return AdapterProbe(
-                dataset=self.name,
-                version=ADAPTER_VERSION,
-                sample_file=release_root / "dataset_dict.json"
-                if (release_root / "dataset_dict.json").is_file()
-                else release_root,
-                observed_fields=("local",),
-                sample_count=1,
-                task=task,
-                available_tasks=(task,),
-            )
-        local_tasks = [task for task in sorted(self.supported_tasks) if self._has_local(root, task)]
-        if not local_tasks and not self.allow_download:
-            raise DatasetProbeError(
-                f"offline: no local XLRS release under {root}; "
-                "pass allow_download=True to download from Hugging Face"
-            )
-        available = tuple(local_tasks) if local_tasks else tuple(sorted(self.supported_tasks))
-        return AdapterProbe(
-            dataset=self.name,
-            version=ADAPTER_VERSION,
-            sample_file=root,
-            observed_fields=("local",) if local_tasks else ("remote",),
-            sample_count=len(local_tasks) if local_tasks else 1,
-            available_tasks=available,
-        )
-
-    # ── iter_samples / 样本迭代 ────────────────────────────────────────────
-
     def _effective_cache_root(self) -> Path:
         """Stable default user cache; created only when bytes/PIL are handled.
         稳定默认用户 cache；仅处理 bytes/PIL 时才创建。"""
@@ -159,9 +125,71 @@ class XLRSAdapter:
             return self._cache_root
         return Path(tempfile.gettempdir()) / "m3-xlrs-image-cache"
 
+    # ── probe / 探测 ────────────────────────────────────────────────────────
+
+    def probe(self, root: Path, task: str | None = None) -> AdapterProbe:
+        """Report verified local evidence; never downloads, never fake counts.
+        报告经本地验证的证据；绝不下载、绝不使用假计数。"""
+        if task is not None:
+            if task not in self.supported_tasks:
+                raise DatasetProbeError(
+                    f"XLRS-Bench does not support task={task!r}; "
+                    f"supported={sorted(self.supported_tasks)}"
+                )
+            release_root = self._resolve_release_root(root, task)
+            rows = self._rows_local_only(release_root, task)
+            if not rows:
+                raise DatasetProbeError(
+                    f"zero XLRS records for task={task!r} under {release_root}"
+                )
+            observed = tuple(
+                sorted({key for row in rows[:20] for key in row})
+            )
+            return AdapterProbe(
+                dataset=self.name,
+                version=ADAPTER_VERSION,
+                sample_file=release_root / "dataset_dict.json"
+                if (release_root / "dataset_dict.json").is_file()
+                else release_root,
+                observed_fields=observed,
+                sample_count=len(rows),
+                task=task,
+                available_tasks=(task,),
+            )
+        available: list[str] = []
+        counts: dict[str, int] = {}
+        for candidate in sorted(self.supported_tasks):
+            try:
+                release_root = self._resolve_release_root(root, candidate)
+            except DatasetProbeError:
+                continue
+            rows = self._rows_local_only(release_root, candidate)
+            if not rows:
+                raise DatasetProbeError(
+                    f"zero XLRS records for task={candidate!r} under {release_root}"
+                )
+            available.append(candidate)
+            counts[candidate] = len(rows)
+        if not available:
+            raise DatasetProbeError(
+                f"offline: no local XLRS release under {root}; "
+                "pass allow_download=True to download from Hugging Face"
+            )
+        primary = available[0]
+        return AdapterProbe(
+            dataset=self.name,
+            version=ADAPTER_VERSION,
+            sample_file=root,
+            observed_fields=("local",),
+            sample_count=counts[primary],
+            available_tasks=tuple(available),
+        )
+
+    # ── iter_samples / 样本迭代 ────────────────────────────────────────────
+
     def iter_samples(self, root: Path, split: str, task: str) -> Iterator[UnifiedSample]:
         """Yield unified samples for one task; official splits are enforced.
-        产出某一任务的统一样本；官方 split 被强制。"""
+        产出某一任务的统一样本；官方 split 被强制；零行显式失败。"""
         if task not in self.supported_tasks:
             raise DatasetProbeError(
                 f"XLRS-Bench does not support task={task!r}; "
@@ -175,25 +203,48 @@ class XLRSAdapter:
             )
         release_root = self._resolve_release_root(root, task)
         rows = self._rows(release_root, task)
+        if not rows:
+            raise DatasetProbeError(
+                f"zero XLRS records for task={task!r} under {release_root}"
+            )
         for index, row in enumerate(rows):
-            safe_row, refs, cache_used = self._sanitize_row(
+            safe_row, refs, image_root_kind = self._sanitize_row(
                 row, release_root=release_root, index=index
             )
-            image_root = self._effective_cache_root() if cache_used else release_root
-            images = self._image_refs(safe_row, refs, index, image_root=image_root)
+            image_root = (
+                self._effective_cache_root()
+                if image_root_kind == "cache"
+                else release_root
+            )
+            images = self._image_refs(refs, index, image_root=image_root)
             if task == "caption":
-                yield self._caption_sample(safe_row, images, release_root, official_split, index)
+                yield self._caption_sample(
+                    safe_row, images, official_split, index,
+                    image_root_kind=image_root_kind,
+                )
             elif task == "grounding":
-                yield self._grounding_sample(safe_row, images, release_root, official_split, index)
+                yield self._grounding_sample(
+                    safe_row, images, official_split, index,
+                    image_root_kind=image_root_kind,
+                )
             else:
-                yield self._vqa_lite_sample(safe_row, images, release_root, official_split, index)
-        self._last_image_root = self._effective_cache_root() if False else release_root
+                yield self._vqa_lite_sample(
+                    safe_row, images, official_split, index,
+                    image_root_kind=image_root_kind,
+                )
 
-    @property
-    def image_root(self) -> Path | None:
-        """The resolution root for ImageRef paths (release root or external cache).
-        ImageRef 路径的解析根（release root 或外部 cache）。"""
-        return getattr(self, "_last_image_root", None)
+    def image_root_for_sample(self, sample: UnifiedSample, release_root: Path) -> Path:
+        """Resolution root for one sample's ImageRef paths, from the sample's
+        own metadata; never depends on iterator state.
+        单样本 ImageRef 路径的解析根，取自样本自身 metadata；不依赖迭代器状态。"""
+        kind = sample.metadata.get("image_root_kind")
+        if kind == "cache":
+            return self._effective_cache_root()
+        if kind == "release":
+            return release_root
+        raise DatasetProbeError(
+            f"sample {sample.sample_id} has no image_root_kind metadata"
+        )
 
     # ── loading strategy / 加载策略 ─────────────────────────────────────────
 
@@ -227,6 +278,16 @@ class XLRSAdapter:
                 "pass allow_download=True to download from Hugging Face"
             )
         loader = self._loader or self._load_from_hub
+        return loader(release_root, task)
+
+    def _rows_local_only(self, release_root: Path, task: str) -> list[dict[str, Any]]:
+        """Local-only row loading used by probe(); probe never downloads.
+        probe 使用的仅本地加载；probe 绝不下载。"""
+        if not self._has_local(release_root, task):
+            raise DatasetProbeError(
+                f"offline: no local XLRS {task} release under {release_root}"
+            )
+        loader = self._loader or self._load_from_disk
         return loader(release_root, task)
 
     @staticmethod
@@ -267,12 +328,23 @@ class XLRSAdapter:
         *,
         release_root: Path,
         index: int,
-    ) -> tuple[dict[str, Any], list[tuple[str, dict[str, Any]]], bool]:
-        """Strip non-JSON values and materialize image features.
-        去除非 JSON 值并物化图片特征。"""
+    ) -> tuple[dict[str, Any], list[tuple[Path, dict[str, Any]]], str]:
+        """Strip non-JSON values and materialize image features. Every image of
+        one row shares a single resolution root: release (all path-backed) or
+        cache (any image needs materialization).
+        去除非 JSON 值并物化图片特征。一行内所有图片共享单一解析根：
+        release（全部 path）或 cache（任一图片需要物化）。"""
+        image_values = []
+        for key in _IMAGE_KEYS:
+            value = row.get(key)
+            if value is not None:
+                values = value if isinstance(value, list) else [value]
+                image_values.extend((key, item) for item in values)
+        needs_cache = any(
+            not isinstance(item, str) for _, item in image_values
+        )
         safe: dict[str, Any] = {}
-        refs: list[tuple[str, dict[str, Any]]] = []
-        used_cache = False
+        refs: list[tuple[Path, dict[str, Any]]] = []
         excluded: list[str] = []
         for key, value in row.items():
             if key in _IMAGE_KEYS:
@@ -280,17 +352,24 @@ class XLRSAdapter:
                 values = value if is_list else [value]
                 descriptors = []
                 for item in values:
-                    try:
-                        path, descriptor = materialize_image(
-                            item, release_root=release_root,
-                            cache_root=self._cache_root, index=index,
+                    if needs_cache and isinstance(item, str):
+                        path, descriptor = cache_existing_path(
+                            release_root / item,
+                            cache_root=self._effective_cache_root(),
+                            index=index,
                         )
-                    except ImageMaterializationError as error:
-                        raise DatasetProbeError(str(error)) from error
+                    else:
+                        try:
+                            path, descriptor = materialize_image(
+                                item,
+                                release_root=release_root,
+                                cache_root=self._effective_cache_root(),
+                                index=index,
+                            )
+                        except ImageMaterializationError as error:
+                            raise DatasetProbeError(str(error)) from error
                     descriptors.append(descriptor)
-                    refs.append((str(path), descriptor))
-                    if descriptor["image_source_type"] in {"bytes", "pil"}:
-                        used_cache = True
+                    refs.append((path, descriptor))
                 if is_list:
                     safe[key] = descriptors
                 else:
@@ -301,12 +380,12 @@ class XLRSAdapter:
                 excluded.append(key)
         if excluded:
             safe["excluded_fields"] = sorted(excluded)
-        return safe, refs, used_cache
+        image_root_kind = "cache" if needs_cache else "release"
+        return safe, refs, image_root_kind
 
     def _image_refs(
         self,
-        row: dict[str, Any],
-        refs: list[tuple[str, dict[str, Any]]],
+        refs: list[tuple[Path, dict[str, Any]]],
         index: int,
         *,
         image_root: Path,
@@ -314,8 +393,7 @@ class XLRSAdapter:
         if not refs:
             raise DatasetProbeError(f"XLRS row {index} has no image field")
         images: list[ImageRef] = []
-        for position, (raw_path, _descriptor) in enumerate(refs):
-            path = Path(raw_path)
+        for position, (path, _descriptor) in enumerate(refs):
             try:
                 relative = path.relative_to(image_root)
             except ValueError as error:
@@ -338,21 +416,15 @@ class XLRSAdapter:
         self,
         row: dict[str, Any],
         images: list[ImageRef],
-        release_root: Path,
         split: str,
         index: int,
+        *,
+        image_root_kind: str,
     ) -> UnifiedSample:
         question = _first_text(row, ("question",))
         if not question:
             raise DatasetProbeError(f"XLRS caption row {index} has no question text")
-        answer_value = _first_value(row, ("caption", "text", "answer", "description"))
-        answers = (
-            [str(answer) for answer in answer_value]
-            if isinstance(answer_value, list)
-            else [str(answer_value or "")]
-        )
-        if not answers or not answers[0]:
-            raise DatasetProbeError(f"XLRS caption row {index} has no caption field")
+        answers = _caption_texts(row, index)
         source_id = _first_text(row, ("id", "question_id", "source_id"))
         return UnifiedSample(
             sample_id=stable_sample_id(
@@ -374,6 +446,7 @@ class XLRSAdapter:
                 "release": HF_REPOS["caption"],
                 "release_split": RELEASE_SPLITS["caption"],
                 "source_index": index,
+                "image_root_kind": image_root_kind,
                 "adapter_version": ADAPTER_VERSION,
             },
         )
@@ -382,9 +455,10 @@ class XLRSAdapter:
         self,
         row: dict[str, Any],
         images: list[ImageRef],
-        release_root: Path,
         split: str,
         index: int,
+        *,
+        image_root_kind: str,
     ) -> UnifiedSample:
         question = _first_text(row, ("question", "ref", "referring", "text"))
         box_value = _first_value(row, _GROUNDING_BOX_KEYS)
@@ -423,6 +497,7 @@ class XLRSAdapter:
                 "release": HF_REPOS["grounding"],
                 "release_split": RELEASE_SPLITS["grounding"],
                 "source_index": index,
+                "image_root_kind": image_root_kind,
                 "image_width": float(width) if width is not None else None,
                 "image_height": float(height) if height is not None else None,
                 "adapter_version": ADAPTER_VERSION,
@@ -433,25 +508,35 @@ class XLRSAdapter:
         self,
         row: dict[str, Any],
         images: list[ImageRef],
-        release_root: Path,
         split: str,
         index: int,
+        *,
+        image_root_kind: str,
     ) -> UnifiedSample:
         question = _first_text(row, ("question", "text", "query"))
         choices = _choices(row)
         if not question or not isinstance(choices, list) or not choices:
             raise DatasetProbeError(f"XLRS Lite row {index} is missing VQA fields")
         answer = _first_text(row, ("answer", "label", "ground_truth"))
-        allowed_letters = "ABCDE"[: len(choices)]
+        allow_multiple = _multi_answer_hint(row)
         if answer is not None and len(choices) <= 5:
-            allowed_set = set(allowed_letters)
+            allowed_set = set("ABCDE"[: len(choices)])
             parts = [part.strip() for part in _ANSWER_SEPARATOR.split(answer) if part.strip()]
             if any(len(part) != 1 or part.upper() not in allowed_set for part in parts):
                 raise DatasetProbeError(
                     f"XLRS Lite row {index} has invalid answer {answer!r} "
                     f"for {len(choices)} choices"
                 )
-        multi_answer = _multi_answer_hint(row)
+            if len(parts) > 1:
+                if not allow_multiple:
+                    raise DatasetProbeError(
+                        f"XLRS Lite row {index} has multiple answers but "
+                        "allow_multiple is false"
+                    )
+                if len({part.upper() for part in parts}) != len(parts):
+                    raise DatasetProbeError(
+                        f"XLRS Lite row {index} repeats an answer letter: {answer!r}"
+                    )
         source_id = _first_text(row, ("id", "question_id", "source_id"))
         return UnifiedSample(
             sample_id=stable_sample_id(
@@ -473,25 +558,80 @@ class XLRSAdapter:
                 "release": HF_REPOS["multiple_choice_vqa"],
                 "release_split": RELEASE_SPLITS["multiple_choice_vqa"],
                 "source_index": index,
+                "image_root_kind": image_root_kind,
                 "choices": [str(choice) for choice in choices],
-                "allow_multiple": multi_answer,
+                "allow_multiple": allow_multiple,
                 "adapter_version": ADAPTER_VERSION,
             },
         )
 
 
 def _multi_answer_hint(row: dict[str, Any]) -> bool:
-    """Explicit fields win; otherwise the audited official question-type rule.
-    显式字段优先；否则使用已审计的官方问题类型规则。"""
-    for key in ("allow_multiple", "multi_answer"):
+    """Explicit fields win with strict bool parsing; otherwise only audited
+    question types count. Never scans the whole row string.
+    显式字段优先（严格 bool 解析）；否则仅已审计问题类型生效。
+    绝不扫描整个 row 字符串。"""
+    for key in _EXPLICIT_MULTI_ANSWER_KEYS:
         value = row.get(key)
+        if value is None:
+            continue
         if isinstance(value, bool):
             return value
-        if isinstance(value, str) and value.strip().lower() in {"true", "1", "yes"}:
-            return True
-        if isinstance(value, str) and value.strip().lower() in {"false", "0", "no"}:
-            return False
-    return "overall land use" in str(row).lower()
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes"}:
+                return True
+            if lowered in {"false", "0", "no"}:
+                return False
+            raise DatasetProbeError(
+                f"invalid boolean value {value!r} for {key}"
+            )
+        raise DatasetProbeError(
+            f"invalid boolean value {value!r} for {key}"
+        )
+    question_type = _first_text(row, ("question_type", "type", "subtask", "task_type"))
+    if question_type is None:
+        return False
+    return question_type.casefold() in _AUDITED_MULTI_ANSWER_TYPES
+
+
+def _caption_texts(row: dict[str, Any], index: int) -> list[str]:
+    """Extract all non-empty reference captions; strings, list[str], or
+    list[dict] with explicit text keys. Other structures fail.
+    提取全部非空参考 caption；支持字符串、list[str] 或带明确文本键的
+    list[dict]；其他结构失败。"""
+    answer_value = _first_value(row, ("caption", "text", "answer", "description"))
+    if answer_value is None:
+        raise DatasetProbeError(f"XLRS caption row {index} has no caption field")
+    if isinstance(answer_value, str):
+        texts = [answer_value.strip()] if answer_value.strip() else []
+    elif isinstance(answer_value, list):
+        texts = []
+        for item in answer_value:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    texts.append(stripped)
+            elif isinstance(item, dict):
+                text = _first_text(item, _CAPTION_TEXT_KEYS)
+                if text is None:
+                    raise DatasetProbeError(
+                        f"XLRS caption row {index} has a dict caption without a text key"
+                    )
+                texts.append(text)
+            else:
+                raise DatasetProbeError(
+                    f"XLRS caption row {index} has an unsupported caption item "
+                    f"of type {type(item).__name__}"
+                )
+    else:
+        raise DatasetProbeError(
+            f"XLRS caption row {index} has an unsupported caption value "
+            f"of type {type(answer_value).__name__}"
+        )
+    if not texts:
+        raise DatasetProbeError(f"XLRS caption row {index} has no non-empty caption")
+    return texts
 
 
 def _parse_boxes(value: Any, index: int) -> list[list[float]]:

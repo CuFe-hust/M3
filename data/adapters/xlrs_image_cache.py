@@ -30,6 +30,10 @@ def materialize_image(
 ) -> tuple[Path, dict[str, Any]]:
     """Resolve one HF image feature to a local file and a JSON-safe descriptor.
     将一条 HF 图片特征解析为本地文件与 JSON 安全描述符。"""
+    if not isinstance(cache_root, Path):
+        raise ImageMaterializationError(
+            f"cache_root must be a Path, got {type(cache_root).__name__}"
+        )
     if isinstance(value, str):
         candidate = release_root / value
         if not candidate.is_file():
@@ -61,6 +65,34 @@ def materialize_image(
     raise ImageMaterializationError(
         f"XLRS row {index} has an unsupported image value of type {type(value).__name__}"
     )
+
+
+def cache_existing_path(
+    path: Path,
+    *,
+    cache_root: Path,
+    index: int,
+) -> tuple[Path, dict[str, Any]]:
+    """Copy a path-backed image into the external cache by content hash.
+    Used when one row mixes path and bytes/PIL images so every image of the
+    row shares the cache root. 按内容哈希把 path 图片复制到外部 cache；
+    用于一行混合 path 与 bytes/PIL 图片时统一解析根。"""
+    if not isinstance(cache_root, Path):
+        raise ImageMaterializationError(
+            f"cache_root must be a Path, got {type(cache_root).__name__}"
+        )
+    if not path.is_file():
+        raise ImageMaterializationError(
+            f"XLRS row {index} references missing image path: {path}"
+        )
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    suffix = path.suffix.lower() or ".png"
+    target = cache_root / f"{digest}{suffix}"
+    if not target.is_file():
+        cache_root.mkdir(parents=True, exist_ok=True)
+        _atomic_write(target, data)
+    return target, {"image_present": True, "image_source_type": "path_cached"}
 
 
 def _materialize_bytes(data: bytes, cache_root: Path) -> Path:
@@ -100,12 +132,17 @@ def _encode_png(image: Any) -> bytes:
 def _atomic_write(target: Path, data: bytes) -> None:
     directory = target.parent
     directory.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        "wb", dir=directory, prefix=".xlrs-", delete=False
-    ) as handle:
-        handle.write(data)
-        temporary = Path(handle.name)
-    temporary.replace(target)
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "wb", dir=directory, prefix=".xlrs-", delete=False
+        ) as handle:
+            handle.write(data)
+            temporary = Path(handle.name)
+        temporary.replace(target)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
 
 
 def _is_pil_image(value: Any) -> bool:
