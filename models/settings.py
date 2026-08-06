@@ -6,9 +6,10 @@ application/settings.py 负责。
 
 from __future__ import annotations
 
+import os
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class QwenSettings(BaseModel):
@@ -17,7 +18,12 @@ class QwenSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # Physical checkpoint path / name passed to from_pretrained.
+    # 传给 from_pretrained 的物理 checkpoint 路径/名称。
     model: str = "qwen3-vl-4b-instruct"
+    # Logical, machine-independent model identity used for hashes and traces.
+    # 用于哈希与 trace 的逻辑、与机器无关的模型身份。
+    cache_model_id: str | None = None
     max_tokens: int = Field(default=4096, gt=0)
     spatial_review_max_tokens: int = Field(default=128, gt=0)
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
@@ -29,6 +35,27 @@ class QwenSettings(BaseModel):
     min_pixels: int | None = Field(default=None, gt=0)
     max_pixels: int | None = Field(default=None, gt=0)
     revision: str | None = None
+
+    @model_validator(mode="after")
+    def validate_model_identity(self) -> "QwenSettings":
+        """A local absolute checkpoint path must carry an explicit logical
+        cache model id so hashes and traces never leak machine paths.
+        本地绝对 checkpoint 路径必须携带显式逻辑缓存模型 ID，使哈希与
+        trace 永不泄漏机器路径。"""
+        if os.path.isabs(self.model) and not self.cache_model_id:
+            raise ValueError(
+                "cache_model_id is required when model is a local absolute path"
+            )
+        return self
+
+    @property
+    def effective_cache_model_id(self) -> str:
+        """Logical model identity for hashes and traces; falls back to the
+        declared model name, which is always safe because absolute local
+        paths are rejected without an explicit cache_model_id.
+        用于哈希与 trace 的逻辑模型身份；未提供时回退到声明的模型名——
+        绝对本地路径已在无 cache_model_id 时被拒绝，因此回退始终安全。"""
+        return self.cache_model_id or self.model
 
 
 class DeepSeekSettings(BaseModel):

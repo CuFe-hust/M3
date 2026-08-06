@@ -7,10 +7,11 @@ Qwen3-VL 基线封装：惰性加载处理器与模型，提供基于 UnifiedSam
 
 from __future__ import annotations
 
+import os
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from models.qwen_transformers import QwenTransformersError
 
@@ -22,6 +23,9 @@ class Qwen3VLSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     model: str = "qwen3-vl-4b-instruct"
+    # Logical, machine-independent model identity (mirrors QwenSettings).
+    # 逻辑、与机器无关的模型身份（与 QwenSettings 保持一致）。
+    cache_model_id: str | None = None
     max_new_tokens: int = Field(default=128, gt=0)
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     device_map: str = "auto"
@@ -29,6 +33,25 @@ class Qwen3VLSettings(BaseModel):
     # 联网行为的唯一来源：默认离线。
     allow_download: bool = False
     revision: str | None = None
+
+    @model_validator(mode="after")
+    def validate_model_identity(self) -> "Qwen3VLSettings":
+        """A local absolute checkpoint path must carry an explicit logical
+        cache model id (mirrors QwenSettings). 本地绝对 checkpoint 路径必须
+        携带显式逻辑缓存模型 ID（与 QwenSettings 一致）。"""
+        if os.path.isabs(self.model) and not self.cache_model_id:
+            raise ValueError(
+                "cache_model_id is required when model is a local absolute path"
+            )
+        return self
+
+    @property
+    def effective_cache_model_id(self) -> str:
+        """Logical model identity; the fallback is always safe because absolute
+        local paths are rejected without an explicit cache_model_id.
+        逻辑模型身份；回退始终安全，因为无 cache_model_id 的绝对本地路径
+        已被拒绝。"""
+        return self.cache_model_id or self.model
 
 
 class Qwen3VLBaseline:
