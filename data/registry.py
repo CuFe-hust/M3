@@ -85,7 +85,10 @@ def register_default_adapters(registry: DatasetRegistry) -> None:
     registry.register("XLRS-Bench", lambda: XLRSAdapter(), aliases=("XLRS",))
     registry.register(
         "XLRS-Bench-lite",
-        lambda: XLRSAdapter(name="XLRS-Bench-lite"),
+        lambda: XLRSAdapter(
+            name="XLRS-Bench-lite",
+            supported_tasks=frozenset({"multiple_choice_vqa"}),
+        ),
         aliases=("XLRS-lite",),
     )
 
