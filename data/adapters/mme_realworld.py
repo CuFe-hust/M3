@@ -24,9 +24,11 @@ from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 ANNOTATION_NAME = "MME_RealWorld.json"
 SUPPORTED_TASKS = frozenset({"multiple_choice_vqa"})
 ADAPTER_VERSION = "official-v1"
-# 合法答案格式：一个或多个选项字母（A–E，大小写），逗号/空格/顿号分隔。
-_ANSWER_PATTERN: Pattern[str] = re.compile(r"^[A-Ea-e](?:[,\s，、]+[A-Ea-e])*$")
 _IMAGE_KEYS = ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename", "image_id")
+# Multi-answer separators: space, comma, Chinese comma, ideographic comma.
+# 多答案分隔符：空格、逗号、中文逗号、顿号。
+_ANSWER_SEPARATOR = re.compile(r"[\s,，、]+")
+_MAX_CHOICES = 5
 
 
 def _first_text(row: dict[str, Any], keys: tuple[str, ...]) -> str | None:
@@ -80,23 +82,18 @@ class MMERealWorldAdapter:
             )
         annotation = self._annotation_path(root)
         rows = read_json_rows(annotation)
+        rs_rows = [row for row in rows if self._is_remote_sensing(row)]
+        if not rs_rows:
+            raise DatasetProbeError(f"zero remote-sensing records in {ANNOTATION_NAME} under {root}")
         for index, row in enumerate(rows):
             if not self._is_remote_sensing(row):
                 continue
             self._validate_row(row, index)
             question = _first_text(row, ("Text", "text", "question"))
             choices = row.get("Answer choices", row.get("answer_choices", []))
-            if not isinstance(choices, list) or not choices:
-                raise DatasetProbeError(f"MME-RealWorld RS row {index} has invalid choices")
             ground_truth = _first_text(row, ("Ground truth", "ground_truth", "answer"))
-            assert ground_truth is not None  # guaranteed by _validate_row
             image_value = _first_value(row, _IMAGE_KEYS)
-            assert image_value is not None  # guaranteed by _validate_row
-            image_path = root / str(image_value)
-            if not image_path.is_file():
-                raise DatasetProbeError(
-                    f"MME-RealWorld RS row {index} references missing image: {image_value}"
-                )
+            image_path = self._image_path(root, annotation.parent, str(image_value))
             subtask = self._subtask(row)
             allow_multiple = _as_bool(
                 row.get("allow_multiple", row.get("multi_answer", False))
@@ -162,15 +159,52 @@ class MMERealWorldAdapter:
         choices = row.get("Answer choices", row.get("answer_choices", []))
         if not isinstance(choices, list) or not choices:
             raise DatasetProbeError(f"MME-RealWorld RS row {index} has no answer choices")
+        if len(choices) > _MAX_CHOICES:
+            raise DatasetProbeError(
+                f"MME-RealWorld RS row {index} has {len(choices)} choices; "
+                f"at most {_MAX_CHOICES} are supported"
+            )
         ground_truth = _first_text(row, ("Ground truth", "ground_truth", "answer"))
         if ground_truth is None:
             raise DatasetProbeError(f"MME-RealWorld RS row {index} has no ground truth")
-        if not _ANSWER_PATTERN.match(ground_truth):
+        allow_multiple = _as_bool(row.get("allow_multiple", row.get("multi_answer", False)))
+        allowed_letters = "ABCDE"[: len(choices)]
+        allowed_set = set(allowed_letters)
+        answers = [part.strip() for part in _ANSWER_SEPARATOR.split(ground_truth) if part.strip()]
+        if not answers or any(
+            len(answer) != 1 or answer.upper() not in allowed_set for answer in answers
+        ):
             raise DatasetProbeError(
-                f"MME-RealWorld RS row {index} has invalid answer format: {ground_truth!r}"
+                f"MME-RealWorld RS row {index} has invalid answer {ground_truth!r} "
+                f"for {len(choices)} choices (allowed letters: {allowed_letters})"
+            )
+        if len(set(answer.upper() for answer in answers)) != len(answers):
+            raise DatasetProbeError(
+                f"MME-RealWorld RS row {index} repeats an answer letter: {ground_truth!r}"
+            )
+        if len(answers) > 1 and not allow_multiple:
+            raise DatasetProbeError(
+                f"MME-RealWorld RS row {index} has multiple answers but allow_multiple is false"
             )
         if _first_value(row, _IMAGE_KEYS) is None:
             raise DatasetProbeError(f"MME-RealWorld RS row {index} has no image field")
+
+    def _image_path(self, root: Path, annotation_root: Path, image_value: str) -> Path:
+        candidates = (
+            root / image_value,
+            annotation_root / image_value,
+            root / "images" / image_value,
+            annotation_root / "images" / image_value,
+        )
+        existing = sorted({candidate.resolve() for candidate in candidates if candidate.is_file()})
+        if not existing:
+            raise DatasetProbeError(f"MME-RealWorld image is missing: {image_value}")
+        if len(existing) > 1:
+            raise DatasetProbeError(
+                f"MME-RealWorld image is ambiguous: {image_value} matches "
+                f"{len(existing)} different files"
+            )
+        return existing[0]
 
 
 def _first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:

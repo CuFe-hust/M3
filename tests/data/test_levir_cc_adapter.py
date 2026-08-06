@@ -118,7 +118,7 @@ def test_filename_split_mode_resolves_images(tmp_path: Path) -> None:
     assert "A" in sample.images[0].path.parts and "B" in sample.images[1].path.parts
 
 
-def test_split_filtering(tmp_path: Path) -> None:
+def test_split_filtering_and_empty_split_failure(tmp_path: Path) -> None:
     root = tmp_path / "levir_cc_split"
     _make_image(root / "images" / "train" / "A" / "0001.png", 7)
     _make_image(root / "images" / "train" / "B" / "0001.png", 8)
@@ -126,27 +126,37 @@ def test_split_filtering(tmp_path: Path) -> None:
         {"split": "train", "image_A": "images/train/A/0001.png",
          "image_B": "images/train/B/0001.png", "captions": ["train change"]},
     ])
-    assert list(LEVIRCCAdapter().iter_samples(root, "test", "change_caption")) == []
     assert len(list(LEVIRCCAdapter().iter_samples(root, "train", "change_caption"))) == 1
+    with pytest.raises(DatasetProbeError, match="no LEVIR-CC records"):
+        list(LEVIRCCAdapter().iter_samples(root, "test", "change_caption"))
+
+
+def test_split_aliases_are_normalized(tmp_path: Path) -> None:
+    root = tmp_path / "levir_cc_alias_split"
+    _make_image(root / "images" / "val" / "A" / "0001.png", 1)
+    _make_image(root / "images" / "val" / "B" / "0001.png", 2)
+    _write_json(root / "LevirCCcaptions.json", [
+        {"split": "val", "image_A": "images/val/A/0001.png",
+         "image_B": "images/val/B/0001.png", "captions": ["changed"]},
+    ])
+    samples = list(LEVIRCCAdapter().iter_samples(root, "validation", "change_caption"))
+    assert len(samples) == 1
+    assert samples[0].split == "validation"
+    with pytest.raises(DatasetProbeError, match="unknown LEVIR-CC split"):
+        list(LEVIRCCAdapter().iter_samples(root, "nope", "change_caption"))
 
 
 # ── change_qa / 条件支持 ────────────────────────────────────────────────────
 
 
-def test_change_qa_requires_explicit_question(tmp_path: Path) -> None:
+def test_change_qa_is_not_declared_without_official_question_field(tmp_path: Path) -> None:
+    """The official LEVIR-CC caption release carries no question field, so
+    change_qa is not a supported task.
+    官方 LEVIR-CC caption 发布不含 question 字段，因此不声明 change_qa。"""
     root = _build_official_root(tmp_path)
-    with pytest.raises(DatasetProbeError, match="no question"):
+    assert "change_qa" not in LEVIRCCAdapter().supported_tasks
+    with pytest.raises(DatasetProbeError, match="not support"):
         list(LEVIRCCAdapter().iter_samples(root, "test", "change_qa"))
-    _write_json(root / "LevirCCcaptions.json", [
-        {"split": "test",
-         "image_A": "images/test/A/0001.png",
-         "image_B": "images/test/B/0001.png",
-         "captions": ["A building appeared."],
-         "question": "Did a building appear?"},
-    ])
-    sample = next(LEVIRCCAdapter().iter_samples(root, "test", "change_qa"))
-    assert sample.task == "change_qa"
-    assert sample.question == "Did a building appear?"
 
 
 # ── 显式失败 / explicit failures ───────────────────────────────────────────

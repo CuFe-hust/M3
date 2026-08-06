@@ -19,13 +19,35 @@ from data.adapters.base import AdapterProbe, DatasetProbeError, read_json_rows
 from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 
 ANNOTATION_NAME = "LevirCCcaptions.json"
-SUPPORTED_TASKS = frozenset({"change_caption", "change_qa"})
+SUPPORTED_TASKS = frozenset({"change_caption"})
+# change_qa is intentionally NOT declared: the official LEVIR-CC caption
+# release carries no question field, so the capability cannot be proven.
+# change_qa 有意不声明：官方 LEVIR-CC caption 发布不含 question 字段，
+# 该能力无法被证明。
 
 # First image keys map to t1; second image keys map to t2. / 首图键映射 t1，次图键映射 t2。
 _T1_KEYS = ("image_A", "A", "image1", "before")
 _T2_KEYS = ("image_B", "B", "image2", "after")
 _CAPTION_KEYS = ("captions", "caption", "sentences", "description")
 _CAPTION_TEXT_KEYS = ("raw", "caption", "text", "sentence")
+
+# Split aliases normalized to canonical forms. / split 别名规范化为规范形式。
+_SPLIT_ALIASES = {
+    "val": "validation",
+    "validation": "validation",
+    "test": "test",
+    "testing": "test",
+    "train": "train",
+}
+
+
+def _normalize_split(split: str) -> str:
+    canonical = _SPLIT_ALIASES.get(split.strip().lower())
+    if canonical is None:
+        raise DatasetProbeError(
+            f"unknown LEVIR-CC split {split!r}; supported={sorted(set(_SPLIT_ALIASES))}"
+        )
+    return canonical
 
 
 def _first_value(row: dict[str, Any], keys: tuple[str, ...]) -> Any:
@@ -42,11 +64,20 @@ class LEVIRCCAdapter:
     name = "LEVIR-CC"
     supported_tasks = SUPPORTED_TASKS
 
-    def probe(self, root: Path) -> AdapterProbe:
+    def probe(self, root: Path, task: str | None = None) -> AdapterProbe:
         """Locate and validate the unique official annotation before execution.
-        运行前定位并校验唯一的官方标注。"""
+        Zero-record annotations are rejected. 运行前定位并校验唯一的官方标注；
+        零记录标注被拒绝。"""
+        if task is not None and task not in SUPPORTED_TASKS:
+            raise DatasetProbeError(
+                f"LEVIR-CC does not support task={task!r}; supported={sorted(SUPPORTED_TASKS)}"
+            )
         annotation = self._annotation_path(root)
         rows = read_json_rows(annotation)
+        if not rows:
+            raise DatasetProbeError(
+                f"zero records in {ANNOTATION_NAME} under {root}"
+            )
         self._validate_rows(rows, annotation)
         observed = tuple(sorted({key for row in rows[:20] for key in row}))
         return AdapterProbe(
@@ -55,22 +86,31 @@ class LEVIRCCAdapter:
             sample_file=annotation,
             observed_fields=observed,
             sample_count=len(rows),
+            task=task,
+            available_tasks=tuple(sorted(SUPPORTED_TASKS)),
         )
 
     def iter_samples(self, root: Path, split: str, task: str) -> Iterator[UnifiedSample]:
         """Yield schema-validated unified samples in source order.
-        按源顺序产出具 schema 校验的统一样本。"""
+        An empty split fails before yielding anything.
+        按源顺序产出具 schema 校验的统一样本；空 split 在产出前失败。"""
         if task not in SUPPORTED_TASKS:
             raise DatasetProbeError(
                 f"LEVIR-CC does not support task={task!r}; supported={sorted(SUPPORTED_TASKS)}"
             )
+        canonical_split = _normalize_split(split)
         annotation = self._annotation_path(root)
         rows = read_json_rows(annotation)
+        if not rows:
+            raise DatasetProbeError(
+                f"zero records in {ANNOTATION_NAME} under {root}"
+            )
         self._validate_rows(rows, annotation)
         dataset_root = annotation.parent
+        yielded = 0
         for index, row in enumerate(rows):
             row_split = str(row.get("split", row.get("Split", "test"))).lower()
-            if row_split != split.lower():
+            if _normalize_split(row_split) != canonical_split:
                 continue
             image_a, image_b = self._image_pair(row, dataset_root)
             if not image_a.is_file() or not image_b.is_file():
@@ -79,19 +119,12 @@ class LEVIRCCAdapter:
                     f"{image_a} / {image_b}"
                 )
             answers = self._caption_texts(row, index)
-            question = ""
-            if task == "change_qa":
-                if "question" not in row or not str(row.get("question", "")).strip():
-                    raise DatasetProbeError(
-                        f"LEVIR-CC row {index} has no question for change_qa"
-                    )
-                question = str(row["question"])
-            else:
-                question = str(row.get("question", ""))
+            question = str(row.get("question", ""))
+            yielded += 1
             yield UnifiedSample(
                 sample_id=stable_sample_id(
                     dataset=self.name,
-                    split=split,
+                    split=canonical_split,
                     source_id=None,
                     relative_image_paths=[
                         image_a.relative_to(root),
@@ -101,7 +134,7 @@ class LEVIRCCAdapter:
                     source_index=index,
                 ),
                 dataset=self.name,
-                split=split,
+                split=canonical_split,
                 task=task,
                 images=[
                     ImageRef(image_id=f"t1-{index}", path=image_a.relative_to(root), role="t1"),
@@ -120,6 +153,10 @@ class LEVIRCCAdapter:
                     "source_index": index,
                     "adapter_version": "official-captions-v1",
                 },
+            )
+        if yielded == 0:
+            raise DatasetProbeError(
+                f"no LEVIR-CC records for split {split!r} under {root}"
             )
 
     # ── helpers / 辅助 ──────────────────────────────────────────────────────

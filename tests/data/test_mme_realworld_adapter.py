@@ -129,11 +129,26 @@ def test_metadata_holds_subtask_and_allow_multiple(tmp_path: Path) -> None:
 
 def test_answer_format_validation() -> None:
     adapter = MMERealWorldAdapter()
-    for good in ("A", "B", "a", "A, B", "A,B", "A B", "A、B", "C, E"):
+    for good in ("A", "B", "a", "C", "D"):
         adapter._validate_row(_rs_row(**{"Ground truth": good}), 0)
-    for bad in ("AB", "F", "1", "A-B", "B and C", "A,B,C,D,E,F"):
-        with pytest.raises(DatasetProbeError, match="answer format"):
+    adapter._validate_row(
+        _rs_row(**{"Ground truth": "A, B"}, allow_multiple=True), 0
+    )
+    adapter._validate_row(
+        _rs_row(**{"Ground truth": "A、B"}, allow_multiple=True), 0
+    )
+    for bad in ("", "AB", "1", "A-B", "A, B", "B and C", "A,A"):
+        with pytest.raises(DatasetProbeError):
             adapter._validate_row(_rs_row(**{"Ground truth": bad}), 0)
+
+
+def test_answer_outside_choice_count_fails() -> None:
+    """Four choices allow A-D only; E must fail. / 4 个选项只允许 A–D；E 必须失败。"""
+    adapter = MMERealWorldAdapter()
+    four = _rs_row(**{"Answer choices": ["0", "1", "2", "3"]})
+    adapter._validate_row(four, 0)  # answer B is valid / 答案 B 合法
+    with pytest.raises(DatasetProbeError, match="invalid answer"):
+        adapter._validate_row(_rs_row(**{"Answer choices": ["0", "1", "2", "3"], "Ground truth": "E"}), 0)
 
 
 def test_missing_ground_truth_fails(tmp_path: Path) -> None:
@@ -149,7 +164,7 @@ def test_missing_ground_truth_fails(tmp_path: Path) -> None:
 def test_missing_image_fails(tmp_path: Path) -> None:
     root = tmp_path / "mme_missing_img"
     _write_json(root / "MME_RealWorld.json", [_rs_row()])
-    with pytest.raises(DatasetProbeError, match="missing image"):
+    with pytest.raises(DatasetProbeError, match="image is missing"):
         list(MMERealWorldAdapter().iter_samples(root, "test", "multiple_choice_vqa"))
 
 
