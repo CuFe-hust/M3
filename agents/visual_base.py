@@ -18,7 +18,12 @@ from agents.base import AgentContext, AgentExecution
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentName, AgentResult
 from data.schema import UnifiedSample
-from models.base import RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import (
+    ModelCacheIdentity,
+    RequestMeta,
+    VisionLanguageClient,
+    build_request_hash,
+)
 from models.images import UnsupportedImageFormatError, detect_image_mime, image_to_data_url
 
 
@@ -101,16 +106,19 @@ class VisualAgentBase:
         if sample.task not in self.supported_tasks:
             raise AgentTaskMismatchError(self.name, sample.task, supported=self.supported_tasks)
 
-        # The client's own cache identity is the only hash source; fail before
-        # reading images, consuming budget, or calling the model when it is
-        # missing. 客户端自身的缓存身份是唯一哈希来源；缺失时在读图、消费
-        # budget、调用模型之前显式失败。
+        # The client's own cache identity is the only hash source; it must be
+        # a real ModelCacheIdentity (never a duck-typed stand-in) so path-like
+        # models cannot bypass validation. Fail before reading images,
+        # consuming budget, or calling the model.
+        # 客户端自身的缓存身份是唯一哈希来源；它必须是真正的
+        # ModelCacheIdentity（不接受任意鸭子类型替代品），使 path-like 模型
+        # 无法绕过校验。在读图、消费 budget、调用模型之前显式失败。
         identity = getattr(self._client, "cache_identity", None)
-        if identity is None:
+        if not isinstance(identity, ModelCacheIdentity):
             raise AgentExecutionError(
                 self.name,
                 sample.sample_id,
-                cause="model client does not expose cache_identity",
+                cause="model client returned an invalid cache_identity",
             )
 
         # Read images and build content / 读取图像并构建内容
@@ -203,7 +211,7 @@ class VisualAgentBase:
         revision 全部取自客户端自身的缓存身份，使哈希与实际调用不会漂移。"""
         return build_request_hash(
             model=identity.model,
-            generation=identity.generation,
+            generation=identity.generation_payload(),
             prompt_version=prompt_version,
             messages=messages,
             image_sha256="|".join(image_hashes),
