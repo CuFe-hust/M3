@@ -20,7 +20,14 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
-from models.base import ModelT, RequestMeta, VisionLanguageClient, sanitize_messages
+from models.base import (
+    CacheIdentifiedClient,
+    ModelCacheIdentity,
+    ModelT,
+    RequestMeta,
+    VisionLanguageClient,
+    sanitize_messages,
+)
 from models.cache import CacheEntry, JsonResponseCache, ModelCacheError
 from models.settings import QwenSettings
 
@@ -36,7 +43,7 @@ class QwenTransformersError(RuntimeError):
     """
 
 
-class QwenTransformersClient(VisionLanguageClient):
+class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
     """Run the configured local checkpoint directly through Transformers.
     通过 Transformers 直接运行配置的本地权重。
     """
@@ -63,14 +70,21 @@ class QwenTransformersClient(VisionLanguageClient):
         self._generation_lock = asyncio.Lock()
 
     @property
-    def cache_generation_config(self) -> dict[str, Any]:
-        """Stable generation config used by request hashing.
-        供请求哈希使用的稳定生成配置。"""
-        return {
-            "temperature": 0.0,
-            "do_sample": False,
-            "max_tokens": self.settings.max_tokens,
-        }
+    def cache_identity(self) -> ModelCacheIdentity:
+        """Stable identity used by request hashing; the single source for
+        model name, generation parameters, client version, and revision.
+        供请求哈希使用的稳定身份；是模型名、生成参数、客户端版本与 revision
+        的唯一来源。"""
+        return ModelCacheIdentity(
+            model=self.settings.model,
+            generation={
+                "temperature": 0.0,
+                "do_sample": False,
+                "max_tokens": self.settings.max_tokens,
+            },
+            client_version=QWEN_CLIENT_VERSION,
+            revision=self.settings.revision,
+        )
 
     def _load(self) -> tuple[Any, Any]:
         """Load only the declared checkpoint without an endpoint or download
@@ -84,7 +98,7 @@ class QwenTransformersClient(VisionLanguageClient):
             raise QwenTransformersError(
                 "Install requirements.txt before loading local Qwen."
             ) from error
-        local_files_only = self.settings.effective_local_files_only()
+        local_files_only = not self.settings.allow_download
         revision = self.settings.revision
         dtype: Any = "auto"
         if self.settings.dtype != "auto":
@@ -168,7 +182,13 @@ class QwenTransformersClient(VisionLanguageClient):
                 result,
                 cache_hit=True,
                 validation_error=None,
-                metadata={"latency_seconds": 0.0, "token_usage": None},
+                metadata={
+                    "latency_seconds": 0.0,
+                    "token_usage": None,
+                    "cache_read_error": cache_error,
+                    "cache_write_error": None,
+                    "cache_write_recovered": False,
+                },
             )
             return result
         started = time.perf_counter()
@@ -236,11 +256,18 @@ class QwenTransformersClient(VisionLanguageClient):
             )
             raise QwenTransformersError(f"Local Qwen generation failed: {error}") from error
         rendered_raw = _render_raw_responses(raw_responses)
+        cache_write_error: str | None = None
         if self.cache:
-            self.cache.save(
-                request_meta.request_hash,
-                CacheEntry(raw_response=rendered_raw, parsed=result.model_dump(mode="json")),
-            )
+            try:
+                self.cache.save(
+                    request_meta.request_hash,
+                    CacheEntry(raw_response=rendered_raw, parsed=result.model_dump(mode="json")),
+                )
+            except ModelCacheError as error:
+                # A failed cache write must never drop a successful inference
+                # result; record it and continue. 缓存写失败绝不得丢弃成功的
+                # 推理结果；记录后继续。
+                cache_write_error = str(error)
         self._write_artifacts(
             request_meta,
             messages,
@@ -255,6 +282,8 @@ class QwenTransformersClient(VisionLanguageClient):
                 "repair_used": len(raw_responses) > 1,
                 "local_recoveries": _result_local_recoveries(result),
                 "cache_read_error": cache_error,
+                "cache_write_error": cache_write_error,
+                "cache_write_recovered": cache_write_error is not None,
             },
         )
         return result

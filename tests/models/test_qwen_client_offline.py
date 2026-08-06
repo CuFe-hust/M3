@@ -341,32 +341,124 @@ def test_cache_hit_does_not_acquire_generation_lock(tmp_path: Path) -> None:
     assert not client._generation_lock.locked()
 
 
+# ── cache identity / 缓存身份 (A) ──────────────────────────────────────────
+
+
+def test_cache_identity_is_stable() -> None:
+    from models.qwen_transformers import QWEN_CLIENT_VERSION
+
+    client = QwenTransformersClient(
+        QwenSettings(model="fake-model", max_tokens=64, revision="rev-1"),
+        model=_FakeModel(),
+        processor=_FakeProcessor([]),
+    )
+    identity = client.cache_identity
+    assert identity.model == "fake-model"
+    assert identity.revision == "rev-1"
+    assert identity.client_version == QWEN_CLIENT_VERSION
+    assert identity.generation == {
+        "temperature": 0.0,
+        "do_sample": False,
+        "max_tokens": 64,
+    }
+
+
+def test_cache_identity_reflects_max_tokens_and_revision() -> None:
+    base = QwenSettings(model="fake-model", max_tokens=64, revision="rev-1")
+    client_a = QwenTransformersClient(
+        base, model=_FakeModel(), processor=_FakeProcessor([])
+    )
+    client_b = QwenTransformersClient(
+        base.model_copy(update={"revision": "rev-2"}),
+        model=_FakeModel(),
+        processor=_FakeProcessor([]),
+    )
+    client_c = QwenTransformersClient(
+        base.model_copy(update={"max_tokens": 128}),
+        model=_FakeModel(),
+        processor=_FakeProcessor([]),
+    )
+    assert client_a.cache_identity != client_b.cache_identity
+    assert client_a.cache_identity != client_c.cache_identity
+
+
+# ── 缓存写失败 / cache write failures (C) ──────────────────────────────────
+
+
+def test_cache_write_failure_does_not_drop_result(tmp_path: Path, monkeypatch) -> None:
+    from models.cache import CacheWriteError
+
+    cache = JsonResponseCache(tmp_path / "cache")
+
+    def _broken_save(request_hash, entry):
+        raise CacheWriteError("cache write failed for deadbeef (write_text): OSError")
+
+    monkeypatch.setattr(cache, "save", _broken_save)
+    processor = _FakeProcessor(['{"label": "a", "box": [1, 2, 3, 4]}'])
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=_FakeModel(),
+        processor=processor,
+        cache=cache,
+    )
+    import asyncio
+
+    meta = _meta(tmp_path / "artifacts")
+    result = asyncio.run(client.complete_json(
+        messages=[{"role": "user", "content": "Q"}], response_model=_BoxResult, request_meta=meta,
+    ))
+    assert result.label == "a"
+    metadata = json.loads((tmp_path / "artifacts" / "validation.json").read_text(encoding="utf-8"))
+    assert metadata["response_metadata"]["cache_write_error"]
+    assert metadata["response_metadata"]["cache_write_recovered"] is True
+
+
+def test_successful_cache_write_records_no_error(tmp_path: Path) -> None:
+    cache = JsonResponseCache(tmp_path / "cache")
+    processor = _FakeProcessor(['{"label": "a", "box": [1, 2, 3, 4]}'])
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=_FakeModel(),
+        processor=processor,
+        cache=cache,
+    )
+    import asyncio
+
+    meta = _meta(tmp_path / "artifacts")
+    asyncio.run(client.complete_json(
+        messages=[{"role": "user", "content": "Q"}], response_model=_BoxResult, request_meta=meta,
+    ))
+    metadata = json.loads((tmp_path / "artifacts" / "validation.json").read_text(encoding="utf-8"))
+    assert metadata["response_metadata"]["cache_write_error"] is None
+    assert metadata["response_metadata"]["cache_write_recovered"] is False
+
+
 # ── 离线默认 / offline defaults (I) ────────────────────────────────────────
 
 
 def test_offline_defaults() -> None:
     settings = QwenSettings()
     assert settings.allow_download is False
-    assert settings.effective_local_files_only() is True
-    assert settings.local_files_only is None
+    # The dual-field config is gone: allow_download is the single source.
+    # 双字段配置已移除：allow_download 是唯一来源。
+    assert not hasattr(settings, "local_files_only")
 
 
-def test_allow_download_inverts_local_files_only() -> None:
-    assert QwenSettings(allow_download=True).effective_local_files_only() is False
-    with pytest.raises(ValueError, match="cannot both"):
-        QwenSettings(allow_download=True, local_files_only=True)
+def test_allow_download_is_single_source() -> None:
+    assert QwenSettings(allow_download=True).allow_download is True
+    assert QwenSettings(allow_download=False).allow_download is False
 
 
-# ── cache_generation_config / 生成配置 ─────────────────────────────────────
+# ── cache identity / 缓存身份 ───────────────────────────────────────────────
 
 
-def test_cache_generation_config_is_stable() -> None:
+def test_cache_identity_generation_matches_max_tokens() -> None:
     client = QwenTransformersClient(
         QwenSettings(model="fake", max_tokens=64),
         model=_FakeModel(),
         processor=_FakeProcessor([]),
     )
-    assert client.cache_generation_config == {
+    assert client.cache_identity.generation == {
         "temperature": 0.0,
         "do_sample": False,
         "max_tokens": 64,
