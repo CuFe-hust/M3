@@ -1,6 +1,9 @@
 {
   "completed_tasks": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
-  "completed_hardening_tasks": ["11.5-data-official-format-parity"],
+  "completed_hardening_tasks": [
+    "11.5-data-official-format-parity",
+    "11.6-data-runtime-correctness"
+  ],
   "implemented_files": [
     "data/__init__.py",
     "data/schema.py",

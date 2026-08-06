@@ -173,6 +173,7 @@ tests/data/test_adapter_integration.py
 tests/data/test_levir_cc_adapter.py
 tests/data/test_mme_realworld_adapter.py
 tests/data/test_registry.py
+tests/data/test_runtime_correctness_regressions.py
 tests/data/test_selection.py
 tests/data/test_validation.py
 tests/data/test_vrsbench_adapter.py

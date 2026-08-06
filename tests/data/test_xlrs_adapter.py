@@ -48,7 +48,7 @@ def _grounding_rows() -> list[dict]:
 def _lite_rows() -> list[dict]:
     return [
         {"question": "What is the overall land use type?", "choices": ["A", "B", "C", "D"],
-         "answer": "B", "image": "img_1.png"},
+         "answer": "B", "image": "img_1.png", "allow_multiple": True},
         {"question": "Which class is the target?", "A": "x", "B": "y", "C": "z", "D": "w",
          "label": "A", "image": "img_1.png"},
     ]

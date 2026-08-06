@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from data.adapters.base import DatasetProbeError
 from data.adapters.levir_cc import LEVIRCCAdapter
 from data.adapters.mme_realworld import MMERealWorldAdapter
 from data.adapters.vrsbench.adapter import VRSBenchAdapter
@@ -75,8 +76,10 @@ def test_vrsbench_full_root_discovers_all_tasks() -> None:
 
 
 def test_vrsbench_ambiguous_annotation_fails() -> None:
+    from data.adapters.base import DatasetProbeError
+
     root = FIXTURES / "vrsbench" / "ambiguous"
-    with pytest.raises(Exception, match="Expected exactly one"):
+    with pytest.raises(DatasetProbeError, match="Expected exactly one"):
         VRSBenchAdapter().probe(root, task="general_vqa")
 
 
@@ -170,7 +173,7 @@ def test_xlrs_split_mismatch_fails_before_loading(tmp_path: Path) -> None:
         return []
 
     adapter = XLRSAdapter(dataset_loader=loader)
-    with pytest.raises(Exception, match="requires split='train'"):
+    with pytest.raises(DatasetProbeError, match="requires split='train'"):
         list(adapter.iter_samples(unified, "test", "multiple_choice_vqa"))
     assert calls == [], "split mismatch must fail before any load"
 
@@ -186,7 +189,7 @@ def test_xlrs_allow_download_false_never_calls_hub_loader(tmp_path: Path) -> Non
     XLRSAdapter._load_from_hub = staticmethod(spy_hub)
     try:
         adapter = XLRSAdapter()  # allow_download=False by default
-        with pytest.raises(Exception, match="no local"):
+        with pytest.raises(DatasetProbeError, match="no local"):
             list(adapter.iter_samples(tmp_path / "empty", "train", "multiple_choice_vqa"))
         assert calls == []
     finally:
@@ -218,6 +221,8 @@ def test_adapter_run_does_not_modify_source(tmp_path: Path) -> None:
 
 
 def test_xlrs_bytes_image_materializes_to_external_cache(tmp_path: Path) -> None:
+    import hashlib
+    import io
     import shutil
 
     from PIL import Image
@@ -226,7 +231,7 @@ def test_xlrs_bytes_image_materializes_to_external_cache(tmp_path: Path) -> None
     release = unified / "XLRS-Bench-lite"
     shutil.copytree(FIXTURES / "xlrs" / "XLRS-Bench-lite", release)
     (release / "img_1.png").unlink()  # no path-backed image / 移除 path 图片
-    buffer = __import__("io").BytesIO()
+    buffer = io.BytesIO()
     Image.new("RGB", (4, 4), (6, 6, 6)).save(buffer, format="PNG")
     rows = [{"question": "Which class is the target?", "choices": ["A", "B", "C", "D"],
              "answer": "A", "image": {"path": "missing.png", "bytes": buffer.getvalue()}}]
@@ -234,23 +239,33 @@ def test_xlrs_bytes_image_materializes_to_external_cache(tmp_path: Path) -> None
     adapter = XLRSAdapter(dataset_loader=_xlrs_loader(rows), cache_root=cache)
     samples = list(adapter.iter_samples(unified, "train", "multiple_choice_vqa"))
     assert len(samples) == 1
-    # Cache file exists, deterministic name, source untouched. / cache 文件确定性命名，源未动。
+    # Cache file exists, deterministic name. / cache 文件存在，确定性命名。
     cached = list(cache.glob("*.png"))
     assert len(cached) == 1
-    assert cached[0].name == __import__("hashlib").sha256(buffer.getvalue()).hexdigest() + ".png"
-    assert not (release / "dataset_dict.json").exists() or True
+    assert cached[0].name == hashlib.sha256(buffer.getvalue()).hexdigest() + ".png"
     # Re-run reuses the same cache file. / 重跑复用同一 cache 文件。
     adapter2 = XLRSAdapter(dataset_loader=_xlrs_loader(rows), cache_root=cache)
     list(adapter2.iter_samples(unified, "train", "multiple_choice_vqa"))
     assert len(list(cache.glob("*.png"))) == 1
-    # validate against the cache root (the adapter's resolution root).
-    # 以 cache root（适配器解析根）执行校验。
+    # validate against the cache root (the sample's image_root_kind=cache).
+    # 以 cache root（样本 image_root_kind=cache）执行校验。
     report = validate_sample(samples[0], cache)
     assert report.ok is True, report.issues
-    # The dataset release root gained no new files. / dataset release 根未新增文件。
-    assert not (release / "missing.png").exists()
+    # The dataset release root gained no new files (real snapshot).
+    # dataset release 根未新增文件（真实快照）。
+    release_files_before = {
+        path.relative_to(release).as_posix(): path.read_bytes()
+        for path in release.rglob("*") if path.is_file()
+    }
+    assert (release / "missing.png").exists() is False
+    release_files_after = {
+        path.relative_to(release).as_posix(): path.read_bytes()
+        for path in release.rglob("*") if path.is_file()
+    }
+    assert release_files_after == release_files_before
     assert samples[0].ground_truth is not None
     assert samples[0].ground_truth.raw["source_row"]["image"]["image_present"] is True
+    assert samples[0].metadata["image_root_kind"] == "cache"
 
 
 def test_xlrs_pil_image_materializes_and_raw_stays_json_safe(tmp_path: Path) -> None:
