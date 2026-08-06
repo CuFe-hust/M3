@@ -21,8 +21,13 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from models.base import ModelT, RequestMeta, VisionLanguageClient, sanitize_messages
-from models.cache import CacheEntry, JsonResponseCache
+from models.cache import CacheEntry, JsonResponseCache, ModelCacheError
 from models.settings import QwenSettings
+
+# Bump whenever message translation, schema injection, JSON recovery, repair
+# semantics, or generation parameters change. / 消息翻译、Schema 注入、JSON
+# 恢复、修复语义或生成参数变化时提升此版本。
+QWEN_CLIENT_VERSION = "1"
 
 
 class QwenTransformersError(RuntimeError):
@@ -53,10 +58,24 @@ class QwenTransformersClient(VisionLanguageClient):
             raise ValueError("model and processor must be supplied together")
         self.model, self.processor = (model, processor) if model is not None else self._load()
         self.load_seconds = round(time.perf_counter() - started, 6)
+        # Serializes generation on this single client instance; cache hits do
+        # not acquire this lock. 序列化本客户端实例上的生成；缓存命中不占用锁。
+        self._generation_lock = asyncio.Lock()
+
+    @property
+    def cache_generation_config(self) -> dict[str, Any]:
+        """Stable generation config used by request hashing.
+        供请求哈希使用的稳定生成配置。"""
+        return {
+            "temperature": 0.0,
+            "do_sample": False,
+            "max_tokens": self.settings.max_tokens,
+        }
 
     def _load(self) -> tuple[Any, Any]:
-        """Load only the declared checkpoint without an endpoint or download fallback.
-        仅加载声明的权重，不使用端点或下载回退。"""
+        """Load only the declared checkpoint without an endpoint or download
+        fallback unless allow_download is explicitly enabled.
+        仅加载声明的权重；除非显式 allow_download，否则不做下载回退。"""
         try:
             import torch
             import transformers
@@ -65,6 +84,8 @@ class QwenTransformersClient(VisionLanguageClient):
             raise QwenTransformersError(
                 "Install requirements.txt before loading local Qwen."
             ) from error
+        local_files_only = self.settings.effective_local_files_only()
+        revision = self.settings.revision
         dtype: Any = "auto"
         if self.settings.dtype != "auto":
             dtype = {
@@ -79,12 +100,17 @@ class QwenTransformersClient(VisionLanguageClient):
             processor_kwargs["max_pixels"] = self.settings.max_pixels
         config = AutoConfig.from_pretrained(
             self.settings.model,
-            local_files_only=self.settings.local_files_only,
+            local_files_only=local_files_only,
             trust_remote_code=True,
+            revision=revision,
         )
         model_factory = _qwen_model_factory(transformers, config.model_type)
         model_load_kwargs = _model_load_kwargs(
-            self.settings, dtype=dtype, model_type=config.model_type
+            self.settings,
+            dtype=dtype,
+            model_type=config.model_type,
+            local_files_only=local_files_only,
+            revision=revision,
         )
         if config.model_type == "qwen3_5" and self.settings.use_kernels:
             model_module = importlib.import_module(model_factory.__module__)
@@ -98,8 +124,9 @@ class QwenTransformersClient(VisionLanguageClient):
         )
         processor = AutoProcessor.from_pretrained(
             self.settings.model,
-            local_files_only=self.settings.local_files_only,
+            local_files_only=local_files_only,
             trust_remote_code=True,
+            revision=revision,
             **processor_kwargs,
         )
         model.eval()
@@ -114,8 +141,24 @@ class QwenTransformersClient(VisionLanguageClient):
         max_tokens: int | None = None,
     ) -> ModelT:
         """Generate once, validate JSON, and persist auditable local-call metadata.
-        生成一次、校验 JSON，并保存可审计的本地调用元数据。"""
-        cached = self.cache.load(request_meta.request_hash) if self.cache else None
+        Corrupt or stale cache entries are recovered by regenerating.
+        生成一次、校验 JSON，并保存可审计的本地调用元数据。损坏或过期的
+        缓存条目通过重新生成恢复。"""
+        cache_error: str | None = None
+        cached = None
+        if self.cache is not None:
+            try:
+                cached = self.cache.load(request_meta.request_hash)
+            except ModelCacheError as error:
+                cache_error = str(error)
+        if cached is not None:
+            try:
+                result = response_model.model_validate(cached.parsed)
+            except ValidationError:
+                # Stale schema cache: regenerate and overwrite.
+                # 过期 Schema 缓存：重新生成并覆盖。
+                cached = None
+                cache_error = "stale_schema_cache_regenerated"
         if cached is not None:
             result = response_model.model_validate(cached.parsed)
             self._write_artifacts(
@@ -133,23 +176,27 @@ class QwenTransformersClient(VisionLanguageClient):
         attempt_errors: list[dict[str, Any]] = []
         token_usage: dict[str, int] | None = None
         try:
-            raw_response, token_usage = await asyncio.to_thread(
-                self._generate, messages, response_model, max_tokens
-            )
-            raw_responses.append(raw_response)
-            try:
-                result = _validate_response(raw_response, response_model)
-            except (json.JSONDecodeError, ValidationError, ValueError) as error:
-                attempt_errors.append(_validation_attempt_error(1, error))
-                if self.repair_prompt is None:
-                    raise
-                repair_messages = _repair_messages(self.repair_prompt, raw_response, str(error))
-                repaired, repair_usage = await asyncio.to_thread(
-                    self._generate, repair_messages, response_model, max_tokens
+            # Primary generation and any repair share one lock acquisition so
+            # no other request can interleave between them.
+            # 首次生成与修复共用一次锁获取，避免其他请求插入其间。
+            async with self._generation_lock:
+                raw_response, token_usage = await asyncio.to_thread(
+                    self._generate, messages, response_model, max_tokens
                 )
-                raw_responses.append(repaired)
-                token_usage = _sum_token_usage(token_usage, repair_usage)
-                result = _validate_response(repaired, response_model)
+                raw_responses.append(raw_response)
+                try:
+                    result = _validate_response(raw_response, response_model)
+                except (json.JSONDecodeError, ValidationError, ValueError) as error:
+                    attempt_errors.append(_validation_attempt_error(1, error))
+                    if self.repair_prompt is None:
+                        raise
+                    repair_messages = _repair_messages(self.repair_prompt, raw_response, str(error))
+                    repaired, repair_usage = await asyncio.to_thread(
+                        self._generate, repair_messages, response_model, max_tokens
+                    )
+                    raw_responses.append(repaired)
+                    token_usage = _sum_token_usage(token_usage, repair_usage)
+                    result = _validate_response(repaired, response_model)
         except (json.JSONDecodeError, ValidationError, ValueError) as error:
             if not attempt_errors or attempt_errors[-1]["error"] != str(error):
                 attempt_errors.append(_validation_attempt_error(len(raw_responses), error))
@@ -165,6 +212,7 @@ class QwenTransformersClient(VisionLanguageClient):
                     "token_usage": token_usage,
                     "attempt_errors": attempt_errors,
                     "repair_used": len(raw_responses) > 1,
+                    "cache_read_error": cache_error,
                 },
             )
             raise QwenTransformersError(
@@ -183,6 +231,7 @@ class QwenTransformersClient(VisionLanguageClient):
                     "token_usage": token_usage,
                     "attempt_errors": attempt_errors,
                     "repair_used": len(raw_responses) > 1,
+                    "cache_read_error": cache_error,
                 },
             )
             raise QwenTransformersError(f"Local Qwen generation failed: {error}") from error
@@ -205,6 +254,7 @@ class QwenTransformersClient(VisionLanguageClient):
                 "attempt_errors": attempt_errors,
                 "repair_used": len(raw_responses) > 1,
                 "local_recoveries": _result_local_recoveries(result),
+                "cache_read_error": cache_error,
             },
         )
         return result
@@ -308,17 +358,25 @@ def _uses_qwen35_chat_template(model: Any) -> bool:
     return getattr(getattr(model, "config", None), "model_type", None) == "qwen3_5"
 
 
-def _model_load_kwargs(settings: QwenSettings, *, dtype: Any, model_type: str) -> dict[str, Any]:
+def _model_load_kwargs(
+    settings: QwenSettings,
+    *,
+    dtype: Any,
+    model_type: str,
+    local_files_only: bool,
+    revision: str | None,
+) -> dict[str, Any]:
     kwargs: dict[str, Any] = {
         "dtype": dtype,
         "device_map": settings.device_map,
-        "local_files_only": settings.local_files_only,
+        "local_files_only": local_files_only,
         "trust_remote_code": True,
+        "revision": revision,
     }
     if model_type == "qwen3_5" and settings.use_kernels:
         kwargs["use_kernels"] = True
         kwargs["kernel_config"] = _qwen35_gb10_kernel_config(
-            local_files_only=settings.local_files_only
+            local_files_only=local_files_only
         )
     return kwargs
 

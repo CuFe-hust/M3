@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from models.cache import CacheEntry, JsonResponseCache
+from models.cache import CacheEntry, CorruptCacheEntryError, JsonResponseCache, ModelCacheError
 
 
 def test_cache_miss_returns_none(tmp_path: Path) -> None:
@@ -66,9 +66,37 @@ def test_cache_entry_rejects_extra_fields() -> None:
         CacheEntry.model_validate({"raw_response": "x", "parsed": {}, "secret": "sk-1"})
 
 
-def test_cache_corrupt_entry_raises(tmp_path: Path) -> None:
+def test_cache_corrupt_entry_raises_specific_error(tmp_path: Path) -> None:
+    """Corrupt JSON raises the precise CorruptCacheEntryError, never a broad
+    exception. 损坏 JSON 必须抛出精确的 CorruptCacheEntryError。"""
     digest = "e" * 64
     (tmp_path / f"{digest}.json").write_text("{not json", encoding="utf-8")
     cache = JsonResponseCache(tmp_path)
-    with pytest.raises(Exception):
+    with pytest.raises(CorruptCacheEntryError, match="invalid"):
         cache.load(digest)
+
+
+def test_cache_schema_invalid_entry_raises_specific_error(tmp_path: Path) -> None:
+    """Valid JSON failing the entry schema raises CorruptCacheEntryError.
+    合法 JSON 但不符合条目 Schema 时抛出 CorruptCacheEntryError。"""
+    digest = "f" * 64
+    (tmp_path / f"{digest}.json").write_text('{"parsed": {}}', encoding="utf-8")
+    cache = JsonResponseCache(tmp_path)
+    with pytest.raises(CorruptCacheEntryError, match="invalid"):
+        cache.load(digest)
+
+
+def test_cache_non_utf8_entry_raises_specific_error(tmp_path: Path) -> None:
+    """Non-UTF-8 cache files raise CorruptCacheEntryError, not OSError.
+    非 UTF-8 缓存文件抛出 CorruptCacheEntryError，而非 OSError。"""
+    digest = "a1b2c3d4" * 8
+    (tmp_path / f"{digest}.json").write_bytes(b"\xff\xfe\x00\x80")
+    cache = JsonResponseCache(tmp_path)
+    with pytest.raises(CorruptCacheEntryError, match="unreadable"):
+        cache.load(digest)
+
+
+def test_cache_errors_share_model_cache_base() -> None:
+    """All cache failures share the ModelCacheError base type.
+    所有缓存失败共享 ModelCacheError 基类。"""
+    assert issubclass(CorruptCacheEntryError, ModelCacheError)
