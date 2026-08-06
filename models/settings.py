@@ -6,10 +6,11 @@ application/settings.py 负责。
 
 from __future__ import annotations
 
-import os
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from models.base import is_local_model_path, validate_logical_model_id
 
 
 class QwenSettings(BaseModel):
@@ -38,24 +39,31 @@ class QwenSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_model_identity(self) -> "QwenSettings":
-        """A local absolute checkpoint path must carry an explicit logical
-        cache model id so hashes and traces never leak machine paths.
-        本地绝对 checkpoint 路径必须携带显式逻辑缓存模型 ID，使哈希与
-        trace 永不泄漏机器路径。"""
-        if os.path.isabs(self.model) and not self.cache_model_id:
-            raise ValueError(
-                "cache_model_id is required when model is a local absolute path"
+        """A local checkpoint path (POSIX, Windows drive, UNC, or file URI)
+        must carry an explicit logical cache model id, which itself must be a
+        logical identifier — never a local path — so hashes and traces never
+        leak machine paths. 本地 checkpoint 路径（POSIX、Windows drive、UNC
+        或 file URI）必须携带显式逻辑缓存模型 ID；该 ID 本身必须是逻辑标识
+        符而非本地路径，使哈希与 trace 永不泄漏机器路径。"""
+        if is_local_model_path(self.model) and not self.cache_model_id:
+            raise ValueError("cache_model_id is required when model is a local path")
+        if self.cache_model_id is not None:
+            self.cache_model_id = validate_logical_model_id(
+                self.cache_model_id,
+                where="cache_model_id",
             )
         return self
 
     @property
     def effective_cache_model_id(self) -> str:
-        """Logical model identity for hashes and traces; falls back to the
-        declared model name, which is always safe because absolute local
-        paths are rejected without an explicit cache_model_id.
-        用于哈希与 trace 的逻辑模型身份；未提供时回退到声明的模型名——
-        绝对本地路径已在无 cache_model_id 时被拒绝，因此回退始终安全。"""
-        return self.cache_model_id or self.model
+        """Logical model identity for hashes and traces; the returned value is
+        always validated — absolute local checkpoint paths are rejected without
+        an explicit cache_model_id, and the declared model name is safe.
+        用于哈希与 trace 的逻辑模型身份；返回值始终经过校验——无显式
+        cache_model_id 的绝对本地 checkpoint 路径已被拒绝，声明模型名安全。"""
+        if self.cache_model_id is not None:
+            return self.cache_model_id
+        return validate_logical_model_id(self.model, where="model")
 
 
 class DeepSeekSettings(BaseModel):

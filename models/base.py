@@ -11,9 +11,10 @@ import hashlib
 import json
 import math
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol, TypeVar
+from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
 
@@ -33,6 +34,43 @@ _IDENTITY_VALUE_PREFIXES = (
     "data:image/",
     "-----begin private key-----",
 )
+
+
+def is_local_model_path(value: str) -> bool:
+    """Cross-platform detection of local filesystem paths: POSIX absolute,
+    Windows drive (backslash or slash), Windows UNC (backslash or slash form),
+    and file URIs. 跨平台识别本地文件系统路径：POSIX 绝对、Windows drive
+    （反斜杠或斜杠）、Windows UNC（反斜杠或斜杠形式）与 file URI。"""
+    stripped = value.strip()
+    if not stripped:
+        return False
+    parsed = urlparse(stripped)
+    if parsed.scheme.lower() == "file":
+        return True
+    return (
+        PurePosixPath(stripped).is_absolute()
+        or PureWindowsPath(stripped).is_absolute()
+        or stripped.startswith("\\")
+        or stripped.startswith("//")
+    )
+
+
+def validate_logical_model_id(value: str, *, where: str) -> str:
+    """Validate a logical model identifier: a non-empty string without control
+    characters that is never a local filesystem path. Remote model names such
+    as "Qwen/Qwen3-VL-4B-Instruct" or "org:model@rev" remain allowed.
+    校验逻辑模型标识符：非空、无控制字符、且绝不是本地文件系统路径的字符串。
+    远程模型名（如 "Qwen/Qwen3-VL-4B-Instruct" 或 "org:model@rev"）仍被允许。"""
+    if not isinstance(value, str):
+        raise TypeError(f"{where} must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{where} must not be empty")
+    if "\x00" in normalized or "\n" in normalized or "\r" in normalized:
+        raise ValueError(f"{where} contains forbidden control characters")
+    if is_local_model_path(normalized):
+        raise ValueError(f"{where} must be a logical identifier, not a local path")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -55,24 +93,45 @@ class ModelCacheIdentity:
     generation: Mapping[str, Any]
     client_version: str
     revision: str | None = None
+    _frozen_generation: tuple[Any, ...] = field(init=False, repr=False, compare=True)
 
     def __post_init__(self) -> None:
-        if not self.model:
-            raise ValueError("model must not be empty")
-        if not self.client_version:
+        # The logical model id is validated independently of any settings
+        # class so even a custom client cannot inject a machine path.
+        # 逻辑模型 ID 独立于任何配置类校验，自定义客户端也无法注入机器路径。
+        object.__setattr__(
+            self,
+            "model",
+            validate_logical_model_id(self.model, where="ModelCacheIdentity.model"),
+        )
+        client_version = self.client_version.strip()
+        if not client_version:
             raise ValueError("client_version must not be empty")
+        object.__setattr__(self, "client_version", client_version)
+        if self.revision is not None:
+            revision = self.revision.strip()
+            if not revision or any(
+                character in revision for character in ("\x00", "\n", "\r")
+            ):
+                raise ValueError("revision contains forbidden characters")
+            object.__setattr__(self, "revision", revision)
         _validate_identity_value(self.generation, "generation")
         object.__setattr__(
             self,
+            "_frozen_generation",
+            _canonical_generation(self.generation, "generation"),
+        )
+        object.__setattr__(
+            self,
             "generation",
-            _freeze_identity_mapping(self.generation, "generation"),
+            _FrozenJsonMapping(self.generation, "generation"),
         )
 
     def generation_payload(self) -> dict[str, Any]:
         """Return a fresh plain-JSON copy of the generation payload; the
         internal frozen structure is never exposed.
         返回生成载荷的全新普通 JSON 副本；绝不暴露内部冻结结构。"""
-        return _unfreeze_identity_value(self.generation)
+        return _unfreeze_identity_value(self._frozen_generation)
 
 
 class CacheIdentifiedClient(Protocol):
@@ -83,17 +142,68 @@ class CacheIdentifiedClient(Protocol):
     def cache_identity(self) -> ModelCacheIdentity: ...
 
 
-# Type tags used by the frozen identity representation; they cannot collide
-# with user data because tuples are rejected by identity validation.
-# 冻结身份表示使用的类型标记；由于 tuple 会被身份校验拒绝，它们不会与
+class _FrozenJsonMapping(Mapping[str, Any]):
+    """Read-only, deep-frozen Mapping over JSON-safe values. Nested dicts
+    become further _FrozenJsonMapping instances and nested lists become
+    tuples, so no part of the payload can be mutated in place.
+    覆盖 JSON 安全值的只读、深度冻结 Mapping。嵌套 dict 变为新的
+    _FrozenJsonMapping，嵌套 list 变为 tuple，载荷任何部分都无法原地修改。"""
+
+    __slots__ = ("_items",)
+
+    def __init__(self, items: Mapping[str, Any], where: str) -> None:
+        object.__setattr__(
+            self,
+            "_items",
+            tuple(
+                (
+                    key,
+                    _freeze_identity_value(item, f"{where}.{key}"),
+                )
+                for key, item in sorted(items.items())
+            ),
+        )
+
+    def __getitem__(self, key: str) -> Any:
+        for item_key, item_value in self._items:
+            if item_key == key:
+                return item_value
+        raise KeyError(key)
+
+    def __iter__(self):
+        return (key for key, _ in self._items)
+
+    def __len__(self) -> int:
+        return len(self._items)
+
+    def __repr__(self) -> str:
+        return repr(dict(self))
+
+    def __eq__(self, other: Any) -> bool:
+        if isinstance(other, _FrozenJsonMapping):
+            return self._items == other._items
+        if isinstance(other, Mapping):
+            return dict(self) == dict(other)
+        return NotImplemented
+
+    def __hash__(self) -> int:
+        return hash(self._items)
+
+
+# Tag used by the canonical frozen generation representation; it cannot
+# collide with user data because tuples are rejected by identity validation.
+# 规范冻结生成表示使用的类型标记；由于 tuple 会被身份校验拒绝，它不会与
 # 用户数据冲突。
 _DICT_TAG = "_dict"
-_LIST_TAG = "_list"
 
 
-def _freeze_identity_mapping(mapping: Mapping[str, Any], where: str) -> tuple[Any, ...]:
-    """Canonicalize a mapping into a tagged, sorted, deep-frozen structure.
-    将映射规范化为带标记、排序、深度冻结的结构。"""
+def _canonical_generation(
+    mapping: Mapping[str, Any],
+    where: str,
+) -> tuple[Any, ...]:
+    """Canonicalize a mapping into a tagged, sorted, deep-frozen structure
+    used for equality and hashing. 将映射规范化为用于相等性与哈希的带标记、
+    排序、深度冻结结构。"""
     return (
         _DICT_TAG,
         tuple(
@@ -107,15 +217,15 @@ def _freeze_identity_mapping(mapping: Mapping[str, Any], where: str) -> tuple[An
 
 
 def _freeze_identity_value(value: Any, where: str) -> Any:
-    """Recursively freeze dicts and lists with type tags; other JSON-safe
-    values pass through. 用类型标记递归冻结 dict 与 list；其他 JSON 安全值
-    原样通过。"""
+    """Recursively freeze dicts as read-only mappings and lists as tuples;
+    other JSON-safe values pass through. 递归将 dict 冻结为只读映射、list
+    冻结为 tuple；其他 JSON 安全值原样通过。"""
     if isinstance(value, dict):
-        return _freeze_identity_mapping(value, where)
+        return _FrozenJsonMapping(value, where)
     if isinstance(value, list):
-        return (
-            _LIST_TAG,
-            tuple(_freeze_identity_value(item, f"{where}[{index}]") for index, item in enumerate(value)),
+        return tuple(
+            _freeze_identity_value(item, f"{where}[{index}]")
+            for index, item in enumerate(value)
         )
     return value
 
@@ -123,13 +233,18 @@ def _freeze_identity_value(value: Any, where: str) -> Any:
 def _unfreeze_identity_value(value: Any) -> Any:
     """Convert a frozen identity payload back into a plain JSON structure.
     将冻结的身份载荷还原为普通 JSON 结构。"""
-    if isinstance(value, tuple) and len(value) == 2 and value[0] in (_DICT_TAG, _LIST_TAG):
-        if value[0] == _DICT_TAG:
-            return {
-                key: _unfreeze_identity_value(item)
-                for key, item in value[1]
-            }
-        return [_unfreeze_identity_value(item) for item in value[1]]
+    if isinstance(value, tuple) and len(value) == 2 and value[0] == _DICT_TAG:
+        return {
+            key: _unfreeze_identity_value(item)
+            for key, item in value[1]
+        }
+    if isinstance(value, _FrozenJsonMapping):
+        return {
+            key: _unfreeze_identity_value(item)
+            for key, item in value._items
+        }
+    if isinstance(value, tuple):
+        return [_unfreeze_identity_value(item) for item in value]
     return value
 
 

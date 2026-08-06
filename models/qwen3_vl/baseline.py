@@ -7,12 +7,12 @@ Qwen3-VL 基线封装：惰性加载处理器与模型，提供基于 UnifiedSam
 
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from models.base import is_local_model_path, validate_logical_model_id
 from models.qwen_transformers import QwenTransformersError
 
 
@@ -36,22 +36,26 @@ class Qwen3VLSettings(BaseModel):
 
     @model_validator(mode="after")
     def validate_model_identity(self) -> "Qwen3VLSettings":
-        """A local absolute checkpoint path must carry an explicit logical
-        cache model id (mirrors QwenSettings). 本地绝对 checkpoint 路径必须
-        携带显式逻辑缓存模型 ID（与 QwenSettings 一致）。"""
-        if os.path.isabs(self.model) and not self.cache_model_id:
-            raise ValueError(
-                "cache_model_id is required when model is a local absolute path"
+        """A local checkpoint path must carry an explicit logical cache model
+        id, which itself must be a logical identifier (mirrors QwenSettings).
+        本地 checkpoint 路径必须携带显式逻辑缓存模型 ID；该 ID 必须是逻辑
+        标识符（与 QwenSettings 一致）。"""
+        if is_local_model_path(self.model) and not self.cache_model_id:
+            raise ValueError("cache_model_id is required when model is a local path")
+        if self.cache_model_id is not None:
+            self.cache_model_id = validate_logical_model_id(
+                self.cache_model_id,
+                where="cache_model_id",
             )
         return self
 
     @property
     def effective_cache_model_id(self) -> str:
-        """Logical model identity; the fallback is always safe because absolute
-        local paths are rejected without an explicit cache_model_id.
-        逻辑模型身份；回退始终安全，因为无 cache_model_id 的绝对本地路径
-        已被拒绝。"""
-        return self.cache_model_id or self.model
+        """Logical model identity; the returned value is always validated.
+        逻辑模型身份；返回值始终经过校验。"""
+        if self.cache_model_id is not None:
+            return self.cache_model_id
+        return validate_logical_model_id(self.model, where="model")
 
 
 class Qwen3VLBaseline:
