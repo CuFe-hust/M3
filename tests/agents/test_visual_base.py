@@ -359,6 +359,26 @@ def test_missing_cache_identity_fails_before_budget_and_model(tmp_path: Path) ->
     assert client.calls == []
 
 
+def test_invalid_cache_identity_fails_before_budget_and_model(tmp_path: Path) -> None:
+    """A duck-typed fake identity (not a ModelCacheIdentity) must be rejected
+    before images are read, budget is consumed, or the model is called.
+    鸭子类型的假身份（非 ModelCacheIdentity）必须在读图、消费 budget、调用
+    模型之前被拒绝。"""
+    root = tmp_path / "data"
+    budget = _FakeBudget()
+
+    class _FakeIdentityClient(_RecordingClient):
+        @property
+        def cache_identity(self):
+            return {"model": "/models/Qwen", "generation": {}, "client_version": "1"}
+
+    client = _FakeIdentityClient()
+    with __import__("pytest").raises(AgentExecutionError, match="cache_identity"):
+        asyncio.run(_base(client).run(_sample(root), _context(root, budget)))
+    assert budget.qwen_calls == 0
+    assert client.calls == []
+
+
 # ── 图片读取错误 / image read errors (F) ───────────────────────────────────
 
 

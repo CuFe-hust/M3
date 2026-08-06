@@ -505,15 +505,51 @@ def test_cache_entry_rejection_data_url_does_not_drop_result(tmp_path: Path) -> 
 # ── 离线默认 / offline defaults (I) ────────────────────────────────────────
 
 
-def test_absolute_checkpoint_requires_cache_model_id() -> None:
-    """A local absolute checkpoint path must carry an explicit logical id.
-    本地绝对 checkpoint 路径必须携带显式逻辑 ID。"""
+@pytest.mark.parametrize("path_like", [
+    "/models/Qwen3-VL-4B",
+    r"C:\models\Qwen3-VL-4B",
+    "C:/models/Qwen3-VL-4B",
+    r"\\server\share\Qwen3-VL-4B",
+    "//server/share/Qwen3-VL-4B",
+    "file:///models/Qwen3-VL-4B",
+])
+def test_path_like_model_requires_cache_model_id(path_like: str) -> None:
+    """A local checkpoint path of any platform shape must carry an explicit
+    logical id. 任何平台形态的本地 checkpoint 路径都必须携带显式逻辑 ID。"""
     from pydantic import ValidationError
 
     with pytest.raises(ValidationError, match="cache_model_id is required"):
-        QwenSettings(model="/models/Qwen3-VL-4B")
-    settings = QwenSettings(model="/models/Qwen3-VL-4B", cache_model_id="qwen3-vl-4b-local")
+        QwenSettings(model=path_like)
+    settings = QwenSettings(model=path_like, cache_model_id="qwen3-vl-4b-local")
     assert settings.effective_cache_model_id == "qwen3-vl-4b-local"
+
+
+@pytest.mark.parametrize("bad_id", [
+    "/models/Qwen",
+    r"C:\models\Qwen",
+    "C:/models/Qwen",
+    r"\\server\share\Qwen",
+    "//server/share/Qwen",
+    "file:///models/Qwen",
+    "",
+    "   ",
+    "line\nbreak",
+    "nul\x00byte",
+])
+def test_path_like_cache_model_id_rejected(bad_id: str) -> None:
+    """cache_model_id itself must be a logical identifier, never a path or
+    empty/control-character text. cache_model_id 本身必须是逻辑标识符，
+    绝不能是路径、空文本或含控制字符的文本。"""
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        QwenSettings(model="/models/Qwen3-VL-4B", cache_model_id=bad_id)
+
+
+def test_logical_cache_model_ids_allowed() -> None:
+    for value in ("qwen3-vl-4b-local", "Qwen/Qwen3-VL-4B-Instruct", "org:model@rev"):
+        settings = QwenSettings(model="/models/Qwen3-VL-4B", cache_model_id=value)
+        assert settings.effective_cache_model_id == value
     # Remote model names default to the declared name. / 远程模型名默认用声明名。
     remote = QwenSettings(model="Qwen/Qwen3-VL-4B-Instruct")
     assert remote.effective_cache_model_id == "Qwen/Qwen3-VL-4B-Instruct"

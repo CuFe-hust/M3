@@ -268,3 +268,69 @@ def test_cache_identity_key_order_does_not_matter() -> None:
     ) == build_request_hash(
         **kwargs, generation=b.generation_payload(), client_version=b.client_version
     )
+
+
+# ── 跨平台路径识别 / cross-platform path detection (A/C) ───────────────────
+
+
+@pytest.mark.parametrize("path_like", [
+    "/models/Qwen",
+    r"C:\models\Qwen",
+    "C:/models/Qwen",
+    r"\\server\share\Qwen",
+    "//server/share/Qwen",
+    "file:///models/Qwen",
+    "file://server/share/Qwen",
+])
+def test_cache_identity_rejects_path_like_model(path_like: str) -> None:
+    """Identity model must be a logical identifier, never a local path.
+    身份模型必须是逻辑标识符，绝不能是本地路径。"""
+    from models.base import ModelCacheIdentity
+
+    with pytest.raises(ValueError, match="logical identifier"):
+        ModelCacheIdentity(model=path_like, generation={}, client_version="1")
+
+
+def test_cache_identity_generation_exposes_mapping() -> None:
+    """generation must publicly behave as a Mapping even though it is frozen.
+    generation 对外必须是 Mapping，尽管内部已冻结。"""
+    from collections.abc import Mapping
+
+    from models.base import ModelCacheIdentity
+
+    identity = ModelCacheIdentity(
+        model="m",
+        generation={"max_tokens": 64, "nested": {"values": [1, 2]}},
+        client_version="1",
+    )
+    assert isinstance(identity.generation, Mapping)
+    assert dict(identity.generation)["max_tokens"] == 64
+    assert identity.generation["max_tokens"] == 64
+    assert isinstance(identity.generation["nested"], Mapping)
+    # Nested lists are frozen as tuples inside the Mapping view; the plain
+    # JSON payload restores lists. 嵌套 list 在 Mapping 视图中冻结为 tuple；
+    # 普通 JSON payload 还原为 list。
+    assert identity.generation["nested"]["values"] == (1, 2)
+    assert identity.generation_payload() == {"max_tokens": 64, "nested": {"values": [1, 2]}}
+
+
+def test_cache_identity_rejects_bad_client_version_and_revision() -> None:
+    from models.base import ModelCacheIdentity
+
+    with pytest.raises(ValueError, match="client_version"):
+        ModelCacheIdentity(model="m", generation={}, client_version="   ")
+    with pytest.raises(ValueError, match="revision"):
+        ModelCacheIdentity(model="m", generation={}, client_version="1", revision="a\nb")
+    with pytest.raises(ValueError, match="revision"):
+        ModelCacheIdentity(model="m", generation={}, client_version="1", revision="\x00")
+    # Trimmed, non-empty revisions are allowed. / strip 后非空的 revision 允许。
+    identity = ModelCacheIdentity(model="m", generation={}, client_version="1", revision=" v1.0 ")
+    assert identity.revision == "v1.0"
+
+
+def test_validate_logical_model_id_accepts_remote_names() -> None:
+    from models.base import validate_logical_model_id
+
+    for value in ("Qwen/Qwen3-VL-4B-Instruct", "qwen3-vl-4b-local",
+                  "qwen3.5-gb10", "org:model@rev"):
+        assert validate_logical_model_id(value, where="cache_model_id") == value
