@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–15 完成，15.5/15.6 hardening 完成）
+## 当前状态（Task 00–15 完成，15.5/15.6/15.7 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`

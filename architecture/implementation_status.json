@@ -22,7 +22,8 @@
     "11.6-data-runtime-correctness",
     "11.7-xlrs-image-source-resolution",
     "15.5-models-agent-runtime-integration",
-    "15.6-model-cache-identity-execution-safety"
+    "15.6-model-cache-identity-execution-safety",
+    "15.7-cache-persistence-image-mime-finalization"
   ],
   "implemented_files": [
     "data/__init__.py",
