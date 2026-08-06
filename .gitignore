@@ -1,7 +1,7 @@
 .DS_Store
 
 # Downloaded datasets and Hugging Face artifacts
-datasets/
+/datasets/
 model_cache/
 hf_cache/
 .cache/
@@ -37,6 +37,8 @@ models/*.tgz
 
 # User-authorized deploy artifact tracked through Git LFS
 !models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+!models/segformer_mitb2_oem/model.safetensors
+!models/segformer_mitb2_isaid/model.safetensors
 
 # Python bytecode
 __pycache__/
