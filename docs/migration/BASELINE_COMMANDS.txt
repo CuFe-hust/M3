@@ -1,0 +1,74 @@
+# BASELINE_COMMANDS.txt - try_yolo @ ec962eb87c3ad0b8c1502efcbd08db0daec48868
+# Generated: 2026-08-06 15:01:22 on Windows; interpreter: Python 3.11.15
+# Each block shows the exact command, its full stdout, and the process exit code.
+
+#################### python main.py --help ####################
+usage: main.py [-h] [--config CONFIG] {serve,ask,run-dataset} ...
+
+Remote-sensing multi-Agent local runtime
+
+positional arguments:
+  {serve,ask,run-dataset}
+    serve               Load the local model once and start the HTTP service.
+    ask                 Run one question against images from a local
+                        directory.
+    run-dataset         Run an existing dataset through the DatasetRunner
+                        workflow.
+
+options:
+  -h, --help            show this help message and exit
+  --config CONFIG       Path to YAML configuration.
+[exit=0]
+
+#################### python main.py serve --help ####################
+usage: main.py serve [-h] [--host HOST] [--port PORT]
+
+options:
+  -h, --help   show this help message and exit
+  --host HOST
+  --port PORT
+[exit=0]
+
+#################### python main.py ask --help ####################
+usage: main.py ask [-h] --images-dir IMAGES_DIR [--question QUESTION]
+                   [--task {auto,counting,fine_grained_counting,change_caption,change_qa,grounding,spatial_relation,scene_classification,general_vqa,caption,multiple_choice_vqa}]
+                   [--output OUTPUT]
+
+options:
+  -h, --help            show this help message and exit
+  --images-dir IMAGES_DIR
+  --question QUESTION
+  --task {auto,counting,fine_grained_counting,change_caption,change_qa,grounding,spatial_relation,scene_classification,general_vqa,caption,multiple_choice_vqa}
+  --output OUTPUT
+[exit=0]
+
+#################### python main.py run-dataset --help ####################
+usage: main.py run-dataset [-h] --dataset
+                           {LEVIR-CC,VRSBench,MME-RealWorld,XLRS-Bench-lite}
+                           --root ROOT --split SPLIT [--task TASK]
+                           [--run-id RUN_ID] [--max-samples MAX_SAMPLES]
+                           [--start-index START_INDEX]
+                           [--sample-concurrency SAMPLE_CONCURRENCY]
+                           [--resume] [--fail-fast]
+                           [--evaluate | --no-evaluate]
+                           [--judge-policy {none,errors-only,all}]
+
+options:
+  -h, --help            show this help message and exit
+  --dataset {LEVIR-CC,VRSBench,MME-RealWorld,XLRS-Bench-lite}
+  --root ROOT
+  --split SPLIT
+  --task TASK           One or more comma-separated tasks; omitted means
+                        adapter-supported tasks.
+  --run-id RUN_ID
+  --max-samples MAX_SAMPLES
+  --start-index START_INDEX
+  --sample-concurrency SAMPLE_CONCURRENCY
+  --resume
+  --fail-fast
+  --evaluate, --no-evaluate
+                        Run evaluation and DeepSeek VQA judging by default;
+                        use --no-evaluate to opt out.
+  --judge-policy {none,errors-only,all}
+[exit=0]
+
