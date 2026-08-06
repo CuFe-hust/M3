@@ -15,6 +15,7 @@ from __future__ import annotations
 import re
 import tempfile
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -65,6 +66,15 @@ _ANSWER_SEPARATOR = re.compile(r"[\s,，、]+")
 _CAPTION_TEXT_KEYS = ("caption", "text", "raw")
 
 RowLoader = Callable[[Path, str], list[dict[str, Any]]]
+
+
+@dataclass(frozen=True)
+class _ResolvedImage:
+    """One resolved image: local file path plus its JSON-safe descriptor.
+    一条已解析图片：本地文件路径与其 JSON 安全描述符。"""
+
+    path: Path
+    descriptor: dict[str, Any]
 
 
 def _first_text(row: dict[str, Any], keys: tuple[str, ...]) -> str | None:
@@ -330,58 +340,116 @@ class XLRSAdapter:
         index: int,
     ) -> tuple[dict[str, Any], list[tuple[Path, dict[str, Any]]], str]:
         """Strip non-JSON values and materialize image features. Every image of
-        one row shares a single resolution root: release (all path-backed) or
-        cache (any image needs materialization).
-        去除非 JSON 值并物化图片特征。一行内所有图片共享单一解析根：
-        release（全部 path）或 cache（任一图片需要物化）。"""
-        image_values = []
+        one row shares a single resolution root decided from the ACTUAL
+        materialization results (descriptor.image_source_type), never from the
+        raw Python type of the input value.
+        去除非 JSON 值并物化图片特征。一行内所有图片共享单一解析根——
+        该根由实际物化结果（descriptor.image_source_type）决定，绝不按输入
+        值的 Python 类型判断。"""
+        image_groups: dict[str, list[Any]] = {}
         for key in _IMAGE_KEYS:
             value = row.get(key)
             if value is not None:
-                values = value if isinstance(value, list) else [value]
-                image_values.extend((key, item) for item in values)
-        needs_cache = any(
-            not isinstance(item, str) for _, item in image_values
+                image_groups[key] = value if isinstance(value, list) else [value]
+
+        all_resolved: list[tuple[str, _ResolvedImage]] = []
+        for key in _IMAGE_KEYS:
+            for item in image_groups.get(key, []):
+                resolved = self._resolve_row_images(
+                    [(key, item)], release_root=release_root, index=index
+                )
+                all_resolved.append((key, resolved[0]))
+        unified, image_root_kind = self._unify_row_image_root(
+            [resolved for _, resolved in all_resolved],
+            release_root=release_root,
+            index=index,
         )
+        # Re-group unified images back to their source keys, preserving order.
+        # 将统一后的图片按源键分组，保持顺序。
+        unified_by_key: dict[str, list[_ResolvedImage]] = {}
+        for (key, _original), resolved in zip(all_resolved, unified):
+            unified_by_key.setdefault(key, []).append(resolved)
+
         safe: dict[str, Any] = {}
         refs: list[tuple[Path, dict[str, Any]]] = []
         excluded: list[str] = []
         for key, value in row.items():
-            if key in _IMAGE_KEYS:
-                is_list = isinstance(value, list)
-                values = value if is_list else [value]
-                descriptors = []
-                for item in values:
-                    if needs_cache and isinstance(item, str):
-                        path, descriptor = cache_existing_path(
-                            release_root / item,
-                            cache_root=self._effective_cache_root(),
-                            index=index,
-                        )
-                    else:
-                        try:
-                            path, descriptor = materialize_image(
-                                item,
-                                release_root=release_root,
-                                cache_root=self._effective_cache_root(),
-                                index=index,
-                            )
-                        except ImageMaterializationError as error:
-                            raise DatasetProbeError(str(error)) from error
-                    descriptors.append(descriptor)
-                    refs.append((path, descriptor))
-                if is_list:
+            if key in image_groups:
+                descriptors = [
+                    resolved.descriptor for resolved in unified_by_key.get(key, [])
+                ]
+                if isinstance(value, list):
                     safe[key] = descriptors
                 else:
                     safe[key] = descriptors[0] if descriptors else {"image_present": False}
+                refs.extend(
+                    (resolved.path, resolved.descriptor)
+                    for resolved in unified_by_key.get(key, [])
+                )
             elif _is_json_safe(value):
                 safe[key] = value
             else:
                 excluded.append(key)
         if excluded:
             safe["excluded_fields"] = sorted(excluded)
-        image_root_kind = "cache" if needs_cache else "release"
         return safe, refs, image_root_kind
+
+    def _resolve_row_images(
+        self,
+        image_values: list[tuple[str, Any]],
+        *,
+        release_root: Path,
+        index: int,
+    ) -> list[_ResolvedImage]:
+        """Resolve every image through materialize_image(); errors become
+        DatasetProbeError. 通过 materialize_image() 解析每张图片；错误统一
+        转换为 DatasetProbeError。"""
+        resolved: list[_ResolvedImage] = []
+        for _key, item in image_values:
+            try:
+                path, descriptor = materialize_image(
+                    item,
+                    release_root=release_root,
+                    cache_root=self._effective_cache_root(),
+                    index=index,
+                )
+            except ImageMaterializationError as error:
+                raise DatasetProbeError(str(error)) from error
+            resolved.append(_ResolvedImage(path=path, descriptor=descriptor))
+        return resolved
+
+    def _unify_row_image_root(
+        self,
+        resolved: list[_ResolvedImage],
+        *,
+        release_root: Path,
+        index: int,
+    ) -> tuple[list[_ResolvedImage], str]:
+        """Decide the row image root from actual sources: any bytes/pil image
+        forces the whole row into the cache root; path images are then copied
+        via cache_existing_path(). 根据实际来源决定整行图片根：任一 bytes/pil
+        图片使整行进入 cache 根；path 图片随后经 cache_existing_path() 复制。"""
+        needs_cache = any(
+            resolved_image.descriptor["image_source_type"] in {"bytes", "pil"}
+            for resolved_image in resolved
+        )
+        if not needs_cache:
+            return resolved, "release"
+        unified: list[_ResolvedImage] = []
+        for resolved_image in resolved:
+            if resolved_image.descriptor["image_source_type"] in {"bytes", "pil"}:
+                unified.append(resolved_image)
+                continue
+            try:
+                cached_path, cached_descriptor = cache_existing_path(
+                    resolved_image.path,
+                    cache_root=self._effective_cache_root(),
+                    index=index,
+                )
+            except ImageMaterializationError as error:
+                raise DatasetProbeError(str(error)) from error
+            unified.append(_ResolvedImage(path=cached_path, descriptor=cached_descriptor))
+        return unified, "cache"
 
     def _image_refs(
         self,
