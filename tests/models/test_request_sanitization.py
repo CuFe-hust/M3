@@ -212,3 +212,59 @@ def test_cache_identity_is_frozen_and_stable() -> None:
     assert identity != ModelCacheIdentity(
         model="m", generation={"max_tokens": 1}, client_version="1", revision="r2"
     )
+
+
+def test_cache_identity_generation_is_deeply_frozen() -> None:
+    """Mutating the caller's source dict must not change the identity, and the
+    internal structure must reject in-place mutation.
+    修改调用方的源 dict 不得改变身份；内部结构必须拒绝原地修改。"""
+    from models.base import ModelCacheIdentity
+
+    source = {"max_tokens": 64, "nested": {"values": [1, 2]}}
+    identity = ModelCacheIdentity(model="m", generation=source, client_version="1")
+    source["max_tokens"] = 999
+    source["nested"]["values"].append(3)
+
+    payload = identity.generation_payload()
+    assert payload["max_tokens"] == 64
+    assert payload["nested"]["values"] == [1, 2]
+
+    # The internal structure must reject in-place mutation.
+    # 内部结构必须拒绝原地修改。
+    with pytest.raises((TypeError, AttributeError)):
+        identity.generation["max_tokens"] = 128  # type: ignore[index]
+
+    # Payloads are fresh copies: mutating one never changes the identity.
+    # payload 是全新副本：修改它不会改变身份。
+    identity.generation_payload()["nested"]["values"].append(99)
+    assert identity.generation_payload()["nested"]["values"] == [1, 2]
+
+
+def test_cache_identity_requires_string_keys() -> None:
+    """Non-string mapping keys must fail; they are never auto-stringified.
+    非字符串映射键必须失败；绝不自动字符串化。"""
+    from models.base import ModelCacheIdentity
+
+    with pytest.raises(ValueError, match="non-string key"):
+        ModelCacheIdentity(model="m", generation={1: "x"}, client_version="1")
+    with pytest.raises(ValueError, match="non-string key"):
+        ModelCacheIdentity(model="m", generation={"nested": {1: 2}}, client_version="1")
+    with pytest.raises(ValueError, match="non-string key"):
+        ModelCacheIdentity(model="m", generation={"items": [{2: 3}]}, client_version="1")
+
+
+def test_cache_identity_key_order_does_not_matter() -> None:
+    """Identical content with different key order must be equal and hash
+    stably. 内容相同但键顺序不同的身份必须相等且哈希稳定。"""
+    from models.base import ModelCacheIdentity, build_request_hash
+
+    a = ModelCacheIdentity(model="m", generation={"a": 1, "b": 2}, client_version="1")
+    b = ModelCacheIdentity(model="m", generation={"b": 2, "a": 1}, client_version="1")
+    assert a == b
+    assert a.generation_payload() == b.generation_payload()
+    kwargs = dict(model=a.model, prompt_version="v1", messages=[], image_sha256=None)
+    assert build_request_hash(
+        **kwargs, generation=a.generation_payload(), client_version=a.client_version
+    ) == build_request_hash(
+        **kwargs, generation=b.generation_payload(), client_version=b.client_version
+    )

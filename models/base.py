@@ -41,10 +41,15 @@ class ModelCacheIdentity:
 
     The visual agent builds its request hash exclusively from this object so
     the hashed model name, generation parameters, client version, and revision
-    can never drift from the client that actually runs the call.
+    can never drift from the client that actually runs the call. generation is
+    deep-frozen at construction: nested dicts/lists are canonicalized into
+    immutable tuples, string keys are mandatory, and later mutation of the
+    caller's source mapping cannot alter this identity.
     单个模型客户端用于缓存键的稳定、JSON 安全身份。视觉 Agent 只从该对象
     构建请求哈希，使参与哈希的模型名、生成参数、客户端版本与 revision 永远
-    不会与实际执行调用的客户端漂移。"""
+    不会与实际执行调用的客户端漂移。generation 在构造时深度冻结：嵌套
+    dict/list 规范化为不可变 tuple，键必须是字符串，调用方后续修改源映射
+    不会改变本身份。"""
 
     model: str
     generation: Mapping[str, Any]
@@ -57,6 +62,17 @@ class ModelCacheIdentity:
         if not self.client_version:
             raise ValueError("client_version must not be empty")
         _validate_identity_value(self.generation, "generation")
+        object.__setattr__(
+            self,
+            "generation",
+            _freeze_identity_mapping(self.generation, "generation"),
+        )
+
+    def generation_payload(self) -> dict[str, Any]:
+        """Return a fresh plain-JSON copy of the generation payload; the
+        internal frozen structure is never exposed.
+        返回生成载荷的全新普通 JSON 副本；绝不暴露内部冻结结构。"""
+        return _unfreeze_identity_value(self.generation)
 
 
 class CacheIdentifiedClient(Protocol):
@@ -67,9 +83,60 @@ class CacheIdentifiedClient(Protocol):
     def cache_identity(self) -> ModelCacheIdentity: ...
 
 
+# Type tags used by the frozen identity representation; they cannot collide
+# with user data because tuples are rejected by identity validation.
+# 冻结身份表示使用的类型标记；由于 tuple 会被身份校验拒绝，它们不会与
+# 用户数据冲突。
+_DICT_TAG = "_dict"
+_LIST_TAG = "_list"
+
+
+def _freeze_identity_mapping(mapping: Mapping[str, Any], where: str) -> tuple[Any, ...]:
+    """Canonicalize a mapping into a tagged, sorted, deep-frozen structure.
+    将映射规范化为带标记、排序、深度冻结的结构。"""
+    return (
+        _DICT_TAG,
+        tuple(
+            (
+                key,
+                _freeze_identity_value(item, f"{where}.{key}"),
+            )
+            for key, item in sorted(mapping.items())
+        ),
+    )
+
+
+def _freeze_identity_value(value: Any, where: str) -> Any:
+    """Recursively freeze dicts and lists with type tags; other JSON-safe
+    values pass through. 用类型标记递归冻结 dict 与 list；其他 JSON 安全值
+    原样通过。"""
+    if isinstance(value, dict):
+        return _freeze_identity_mapping(value, where)
+    if isinstance(value, list):
+        return (
+            _LIST_TAG,
+            tuple(_freeze_identity_value(item, f"{where}[{index}]") for index, item in enumerate(value)),
+        )
+    return value
+
+
+def _unfreeze_identity_value(value: Any) -> Any:
+    """Convert a frozen identity payload back into a plain JSON structure.
+    将冻结的身份载荷还原为普通 JSON 结构。"""
+    if isinstance(value, tuple) and len(value) == 2 and value[0] in (_DICT_TAG, _LIST_TAG):
+        if value[0] == _DICT_TAG:
+            return {
+                key: _unfreeze_identity_value(item)
+                for key, item in value[1]
+            }
+        return [_unfreeze_identity_value(item) for item in value[1]]
+    return value
+
+
 def _validate_identity_value(value: Any, where: str) -> None:
-    """Require JSON-safe, finite, secret-free identity content.
-    要求身份内容 JSON 安全、数值有限、不含密钥。"""
+    """Require JSON-safe, finite, secret-free identity content with string
+    mapping keys only. 要求身份内容 JSON 安全、数值有限、不含密钥，且映射键
+    全部为字符串。"""
     if value is None or isinstance(value, bool):
         return
     if isinstance(value, str):
@@ -96,7 +163,9 @@ def _validate_identity_value(value: Any, where: str) -> None:
         return
     if isinstance(value, dict):
         for key, item in value.items():
-            normalized_key = str(key).lower().replace("-", "_").replace(" ", "_")
+            if not isinstance(key, str):
+                raise ValueError(f"{where} contains a non-string key {key!r}")
+            normalized_key = key.lower().replace("-", "_").replace(" ", "_")
             if normalized_key in _SENSITIVE_IDENTITY_KEYS:
                 raise ValueError(f"{where} contains a sensitive key {key!r}")
             _validate_identity_value(item, where)
