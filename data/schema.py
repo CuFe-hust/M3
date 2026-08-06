@@ -391,25 +391,16 @@ def stable_sample_id(
         raise ValueError("dataset must not be empty")
     if not split.strip():
         raise ValueError("split must not be empty")
-    if not relative_image_paths:
-        raise ValueError("relative_image_paths must contain at least one path")
     if not isinstance(source_index, int) or source_index < 0:
         raise ValueError(f"source_index must be a non-negative integer, got {source_index!r}")
+    if not relative_image_paths:
+        raise ValueError("relative_image_paths must contain at least one path")
+    # ALL inputs are validated before the safe source ID is reused, so a safe
+    # source ID can never bypass image-path validation.
+    # 所有输入先校验，再决定复用安全 source ID——安全 ID 不能绕过路径校验。
+    posix_paths = _normalize_relative_image_paths(relative_image_paths)
     if _source_id_is_safe(source_id):
         return source_id  # type: ignore[return-value]
-    posix_paths = []
-    for value in relative_image_paths:
-        text = str(value)
-        if not text.strip():
-            raise ValueError("relative_image_paths must not be empty")
-        if _is_absolute_like(text):
-            raise ValueError(f"relative_image_paths must be relative, got {text!r}")
-        segments = text.replace("\\", "/").split("/")
-        if any(segment in {".", ".."} for segment in segments):
-            raise ValueError(
-                f"relative_image_paths must not contain '.' or '..' segments, got {text!r}"
-            )
-        posix_paths.append(text.replace("\\", "/"))
     parts = [
         dataset,
         split,
@@ -420,6 +411,26 @@ def stable_sample_id(
     ]
     payload = "\n".join(parts).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()[:20]
+
+
+def _normalize_relative_image_paths(values: Sequence[Path | str]) -> list[str]:
+    """Normalize and validate every image path (POSIX form, relative,
+    non-escape). 规范化并校验每条图片路径（POSIX 形式、相对、无逃逸段）。"""
+    posix_paths: list[str] = []
+    for value in values:
+        text = str(value)
+        if not text.strip():
+            raise ValueError("relative_image_paths must not be empty")
+        if _is_absolute_like(text):
+            raise ValueError(f"relative_image_paths must be relative, got {text!r}")
+        normalized = text.replace("\\", "/")
+        segments = normalized.split("/")
+        if any(segment in {".", ".."} for segment in segments):
+            raise ValueError(
+                f"relative_image_paths must not contain '.' or '..' segments, got {text!r}"
+            )
+        posix_paths.append(normalized)
+    return posix_paths
 
 
 _WINDOWS_RESERVED_BASENAMES = frozenset(
