@@ -162,12 +162,15 @@ application/commands/count_image.py
 # === Tests (explicit test files; future test paths require separate approval) ===
 tests/__init__.py
 tests/conftest.py
+tests/agents/test_agent_registry.py
+tests/agents/test_visual_base.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
 tests/architecture/test_init_side_effects.py
 tests/architecture/test_no_new_to_legacy_imports.py
 tests/contracts/test_adapter_contract.py
+tests/contracts/test_agent_result_contract.py
 tests/contracts/test_data_schema_contract.py
 tests/data/test_adapter_integration.py
 tests/data/test_levir_cc_adapter.py
@@ -180,6 +183,12 @@ tests/data/test_vrsbench_adapter.py
 tests/data/test_vrsbench_task_normalizer.py
 tests/data/test_xlrs_adapter.py
 tests/parity/test_baseline_golden_fixtures.py
+
+# === Models tests ===
+tests/models/test_model_entry.py
+tests/models/test_qwen_client_offline.py
+tests/models/test_request_sanitization.py
+tests/models/test_response_cache.py
 
 # === Migration tooling ===
 scripts/generate_migration_fixtures.py

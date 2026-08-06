@@ -1,5 +1,5 @@
 {
-  "completed_tasks": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
+  "completed_tasks": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
   "completed_hardening_tasks": [
     "11.5-data-official-format-parity",
     "11.6-data-runtime-correctness",
@@ -20,7 +20,24 @@
     "data/adapters/vrsbench/task_normalizer.py",
     "data/adapters/vrsbench/adapter.py",
     "data/adapters/xlrs.py",
-    "data/adapters/xlrs_image_cache.py"
+    "data/adapters/xlrs_image_cache.py",
+    "models/__init__.py",
+    "models/base.py",
+    "models/cache.py",
+    "models/images.py",
+    "models/settings.py",
+    "models/entry.py",
+    "models/qwen_transformers.py",
+    "models/qwen3_5/__init__.py",
+    "models/qwen3_5/model.py",
+    "models/qwen3_vl/__init__.py",
+    "models/qwen3_vl/baseline.py",
+    "agents/__init__.py",
+    "agents/schema.py",
+    "agents/base.py",
+    "agents/registry.py",
+    "agents/errors.py",
+    "agents/visual_base.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
