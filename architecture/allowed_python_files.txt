@@ -173,6 +173,7 @@ tests/agents/counting/test_settings.py
 tests/agents/counting/test_geometry.py
 tests/agents/counting/test_evidence.py
 tests/agents/counting/test_point_pipeline.py
+tests/agents/counting/test_backend_registry.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
