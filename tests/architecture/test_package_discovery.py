@@ -58,7 +58,7 @@ def test_every_implemented_package_is_discovered() -> None:
 
 def test_ci_compileall_covers_routing() -> None:
     workflow = _workflow()
-    assert "python -m compileall data models agents routing tests" in workflow
+    assert "python -m compileall data models agents routing workflows evaluation tests" in workflow
 
 
 def test_wheel_smoke_script_imports_routing() -> None:

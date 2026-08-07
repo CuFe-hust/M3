@@ -19,10 +19,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install foundation dependencies
-        run: python -m pip install -e ".[dev,migration]"
+        run: python -m pip install -e ".[dev,migration,change]"
 
       - name: Compile implemented code
-        run: python -m compileall data models agents routing tests scripts/generate_migration_fixtures.py
+        run: python -m compileall data models agents routing workflows evaluation tests scripts/generate_migration_fixtures.py
 
       - name: Architecture guards
         run: python -m pytest -q tests/architecture
@@ -36,6 +36,11 @@ jobs:
           python -m pytest -q tests/agents
           python -m pytest -q tests/contracts/test_agent_result_contract.py
 
+      - name: Workflow and evaluation contracts
+        run: |
+          python -m pytest -q tests/workflows
+          python -m pytest -q tests/evaluation
+
       - name: Build and verify wheel
         run: |
           python -m build
@@ -44,12 +49,19 @@ jobs:
           /tmp/m3-wheel-test/bin/python -m pip install dist/*.whl
           cd /tmp
           /tmp/m3-wheel-test/bin/python - <<'PY'
+          import sys
+
           import data
           import models
           import agents
           import routing
+          import workflows
+          import evaluation
+
           import models.qwen3_vl
           import models.qwen3_5
+          import agents.spatial
+          import agents.change
 
           from models.entry import list_models
           from agents.registry import AgentRegistry
@@ -62,6 +74,11 @@ jobs:
               MissingModelCacheIdentityError,
           )
           from routing import POLICIES, RoutePolicy, RoutingDecision, SampleCapabilities, TaskRouter
+          from agents.spatial import SpatialAgent
+          from agents.change import AgentChangeSettings
+          from workflows import CallBudget, RunStore
+          from workflows.artifact_writer import ArtifactWriter
+          from evaluation import EvaluationRecord, aggregate
 
           names = list_models()
           assert "qwen_transformers" in names
@@ -76,8 +93,20 @@ jobs:
           assert BackendError is CoreError
           assert BackendKind is not None
           assert MissingModelCacheIdentityError is not None
+          # Task 26-33 runtime integrity: the base wheel must not require
+          # OpenCV, and every new package must import from outside the tree.
+          # 基础 wheel 不得要求 OpenCV，且所有新包必须在源码树外可导入。
+          assert "cv2" not in sys.modules
+          assert SpatialAgent is not None
+          assert AgentChangeSettings is not None
+          assert CallBudget is not None
+          assert RunStore is not None
+          assert ArtifactWriter is not None
+          assert EvaluationRecord is not None
+          assert aggregate is not None
 
           print("wheel-import-contract: PASS")
+          print("task33-wheel-import-contract: PASS")
           PY
 
       - name: Golden fixtures
