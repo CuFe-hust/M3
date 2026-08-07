@@ -29,6 +29,7 @@ include = [
   "models*",
   "agents*",
   "routing*",
+  "workflows*",
 ]
 
 [tool.pytest.ini_options]

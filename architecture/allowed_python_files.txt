@@ -222,6 +222,10 @@ tests/parity/test_baseline_golden_fixtures.py
 tests/routing/test_policies.py
 tests/routing/test_router.py
 
+# === Workflow tests ===
+tests/workflows/test_call_budget.py
+tests/workflows/test_run_store.py
+
 # === Models tests ===
 tests/models/test_model_entry.py
 tests/models/test_qwen_client_offline.py

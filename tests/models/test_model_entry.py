@@ -220,15 +220,16 @@ def test_baseline_offline_default() -> None:
 
 
 def test_pyproject_packages_include_data_models_agents() -> None:
-    """The wheel must ship data, models, agents and routing.
-    wheel 必须包含 data、models、agents 与 routing。"""
+    """The wheel must ship data, models, agents, routing and workflows.
+    wheel 必须包含 data、models、agents、routing 与 workflows（workflows
+    已实现后由 test_package_discovery 守卫强制同步）。"""
     import tomllib
 
     root = Path(__file__).resolve().parents[2]
     with open(root / "pyproject.toml", "rb") as handle:
         config = tomllib.load(handle)
     include = config["tool"]["setuptools"]["packages"]["find"]["include"]
-    assert include == ["data*", "models*", "agents*", "routing*"]
+    assert include == ["data*", "models*", "agents*", "routing*", "workflows*"]
 
 
 # ── 注册表污染 / registry pollution (J) ────────────────────────────────────

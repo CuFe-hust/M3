@@ -114,7 +114,12 @@
     "agents/change/difference_proposal.py",
     "agents/change/preprocess.py",
     "agents/change/reviewer.py",
-    "agents/change/agent.py"
+    "agents/change/agent.py",
+    "workflows/__init__.py",
+    "workflows/schema.py",
+    "workflows/call_budget.py",
+    "workflows/events.py",
+    "workflows/run_store.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
