@@ -184,6 +184,8 @@ tests/agents/counting/test_qwen_point_backend.py
 tests/agents/counting/test_quantity_proposal_backend.py
 tests/agents/counting/test_yolo_adapter.py
 tests/agents/counting/test_yolo_runtime.py
+tests/agents/change/test_pair_validator.py
+tests/agents/change/test_harmonizer.py
 tests/agents/counting/test_backend_selector.py
 tests/agents/counting/test_target_parser.py
 tests/agents/counting/test_agent.py
