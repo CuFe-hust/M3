@@ -15,6 +15,7 @@ from agents.counting.backends.base import (
     CountingRequest,
 )
 from agents.counting.backends.yolo_model_store import YoloModelStore
+from agents.errors import DetectorInferenceError
 from agents.counting.geometry import (
     build_core_halo_tiles,
     convert_local_point_to_global,
@@ -172,10 +173,19 @@ class YoloOBBCountingBackend:
                 warnings.append(
                     IssueRecord(
                         code="YOLO_TILE_INFERENCE_FAILED",
-                        message=f"{tile.tile_id}: {type(exc).__name__}: {exc}",
+                        message=(
+                            f"Tile {tile.tile_id} inference failed with "
+                            f"{_safe_exception_type(exc)}."
+                        ),
                         tile_ids=[tile.tile_id],
                     )
                 )
+        if failed and not succeeded:
+            # Every tile failed: propagate a stable error so the agent can
+            # decide on an explicit fallback instead of returning a fake zero
+            # result. 所有 tile 均失败：传播稳定错误，使 Agent 能决定显式
+            # 回退，而不是返回伪造的零结果。
+            raise DetectorInferenceError("ALL_YOLO_TILES_FAILED")
         effective_min_confidence = max(
             self._counting.min_confidence, self._detector.confidence
         )
@@ -385,6 +395,15 @@ class YoloOBBCountingBackend:
 def _scalar(value: Any) -> float:
     item = getattr(value, "item", None)
     return float(item() if callable(item) else value)
+
+
+def _safe_exception_type(error: BaseException) -> str:
+    """Return a bounded, identifier-only exception type name.
+    返回有界、仅标识符的异常类型名。"""
+    name = type(error).__name__
+    if not name.isidentifier() or len(name) > 80:
+        return "BackendError"
+    return name
 
 
 def _model_names(value: object) -> dict[int, str]:
