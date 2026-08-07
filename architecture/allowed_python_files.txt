@@ -170,6 +170,7 @@ tests/agents/caption/__init__.py
 tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
+tests/agents/change/__init__.py
 tests/agents/spatial/test_geometry.py
 tests/agents/spatial/test_evidence_merge.py
 tests/agents/spatial/test_candidate_review.py
@@ -189,6 +190,7 @@ tests/agents/change/test_harmonizer.py
 tests/agents/change/test_difference_proposal.py
 tests/agents/change/test_preprocess.py
 tests/agents/change/test_reviewer.py
+tests/agents/change/test_agent.py
 tests/agents/counting/test_backend_selector.py
 tests/agents/counting/test_target_parser.py
 tests/agents/counting/test_agent.py

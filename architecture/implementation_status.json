@@ -113,7 +113,8 @@
     "agents/change/harmonizer.py",
     "agents/change/difference_proposal.py",
     "agents/change/preprocess.py",
-    "agents/change/reviewer.py"
+    "agents/change/reviewer.py",
+    "agents/change/agent.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
