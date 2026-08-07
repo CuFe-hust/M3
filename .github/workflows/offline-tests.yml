@@ -78,7 +78,13 @@ jobs:
           from agents.change import AgentChangeSettings
           from workflows import CallBudget, RunStore
           from workflows.artifact_writer import ArtifactWriter
-          from evaluation import EvaluationRecord, aggregate
+          from evaluation import (
+              EvaluationRecord,
+              GroundingDeterministicMetrics,
+              VQADeterministicMetrics,
+              aggregate,
+              merge_vqa_evaluation,
+          )
 
           names = list_models()
           assert "qwen_transformers" in names
@@ -105,8 +111,27 @@ jobs:
           assert EvaluationRecord is not None
           assert aggregate is not None
 
+          # Task 33.6/33.7 public API contract: canonical VQA merge returns
+          # the unified EvaluationRecord with typed deterministic metrics.
+          # Task 33.6/33.7 公共 API 契约：canonical VQA merge 返回带类型化
+          # 确定性指标的统一 EvaluationRecord。
+          vqa_record = merge_vqa_evaluation(
+              sample_id="wheel-vqa",
+              question="Is there a road?",
+              reference_answers=["yes"],
+              candidate_answer="yes",
+          )
+          assert isinstance(vqa_record, EvaluationRecord)
+          assert vqa_record.task == "general_vqa"
+          assert isinstance(vqa_record.deterministic_metrics, VQADeterministicMetrics)
+          assert vqa_record.deterministic_metrics.exact_match is True
+
+          grounding = GroundingDeterministicMetrics(iou=0.5, iou_at_0_5=True)
+          assert grounding.iou_at_0_5 is True
+
           print("wheel-import-contract: PASS")
           print("task33-wheel-import-contract: PASS")
+          print("task33.7-wheel-contract: PASS")
           PY
 
       - name: Golden fixtures
