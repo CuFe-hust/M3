@@ -85,3 +85,37 @@ def test_grounding_metrics_have_no_network_side_effects() -> None:
     source = (REPO_ROOT / "evaluation/metrics/grounding.py").read_text(encoding="utf-8")
     for token in ("urlopen", "requests", "socket", "httpx", "api.deepseek", "http://", "https://"):
         assert token not in source, token
+
+
+# ── 阈值一致性 / threshold consistency (33.6) ─────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("iou", "expected_flag"),
+    [
+        (0.4999994, False),
+        (0.4999996, False),
+        (0.5, True),
+        (0.5000004, True),
+    ],
+)
+def test_iou_threshold_decided_once_per_record(iou: float, expected_flag: bool) -> None:
+    """The stored flag is the single threshold authority; the raw value is
+    stored unrounded. 存储标志是唯一阈值权威；原始值不做舍入存储。"""
+    metrics = grounding_deterministic_metrics(iou)
+    assert metrics.iou == pytest.approx(iou)
+    assert metrics.iou_at_0_5 is expected_flag
+
+
+def test_aggregate_uses_stored_threshold_flag() -> None:
+    """Aggregate accuracy must come from the stored flag, never a second
+    comparison against the stored (possibly rounded) value.
+    聚合准确率必须来自存储标志，绝不再次比较（可能已舍入的）存储值。"""
+    records = [
+        _grounding_record(0.4999996),
+        _grounding_record(0.5),
+        _grounding_record(0.5000004),
+    ]
+    summary = aggregate_grounding(records)
+    assert summary["accuracy"] == pytest.approx(2 / 3)
+    assert summary["mean_iou"] == pytest.approx((0.4999996 + 0.5 + 0.5000004) / 3)

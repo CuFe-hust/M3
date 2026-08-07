@@ -279,3 +279,86 @@ def test_judge_success_never_overrides_counting_metrics_in_aggregate() -> None:
     summary = aggregate([record])
     assert summary["exact_match_accuracy"] == 0.0
     assert record.judge_inconsistency is True
+
+
+# ── task/metrics 强一致 / task-metrics invariants (33.6) ───────────────────
+
+
+def test_task_metrics_mismatch_rejected_at_construction() -> None:
+    from evaluation.records import (
+        CaptionDeterministicMetrics,
+        EvaluationRecord,
+        GroundingDeterministicMetrics,
+        VQADeterministicMetrics,
+    )
+
+    cases = [
+        ("counting", VQADeterministicMetrics(exact_match=True)),
+        ("general_vqa", _record(5, 5).deterministic_metrics),
+        ("grounding", CaptionDeterministicMetrics(candidate="x", references=["y"])),
+        ("caption", GroundingDeterministicMetrics(iou=0.5, iou_at_0_5=True)),
+    ]
+    for task, metrics in cases:
+        with pytest.raises(ValueError, match="does not match task"):
+            EvaluationRecord(
+                sample_id="s1",
+                task=task,  # type: ignore[arg-type]
+                deterministic_metrics=metrics,
+                judge_status="not_requested",
+            )
+
+
+def test_task_metrics_match_and_none_accepted() -> None:
+    from evaluation.records import (
+        CaptionDeterministicMetrics,
+        EvaluationRecord,
+        GroundingDeterministicMetrics,
+        VQADeterministicMetrics,
+    )
+
+    EvaluationRecord(
+        sample_id="s1", task="counting",
+        deterministic_metrics=_record(5, 5).deterministic_metrics,
+        judge_status="not_requested",
+    )
+    EvaluationRecord(
+        sample_id="s1", task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
+    )
+    EvaluationRecord(
+        sample_id="s1", task="grounding",
+        deterministic_metrics=GroundingDeterministicMetrics(iou=0.5, iou_at_0_5=True),
+        judge_status="not_requested",
+    )
+    EvaluationRecord(
+        sample_id="s1", task="caption",
+        deterministic_metrics=CaptionDeterministicMetrics(candidate="x", references=["y"]),
+        judge_status="not_requested",
+    )
+    for task in ("counting", "general_vqa", "grounding", "caption"):
+        EvaluationRecord(
+            sample_id="s1",
+            task=task,  # type: ignore[arg-type]
+            deterministic_metrics=None,
+            judge_status="not_requested",
+        )
+
+
+def test_aggregate_counting_fails_closed_on_wrong_metrics() -> None:
+    """Even if the schema invariant were bypassed, the aggregator must fail
+    closed instead of silently degrading. 即使 schema 不变式被绕过，聚合器
+    也必须显式失败，绝不静默降级。"""
+    from evaluation import aggregate
+    from evaluation.records import EvaluationRecord, VQADeterministicMetrics
+
+    # Bypass the validator via construct to prove the aggregator guard.
+    # 绕过 validator 直接构造，证明聚合器自身有防线。
+    record = EvaluationRecord.model_construct(
+        sample_id="s1",
+        task="counting",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
+    )
+    with pytest.raises(ValueError, match="CountDeterministicMetrics"):
+        aggregate([record])

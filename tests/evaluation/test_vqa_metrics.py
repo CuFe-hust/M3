@@ -16,7 +16,11 @@ from evaluation.metrics.vqa import (
     merge_vqa_evaluation,
     normalize_answer,
 )
-from evaluation.records import VQAEvaluationRecord
+from evaluation.records import (
+    EvaluationRecord,
+    VQADeterministicMetrics,
+    VQAEvaluationRecord,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -42,9 +46,11 @@ def test_merge_vqa_not_requested() -> None:
         reference_answers=["yes"],
         candidate_answer="yes",
     )
-    assert record.exact_match is True
+    assert isinstance(record, EvaluationRecord)
+    assert record.task == "general_vqa"
+    assert isinstance(record.deterministic_metrics, VQADeterministicMetrics)
+    assert record.deterministic_metrics.exact_match is True
     assert record.judge_status == "not_requested"
-    assert record.judge_score is None
 
 
 def test_judge_score_never_overrides_exact_match() -> None:
@@ -61,10 +67,11 @@ def test_judge_score_never_overrides_exact_match() -> None:
         candidate_answer="no",
         judge_parsed=_Judge(),
     )
-    assert record.exact_match is False
+    assert isinstance(record, EvaluationRecord)
+    assert record.deterministic_metrics.exact_match is False
     assert record.judge_status == "succeeded"
-    assert record.judge_score == 1
     assert record.judge_parsed is not None
+    assert getattr(record.judge_parsed, "score", None) == 1
 
 
 def test_merge_vqa_judge_error() -> None:
@@ -75,7 +82,7 @@ def test_merge_vqa_judge_error() -> None:
         candidate_answer="yes",
         judge_error="timeout",
     )
-    assert record.exact_match is True
+    assert record.deterministic_metrics.exact_match is True
     assert record.judge_status == "failed"
     assert record.judge_error == "timeout"
 
@@ -109,17 +116,17 @@ def test_record_serialization_is_stable() -> None:
         sample_id="s1", question="Q", reference_answers=["yes"], candidate_answer="yes"
     )
     payload = record.model_dump(mode="json")
-    assert payload["exact_match"] is True
+    assert payload["task"] == "general_vqa"
+    assert payload["deterministic_metrics"] == {"exact_match": True}
     assert payload["judge_status"] == "not_requested"
     assert set(payload) == {
         "sample_id",
-        "question",
-        "reference_answers",
-        "candidate_answer",
-        "exact_match",
+        "task",
+        "deterministic_metrics",
         "judge_status",
-        "judge_score",
+        "judge_raw",
         "judge_parsed",
+        "judge_inconsistency",
         "judge_error",
     }
 
@@ -129,3 +136,50 @@ def test_vqa_metrics_have_no_network_side_effects() -> None:
         source = (REPO_ROOT / module).read_text(encoding="utf-8")
         for token in ("urlopen", "requests", "socket", "httpx", "api.deepseek", "http://", "https://"):
             assert token not in source, (module, token)
+
+
+# ── 统一记录不变式 / unified record invariants (33.6) ──────────────────────
+
+
+def test_vqa_merge_returns_unified_record() -> None:
+    record = merge_vqa_evaluation(
+        sample_id="s1", question="Q", reference_answers=["yes"], candidate_answer="yes"
+    )
+    assert isinstance(record, EvaluationRecord)
+    assert record.task == "general_vqa"
+    assert isinstance(record.deterministic_metrics, VQADeterministicMetrics)
+
+
+def test_legacy_wrapper_conversion_is_explicit() -> None:
+    from evaluation.metrics.vqa import to_evaluation_record
+    from evaluation.records import VQAEvaluationRecord
+
+    legacy = VQAEvaluationRecord(
+        sample_id="s1",
+        question="Q",
+        reference_answers=["yes"],
+        candidate_answer="no",
+        exact_match=False,
+        judge_status="not_requested",
+    )
+    record = to_evaluation_record(legacy)
+    assert isinstance(record, EvaluationRecord)
+    assert record.task == "general_vqa"
+    assert record.deterministic_metrics.exact_match is False
+
+
+def test_aggregate_vqa_accepts_legacy_wrapper_explicitly() -> None:
+    from evaluation.records import VQAEvaluationRecord
+
+    records = [
+        VQAEvaluationRecord(
+            sample_id="s1",
+            question="Q",
+            reference_answers=["yes"],
+            candidate_answer="yes",
+            exact_match=True,
+            judge_status="not_requested",
+        )
+    ]
+    summary = aggregate_vqa(records)
+    assert summary["correct"] == 1

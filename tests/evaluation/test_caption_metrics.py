@@ -128,15 +128,14 @@ def test_aggregate_caption_uses_unified_records(monkeypatch) -> None:
 def test_aggregate_caption_rejects_records_without_caption_metrics(monkeypatch) -> None:
     _inject_fake_caption_modules(monkeypatch)
     from evaluation.metrics.caption import aggregate_caption
-    from evaluation.records import CountDeterministicMetrics, EvaluationRecord
+    from evaluation.records import EvaluationRecord
 
+    # A caption record without metrics is rejected by aggregate fail-closed.
+    # 无指标的 caption 记录被聚合器显式拒绝。
     record = EvaluationRecord(
         sample_id="x",
         task="caption",
-        deterministic_metrics=CountDeterministicMetrics(
-            predicted_count=1, gold_count=1, exact_match=1,
-            absolute_error=0, relative_error=0.0, smooth_error_score=1.0,
-        ),
+        deterministic_metrics=None,
         judge_status="not_requested",
     )
     with pytest.raises(ValueError, match="CaptionDeterministicMetrics"):
