@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–25 完成，25.5/25.6 hardening 完成）
+## 当前状态（Task 00–25 完成，25.5/25.6/25.7 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -16,7 +16,9 @@
 - 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
 
 计数后端契约：每个后端显式声明 `kind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
-只有 `yolo_obb` 进入 detector plan、zero-review 与 detector fallback；
+只有 `yolo_obb` 进入 detector plan、zero-review 与 detector fallback；所有 YOLO tile
+均失败时 backend 抛出稳定错误并由 CountingAgent 执行显式 fallback；tile warning
+不保存原始异常文本；
 `CountingBackendUnavailableError` 全仓唯一（`agents.errors` 权威定义，顶层导出与
 backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
 绝对路径、密钥或 Base64。

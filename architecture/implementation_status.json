@@ -36,7 +36,8 @@
     "15.7-cache-persistence-image-mime-finalization",
     "15.8-logical-model-identity-path-safety",
     "25.5-routing-packaging-counting-runtime-integrity",
-    "25.6-counting-backend-kind-public-error-finalization"
+    "25.6-counting-backend-kind-public-error-finalization",
+    "25.7-yolo-failure-propagation-warning-safety"
   ],
   "implemented_files": [
     "data/__init__.py",
