@@ -362,3 +362,35 @@ def test_aggregate_counting_fails_closed_on_wrong_metrics() -> None:
     )
     with pytest.raises(ValueError, match="CountDeterministicMetrics"):
         aggregate([record])
+
+
+# ── 指标注册表不可变 / immutable metric registry (33.7) ────────────────────
+
+
+def test_expected_metrics_registry_is_immutable() -> None:
+    from evaluation.records import EXPECTED_METRICS
+    from evaluation.records import VQADeterministicMetrics
+
+    with pytest.raises(TypeError):
+        EXPECTED_METRICS["grounding"] = VQADeterministicMetrics  # type: ignore[index]
+
+
+def test_metric_registry_not_exposed_from_top_level() -> None:
+    import evaluation
+
+    assert "EXPECTED_METRICS" not in evaluation.__all__
+    assert not hasattr(evaluation, "EXPECTED_METRICS")
+
+
+def test_validator_still_enforces_task_metrics() -> None:
+    """The immutable registry does not change validation behavior.
+    不可变注册表不改变校验行为。"""
+    from evaluation.records import EvaluationRecord, VQADeterministicMetrics
+
+    with pytest.raises(ValueError, match="does not match task"):
+        EvaluationRecord(
+            sample_id="s1",
+            task="grounding",
+            deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+            judge_status="not_requested",
+        )

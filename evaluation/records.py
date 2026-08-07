@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from types import MappingProxyType
 from typing import Any, Literal, Union
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -66,14 +67,18 @@ DeterministicMetrics = Union[
     CaptionDeterministicMetrics,
 ]
 
-# The only legal deterministic-metrics type for each task.
-# 每个任务唯一合法的确定性指标类型。
-EXPECTED_METRICS: dict[str, type[BaseModel]] = {
-    "counting": CountDeterministicMetrics,
-    "general_vqa": VQADeterministicMetrics,
-    "grounding": GroundingDeterministicMetrics,
-    "caption": CaptionDeterministicMetrics,
-}
+# The only legal deterministic-metrics type for each task. Immutable and
+# internal: the registry must not be modifiable through any public API.
+# 每个任务唯一合法的确定性指标类型。不可变且内部：注册表不得通过任何
+# 公共 API 修改。
+EXPECTED_METRICS: MappingProxyType[str, type[BaseModel]] = MappingProxyType(
+    {
+        "counting": CountDeterministicMetrics,
+        "general_vqa": VQADeterministicMetrics,
+        "grounding": GroundingDeterministicMetrics,
+        "caption": CaptionDeterministicMetrics,
+    }
+)
 
 
 class VQAEvaluationRecord(BaseModel):
