@@ -54,6 +54,13 @@ jobs:
           from models.entry import list_models
           from agents.registry import AgentRegistry
           from agents.counting import CountingAgent, CountingResult
+          from agents import CountingBackendUnavailableError as PublicError
+          from agents.errors import CountingBackendUnavailableError as CoreError
+          from agents.counting.backends.base import (
+              BackendKind,
+              CountingBackendUnavailableError as BackendError,
+              MissingModelCacheIdentityError,
+          )
           from routing import POLICIES, RoutePolicy, RoutingDecision, SampleCapabilities, TaskRouter
 
           names = list_models()
@@ -65,6 +72,10 @@ jobs:
           assert "counting" in POLICIES
           assert CountingAgent is not None
           assert CountingResult is not None
+          assert PublicError is CoreError
+          assert BackendError is CoreError
+          assert BackendKind is not None
+          assert MissingModelCacheIdentityError is not None
 
           print("wheel-import-contract: PASS")
           PY
