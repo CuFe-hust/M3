@@ -110,7 +110,10 @@
     "agents/change/schema.py",
     "agents/change/settings.py",
     "agents/change/pair_validator.py",
-    "agents/change/harmonizer.py"
+    "agents/change/harmonizer.py",
+    "agents/change/difference_proposal.py",
+    "agents/change/preprocess.py",
+    "agents/change/reviewer.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
