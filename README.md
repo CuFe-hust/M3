@@ -247,6 +247,119 @@ python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 `AgentExecution` → `ArtifactWriter` and optional `JudgeService`. The runtime has no deprecated
 workflow, counting, or expert-module compatibility path.
 
+## Merger-Layer LoRA Fine-Tuning (Qwen3-VL-8B)
+
+Qwen3-VL-8B has four vision merger modules: the final `visual.merger` plus the
+three `visual.deepstack_merger_list.*` deepstack mergers. The scripts under
+`scripts/` prepare VRSBench SFT data and train pure LoRA on the eight
+`nn.Linear` layers inside those mergers while freezing every other weight.
+Qwen3-VL-8B 有四个视觉 merger 模块：最终 `visual.merger` 与三个
+`visual.deepstack_merger_list.*` deepstack merger。`scripts/` 下的脚本负责
+准备 VRSBench SFT 数据，并对这四个 merger 内的八个 `nn.Linear` 做纯 LoRA
+训练，其余权重全部冻结。
+
+Reference training environment (single 4090/48G):
+参考训练环境（单卡 4090/48G）：
+
+```bash
+conda create -n m3-finetune python=3.11
+conda activate m3-finetune
+pip install torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cu128
+pip install -e '.[dev]'
+pip install -r requirements-finetune.txt
+```
+
+The default run entry prepares the SFT JSON under `$OUTPUT_DIR/data`, trains
+with a 2x English multiplier, and saves the LoRA adapter:
+默认运行入口在 `$OUTPUT_DIR/data` 下生成 SFT JSON，以 2 倍英文复制比例训练，
+并保存 LoRA 适配器：
+
+```bash
+DATA_ROOT=/data/vrsbench \
+MODEL_ID=/home/lijia/M3/models/Qwen3-VL-8B-Instruct \
+OUTPUT_DIR=outputs/finetune/qwen3-vl-8b-merger-lora \
+bash scripts/finetune_qwen3vl_merger_lora.sh
+```
+
+Key exposed parameters (run `python scripts/finetune_qwen3vl_merger_lora.py --help`
+for the full list, including all standard Hugging Face training arguments):
+关键可调参数（完整列表见
+`python scripts/finetune_qwen3vl_merger_lora.py --help`，包含全部标准
+Hugging Face 训练参数）：
+
+- `--lora_rank`, `--lora_alpha`, `--lora_dropout`, `--lora_bias`: LoRA shape.
+  LoRA 形态。
+- `--freeze_merger_base True` (default): pure LoRA; `False` additionally trains
+  the merger base weights like the reference repository.
+  `--freeze_merger_base True`（默认）：纯 LoRA；`False` 会额外全参训练 merger
+  基座权重，与参考仓库一致。
+- `--image_min_pixels` / `--image_max_pixels`: multiples of 32 for Qwen3-VL;
+  default `256*32*32` / `1280*32*32`.
+  `--image_min_pixels` / `--image_max_pixels`：Qwen3-VL 使用 32 的倍数；
+  默认 `256*32*32` / `1280*32*32`。
+- `--per_device_train_batch_size`, `--gradient_accumulation_steps`,
+  `--learning_rate`, `--num_train_epochs`, `--eval_strategy`, `--save_strategy`,
+  etc. come from the standard `TrainingArguments`.
+  `--per_device_train_batch_size`、`--gradient_accumulation_steps`、
+  `--learning_rate`、`--num_train_epochs`、`--eval_strategy`、`--save_strategy`
+  等来自标准 `TrainingArguments`。
+
+Merge the trained adapter when inference needs a single full checkpoint:
+推理需要单一完整权重时合并训练好的适配器：
+
+```bash
+python scripts/merge_qwen3vl_merger_lora.py \
+  --model-id /home/lijia/M3/models/Qwen3-VL-8B-Instruct \
+  --adapter-path outputs/finetune/qwen3-vl-8b-merger-lora \
+  --output-path outputs/finetune/qwen3-vl-8b-merger-lora/merged
+```
+
+The merged directory can be used as `models.qwen.model` in an ignored local
+config; the existing local Transformers client selects the native
+`Qwen3VLForConditionalGeneration` class from its `model_type`.
+合并目录可用作忽略的本地配置中的 `models.qwen.model`；现有本地 Transformers
+客户端会按其 `model_type` 选择原生 `Qwen3VLForConditionalGeneration` 类。
+
+Run the VRSBench test set with LoRA enabled (no merging needed):
+不合并权重，直接启用 LoRA 跑 VRSBench 测试集：
+
+```bash
+python scripts/evaluate_qwen3vl_merger_lora.py \
+  --model-id /home/lijia/M3/models/Qwen3-VL-8B-Instruct \
+  --adapter-path outputs/finetune/qwen3-vl-8b-merger-lora \
+  --data-root /data/vrsbench \
+  --tasks caption vqa \
+  --output-path outputs/eval/qwen3-vl-8b-merger-lora/vrsbench_test.jsonl
+```
+
+The script writes one canonical `{"sample", "prediction"}` JSONL line per test
+record, plus a `.summary.json` with per-task counts, failure counts, mean
+latency, and VQA exact match. Use `--max-samples N` for a smoke run and
+`--device cuda:0` on the remote 4090 node.
+脚本为每条测试记录写一行规范化的 `{"sample", "prediction"}` JSONL，并输出
+`.summary.json`（分任务计数、失败数、平均耗时、VQA 精确匹配）。冒烟测试可用
+`--max-samples N`，远端 4090 节点可加 `--device cuda:0`。
+
+After training and evaluation finish, export the training curves and test
+statistics in one step:
+训练和评测完成后，可一键导出训练曲线与测试结果统计：
+
+```bash
+python scripts/export_finetune_report.py \
+  --train-dir outputs/finetune/qwen3-vl-8b-merger-lora \
+  --eval-dir outputs/eval/qwen3-vl-8b-merger-lora \
+  --report-path outputs/reports/qwen3-vl-8b-merger-lora/report.md
+```
+
+The script reads `trainer_state.json` and every `*.summary.json` (plus the
+prediction JSONL) and writes `report.md`, `report.json`, `report.csv`, and
+`report_training_curves.png`. PNG rendering needs matplotlib and is skipped
+automatically when it is absent; pass `--no-charts` to skip it explicitly.
+脚本读取 `trainer_state.json` 与全部 `*.summary.json`（以及预测 JSONL），
+输出 `report.md`、`report.json`、`report.csv` 和
+`report_training_curves.png`。PNG 曲线需要 matplotlib，缺失时自动跳过，
+也可用 `--no-charts` 显式跳过。
+
 ## Optional YOLO OBB Counting
 
 The repository default keeps YOLO disabled. It neither imports a detector runtime nor inspects

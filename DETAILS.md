@@ -395,6 +395,56 @@ After modifying code, if the current change affects any of the following, pytest
 
 If pytest cannot be run in the current environment, the reason must be stated, and at least feasible static checks must be performed.
 
+### 3.10 `scripts/` Training and Data Preparation Scripts
+
+`scripts/` contains standalone maintenance and training utilities that are not
+part of the single public `main.py` runtime.
+`scripts/` 存放独立的维护与训练工具，不属于唯一公开运行入口 `main.py`。
+
+- `scripts/prepare_vrsbench_sft.py` converts the processed VRSBench JSONL
+  annotations into the reference SFT JSON format
+  (`{"id", "image", "conversations": [human, gpt]}`). English train records
+  are duplicated by `--english-multiplier` (default 2) to emphasize English;
+  the validation split keeps one copy per record.
+  `scripts/prepare_vrsbench_sft.py` 将处理后的 VRSBench JSONL 标注转换为参考
+  SFT JSON 格式（`{"id", "image", "conversations": [human, gpt]}`）。英文训练
+  记录按 `--english-multiplier`（默认 2）复制以侧重英文；验证集每份记录只保留一份。
+- `scripts/finetune_qwen3vl_merger_lora.py` trains pure LoRA on the four
+  Qwen3-VL merger modules (`visual.merger` plus three
+  `visual.deepstack_merger_list.*`), which means LoRA adapters on the eight
+  `nn.Linear` layers inside those mergers while every other weight stays frozen.
+  All model, data, LoRA, and standard Hugging Face training arguments are
+  exposed through the CLI.
+  `scripts/finetune_qwen3vl_merger_lora.py` 对 Qwen3-VL 四个 merger 模块
+  （`visual.merger` 加三个 `visual.deepstack_merger_list.*`）做纯 LoRA 训练，
+  即这四个 merger 内的八个 `nn.Linear` 挂 LoRA，其余权重全部冻结。模型、数据、
+  LoRA 以及标准 Hugging Face 训练参数全部通过 CLI 暴露。
+- `scripts/merge_qwen3vl_merger_lora.py` merges a trained adapter into a full
+  checkpoint that the existing Qwen3-VL wrappers can load directly.
+  `scripts/merge_qwen3vl_merger_lora.py` 将训练好的适配器合并回完整权重，
+  现有 Qwen3-VL 封装可直接加载合并目录。
+- `scripts/finetune_qwen3vl_merger_lora.sh` is the single-4090/48G run entry:
+  it prepares the SFT JSON under the output directory and launches training.
+  `scripts/finetune_qwen3vl_merger_lora.sh` 是单卡 4090/48G 的运行入口：
+  在输出目录下生成 SFT JSON 并启动训练。
+- `scripts/evaluate_qwen3vl_merger_lora.py` loads the base Qwen3-VL checkpoint
+  with an optional LoRA adapter and runs greedy inference on the VRSBench test
+  JSONL (caption and/or VQA). It writes canonical sample/prediction JSONL plus
+  a summary with per-task counts, failures, mean latency, and VQA exact match.
+  `scripts/evaluate_qwen3vl_merger_lora.py` 加载基础 Qwen3-VL 权重并可选挂载
+  LoRA 适配器，在 VRSBench 测试 JSONL（caption 和/或 VQA）上做贪心推理。
+  输出规范化 sample/prediction JSONL 以及摘要（分任务计数、失败数、平均耗时、
+  VQA 精确匹配率）。
+- `scripts/export_finetune_report.py` reads the Hugging Face
+  `trainer_state.json` (train/eval loss, learning rate, gradient norm per
+  step) plus every `*.summary.json` and prediction JSONL under the evaluation
+  output directory, then exports a Markdown report, machine-readable JSON,
+  per-step metrics CSV, and (with matplotlib) a PNG training-curve chart.
+  `scripts/export_finetune_report.py` 读取 Hugging Face `trainer_state.json`
+  （每步训练/验证 loss、学习率、梯度范数）以及评测输出目录下的全部
+  `*.summary.json` 与预测 JSONL，导出 Markdown 报告、机器可读 JSON、
+  每步指标 CSV，以及（装有 matplotlib 时）PNG 训练曲线图。
+
 ## 3. Current Core Interface Contracts
 
 This section records the core interfaces that are currently still valid. When modifying code, the AI should use this file as the source of current facts while also complying with the mandatory behavioral rules in `AGENTS.md`.
@@ -852,3 +902,45 @@ coverage guard remain distinct. An explicit class label and a box at least 15% t
 This does not change `UnifiedSample`, `ExpertResult`, `AgentExecution`, routing names, or CLI dataset execution. Ratios in change schemas always use `0..1`. Every preprocessing attempt has one of `applied`, `skipped`, `rejected`, or `failed`; all non-applied decisions retain raw images, set `used_for_proposal=false`, and include `RAW_FALLBACK_USED`. Generated files live under the sample's `change_preprocess/` directory. Harmonized images and PIF masks are written only for accepted transforms; validation/report, raw-based difference map, overlay, proposals, and raw crops remain auditable on fallback.
 
 `AppSettings.agents.change` is a strict Pydantic configuration group. Old YAML files that omit it receive defaults. `input_mode` selects `raw_only`, `harmonized_only`, or `dual_path`; when harmonization is unavailable, all modes safely use the raw pair. The active change prompt is `change_dual_path_v1.md` (`change-dual-path-v1`). The offline evaluator is `python -m scripts.evaluate_levir_harmonization`; it never calls Qwen and never infers absent label paths.
+
+## 17. Qwen3-VL-8B Merger-Layer LoRA Training
+
+The Qwen3-VL-8B checkpoint (`vision_config.deepstack_visual_indexes =
+[8, 16, 24]`) contains four `Qwen3VLVisionPatchMerger` modules: the final
+`visual.merger` and the three `visual.deepstack_merger_list.0/1/2` deepstack
+mergers. Each merger has `linear_fc1` and `linear_fc2`, so merger-only LoRA
+targets eight `nn.Linear` layers. The training script keeps every non-LoRA
+weight frozen by default (`--freeze_merger_base True`), i.e. a pure LoRA run;
+setting `--freeze_merger_base False` additionally fully trains the merger base
+weights in the style of the reference Qwen-VL-Series-Finetune repository.
+Qwen3-VL-8B 权重（`vision_config.deepstack_visual_indexes = [8, 16, 24]`）
+包含四个 `Qwen3VLVisionPatchMerger` 模块：最终 `visual.merger` 和三个
+`visual.deepstack_merger_list.0/1/2` deepstack merger。每个 merger 有
+`linear_fc1` 与 `linear_fc2`，因此 merger-only LoRA 的目标是八个
+`nn.Linear`。默认（`--freeze_merger_base True`）冻结除 LoRA 外的全部权重，
+即纯 LoRA；设置 `--freeze_merger_base False` 会额外全参训练 merger 基座权重，
+与参考仓库 Qwen-VL-Series-Finetune 的行为一致。
+
+Input data uses the reference conversation format produced by
+`scripts/prepare_vrsbench_sft.py`; image paths stay relative to the VRSBench
+root (`Images_train/Images_train/...`, `Images_val/Images_val/...`), and the
+remote training root is `/data/vrsbench`. The run entry reads `DATA_ROOT`,
+`MODEL_ID`, and `OUTPUT_DIR` from the environment instead of hard-coding paths.
+输入数据使用 `scripts/prepare_vrsbench_sft.py` 生成的参考对话格式；图片路径
+保持相对 VRSBench 根目录（`Images_train/Images_train/...`、
+`Images_val/Images_val/...`），远端训练根目录为 `/data/vrsbench`。运行入口
+从环境变量读取 `DATA_ROOT`、`MODEL_ID` 与 `OUTPUT_DIR`，不硬编码路径。
+
+The Transformers build must contain the native Qwen3-VL deepstack fusion path;
+the reference environment pins `transformers==5.14.1` in
+`requirements-finetune.txt` and the script refuses to run on older builds
+without `Qwen3VLTextModel._deepstack_process`. Image pixel limits use
+multiples of 32 (patch 16 × merge 2), e.g. `--image_max_pixels 1310720`
+(= 1280 × 32 × 32) for a 4090/48G node. SFT checkpoints are saved under
+`outputs/finetune/` and must not be committed.
+Transformers 构建必须包含 Qwen3-VL 原生 deepstack 融合路径；参考环境在
+`requirements-finetune.txt` 中固定 `transformers==5.14.1`，脚本在没有
+`Qwen3VLTextModel._deepstack_process` 的旧版本上会拒绝运行。图像像素上限使用
+32 的倍数（patch 16 × merge 2），例如 4090/48G 单卡使用
+`--image_max_pixels 1310720`（= 1280 × 32 × 32）。SFT checkpoint 保存于
+`outputs/finetune/`，不得提交到仓库。
