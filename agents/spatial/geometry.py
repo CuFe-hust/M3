@@ -34,6 +34,12 @@ def apply_spatial_geometry(
         "input_normalizations",
         "evidence_quality",
         "repair_severity",
+        "candidate_review_used",
+        "candidate_review_added",
+        "candidate_review_replaced",
+        "candidate_review_labeled_boxes",
+        "candidate_review_geometry",
+        "candidate_review_error_type",
     ):
         if key in result.geometry:
             audit[key] = result.geometry[key]

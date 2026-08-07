@@ -102,7 +102,10 @@
     "agents/counting/agent.py",
     "agents/spatial/__init__.py",
     "agents/spatial/schema.py",
-    "agents/spatial/geometry.py"
+    "agents/spatial/geometry.py",
+    "agents/spatial/agent.py",
+    "agents/spatial/candidate_review.py",
+    "agents/spatial/evidence_merge.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
