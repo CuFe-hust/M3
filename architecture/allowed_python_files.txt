@@ -205,6 +205,7 @@ tests/contracts/test_agent_result_contract.py
 tests/contracts/test_data_schema_contract.py
 tests/contracts/test_counting_result_contract.py
 tests/contracts/test_routing_contract.py
+tests/contracts/test_artifact_contract.py
 tests/data/test_adapter_integration.py
 tests/data/test_levir_cc_adapter.py
 tests/data/test_mme_realworld_adapter.py
@@ -225,6 +226,7 @@ tests/routing/test_router.py
 # === Workflow tests ===
 tests/workflows/test_call_budget.py
 tests/workflows/test_run_store.py
+tests/workflows/test_artifact_writer.py
 
 # === Models tests ===
 tests/models/test_model_entry.py
