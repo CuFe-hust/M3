@@ -68,7 +68,10 @@
     "agents/caption/__init__.py",
     "agents/caption/agent.py",
     "agents/grounding/__init__.py",
-    "agents/grounding/agent.py"
+    "agents/grounding/agent.py",
+    "agents/counting/__init__.py",
+    "agents/counting/schema.py",
+    "agents/counting/settings.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"

@@ -1,0 +1,133 @@
+"""Counting-domain settings: deterministic defaults and YOLO declarations.
+
+计数域配置：确定性默认值与 YOLO 声明。配置只做结构校验，不访问权重文件、
+不定义任何后端选择或执行逻辑；不导入应用级配置层。
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class CountingSettings(BaseModel):
+    """Deterministic defaults shared by future point-counting components.
+    未来点式计数组件共用的确定性默认配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tile_core_size: int = Field(default=896, gt=0)
+    halo_size: int = Field(default=128, ge=0)
+    model_max_side: int = Field(default=1280, gt=0)
+    max_pixels_without_tiling: int = Field(default=1_600_000, gt=0)
+    boundary_band_px: int = Field(default=32, ge=0)
+    min_confidence: float = Field(default=0.2, ge=0.0, le=1.0)
+    max_points_per_tile: int = Field(default=200, gt=0)
+    sequential: bool = True
+    concurrency: int = Field(default=1, ge=1)
+    seam_verify: bool = True
+    recursive_split_enabled: bool = True
+    max_recursive_depth: int = Field(default=2, ge=0)
+    min_core_size: int = Field(default=224, gt=0)
+    seam_crop_margin_px: int = Field(default=128, ge=0)
+    unresolved_conflict_policy: Literal["flag_for_review"] = "flag_for_review"
+    prompt_version: str = "count-point-v4"
+    vrsbench_min_scan_depth: int = Field(default=0, ge=0)
+    vrsbench_zero_review: bool = False
+    vrsbench_tile_upscale_max_side: int | None = Field(default=None, gt=0)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.sequential and self.concurrency != 1:
+            raise ValueError("sequential counting requires concurrency=1")
+        if self.vrsbench_min_scan_depth > self.max_recursive_depth:
+            raise ValueError("vrsbench_min_scan_depth cannot exceed max_recursive_depth")
+
+
+class AgentCountingSettings(BaseModel):
+    """Counting agent configuration. / 计数 Agent 配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    default_backend: Literal["auto", "qwen_point", "yolo_obb"] = "auto"
+
+
+class YoloDetectorSettings(BaseModel):
+    """One YOLO detector with its class mapping and priority. Validation is
+    purely structural — weight files are never touched.
+    一个 YOLO 检测器及其类别映射与优先级。校验纯结构性的——绝不访问权重文件。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1)
+    enabled: bool = False
+    weights: Path
+    runtime: Literal["ultralytics", "onnx_yolov5_obb"] = "ultralytics"
+    task: Literal["obb"] = "obb"
+    model_id: str = Field(min_length=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_dataset: str = Field(default="DOTAv1", min_length=1)
+    priority: int = Field(default=100, ge=0)
+    classes: list[str] = Field(min_length=1)
+    aliases: dict[str, str] = Field(default_factory=dict)
+    composite_targets: dict[str, list[str]] = Field(default_factory=dict)
+    confidence: float = Field(default=0.20, ge=0.0, le=1.0)
+    iou: float = Field(default=0.50, ge=0.0, le=1.0)
+    image_size: int = Field(default=1024, gt=0)
+    device: str = "0"
+    max_detections: int = Field(default=1000, gt=0)
+    boundary_duplicate_iou: float = Field(default=0.50, ge=0.0, le=1.0)
+    boundary_duplicate_center_px: float = Field(default=16.0, gt=0.0)
+
+    @model_validator(mode="after")
+    def validate_detector_contract(self) -> "YoloDetectorSettings":
+        """Normalize and validate detector class declarations without I/O.
+        在不访问文件系统的前提下规范并校验检测器类别声明。"""
+        self.sha256 = self.sha256.casefold()
+        normalized = [value.strip() for value in self.classes]
+        folded = [value.casefold() for value in normalized]
+        if len(folded) != len(set(folded)):
+            raise ValueError("YOLO detector classes must be unique after normalization")
+        known = set(folded)
+        for alias, target in self.aliases.items():
+            if target.strip().casefold() not in known:
+                raise ValueError(f"YOLO alias {alias!r} targets unknown class {target!r}")
+        for composite, targets in self.composite_targets.items():
+            if not targets:
+                raise ValueError(f"YOLO composite target {composite!r} must not be empty")
+            missing = [
+                target for target in targets if target.strip().casefold() not in known
+            ]
+            if missing:
+                raise ValueError(
+                    f"YOLO composite {composite!r} contains unknown classes {missing!r}"
+                )
+        if self.name in {"qwen_point", "vrsbench_qwen_count"}:
+            raise ValueError(f"YOLO detector name {self.name!r} is reserved")
+        self.classes = normalized
+        return self
+
+
+class YoloCountingSettings(BaseModel):
+    """YOLO counting backend configuration. / YOLO 计数后端配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    fallback_to_qwen_on_unavailable: bool = True
+    fallback_to_qwen_on_error: bool = True
+    verify_empty_with_qwen: bool = True
+    detectors: list[YoloDetectorSettings] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_enabled_detectors(self) -> "YoloCountingSettings":
+        """Require an enabled detector only when YOLO execution is enabled.
+        仅在启用 YOLO 执行时要求至少一个已启用检测器。"""
+        names = [detector.name for detector in self.detectors]
+        if len(names) != len(set(names)):
+            raise ValueError("YOLO detector names must be unique")
+        if self.enabled and not any(detector.enabled for detector in self.detectors):
+            raise ValueError("enabled YOLO requires at least one enabled detector")
+        return self
