@@ -3,18 +3,20 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–15 完成，15.5/15.6/15.7/15.8 hardening 完成）
+## 当前状态（Task 00–25 完成，25.5 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
-- 架构守卫（文件白名单 / import 依赖 DAG / 旧包禁止）：`tests/architecture/`
+- 架构守卫（文件白名单 / import 依赖 DAG / 旧包禁止 / 打包发现）：`tests/architecture/`
 - 数据层：`data/`（统一样本契约、4 个数据集 Adapter、校验/选择/审计）
 - 模型层基础：`models/`（协议/缓存/图像工具/配置声明、统一 entry、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装）
 - Agent 通用契约：`agents/`（AgentResult/VisualEvidence、AgentContext/AgentExecution、Registry、错误类型、数据集无关 VisualAgentBase）
+- 领域 Agents：`agents/general_vqa/`、`agents/caption/`、`agents/grounding/`（薄视觉 Agent，含 MCQ/Grounding 输出约束）
+- 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent，主输出恒为 CountingResult）
+- 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
 
-**尚未实现**：具体领域 Agents（counting/spatial/change/grounding/caption/general_vqa）、
-routing、workflows、evaluation、reporting、application 与 CLI（`main.py`）。
-请勿将其当作可用功能使用。Task 16 尚未开始。
+**尚未实现**：spatial、change Agents、workflows、evaluation、reporting、
+application 与 CLI（`main.py`）。请勿将其当作可用功能使用。
 
 ## 安装与测试
 
@@ -24,6 +26,7 @@ python -m compileall \
   data \
   models \
   agents \
+  routing \
   tests \
   scripts/generate_migration_fixtures.py
 python -m pytest -q tests/architecture
@@ -53,7 +56,9 @@ GitHub Actions（`.github/workflows/offline-tests.yml`，Ubuntu/Python 3.11）
 - `models/`：模型协议与请求哈希、响应缓存、图像工具、纯声明配置、
   统一模型入口、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装
 - `agents/`：AgentResult/AgentExecution 契约、安全校验、Registry、
-  错误类型、数据集无关 VisualAgentBase
+  错误类型、数据集无关 VisualAgentBase、general_vqa/caption/grounding
+  薄视觉 Agent、计数子系统（契约/几何/证据/pipeline/backends/选择器/Agent）
+- `routing/`：同步确定性 Thin Router（task→policy 表，不读 question）
 - `tests/`：架构守卫 / 契约 / Golden parity 测试
 - `docs/migration/`：迁移基线、Golden 说明
 - `scripts/`：Golden fixture 生成器（离线可复现）

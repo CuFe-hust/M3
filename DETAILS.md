@@ -24,6 +24,28 @@
 | `agents/registry.py` | `AgentRegistry` | 纯注册/查询/supports/coverage |
 | `agents/errors.py` | 9 个稳定错误类型 | 重复/未注册/任务不匹配/执行失败/检测器/可选依赖 |
 | `agents/visual_base.py` | `VisualAgentBase`、`PromptBinding` | 数据集无关视觉 Agent 基类（返回 AgentExecution） |
+| `agents/general_vqa/agent.py` | `GeneralVQAAgent` | 通用/场景分类/多选题 VQA；postprocess 强制 MCQ 输出符合 choices 约束 |
+| `agents/caption/agent.py` | `CaptionAgent` | 仅 caption；trace 含稳定 agent class/route |
+| `agents/grounding/agent.py` | `GroundingAgent` | 仅 grounding；completed 必须携带合法定位证据（0..999） |
+| `agents/counting/schema.py` | 计数域全部契约 | PixelRect/TileSpec/观测/目标/结果；final_count 强绑定 accepted points |
+| `agents/counting/settings.py` | `CountingSettings`、`AgentCountingSettings`、`YoloDetectorSettings`、`YoloCountingSettings` | 计数确定性默认；YOLO 声明纯结构校验（含 require_cuda/allow_cpu_fallback） |
+| `agents/counting/geometry.py` | 切片/坐标换算/owner 规则/`cores_are_neighbours` | 纯确定性；crop_for_tile 接收已打开图片 |
+| `agents/counting/evidence.py` | box→点/去重/边界残片/数量解析 | 通用标签归一化，无数据集分支 |
+| `agents/counting/point_pipeline.py` | `PointCountingOrchestrator`、`find_boundary_conflicts`、`decide_seam_pairs`、`finalize_representatives` | tile 回调协议、递归分割、seam 最终化接入主流程 |
+| `agents/counting/target_parser.py` | `CountTargetParser`、`InvalidCountTargetHintError` | 目标解析优先级：normalization hint → legacy metadata → Qwen |
+| `agents/counting/agent.py` | `CountingAgent` | 显式 plan/回退/zero review；主 payload 恒为 CountingResult；AgentResult 仅附加 |
+| `agents/counting/backends/base.py` | 协议与类型 | CountingRequest/BackendPlan/Outcome；is_enabled/is_available 分离；稳定错误 |
+| `agents/counting/backends/registry.py` | `BackendRegistry` | 稳定注册顺序、重复检测、数据集中性命名 |
+| `agents/counting/backends/selector.py` | `BackendSelector` | 仅按 mode/task/target/hints 计划；计划期不隐藏不可用检测器 |
+| `agents/counting/backends/qwen_point.py` | `QwenPointCountingBackend` | tile 点计数；完整 cache identity；response schema 入 hash |
+| `agents/counting/backends/quantity_proposal.py` | `QuantityProposalBackend` | 提议+定位；无可靠 hint 拒绝 supports；恢复仅限当前请求 hash 目录 |
+| `agents/counting/backends/yolo_model_store.py` | `YoloModelStore` | per-key 并发加载一次；hash/task/class map 校验 |
+| `agents/counting/backends/yolo_obb.py` | `YoloOBBCountingBackend` | OBB 计数；alias/composite；边界去重；provider 审计 |
+| `agents/counting/backends/yolov5_obb_onnx.py` | `YoloV5ObbOnnxModel` | 惰性 ONNX；require_cuda/allow_cpu_fallback；device 校验 |
+| `agents/counting/backends/yolo_adapter.py` | `OBBDetection`、`UltralyticsOBBModelAdapter` | 统一 OBB 输出 |
+| `routing/schema.py` | `SampleCapabilities`、`RoutePolicy`、`RoutingDecision` | 路由契约；Router 不读 question、不调用模型 |
+| `routing/policies.py` | `POLICIES`、`policy_for` | 固定 task→policy 表；未知 task 显式失败 |
+| `routing/router.py` | `TaskRouter` | 同步确定性路由；requires_tiling 为策略字段 |
 | `data/schema.py` | `ImageRef` | 不可变图像引用；path 统一 posix 序列化；sha256 严格 64 位 hex |
 | `data/schema.py` | `GroundTruth` | answers/count/boxes(4|8)/points(2)/labels/raw/coordinate_frame |
 | `data/schema.py` | `TaskNormalization` | 一等规范化字段（结构化 spatial_query/answer_constraints/count_target_hint） |
@@ -46,12 +68,31 @@
 ## 依赖方向
 
 - `data` 不依赖任何其他业务包；`models` 不依赖 data/agents；`agents` 可依赖
-  `data.schema` 与 `models`；`VisualAgentBase` 返回 `AgentExecution`（payload 为
-  `AgentResult`）。
+  `data.schema` 与 `models`；`routing` 可依赖 `data.schema` 与 `agents.schema`。
+- `VisualAgentBase` 返回 `AgentExecution`（payload 为 `AgentResult`）。
 - 新代码不得 import `spacers_agent`/`eval`。
+
+## 关键运行契约
+
+- `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型。
+- `CountingAgent` 主 payload 恒为 `CountingResult`，主文件名恒为
+  `counting_result.json`；`AgentResult`（来自后端或 `answer_as_agent_result`
+  开关）只写入 `additional_results["agent_result.json"]`（JSON-safe dict）。
+- 计数目标解析优先级：`sample.normalization.count_target_hint` →
+  `metadata["count_target_hint"]`（兼容）→ Qwen target parser；无效 hint
+  抛出 `InvalidCountTargetHintError`，绝不静默吞掉。
+- Backend plan 与 runtime fallback 职责分离：`BackendSelector.plan` 只基于
+  配置/支持性规划；运行时权重/依赖就绪由 count 时验证，不可用经 Agent 显式
+  回退（fallback 只能由 Agent 执行，Backend 不自行切换）。
+- seam finalization（`find_boundary_conflicts` → `decide_seam_pairs` →
+  `finalize_representatives`）由 `PointCountingOrchestrator.count_image` 执行，
+  `CountingSettings.seam_verify` 控制开关。
+- YOLO 模型按 (path, sha256) per-key 并发加载一次；ONNX provider 可配置
+  （require_cuda/allow_cpu_fallback）并写入 trace（requested/actual/cpu_fallback）。
+- 所有 Counting 模型调用使用完整 `ModelCacheIdentity`（model/generation/
+  client_version/revision）并把 response schema 纳入 request hash。
 
 ## 尚未实现
 
-具体领域 Agents（counting/spatial/change/grounding/caption/general_vqa）、
-`routing`、`workflows`、`evaluation`、`reporting`、`application`、`main.py`
-及对应目录尚未创建/实现；任务推进时逐层创建并更新本文件。
+`spatial`、`change` Agents、`workflows`、`evaluation`、`reporting`、
+`application`、`main.py` 尚未创建/实现；任务推进时逐层创建并更新本文件。

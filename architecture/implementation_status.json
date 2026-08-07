@@ -15,7 +15,17 @@
     12,
     13,
     14,
-    15
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25
   ],
   "completed_hardening_tasks": [
     "11.5-data-official-format-parity",
@@ -24,7 +34,8 @@
     "15.5-models-agent-runtime-integration",
     "15.6-model-cache-identity-execution-safety",
     "15.7-cache-persistence-image-mime-finalization",
-    "15.8-logical-model-identity-path-safety"
+    "15.8-logical-model-identity-path-safety",
+    "25.5-routing-packaging-counting-runtime-integrity"
   ],
   "implemented_files": [
     "data/__init__.py",
