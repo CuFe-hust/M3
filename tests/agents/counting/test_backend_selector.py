@@ -331,3 +331,35 @@ def test_unknown_kind_fails_stably() -> None:
     selector = _selector(_FakeQwenBackend(), _UnknownKindBackend())
     with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_KIND"):
         selector.plan(_TARGET, task="counting")
+
+
+# ── 25.7 未知 kind 安全 / unknown kind safety ─────────────────────────────
+
+
+class _UnsafeBackend:
+    """A hostile backend carrying path/credential text in name and kind.
+    名称与 kind 携带路径/凭据文本的恶意后端。"""
+
+    name = "/home/user/sk-secret"
+    kind = "Bearer abcdef data:image/png;base64,AAAA"
+    priority = 99
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True
+
+    def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
+        return True
+
+
+def test_unknown_kind_error_never_echoes_raw_values() -> None:
+    from agents.errors import CountingBackendUnavailableError
+
+    selector = _selector(_FakeQwenBackend(), _UnsafeBackend())
+    with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_KIND") as info:
+        selector.plan(_TARGET, task="counting")
+    text = str(info.value)
+    for token in ("/home/user", "sk-secret", "Bearer abcdef", "base64,AAAA"):
+        assert token not in text, token

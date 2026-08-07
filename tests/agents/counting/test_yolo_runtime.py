@@ -364,7 +364,12 @@ def test_count_merges_same_tile_duplicates(tmp_path: Path) -> None:
     assert "YOLO_DUPLICATE_MERGED" in codes
 
 
-def test_count_tile_failure_is_recorded(tmp_path: Path) -> None:
+def test_all_tiles_failed_propagates_stable_error(tmp_path: Path) -> None:
+    """When every tile fails the backend raises DetectorInferenceError instead
+    of returning a fake zero result. 所有 tile 均失败时后端抛出
+    DetectorInferenceError，而非返回伪造的零结果。"""
+    from agents.errors import DetectorInferenceError
+
     class _ExplodingModel(_FakeRuntimeModel):
         def predict(self, **kwargs):
             raise RuntimeError("runtime boom")
@@ -374,13 +379,102 @@ def test_count_tile_failure_is_recorded(tmp_path: Path) -> None:
         counting=CountingSettings(),
         model_store=YoloModelStore(loader=lambda path: _ExplodingModel()),
     )
-    outcome = asyncio.run(
-        backend.count(_request(tmp_path, Image.new("RGB", (200, 200), (1, 2, 3))), _context())
+    with pytest.raises(DetectorInferenceError, match="ALL_YOLO_TILES_FAILED"):
+        asyncio.run(
+            backend.count(_request(tmp_path, Image.new("RGB", (200, 200), (1, 2, 3))), _context())
+        )
+
+
+def test_partial_tile_failure_returns_partial_with_evidence(tmp_path: Path) -> None:
+    """One tile succeeds and one fails: partial result, kept evidence, no
+    global error. 一个 tile 成功一个失败：partial 结果、保留证据、无全局错误。"""
+    class _PartlyFailingModel(_FakeRuntimeModel):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.calls = 0
+
+        def predict(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("first tile boom")
+            # Polygon lies inside the second tile's owner core so its
+            # evidence is accepted. 多边形位于第二个 tile 的 owner core 内，
+            # 使其证据被接受。
+            return [_obb([[[200.0, 200.0], [200.0, 900.0], [900.0, 900.0], [900.0, 200.0]]], [0.0], [0.9])]
+
+    backend = YoloOBBCountingBackend(
+        _detector(tmp_path),
+        counting=CountingSettings(),
+        model_store=YoloModelStore(loader=lambda path: _PartlyFailingModel()),
     )
-    assert outcome.counting.failed_tiles == ["r000_c000"]
-    assert outcome.counting.status == "failed"
+    outcome = asyncio.run(
+        backend.count(_request(tmp_path, Image.new("RGB", (2000, 2000), (1, 2, 3))), _context())
+    )
+    assert outcome.counting.status == "partial"
+    assert "r000_c000" in outcome.counting.failed_tiles
+    assert len(outcome.counting.succeeded_tiles) == 8
+    assert outcome.counting.final_count >= 1  # evidence from successful tiles kept
     codes = {record.code for record in outcome.counting.warnings}
     assert "YOLO_TILE_INFERENCE_FAILED" in codes
+
+
+_SENSITIVE_TILE_ERROR = (
+    "/home/user/private/model.pt "
+    "C:\\\\secret\\\\models\\\\det.onnx "
+    "sk-test-secret "
+    "Bearer abcdef "
+    "data:image/png;base64,AAAA"
+)
+
+
+def test_tile_warning_is_sanitized(tmp_path: Path) -> None:
+    """Tile failure warnings must never contain raw exception text, paths,
+    credentials, or Base64. tile 失败 warning 绝不包含原始异常文本、路径、
+    凭据或 Base64。"""
+    class _SensitiveModel(_FakeRuntimeModel):
+        def predict(self, **kwargs):
+            raise RuntimeError(_SENSITIVE_TILE_ERROR)
+
+    backend = YoloOBBCountingBackend(
+        _detector(tmp_path),
+        counting=CountingSettings(),
+        model_store=YoloModelStore(loader=lambda path: _SensitiveModel()),
+    )
+    with pytest.raises(Exception, match="ALL_YOLO_TILES_FAILED"):
+        asyncio.run(
+            backend.count(_request(tmp_path, Image.new("RGB", (200, 200), (1, 2, 3))), _context())
+        )
+
+    # Partial path: warnings surface on the outcome.
+    # 部分失败路径：warning 出现在 outcome 上。
+    class _SensitivePartial(_FakeRuntimeModel):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.calls = 0
+
+        def predict(self, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError(_SENSITIVE_TILE_ERROR)
+            return [_obb([], [], [])]
+
+    backend2 = YoloOBBCountingBackend(
+        _detector(tmp_path),
+        counting=CountingSettings(),
+        model_store=YoloModelStore(loader=lambda path: _SensitivePartial()),
+    )
+    outcome = asyncio.run(
+        backend2.count(_request(tmp_path, Image.new("RGB", (2000, 2000), (1, 2, 3))), _context())
+    )
+    warning = next(
+        record for record in outcome.counting.warnings
+        if record.code == "YOLO_TILE_INFERENCE_FAILED"
+    )
+    assert "r000_c000" in warning.message
+    assert "RuntimeError" in warning.message
+    for token in ("/home/user/private", "sk-test-secret", "Bearer abcdef", "base64,AAAA"):
+        assert token not in warning.message, token
+        assert token not in str(outcome.trace), token
 
 
 # ── 边界去重对 / duplicate pair detection ─────────────────────────────────
@@ -611,3 +705,90 @@ def test_onnx_settings_device_contract(tmp_path: Path) -> None:
     # Non-negative integers beyond 9 are accepted. / 超过 9 的非负整数可接受。
     detector = _detector(tmp_path, device="10")
     assert detector.device == "10"
+
+
+# ── 25.7 CPU-only predict / CPU-only 预测契约 ──────────────────────────────
+
+
+def test_cpu_only_predict_runs_without_fallback_flag(tmp_path: Path, monkeypatch) -> None:
+    """Explicit CPU-only mode (require_cuda=False, device=cpu) must predict
+    successfully regardless of allow_cpu_fallback. 显式 CPU-only 模式
+    （require_cuda=False, device=cpu）必须能成功 predict，与
+    allow_cpu_fallback 无关。"""
+    import types
+
+    model, captured = _onnx_model(
+        tmp_path, monkeypatch, ["CPUExecutionProvider"],
+        device="cpu", require_cuda=False, allow_cpu_fallback=False,
+    )
+    assert captured["providers"] == ["CPUExecutionProvider"]
+
+    # Stub the heavy image path so predict runs without real cv2 math.
+    # 桩化重图像路径，使 predict 无需真实 cv2 运算即可运行。
+    def _fake_letterbox(image):
+        return image, 1.0, (0, 0)
+
+    def _fake_decode(prediction, confidence):
+        return []
+
+    def _fake_nms(candidates, confidence, iou, max_det):
+        return []
+
+    monkeypatch.setattr(model, "_letterbox", _fake_letterbox)
+    monkeypatch.setattr(model, "_decode", _fake_decode)
+    monkeypatch.setattr(model, "_nms", _fake_nms)
+    model._session.run = lambda *a, **k: [model._np.zeros((1, 5 + 2 + 180))]
+    results = model.predict(
+        Image.new("RGB", (100, 100)),
+        conf=0.2, iou=0.5, imgsz=1024, device="cpu", max_det=100, verbose=False,
+    )
+    assert len(results) == 1
+    assert len(results[0].obb.xyxyxyxy) == 0
+
+
+def test_predict_device_must_match_initialized_device(tmp_path: Path, monkeypatch) -> None:
+    model, _ = _onnx_model(
+        tmp_path, monkeypatch, ["CUDAExecutionProvider"],
+        device="0",
+    )
+    with pytest.raises(ValueError, match="differs from initialized"):
+        model.predict(
+            Image.new("RGB", (100, 100)),
+            conf=0.2, iou=0.5, imgsz=1024, device="1", max_det=100, verbose=False,
+        )
+
+
+def test_cuda_mode_predict_rejects_non_integer_device(tmp_path: Path, monkeypatch) -> None:
+    model, _ = _onnx_model(
+        tmp_path, monkeypatch, ["CUDAExecutionProvider"],
+        device="0",
+    )
+    with pytest.raises(ValueError, match="non-negative integer"):
+        model.predict(
+            Image.new("RGB", (100, 100)),
+            conf=0.2, iou=0.5, imgsz=1024, device="cpu", max_det=100, verbose=False,
+        )
+
+
+def test_identity_error_defined_exactly_once() -> None:
+    """MissingModelCacheIdentityError is declared exactly once in base.py.
+    MissingModelCacheIdentityError 在 base.py 中只声明一次。"""
+    import ast
+
+    source = (REPO_ROOT / "agents" / "counting" / "backends" / "base.py").read_text(
+        encoding="utf-8"
+    )
+    tree = ast.parse(source)
+    count = sum(
+        1
+        for node in tree.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "MissingModelCacheIdentityError"
+    )
+    assert count == 1
+    # The single import point resolves to the same class. / 单一导入点解析为同一类。
+    from agents.counting.backends import base as base_module
+
+    assert base_module.MissingModelCacheIdentityError is base_module.require_model_cache_identity.__globals__[
+        "MissingModelCacheIdentityError"
+    ]

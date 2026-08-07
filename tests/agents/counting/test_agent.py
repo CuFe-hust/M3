@@ -720,3 +720,85 @@ def test_public_error_and_trace_are_sanitized(tmp_path: Path) -> None:
     dump = str(execution.trace) + str(execution.additional_results)
     for token in ("/home/user/private", "sk-test-secret", "Bearer abcdef", "base64,AAAA"):
         assert token not in dump, token
+
+
+# ── 25.7 真实 YOLO 全失败传播 / real YOLO all-tile failure propagation ───
+
+
+def _real_yolo_backend(tmp_path: Path, *, exploding: bool) -> Any:
+    """A real YoloOBBCountingBackend over a fake runtime model.
+    基于假运行时模型的真实 YoloOBBCountingBackend。"""
+    from agents.counting.backends.yolo_model_store import YoloModelStore
+    from agents.counting.backends.yolo_obb import YoloOBBCountingBackend
+    from agents.counting.settings import YoloDetectorSettings
+
+    class _FakePredictModel:
+        task = "obb"
+        names = {0: "car"}
+        providers = ("CPUExecutionProvider",)
+        requested_provider = "CPUExecutionProvider"
+        requested_device = "cpu"
+        resolved_provider = "CPUExecutionProvider"
+        resolved_device = "cpu"
+        cpu_fallback_used = False
+
+        def predict(self, **kwargs):
+            raise RuntimeError("gpu driver crashed")
+
+    import hashlib
+
+    detector = YoloDetectorSettings(
+        name="det-a",
+        enabled=True,
+        weights=tmp_path / "det.pt",
+        model_id="m1",
+        sha256=hashlib.sha256(b"fake").hexdigest(),
+        classes=["car"],
+        device="cpu",
+        require_cuda=False,
+        allow_cpu_fallback=False,
+    )
+    (tmp_path / "det.pt").write_bytes(b"fake")
+    store = YoloModelStore(loader=lambda path: _FakePredictModel())
+    return YoloOBBCountingBackend(detector, counting=CountingSettings(), model_store=store)
+
+
+def test_real_yolo_all_tiles_failed_falls_back_to_qwen(tmp_path: Path) -> None:
+    """Real YOLO backend with every tile failing triggers the Qwen fallback
+    through the CountingAgent with a fully audited trace.
+    真实 YOLO 后端全部 tile 失败时经 CountingAgent 触发 Qwen 回退，trace
+    完整可审计。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    yolo = _real_yolo_backend(tmp_path, exploding=True)
+    registry = _registry(_qwen_backend(client), yolo)
+    execution = asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.trace["primary_backend"] == "det-a"
+    assert execution.trace["primary_backend_kind"] == "yolo_obb"
+    assert execution.trace["final_backend"] == "qwen_point"
+    assert execution.trace["final_backend_kind"] == "qwen_point"
+    assert execution.trace["fallback_triggered"] is True
+    assert execution.trace["fallback_kind"] == "runtime_error"
+    assert execution.trace["fallback_reason_code"] == "PRIMARY_BACKEND_FAILED"
+    assert execution.trace["fallback_error_type"] == "DetectorInferenceError"
+    assert execution.trace["attempted_backends"] == ["det-a", "qwen_point"]
+    assert execution.trace["yolo"]["used_for_final"] is False
+    # No raw exception text anywhere. / 任何位置都不含原始异常文本。
+    dump = str(execution.trace) + str(execution.additional_results)
+    assert "gpu driver crashed" not in dump
+
+
+def test_real_yolo_all_tiles_failed_without_fallback(tmp_path: Path) -> None:
+    """Fallback disabled: the all-tiles-failed YOLO surfaces as a stable
+    AgentExecutionError. 回退禁用：全失败 YOLO 以稳定 AgentExecutionError
+    呈现。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    yolo = _real_yolo_backend(tmp_path, exploding=True)
+    registry = _registry(_qwen_backend(client), yolo)
+    agent = _agent(client, registry, fallback_to_qwen_on_error=False)
+    with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
+        asyncio.run(agent.run(_sample(root), _context(root)))
