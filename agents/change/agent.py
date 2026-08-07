@@ -126,6 +126,15 @@ class ChangeAgent:
 
         settings = self._settings
         preprocess = preprocess_pair(sample, settings, context.artifact_dir, data_root=context.data_root)
+        # Invalid temporal pairs must fail before evidence build, budget
+        # reservation, or any model call. 无效时相图对必须在构建证据、消费
+        # budget 或调用模型之前稳定失败。
+        if not preprocess.validation.valid:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause="INVALID_CHANGE_PAIR",
+            )
         mode = resolve_input_mode(settings)
         content, image_hashes, image_manifest = self._build_evidence(
             sample, context, preprocess, mode

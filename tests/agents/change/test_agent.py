@@ -509,3 +509,98 @@ def test_import_agent_does_not_load_legacy_packages() -> None:
 
     for legacy in ("spacers_agent", "eval"):
         assert legacy not in sys.modules
+
+
+# ── 无效时相图对 / invalid temporal pairs (33.5) ───────────────────────────
+
+
+def _pair_sample(root: Path, images: list[tuple[str, str]]) -> UnifiedSample:
+    """Build a change sample from (filename, role) pairs.
+    从 (filename, role) 列表构建变化样本。"""
+    root.mkdir(parents=True, exist_ok=True)
+    refs = []
+    for index, (filename, role) in enumerate(images):
+        Image.new("RGB", (64, 64), (10, 20, 30)).save(root / filename)
+        refs.append(ImageRef(image_id=f"i{index}", path=filename, role=role))  # type: ignore[arg-type]
+    return UnifiedSample(
+        sample_id="s1",
+        dataset="parity",
+        split="test",
+        task="change_caption",
+        images=refs,
+        question="Describe the change.",
+        ground_truth=GroundTruth(answers=["x"]),
+    )
+
+
+def test_invalid_pair_three_images_fails_before_any_model_call(tmp_path: Path) -> None:
+    """A t1/t2/context triplet passes the schema but is an invalid pair for
+    the PairValidator; the agent must fail before any model call. 三图
+    t1/t2/context 能通过 schema，但对 PairValidator 是无效图对；Agent 必须
+    在任何模型调用前失败。（单图/乱序/错误角色已在 data.schema 层被拒绝，
+    无法到达 Agent。）"""
+    from agents.errors import AgentExecutionError
+
+    client = _RecordingClient()
+    budget = _FakeBudget()
+    images = [("a.png", "t1"), ("b.png", "t2"), ("c.png", "context")]
+    with pytest.raises(AgentExecutionError, match="INVALID_CHANGE_PAIR"):
+        asyncio.run(
+            _agent(client).run(_pair_sample(tmp_path, images), _context(tmp_path, budget))
+        )
+    assert budget.qwen_calls == 0
+    assert client.calls == []
+
+
+def test_invalid_pair_size_mismatch_fails(tmp_path: Path) -> None:
+    from agents.errors import AgentExecutionError
+
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (64, 64)).save(root / "t1.png")
+    Image.new("RGB", (32, 32)).save(root / "t2.png")
+    sample = UnifiedSample(
+        sample_id="s1",
+        dataset="parity",
+        split="test",
+        task="change_caption",
+        images=[
+            ImageRef(image_id="t1", path="t1.png", role="t1"),
+            ImageRef(image_id="t2", path="t2.png", role="t2"),
+        ],
+        question="Q",
+        ground_truth=GroundTruth(answers=["x"]),
+    )
+    client = _RecordingClient()
+    budget = _FakeBudget()
+    with pytest.raises(AgentExecutionError, match="INVALID_CHANGE_PAIR"):
+        asyncio.run(_agent(client).run(sample, _context(root, budget)))
+    assert budget.qwen_calls == 0
+    assert client.calls == []
+
+
+def test_invalid_pair_decode_failure_fails(tmp_path: Path) -> None:
+    from agents.errors import AgentExecutionError
+
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (64, 64)).save(root / "t1.png")
+    (root / "t2.png").write_bytes(b"corrupt image bytes")
+    sample = UnifiedSample(
+        sample_id="s1",
+        dataset="parity",
+        split="test",
+        task="change_caption",
+        images=[
+            ImageRef(image_id="t1", path="t1.png", role="t1"),
+            ImageRef(image_id="t2", path="t2.png", role="t2"),
+        ],
+        question="Q",
+        ground_truth=GroundTruth(answers=["x"]),
+    )
+    client = _RecordingClient()
+    budget = _FakeBudget()
+    with pytest.raises(AgentExecutionError, match="INVALID_CHANGE_PAIR"):
+        asyncio.run(_agent(client).run(sample, _context(root, budget)))
+    assert budget.qwen_calls == 0
+    assert client.calls == []
