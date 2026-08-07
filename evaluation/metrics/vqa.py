@@ -39,41 +39,55 @@ def merge_vqa_evaluation(
     candidate_answer: str,
     judge_parsed: Any | None = None,
     judge_error: str | None = None,
-) -> VQAEvaluationRecord:
-    """Preserve exact comparison and map a successful judge verdict to a
-    binary score; judge output never replaces the deterministic match.
-    保留严格对比并将成功 judge 结论映射为二值分数；judge 输出绝不替换
-    确定性匹配结果。"""
+) -> EvaluationRecord:
+    """Canonical merge: preserve exact comparison and map a successful judge
+    verdict to a binary score recorded alongside the deterministic metrics;
+    judge output never replaces the deterministic match. Returns the unified
+    EvaluationRecord with task='general_vqa'.
+    规范合并：保留严格对比并将成功 judge 结论映射为二值分数，与确定性
+    指标并列记录；judge 输出绝不替换确定性匹配结果。返回
+    task='general_vqa' 的统一 EvaluationRecord。"""
 
     exact = exact_match(candidate_answer, reference_answers)
+    metrics = VQADeterministicMetrics(exact_match=exact)
     if judge_error is not None:
-        return VQAEvaluationRecord(
+        return EvaluationRecord(
             sample_id=sample_id,
-            question=question,
-            reference_answers=reference_answers,
-            candidate_answer=candidate_answer,
-            exact_match=exact,
+            task="general_vqa",
+            deterministic_metrics=metrics,
             judge_status="failed",
             judge_error=judge_error,
         )
     if judge_parsed is None:
-        return VQAEvaluationRecord(
+        return EvaluationRecord(
             sample_id=sample_id,
-            question=question,
-            reference_answers=reference_answers,
-            candidate_answer=candidate_answer,
-            exact_match=exact,
+            task="general_vqa",
+            deterministic_metrics=metrics,
             judge_status="not_requested",
         )
-    return VQAEvaluationRecord(
+    return EvaluationRecord(
         sample_id=sample_id,
-        question=question,
-        reference_answers=reference_answers,
-        candidate_answer=candidate_answer,
-        exact_match=exact,
+        task="general_vqa",
+        deterministic_metrics=metrics,
         judge_status="succeeded",
-        judge_score=int(getattr(judge_parsed, "score", 0)),
         judge_parsed=judge_parsed,
+    )
+
+
+def to_evaluation_record(record: VQAEvaluationRecord) -> EvaluationRecord:
+    """Explicit conversion from the legacy VQA wrapper to the unified record.
+    The legacy wrapper's judge_score is a copy of the parsed judge score and
+    is not carried separately; judge_parsed remains authoritative.
+    从旧版 VQA 包装显式转换为统一记录。旧包装的 judge_score 是已解析
+    judge 分数的副本，不单独保留；judge_parsed 仍为权威来源。"""
+
+    return EvaluationRecord(
+        sample_id=record.sample_id,
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=record.exact_match),
+        judge_status=record.judge_status,
+        judge_parsed=record.judge_parsed,
+        judge_error=record.judge_error,
     )
 
 
@@ -106,4 +120,8 @@ def _exact_of(record: VQAEvaluationRecord | EvaluationRecord) -> bool:
     if isinstance(record, VQAEvaluationRecord):
         return record.exact_match
     metrics = record.deterministic_metrics
-    return bool(getattr(metrics, "exact_match", False))
+    if not isinstance(metrics, VQADeterministicMetrics):
+        raise ValueError(
+            f"vqa record {record.sample_id!r} lacks VQADeterministicMetrics"
+        )
+    return metrics.exact_match

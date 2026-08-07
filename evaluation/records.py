@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 EvaluationTask = Literal["counting", "general_vqa", "grounding", "caption"]
 
@@ -66,6 +66,15 @@ DeterministicMetrics = Union[
     CaptionDeterministicMetrics,
 ]
 
+# The only legal deterministic-metrics type for each task.
+# 每个任务唯一合法的确定性指标类型。
+EXPECTED_METRICS: dict[str, type[BaseModel]] = {
+    "counting": CountDeterministicMetrics,
+    "general_vqa": VQADeterministicMetrics,
+    "grounding": GroundingDeterministicMetrics,
+    "caption": CaptionDeterministicMetrics,
+}
+
 
 class VQAEvaluationRecord(BaseModel):
     """Compatibility wrapper for one deterministic VQA comparison plus
@@ -94,9 +103,11 @@ class VQAEvaluationRecord(BaseModel):
 class EvaluationRecord(BaseModel):
     """One merged deterministic and optional text-only judge evaluation
     record for any implemented task. Judge output is recorded alongside the
-    deterministic metrics and can never override them.
+    deterministic metrics and can never override them. The deterministic
+    metrics type must match the declared task.
     任意已实现任务的单条合并确定性指标与可选仅文本审核结果记录。Judge
-    输出与确定性指标并列记录，永远不能覆盖后者。"""
+    输出与确定性指标并列记录，永远不能覆盖后者。确定性指标类型必须与
+    声明的 task 一致。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -108,3 +119,13 @@ class EvaluationRecord(BaseModel):
     judge_parsed: Any | None = None
     judge_inconsistency: bool = False
     judge_error: str | None = None
+
+    @model_validator(mode="after")
+    def validate_task_metrics(self) -> "EvaluationRecord":
+        """Enforce the task/metrics invariant; the error never dumps the
+        metrics payload. 强制 task/指标 不变式；错误消息不 dump 指标载荷。"""
+        if self.deterministic_metrics is not None and not isinstance(
+            self.deterministic_metrics, EXPECTED_METRICS[self.task]
+        ):
+            raise ValueError("deterministic_metrics type does not match task")
+        return self

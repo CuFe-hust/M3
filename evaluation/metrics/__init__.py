@@ -18,6 +18,7 @@ from evaluation.metrics.vqa import (
     exact_match,
     merge_vqa_evaluation,
     normalize_answer,
+    to_evaluation_record,
     vqa_deterministic_metrics,
 )
 
@@ -35,5 +36,6 @@ __all__ = [
     "merge_count_evaluation",
     "merge_vqa_evaluation",
     "normalize_answer",
+    "to_evaluation_record",
     "vqa_deterministic_metrics",
 ]

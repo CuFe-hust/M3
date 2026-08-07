@@ -18,16 +18,20 @@ from evaluation.metrics.vqa import (
     exact_match,
     merge_vqa_evaluation,
     normalize_answer,
+    to_evaluation_record,
     vqa_deterministic_metrics,
 )
 from evaluation.records import (
     CaptionDeterministicMetrics,
     CountDeterministicMetrics,
     DeterministicMetrics,
+    EXPECTED_METRICS,
     EvaluationRecord,
     EvaluationTask,
     GroundingDeterministicMetrics,
     VQADeterministicMetrics,
+    # Legacy compatibility only: new code must consume EvaluationRecord.
+    # 仅限旧版兼容：新代码必须消费 EvaluationRecord。
     VQAEvaluationRecord,
 )
 
@@ -35,6 +39,7 @@ __all__ = [
     "CaptionDeterministicMetrics",
     "CountDeterministicMetrics",
     "DeterministicMetrics",
+    "EXPECTED_METRICS",
     "EvaluationRecord",
     "EvaluationTask",
     "GroundingDeterministicMetrics",
@@ -53,5 +58,6 @@ __all__ = [
     "merge_count_evaluation",
     "merge_vqa_evaluation",
     "normalize_answer",
+    "to_evaluation_record",
     "vqa_deterministic_metrics",
 ]

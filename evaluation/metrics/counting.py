@@ -87,16 +87,21 @@ def merge_count_evaluation(
 
 
 def aggregate_counting(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
-    """Aggregate deterministic counting metrics across records.
-    跨记录汇总确定性计数指标。"""
+    """Aggregate deterministic counting metrics across records; records with
+    illegal metric types fail closed instead of degrading silently.
+    跨记录汇总确定性计数指标；指标类型非法的记录显式失败，绝不静默降级。"""
 
-    metrics = [
-        record.deterministic_metrics
-        for record in records
-        if record.deterministic_metrics is not None
-    ]
+    metrics_list: list[CountDeterministicMetrics] = []
+    for record in records:
+        metrics = record.deterministic_metrics
+        if metrics is not None and not isinstance(metrics, CountDeterministicMetrics):
+            raise ValueError(
+                f"counting record {record.sample_id!r} lacks CountDeterministicMetrics"
+            )
+        if metrics is not None:
+            metrics_list.append(metrics)
     total = len(records)
-    if not metrics:
+    if not metrics_list:
         return {
             "metric": "counting_deterministic",
             "total": total,
@@ -105,9 +110,9 @@ def aggregate_counting(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
     return {
         "metric": "counting_deterministic",
         "total": total,
-        "samples_with_ground_truth": len(metrics),
-        "exact_match_accuracy": sum(item.exact_match for item in metrics) / len(metrics),
-        "mean_absolute_error": sum(item.absolute_error for item in metrics) / len(metrics),
-        "mean_relative_error": sum(item.relative_error for item in metrics) / len(metrics),
-        "mean_smooth_error_score": sum(item.smooth_error_score for item in metrics) / len(metrics),
+        "samples_with_ground_truth": len(metrics_list),
+        "exact_match_accuracy": sum(item.exact_match for item in metrics_list) / len(metrics_list),
+        "mean_absolute_error": sum(item.absolute_error for item in metrics_list) / len(metrics_list),
+        "mean_relative_error": sum(item.relative_error for item in metrics_list) / len(metrics_list),
+        "mean_smooth_error_score": sum(item.smooth_error_score for item in metrics_list) / len(metrics_list),
     }
