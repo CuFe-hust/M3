@@ -22,7 +22,7 @@ jobs:
         run: python -m pip install -e ".[dev,migration]"
 
       - name: Compile implemented code
-        run: python -m compileall data models agents tests scripts/generate_migration_fixtures.py
+        run: python -m compileall data models agents routing tests scripts/generate_migration_fixtures.py
 
       - name: Architecture guards
         run: python -m pytest -q tests/architecture
@@ -47,17 +47,24 @@ jobs:
           import data
           import models
           import agents
+          import routing
           import models.qwen3_vl
           import models.qwen3_5
 
           from models.entry import list_models
           from agents.registry import AgentRegistry
+          from agents.counting import CountingAgent, CountingResult
+          from routing import POLICIES, RoutePolicy, RoutingDecision, SampleCapabilities, TaskRouter
 
           names = list_models()
           assert "qwen_transformers" in names
           assert "qwen3_vl_baseline" in names
           assert "qwen3_5_transformers" in names
           assert AgentRegistry is not None
+          assert TaskRouter().route("counting").primary_agent == "counting_agent"
+          assert "counting" in POLICIES
+          assert CountingAgent is not None
+          assert CountingResult is not None
 
           print("wheel-import-contract: PASS")
           PY

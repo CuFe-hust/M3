@@ -187,6 +187,7 @@ tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
 tests/architecture/test_init_side_effects.py
+tests/architecture/test_package_discovery.py
 tests/architecture/test_no_new_to_legacy_imports.py
 tests/contracts/test_adapter_contract.py
 tests/contracts/test_agent_result_contract.py
