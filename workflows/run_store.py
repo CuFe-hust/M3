@@ -21,31 +21,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from workflows.events import EventWriter
-
-# Sensitive key names rejected in snapshots (normalized before matching).
-# 快照中拒绝的敏感键名（匹配前先归一化）。
-_SENSITIVE_KEYS = frozenset(
-    {
-        "api_key",
-        "apikey",
-        "authorization",
-        "secret",
-        "token",
-        "password",
-        "base64",
-        "credential",
-        "private_key",
-    }
-)
-# High-risk sensitive value prefixes, checked after lstrip().lower().
-# 高风险敏感值前缀；在 lstrip().lower() 后检查。
-_SENSITIVE_VALUE_PREFIXES = (
-    "sk-",
-    "bearer ",
-    "data:image/",
-    "-----begin private key-----",
-)
+from workflows.events import EventWriter, _reject_secrets
 
 
 class RunManifest(BaseModel):
@@ -94,7 +70,6 @@ class RunStore:
         # 快照绝不能记录凭据；在任何 I/O 之前拒绝。
         _reject_secrets(config_payload, "config payload")
         _reject_secrets(model_ids, "model ids")
-
         resolved_run_id = run_id or _new_run_id()
         run_dir = self.root / resolved_run_id
         if run_dir.exists():
@@ -177,30 +152,6 @@ def _write_json(path: Path, value: object) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
-
-
-def _reject_secrets(value: Any, where: str) -> None:
-    """Recursively reject sensitive keys and high-risk value prefixes in a
-    snapshot payload; error messages never echo the offending value.
-    递归拒绝快照载荷中的敏感键与高风险值前缀；错误消息绝不回显违规值。"""
-
-    if isinstance(value, str):
-        normalized = value.lstrip().lower()
-        for prefix in _SENSITIVE_VALUE_PREFIXES:
-            if normalized.startswith(prefix):
-                raise ValueError(f"{where} contains a sensitive value prefix")
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            normalized_key = str(key).lower().replace("-", "_").replace(" ", "_")
-            if normalized_key in _SENSITIVE_KEYS:
-                raise ValueError(f"{where} contains a sensitive key")
-            _reject_secrets(item, f"{where}.{key}")
-        return
-    if isinstance(value, list):
-        for index, item in enumerate(value):
-            _reject_secrets(item, f"{where}[{index}]")
-        return
 
 
 def _git_value(project_root: Path, *arguments: str) -> str | None:

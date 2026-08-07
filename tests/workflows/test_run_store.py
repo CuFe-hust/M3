@@ -252,9 +252,75 @@ def test_event_writer_appends_valid_jsonl(tmp_path: Path) -> None:
 
 def test_event_writer_rejects_secret_detail_keys(tmp_path: Path) -> None:
     writer = EventWriter(tmp_path / "events.jsonl")
-    for key in ("api_key", "authorization", "base64", "image_data_url"):
-        with pytest.raises(ValueError, match="secret"):
+    for key in ("api_key", "authorization", "base64", "image_data_url", "token"):
+        with pytest.raises(ValueError, match="sensitive"):
             writer.write("X", details={key: "value"})
+
+
+# ── 递归敏感扫描 / recursive secret scanning (33.5) ───────────────────────
+
+
+def test_event_writer_rejects_nested_sensitive_keys(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    with pytest.raises(ValueError, match="sensitive"):
+        writer.write("X", details={"nested": {"token": "sk-secret"}})
+    with pytest.raises(ValueError, match="sensitive"):
+        writer.write("X", details={"nested": {"api_key": "abc"}})
+    with pytest.raises(ValueError, match="sensitive"):
+        writer.write("X", details={"nested": {"deep": {"password": "p"}}})
+
+
+def test_event_writer_rejects_sensitive_value_prefixes_recursively(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    for payload in (
+        {"message": "Bearer abcdef"},
+        {"message": "sk-test-secret"},
+        {"message": "data:image/png;base64,AAAA"},
+        {"message": "-----BEGIN PRIVATE KEY-----"},
+        {"nested": {"message": "  Sk-uppercase"}},
+    ):
+        with pytest.raises(ValueError, match="sensitive value"):
+            writer.write("X", details=payload)
+
+
+def test_event_writer_accepts_clean_nested_payload(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    record = writer.write(
+        "X",
+        details={"nested": {"state": "running", "index": 3}, "labels": ["a", "b"]},
+    )
+    assert record.details["nested"]["state"] == "running"
+
+
+def test_event_writer_error_never_echoes_secret(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    secret = "sk-very-secret-token-value"
+    with pytest.raises(ValueError) as error:
+        writer.write("X", details={"nested": {"token": secret}})
+    assert secret not in str(error.value)
+
+
+def test_event_writer_concurrent_appends_lose_no_lines(tmp_path: Path) -> None:
+    """8 workers appending 100 events concurrently must keep every line.
+    8 个 worker 并发追加 100 条事件必须一行不丢。"""
+    import json as json_module
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "events.jsonl"
+    writer = EventWriter(path)
+
+    def append(index: int) -> None:
+        writer.write("SAMPLE_DONE", sample_id=f"s{index}", details={"index": index})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(append, range(100)))
+
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) == 100
+    rows = [json_module.loads(line) for line in lines]
+    assert {row["details"]["index"] for row in rows} == set(range(100))
+    assert {row["sample_id"] for row in rows} == {f"s{i}" for i in range(100)}
+    assert list(tmp_path.glob("*.tmp")) == []
 
 
 # ── 模型边界 / model boundary ──────────────────────────────────────────────

@@ -216,3 +216,77 @@ def test_writer_rejects_business_status_inference() -> None:
     assert "iterdir" not in source
     assert "glob(" not in source
     assert ".status ==" not in source
+
+
+# ── 文件名安全 / filename safety (33.5) ────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "filename",
+    [
+        "../status.json",
+        r"..\status.json",
+        "subdir/x.json",
+        "a/b.json",
+        r"a\b.json",
+        "/tmp/x.json",
+        r"C:\temp\x.json",
+        "C:/temp/x.json",
+        r"\\server\share\x.json",
+        "//server/share/x.json",
+        ".",
+        "..",
+        "",
+        "bad\x00name.json",
+        "bad\nname.json",
+    ],
+)
+def test_write_evaluation_rejects_path_like_filenames(filename: str, tmp_path: Path) -> None:
+    writer = ArtifactWriter()
+    with pytest.raises(ValueError):
+        writer.write_evaluation(tmp_path, {"k": 1}, filename=filename)
+    # Nothing may be written outside the sample directory. / 样本目录外不得写任何文件。
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize("filename", ["evaluation.json", "judge_evaluation.json", "metrics.json"])
+def test_write_evaluation_accepts_plain_basenames(filename: str, tmp_path: Path) -> None:
+    path = ArtifactWriter().write_evaluation(tmp_path, {"k": 1}, filename=filename)
+    assert path == tmp_path / filename
+    assert path.is_file()
+
+
+def test_write_evaluation_filename_cannot_escape_sample_dir(tmp_path: Path) -> None:
+    """Even a rejected filename must never create files outside sample_dir.
+    即使被拒绝的文件名也绝不能在外侧创建文件。"""
+    outside = tmp_path.parent
+    writer = ArtifactWriter()
+    with pytest.raises(ValueError):
+        writer.write_evaluation(tmp_path, {"k": 1}, filename="../escape.json")
+    assert not (outside / "escape.json").exists()
+    assert not (tmp_path / ".." / "escape.json").exists()
+
+
+# ── JSONL 并发 / JSONL concurrency (33.5) ──────────────────────────────────
+
+
+def test_atomic_append_jsonl_concurrent_lose_no_lines(tmp_path: Path) -> None:
+    """8 workers appending 100 rows concurrently must keep every row.
+    8 个 worker 并发追加 100 行必须一行不丢。"""
+    import json as json_module
+    from concurrent.futures import ThreadPoolExecutor
+
+    path = tmp_path / "predictions.jsonl"
+
+    def append(index: int) -> None:
+        atomic_append_jsonl(path, {"i": index})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(append, range(100)))
+
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line]
+    assert len(lines) == 100
+    rows = [json_module.loads(line) for line in lines]
+    assert {row["i"] for row in rows} == set(range(100))
+    assert len({row["i"] for row in rows}) == 100  # all IDs unique / 所有 ID 唯一
+    assert list(tmp_path.glob("*.tmp")) == []

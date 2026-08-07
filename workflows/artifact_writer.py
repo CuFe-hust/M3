@@ -12,8 +12,9 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agents.base import AgentExecution
+from agents.base import AgentExecution, _validate_plain_basename
 from data.schema import UnifiedSample
+from workflows.events import _path_lock
 from workflows.schema import DatasetRunSummary, SampleRunStatus
 
 # Owned artifact filenames. / 集中拥有的产物文件名。
@@ -41,16 +42,20 @@ def atomic_write_json(path: Path, value: Any) -> None:
 
 
 def atomic_append_jsonl(path: Path, value: Any) -> None:
-    """Append one JSON line atomically via a temporary file, so an
+    """Append one JSON line atomically via a temporary file under a per-path
+    lock. Safe for concurrent writers within one Python process; cross-process
+    concurrent append is not supported by the current workflow layer. An
     interrupted write never exposes a half-written line.
-    通过临时文件原子追加一行 JSON，中断写入不会暴露半行。"""
+    在按路径锁内通过临时文件原子追加一行 JSON。单进程内并发写入安全；
+    当前工作流层不支持跨进程并发追加。中断写入不会暴露半行。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
     line = json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n"
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(existing + line, encoding="utf-8")
-    temporary.replace(path)
+    with _path_lock(path):
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(existing + line, encoding="utf-8")
+        temporary.replace(path)
 
 
 class ArtifactWriter:
@@ -85,9 +90,12 @@ class ArtifactWriter:
         return result_path
 
     def write_evaluation(self, sample_dir: Path, evaluation: object, *, filename: str) -> Path:
-        """Persist an evaluation under a caller-declared filename.
-        使用调用方声明的文件名持久化评测结果。"""
+        """Persist an evaluation under a caller-declared plain basename; any
+        path-like filename is rejected before I/O.
+        使用调用方声明的纯 basename 持久化评测结果；任何类路径文件名在
+        I/O 前被拒绝。"""
 
+        _validate_evaluation_filename(filename)
         path = sample_dir / filename
         atomic_write_json(path, _json_value(evaluation))
         return path
@@ -132,3 +140,15 @@ def _json_value(value: object) -> Any:
 
     model_dump = getattr(value, "model_dump", None)
     return model_dump(mode="json") if callable(model_dump) else value
+
+
+def _validate_evaluation_filename(filename: str) -> str:
+    """Reuse the AgentExecution basename contract (POSIX + Windows semantics)
+    and additionally reject control characters, so an evaluation filename can
+    never escape the sample directory. 复用 AgentExecution 的 basename 契约
+    （POSIX + Windows 语义）并额外拒绝控制字符，使评测文件名绝不逃逸样本
+    目录。"""
+    _validate_plain_basename(filename, "evaluation filename")
+    if any(character in filename for character in ("\x00", "\n", "\r")):
+        raise ValueError("evaluation filename contains control characters")
+    return filename
