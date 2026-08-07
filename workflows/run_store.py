@@ -106,13 +106,28 @@ def _new_run_id() -> str:
     return f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
 
 
+# Windows reserved device stems that must never be used as run ids.
+# 绝不可用作 run id 的 Windows 保留设备名。
+_WINDOWS_RESERVED_STEMS = frozenset(
+    {
+        "CON",
+        "PRN",
+        "AUX",
+        "NUL",
+        *(f"COM{index}" for index in range(1, 10)),
+        *(f"LPT{index}" for index in range(1, 10)),
+    }
+)
+
+
 def _validate_run_id(value: str) -> str:
     """Validate a user-supplied run id as a cross-platform plain identifier.
-    Rejects traversal, absolute paths, drive/UNC paths, and control
-    characters before any filesystem write; the error never echoes the raw
-    value. 将用户提供的 run id 校验为跨平台 plain identifier。在任何文件
-    系统写入前拒绝遍历、绝对路径、drive/UNC 路径与控制字符；错误消息
-    绝不回显原始值。"""
+    Rejects traversal, absolute paths, drive/UNC paths, control characters,
+    Windows reserved device names, and trailing dot/space forms before any
+    filesystem write; the error never echoes the raw value.
+    将用户提供的 run id 校验为跨平台 plain identifier。在任何文件系统写入
+    前拒绝遍历、绝对路径、drive/UNC 路径、控制字符、Windows 保留设备名与
+    尾点/尾空格形式；错误消息绝不回显原始值。"""
 
     if not isinstance(value, str) or not value:
         raise ValueError("run_id must be a safe plain identifier")
@@ -123,6 +138,15 @@ def _validate_run_id(value: str) -> str:
     if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
         raise ValueError("run_id must be a safe plain identifier")
     if re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", value) is None:
+        raise ValueError("run_id must be a safe plain identifier")
+    # Windows reserved device names and trailing dot/space forms carry special
+    # semantics on Windows; reject deterministically on every platform.
+    # Windows 保留设备名与尾点/尾空格形式在 Windows 上有特殊语义；在所有
+    # 平台上确定性拒绝。
+    if value.endswith(".") or value.endswith(" "):
+        raise ValueError("run_id must be a safe plain identifier")
+    stem = value.upper().split(".", 1)[0]
+    if stem in _WINDOWS_RESERVED_STEMS:
         raise ValueError("run_id must be a safe plain identifier")
     return value
 
