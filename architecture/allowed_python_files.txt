@@ -170,6 +170,8 @@ tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
 tests/agents/counting/test_settings.py
+tests/agents/counting/test_geometry.py
+tests/agents/counting/test_evidence.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
