@@ -99,7 +99,10 @@
     "agents/counting/backends/yolov5_obb_onnx.py",
     "agents/counting/backends/selector.py",
     "agents/counting/target_parser.py",
-    "agents/counting/agent.py"
+    "agents/counting/agent.py",
+    "agents/spatial/__init__.py",
+    "agents/spatial/schema.py",
+    "agents/spatial/geometry.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
