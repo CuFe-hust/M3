@@ -134,6 +134,53 @@ def test_auto_excludes_unavailable_detectors() -> None:
     assert plan.primary_backend_name == "qwen_point"
 
 
+# ── 计划期不可用性 / plan-time unavailability (25.5) ─────────────────────
+
+
+class _FakeYoloMissingWeights(_FakeYoloBackend):
+    """Configured and supported, but its weights are missing at runtime.
+    已配置且支持目标，但运行时权重缺失。"""
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True  # runtime readiness verified at count time / 运行时就绪在 count 时验证
+
+    async def count(self, request, context):
+        from agents.errors import DetectorWeightsMissingError
+
+        raise DetectorWeightsMissingError(self.name, "det.pt")
+
+
+def test_unavailable_detector_still_becomes_primary_in_plan() -> None:
+    """A configured+supported detector whose weights are missing must still be
+    planned as primary so the agent can fall back explicitly at run time.
+    已配置+支持但权重缺失的检测器仍必须成为计划主后端，使 Agent 能在运行时
+    显式回退。"""
+    selector = _selector(_FakeQwenBackend(), _FakeYoloMissingWeights())
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "det-a"
+    assert plan.fallback_backend_names == ("qwen_point",)
+    assert "explicit_yolo_unsupported_target_qwen" not in plan.reason_codes
+
+
+def test_explicit_yolo_mode_plans_supported_but_unavailable_detector() -> None:
+    selector = _selector(
+        _FakeQwenBackend(), _FakeYoloMissingWeights(), default_backend="yolo_obb"
+    )
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "det-a"
+    assert plan.fallback_backend_names == ("qwen_point",)
+    assert "explicit_yolo" in plan.reason_codes
+
+
+def test_disabled_detector_is_excluded_from_plan() -> None:
+    selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(available=False))
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "qwen_point"
+
+
 # ── 显式模式 / explicit modes ─────────────────────────────────────────────
 
 

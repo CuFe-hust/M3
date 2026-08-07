@@ -104,14 +104,18 @@ class BackendSelector:
         target: CountTargetSpec,
         hints: dict[str, Any],
     ) -> list[Any]:
-        """Return enabled detector backends that explicitly support the target
-        under the neutral hints. 返回在中性 hints 下已启用且明确支持目标的
-        检测器后端。"""
+        """Return configured (enabled) detector backends that explicitly
+        support the target under the neutral hints. Runtime availability is
+        deliberately NOT consulted here so an unavailable detector still
+        becomes the planned primary and falls back explicitly at run time.
+        返回在中性 hints 下已启用且明确支持目标的检测器后端。此处有意不
+        查询运行时可用性，使不可用检测器仍成为计划主后端，并在运行时显式
+        回退。"""
         return [
             backend
             for backend in self._registry.items()
             if backend.name != "qwen_point"
-            and backend.is_available()
+            and _is_enabled(backend)
             and backend.supports(target, hints=hints)
         ]
 
@@ -134,3 +138,14 @@ class BackendSelector:
         if callable(resolve):
             return tuple(sorted(resolve(target)))
         return (target.canonical_label,)
+
+
+def _is_enabled(backend: object) -> bool:
+    """Configured/enabled check with a conservative fallback for backends
+    that predate the is_enabled split. 已配置/启用检查；对早于拆分协议的后端
+    采用保守回退。"""
+    check = getattr(backend, "is_enabled", None)
+    if callable(check):
+        return bool(check())
+    available = getattr(backend, "is_available", None)
+    return bool(available()) if callable(available) else False
