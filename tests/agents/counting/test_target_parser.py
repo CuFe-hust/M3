@@ -1,7 +1,8 @@
 """Contract tests for the counting target parser.
 
-计数目标解析器契约测试：count_target_hint 优先（dict/字符串）、缺失时调用
-Qwen、无效 hint 忽略、budget 消费时机。
+计数目标解析器契约测试：normalization hint 优先、legacy metadata 兼容、
+无效 hint 稳定失败、缺失时调用 Qwen、budget 消费与解析路径一致、完整
+cache identity。
 """
 
 from __future__ import annotations
@@ -12,8 +13,13 @@ from typing import Any
 
 import pytest
 
+from agents.counting.backends.base import MissingModelCacheIdentityError
 from agents.counting.schema import CountTargetSpec
-from agents.counting.target_parser import CountTargetParser, TargetParser
+from agents.counting.target_parser import (
+    CountTargetParser,
+    InvalidCountTargetHintError,
+    TargetParser,
+)
 from models.base import ModelCacheIdentity
 
 
@@ -51,6 +57,12 @@ class _RecordingClient:
         )
 
 
+class _NoIdentityClient(_RecordingClient):
+    @property
+    def cache_identity(self):
+        return None
+
+
 def _parser(client: _RecordingClient | None = None) -> CountTargetParser:
     return CountTargetParser(
         client or _RecordingClient(),
@@ -59,19 +71,23 @@ def _parser(client: _RecordingClient | None = None) -> CountTargetParser:
     )
 
 
-def _parse(parser: CountTargetParser, *, metadata=None, budget=None):
+def _parse(parser: CountTargetParser, *, hint=None, legacy=None, budget=None):
     return asyncio.run(
         parser.parse(
             "How many cars are there?",
             sample_id="s1",
             artifact_dir=Path("/tmp/run"),
-            metadata=metadata,
+            count_target_hint=hint,
+            legacy_metadata=legacy,
             budget=budget,
         )
     )
 
 
-def test_hint_dict_takes_priority_over_qwen() -> None:
+# ── 优先级 / priority ─────────────────────────────────────────────────────
+
+
+def test_normalization_hint_takes_priority_over_qwen() -> None:
     client = _RecordingClient()
     budget = _FakeBudget()
     hinted = CountTargetSpec(
@@ -79,14 +95,33 @@ def test_hint_dict_takes_priority_over_qwen() -> None:
         inclusion_rule="visible ship",
         exclusion_rule="occluded",
     )
-    target = _parse(_parser(client), metadata={"count_target_hint": hinted.model_dump(mode="json")}, budget=budget)
+    target = _parse(
+        _parser(client),
+        hint=hinted.model_dump(mode="json"),
+        legacy={"count_target_hint": {"canonical_label": "old"}},
+        budget=budget,
+    )
     assert target.canonical_label == "ship"
     assert client.calls == []  # Qwen never called / Qwen 未被调用
     assert budget.qwen_calls == 0
 
 
+def test_legacy_metadata_hint_is_compatible() -> None:
+    client = _RecordingClient()
+    budget = _FakeBudget()
+    target = _parse(
+        _parser(client),
+        legacy={"count_target_hint": {"canonical_label": "plane",
+                                      "inclusion_rule": "r", "exclusion_rule": "e"}},
+        budget=budget,
+    )
+    assert target.canonical_label == "plane"
+    assert client.calls == []
+    assert budget.qwen_calls == 0
+
+
 def test_hint_string_uses_rule_parser() -> None:
-    target = _parse(_parser(), metadata={"count_target_hint": "how many trucks"})
+    target = _parse(_parser(), hint="how many trucks")
     assert target.canonical_label == "truck"
     assert target.aliases == ["trucks"]
     assert target.inclusion_rule
@@ -95,33 +130,54 @@ def test_hint_string_uses_rule_parser() -> None:
 def test_missing_hint_calls_qwen_and_consumes_budget() -> None:
     client = _RecordingClient()
     budget = _FakeBudget()
-    target = _parse(_parser(client), metadata={}, budget=budget)
+    target = _parse(_parser(client), legacy={}, budget=budget)
     assert target.canonical_label == "car"
     assert client.calls == ["s1:target"]
     assert budget.qwen_calls == 1
 
 
-def test_none_metadata_calls_qwen() -> None:
+def test_none_hint_and_none_metadata_calls_qwen() -> None:
     client = _RecordingClient()
-    target = _parse(_parser(client), metadata=None)
+    target = _parse(_parser(client), hint=None, legacy=None)
     assert target.canonical_label == "car"
     assert len(client.calls) == 1
 
 
-def test_invalid_hint_dict_is_ignored() -> None:
-    """Malformed hint dicts must not crash and must fall back to Qwen.
-    畸形 hint dict 不得崩溃，必须回退到 Qwen。"""
-    client = _RecordingClient()
-    target = _parse(_parser(client), metadata={"count_target_hint": {"canonical_label": 42}})
-    assert target.canonical_label == "car"
-    assert len(client.calls) == 1
+# ── 无效 hint / invalid hints ─────────────────────────────────────────────
 
 
-def test_empty_string_hint_calls_qwen() -> None:
+def test_invalid_hint_dict_raises_stable_error() -> None:
+    """Malformed hint dicts raise InvalidCountTargetHintError — never a silent
+    Qwen fallback. 畸形 hint dict 抛出 InvalidCountTargetHintError——绝不静默
+    回退 Qwen。"""
     client = _RecordingClient()
-    target = _parse(_parser(client), metadata={"count_target_hint": "   "})
-    assert target.canonical_label == "car"
-    assert len(client.calls) == 1
+    with pytest.raises(InvalidCountTargetHintError, match="invalid count_target_hint"):
+        _parse(_parser(client), hint={"canonical_label": 42})
+    assert client.calls == []
+
+
+def test_unparseable_hint_string_raises_stable_error() -> None:
+    client = _RecordingClient()
+    with pytest.raises(InvalidCountTargetHintError, match="could not be parsed"):
+        _parse(_parser(client), hint="no count wording here at all")
+    assert client.calls == []
+
+
+def test_empty_string_hint_raises_stable_error() -> None:
+    client = _RecordingClient()
+    with pytest.raises(InvalidCountTargetHintError, match="unsupported"):
+        _parse(_parser(client), hint="   ")
+    assert client.calls == []
+
+
+# ── 缓存身份 / cache identity ─────────────────────────────────────────────
+
+
+def test_missing_cache_identity_fails_before_model_call() -> None:
+    client = _NoIdentityClient()
+    with pytest.raises(MissingModelCacheIdentityError, match="cache_identity"):
+        _parse(_parser(client), hint=None)
+    assert client.calls == []
 
 
 def test_target_parser_alias() -> None:

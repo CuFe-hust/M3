@@ -1,7 +1,9 @@
 """Structured counting-target parsing with hint priority.
 
-结构化计数目标解析。优先使用 metadata.count_target_hint（dict 或字符串）；
-缺失或无效时才调用 Qwen 纯文本契约解析。不按数据集分支。
+结构化计数目标解析。优先级固定：normalization.count_target_hint →
+legacy metadata["count_target_hint"] → Qwen 纯文本契约。无效 hint 抛出
+稳定错误，绝不静默吞掉。所有模型调用使用完整 ModelCacheIdentity 并携带
+response schema。
 """
 
 from __future__ import annotations
@@ -10,19 +12,29 @@ import re
 from pathlib import Path
 from typing import Any
 
-from models.base import RequestMeta, VisionLanguageClient, build_request_hash
+from pydantic import ValidationError
+
+from agents.counting.backends.base import MissingModelCacheIdentityError
 from agents.counting.schema import CountTargetSpec
+from models.base import ModelCacheIdentity, RequestMeta, VisionLanguageClient, build_request_hash
+
+
+class InvalidCountTargetHintError(ValueError):
+    """Raised when a provided count_target_hint cannot be validated.
+    提供的 count_target_hint 无法校验时抛出。"""
 
 
 class CountTargetParser:
-    """Parse one stable target: hint first, frozen text-only Qwen contract
-    second. 解析一个稳定目标：优先 hint，其次冻结的纯文本 Qwen 契约。"""
+    """Parse one stable target: normalization hint first, legacy metadata
+    second, frozen text-only Qwen contract last.
+    解析一个稳定目标：优先 normalization hint，其次 legacy metadata，最后
+    冻结的纯文本 Qwen 契约。"""
 
     def __init__(
         self,
         client: VisionLanguageClient,
         prompt: str,
-        model: str,
+        model: str | None = None,
         *,
         prompt_version: str = "target-parse-v1",
     ) -> None:
@@ -37,26 +49,41 @@ class CountTargetParser:
         *,
         sample_id: str,
         artifact_dir: Path,
-        metadata: dict[str, Any] | None = None,
+        count_target_hint: dict[str, Any] | str | None = None,
+        legacy_metadata: dict[str, Any] | None = None,
         budget: Any = None,
     ) -> CountTargetSpec:
-        """Resolve the target from metadata.count_target_hint when present,
-        otherwise issue the frozen text-only Qwen request.
-        存在 metadata.count_target_hint 时据此解析目标，否则发出冻结的
-        纯文本 Qwen 请求。"""
-        hinted = _target_from_hint(metadata)
-        if hinted is not None:
-            return hinted
+        """Resolve the target; hint hits never call Qwen.
+        解析目标；hint 命中绝不调用 Qwen。"""
+        hint = count_target_hint
+        if hint is None and isinstance(legacy_metadata, dict):
+            hint = legacy_metadata.get("count_target_hint")
+        if hint is not None:
+            return _target_from_hint(hint)
+        return await self._parse_via_qwen(question, sample_id=sample_id, artifact_dir=artifact_dir, budget=budget)
+
+    async def _parse_via_qwen(
+        self,
+        question: str,
+        *,
+        sample_id: str,
+        artifact_dir: Path,
+        budget: Any,
+    ) -> CountTargetSpec:
+        identity = _require_identity(self.client)
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.prompt},
             {"role": "user", "content": question},
         ]
         request_hash = build_request_hash(
-            model=self.model,
-            generation={"temperature": 0.0},
+            model=identity.model,
+            generation=identity.generation_payload(),
             prompt_version=self.prompt_version,
             messages=messages,
             image_sha256=None,
+            response_schema=CountTargetSpec.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
         )
         if budget is not None:
             budget.reserve_qwen()
@@ -76,21 +103,27 @@ class CountTargetParser:
 TargetParser = CountTargetParser
 
 
-def _target_from_hint(metadata: dict[str, Any] | None) -> CountTargetSpec | None:
-    """Resolve a CountTargetSpec from a structured hint; invalid hints are
-    ignored (never guessed). 从结构化 hint 解析 CountTargetSpec；无效 hint
-    被忽略（绝不猜测）。"""
-    if not isinstance(metadata, dict):
-        return None
-    hint = metadata.get("count_target_hint")
+def _target_from_hint(hint: Any) -> CountTargetSpec:
+    """Resolve a CountTargetSpec from a structured hint; invalid hints raise a
+    stable error instead of being silently swallowed.
+    从结构化 hint 解析 CountTargetSpec；无效 hint 抛出稳定错误而非静默吞掉。"""
     if isinstance(hint, dict):
         try:
             return CountTargetSpec.model_validate(hint)
-        except Exception:
-            return None
+        except ValidationError as error:
+            raise InvalidCountTargetHintError(
+                f"invalid count_target_hint dict: {type(error).__name__}"
+            ) from error
     if isinstance(hint, str) and hint.strip():
-        return _rule_target(hint)
-    return None
+        rule = _rule_target(hint)
+        if rule is not None:
+            return rule
+        raise InvalidCountTargetHintError(
+            f"count_target_hint string could not be parsed: {hint[:40]!r}"
+        )
+    raise InvalidCountTargetHintError(
+        f"unsupported count_target_hint value type: {type(hint).__name__}"
+    )
 
 
 def _rule_target(question: str) -> CountTargetSpec | None:
@@ -125,3 +158,14 @@ def _rule_target(question: str) -> CountTargetSpec | None:
         ),
         exclusion_rule="Do not count duplicate halo views, shadows, or ambiguous fragments.",
     )
+
+
+def _require_identity(client: Any) -> ModelCacheIdentity:
+    """Require a real cache identity; counting never fabricates one.
+    要求真实缓存身份；计数绝不伪造。"""
+    identity = getattr(client, "cache_identity", None)
+    if identity is None:
+        raise MissingModelCacheIdentityError(
+            "counting target parser requires client.cache_identity"
+        )
+    return identity

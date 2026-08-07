@@ -17,6 +17,17 @@ from agents.schema import AgentResult
 from data.schema import UnifiedSample
 
 
+class MissingModelCacheIdentityError(RuntimeError):
+    """Raised when a client does not expose a valid cache identity; counting
+    model calls never fall back to fabricated identities.
+    客户端未暴露有效缓存身份时抛出；计数模型调用绝不使用伪造身份回退。"""
+
+
+class CountingBackendUnavailableError(RuntimeError):
+    """Raised when a configured backend cannot run and no fallback exists.
+    已配置后端无法运行且不存在回退时抛出。"""
+
+
 @dataclass(frozen=True)
 class CountingRequest:
     """Immutable counting request for one sample.
@@ -68,9 +79,16 @@ class CountingBackend(Protocol):
     name: str
     priority: int
 
+    def is_enabled(self) -> bool:
+        """Return whether the backend is configured/enabled (plan-time).
+        返回后端是否已配置/启用（计划期）。"""
+        ...
+
     def is_available(self) -> bool:
-        """Return whether the backend is ready (weights loaded, client alive).
-        返回后端是否就绪（权重已加载、客户端存活）。"""
+        """Return whether the backend is ready (weights loaded, client alive);
+        runtime verification happens at count time.
+        返回后端是否就绪（权重已加载、客户端存活）；运行时验证在 count 时
+        进行。"""
         ...
 
     def supports(
