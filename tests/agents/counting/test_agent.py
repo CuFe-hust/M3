@@ -15,14 +15,23 @@ from PIL import Image
 
 from agents.base import AgentContext, AgentExecution
 from agents.counting.agent import CountingAgent
-from agents.counting.backends.base import CountingBackendOutcome, CountingRequest
+from agents.counting.backends.base import (
+    CountingBackendOutcome,
+    CountingBackendUnavailableError,
+    CountingRequest,
+)
 from agents.counting.backends.registry import BackendRegistry
 from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
 from agents.counting.settings import CountingSettings
-from agents.errors import DetectorWeightsMissingError
+from agents.errors import AgentTaskMismatchError, DetectorWeightsMissingError
 from agents.schema import AgentResult
-from data.schema import GroundTruth, ImageRef, UnifiedSample
+from data.schema import (
+    GroundTruth,
+    ImageRef,
+    TaskNormalization,
+    UnifiedSample,
+)
 from models.base import ModelCacheIdentity
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -111,6 +120,33 @@ class _FakeYoloBackend:
     async def count(self, request: CountingRequest, context: object) -> CountingBackendOutcome:
         if self._error is not None:
             raise self._error
+        from agents.counting.schema import GlobalPointObservation, PointProvenance
+
+        points: list[GlobalPointObservation] = []
+        if self._final_count > 0:
+            points = [
+                GlobalPointObservation(
+                    global_id=f"{request.sample.sample_id}:det:p{i}",
+                    target=request.target.canonical_label,
+                    source_tile_id="r000_c000",
+                    local_id=f"p{i}",
+                    local_x_norm=500,
+                    local_y_norm=500,
+                    local_radius_norm=0,
+                    global_x_px=request.image.width // 2,
+                    global_y_px=request.image.height // 2,
+                    global_x_norm=500,
+                    global_y_norm=500,
+                    radius_px=4.0,
+                    confidence=0.9,
+                    ownership_valid=True,
+                    near_core_boundary=False,
+                    accepted=True,
+                    short_evidence="e",
+                    provenance=PointProvenance(source="yolo_obb_center", source_class="car"),
+                )
+                for i in range(self._final_count)
+            ]
         return CountingBackendOutcome(
             counting=CountingResult(
                 sample_id=request.sample.sample_id,
@@ -120,6 +156,7 @@ class _FakeYoloBackend:
                 source_height=request.image.height,
                 tile_count=1,
                 succeeded_tiles=["r000_c000"],
+                global_points=points,
                 final_count=self._final_count,
                 status="completed" if self._final_count > 0 else "completed_with_warnings",
             ),
@@ -197,21 +234,98 @@ def test_run_returns_counting_result_payload(tmp_path: Path) -> None:
     assert "target_classes" in execution.trace
 
 
-def test_run_agent_result_mode_uses_additional_counting_result(tmp_path: Path) -> None:
+def test_run_agent_result_mode_uses_additional_agent_result(tmp_path: Path) -> None:
     root = tmp_path / "data"
     _image(root)
     client = _FakeClient()
     registry = _registry(_qwen_backend(client))
     sample = _sample(root, answer_as_agent_result=True)
     execution = asyncio.run(_agent(client, registry).run(sample, _context(root)))
-    assert isinstance(execution.payload, AgentResult)
-    assert execution.result_filename == "agent_result.json"
-    assert execution.payload.agent_name == "counting_agent"
-    assert execution.payload.answer == "0"
-    assert "counting_result.json" in execution.additional_results
-    payload = execution.additional_results["counting_result.json"]
+    # The primary payload and filename never change. / 主载荷与文件名绝不变。
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+    assert "agent_result.json" in execution.additional_results
+    payload = execution.additional_results["agent_result.json"]
     assert isinstance(payload, dict)  # JSON-safe serialization / JSON 安全序列化
-    assert payload["final_count"] == 0
+    assert payload["agent_name"] == "counting_agent"
+    assert payload["answer"] == "0"
+
+
+@pytest.mark.parametrize("with_agent_answer", [False, True])
+def test_primary_payload_is_always_counting_result(
+    tmp_path: Path, with_agent_answer: bool
+) -> None:
+    """Every execution path returns CountingResult as the primary payload with
+    the fixed filename. 所有执行路径都以 CountingResult 为主载荷并固定文件名。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    registry = _registry(_qwen_backend(client))
+    metadata = {"answer_as_agent_result": True} if with_agent_answer else {}
+    execution = asyncio.run(_agent(client, registry).run(_sample(root, **metadata), _context(root)))
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+    if with_agent_answer:
+        assert "agent_result.json" in execution.additional_results
+
+
+def test_task_mismatch_fails_before_any_work(tmp_path: Path) -> None:
+    """Unsupported tasks fail before images, target parsing, budget, or model
+    calls. 不支持的 task 在读图、解析 target、消费 budget 或调用模型前失败。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    budget = _FakeBudget()
+    registry = _registry(_qwen_backend(client))
+    sample = UnifiedSample(
+        sample_id="s1",
+        dataset="parity",
+        split="test",
+        task="general_vqa",
+        images=[ImageRef(image_id="i1", path="img.png", role="image")],
+        question="Q",
+        ground_truth=GroundTruth(answers=["x"]),
+    )
+    with pytest.raises(AgentTaskMismatchError):
+        asyncio.run(_agent(client, registry).run(sample, _context(root, budget)))
+    assert budget.qwen_calls == 0
+    assert client.calls == []
+
+
+def test_normalization_hint_takes_priority(tmp_path: Path) -> None:
+    """normalization.count_target_hint beats the legacy metadata field.
+    normalization.count_target_hint 优先于 legacy metadata 字段。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    registry = _registry(_qwen_backend(client))
+    sample = UnifiedSample(
+        sample_id="s1",
+        dataset="parity",
+        split="test",
+        task="counting",
+        images=[ImageRef(image_id="i1", path="img.png", role="image")],
+        question="How many ships?",
+        ground_truth=GroundTruth(answers=["2"]),
+        metadata={"count_target_hint": {"canonical_label": "old",
+                                        "inclusion_rule": "r", "exclusion_rule": "e"}},
+        normalization=TaskNormalization(
+            source_task="counting",
+            normalized_task="counting",
+            normalizer="test", version="1",
+            count_target_hint={
+                "canonical_label": "ship",
+                "inclusion_rule": "visible ship",
+                "exclusion_rule": "occluded",
+            },
+        ),
+    )
+    execution = asyncio.run(_agent(client, registry).run(sample, _context(root)))
+    assert execution.trace["target"] == "ship"
+    assert execution.trace["target_classes"] == ["ship"]
+    # Hint hit → no Qwen target call; only the tile count call remains.
+    # hint 命中 → 无 Qwen target 调用；仅剩 tile 计数调用。
+    assert len(client.calls) == 1
 
 
 def test_run_requires_data_root(tmp_path: Path) -> None:
@@ -259,14 +373,14 @@ def test_runtime_error_on_detector_falls_back_to_qwen(tmp_path: Path) -> None:
     assert "RuntimeError" in execution.trace["fallback_reason"]
 
 
-def test_fallback_disabled_raises_original_error(tmp_path: Path) -> None:
+def test_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
     root = tmp_path / "data"
     _image(root)
     client = _FakeClient()
     yolo = _FakeYoloBackend(error=DetectorWeightsMissingError("det-a", "det.pt"))
     registry = _registry(_qwen_backend(client), yolo)
     agent = _agent(client, registry, fallback_to_qwen_on_unavailable=False)
-    with pytest.raises(DetectorWeightsMissingError):
+    with pytest.raises(CountingBackendUnavailableError, match="unavailable and no fallback"):
         asyncio.run(agent.run(_sample(root), _context(root)))
 
 
@@ -315,12 +429,12 @@ def test_zero_review_confirms_zero_without_override(tmp_path: Path) -> None:
     agent = _agent(client, registry, verify_empty_with_qwen=True)
     execution = asyncio.run(agent.run(_sample(root), _context(root)))
     assert execution.trace["yolo"]["zero_overridden"] is False
-    # The qwen review also returns zero → the detector outcome stays final,
-    # although qwen_point was the last attempted backend.
-    # qwen 复核同样为零 → 检测器结果保持为最终结果，qwen_point 仍是最后尝试
-    # 的后端。
+    # The qwen review also returns zero → the detector outcome stays final.
+    # qwen 复核同样为零 → 检测器结果保持为最终结果。
     assert execution.trace["fallback_triggered"] is False
-    assert execution.trace["executed_backend"] == "qwen_point"
+    assert execution.trace["review_backend"] == "qwen_point"
+    assert execution.trace["final_backend"] == "det-a"
+    assert execution.trace["yolo"]["used_for_final"] is True
     assert execution.payload.final_count == 0
 
 
@@ -347,3 +461,54 @@ def test_agent_has_no_dataset_branch_or_judge() -> None:
     assert "Judge" not in source
     assert "judge" not in source
     assert "report" not in source.casefold()
+
+
+# ── 全路径主输出契约 / primary payload across all paths (25.5) ───────────
+
+
+def test_primary_payload_is_counting_result_on_all_execution_paths(tmp_path: Path) -> None:
+    """Qwen point, detector, detector fallback, and zero-review override all
+    return CountingResult with the fixed filename.
+    Qwen point、检测器、检测器回退与 zero review 覆盖路径都以 CountingResult
+    为主载荷并固定文件名。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+
+    # 1. qwen primary / qwen 主路径
+    execution = asyncio.run(
+        _agent(client, _registry(_qwen_backend(client))).run(_sample(root), _context(root))
+    )
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+
+    # 2. yolo primary / yolo 主路径
+    yolo = _FakeYoloBackend(final_count=1)
+    execution = asyncio.run(
+        _agent(client, _registry(_qwen_backend(client), yolo)).run(_sample(root), _context(root))
+    )
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+    assert execution.trace["final_backend"] == "det-a"
+
+    # 3. yolo unavailable fallback / yolo 不可用回退
+    missing = _FakeYoloBackend(error=DetectorWeightsMissingError("det-a", "det.pt"))
+    execution = asyncio.run(
+        _agent(client, _registry(_qwen_backend(client), missing)).run(_sample(root), _context(root))
+    )
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+    assert execution.trace["final_backend"] == "qwen_point"
+
+    # 4. zero review override / zero review 覆盖
+    zero = _FakeYoloBackend(final_count=0)
+    review_client = _FakeClient(tile_points=[(500, 500)])
+    execution = asyncio.run(
+        _agent(review_client, _registry(_qwen_backend(review_client), zero)).run(
+            _sample(root), _context(root)
+        )
+    )
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+    assert execution.trace["final_backend"] == "qwen_point"
+    assert execution.trace["yolo"]["zero_overridden"] is True

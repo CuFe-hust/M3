@@ -15,6 +15,7 @@ from typing import Any
 from agents.base import AgentContext, AgentExecution
 from agents.counting.backends.base import (
     CountingBackendOutcome,
+    CountingBackendUnavailableError,
     CountingRequest,
 )
 from agents.counting.backends.registry import BackendRegistry
@@ -22,6 +23,7 @@ from agents.counting.backends.selector import BackendSelector
 from agents.counting.schema import CountTargetSpec, CountingResult, IssueRecord
 from agents.counting.target_parser import CountTargetParser
 from agents.errors import (
+    AgentTaskMismatchError,
     DetectorClassMapMismatchError,
     DetectorTaskMismatchError,
     DetectorWeightsHashMismatchError,
@@ -82,11 +84,20 @@ class CountingAgent:
     ) -> AgentExecution:
         """Run the selected plan and never silently hide a fallback.
         执行选定计划，绝不静默隐藏回退。"""
+        # Task gating happens before images, target parsing, budget, or any
+        # backend call. task 门控发生在读图、解析 target、消费 budget 或调用
+        # 任何后端之前。
+        if sample.task not in self.supported_tasks:
+            raise AgentTaskMismatchError(
+                self.name,
+                sample.task,
+                supported=self.supported_tasks,
+            )
         target = await self._target(sample, context)
         hints: dict[str, Any] = {"quantity_estimation": True}
         plan = self._selector.plan(target, task=sample.task, hints=hints)
         if plan is None:
-            raise RuntimeError(
+            raise CountingBackendUnavailableError(
                 f"No counting backend plan for task={sample.task!r}, "
                 f"target={target.canonical_label!r}"
             )
@@ -98,6 +109,8 @@ class CountingAgent:
         )
         attempted = [plan.primary_backend_name]
         primary = self._selector.backend_by_name(plan.primary_backend_name)
+        final_backend = plan.primary_backend_name
+        review_backend: str | None = None
         fallback_triggered = False
         fallback_kind: str | None = None
         fallback_reason: str | None = None
@@ -110,10 +123,14 @@ class CountingAgent:
             outcome = await primary.count(request, context)
         except _UNAVAILABLE_ERRORS as exc:
             if not self._fallback_to_qwen_on_unavailable or not plan.fallback_backend_names:
-                raise
+                raise CountingBackendUnavailableError(
+                    f"backend {plan.primary_backend_name!r} unavailable and no fallback "
+                    f"allowed: {type(exc).__name__}"
+                ) from exc
             outcome, attempted, fallback_triggered, fallback_kind, fallback_reason = (
                 await self._fallback(plan, request, context, attempted, "unavailable", exc)
             )
+            final_backend = attempted[-1]
         except Exception as exc:
             if (
                 not self._is_yolo(primary)
@@ -124,6 +141,7 @@ class CountingAgent:
             outcome, attempted, fallback_triggered, fallback_kind, fallback_reason = (
                 await self._fallback(plan, request, context, attempted, "runtime_error", exc)
             )
+            final_backend = attempted[-1]
         else:
             if self._is_yolo(primary):
                 yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
@@ -138,15 +156,17 @@ class CountingAgent:
                         if plan.fallback_backend_names
                         else "qwen_point"
                     )
+                    review_backend = review_name
                     yolo_trace["zero_review_backend"] = review_name
                     try:
-                        review_backend = self._selector.backend_by_name(review_name)
+                        review_backend_obj = self._selector.backend_by_name(review_name)
                         attempted.append(review_name)
-                        review = await review_backend.count(request, context)
+                        review = await review_backend_obj.count(request, context)
                         yolo_trace["zero_review_status"] = review.counting.status
                         yolo_trace["zero_review_result_count"] = review.counting.final_count
                         if review.counting.final_count > 0:
                             outcome = review
+                            final_backend = review_name
                             fallback_triggered = True
                             fallback_kind = "zero_review"
                             fallback_reason = "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
@@ -163,7 +183,7 @@ class CountingAgent:
                         )
                         warning = IssueRecord(
                             code="DETECTOR_ZERO_REVIEW_FAILED",
-                            message=f"{type(exc).__name__}: {exc}",
+                            message=f"{type(exc).__name__}: {_safe_error_text(exc)}",
                         )
                         outcome = CountingBackendOutcome(
                             counting=outcome.counting.model_copy(
@@ -179,15 +199,16 @@ class CountingAgent:
                             agent_result=outcome.agent_result,
                             trace=outcome.trace,
                         )
-        executed = attempted[-1]
         trace: dict[str, object] = {
             "agent_class": "agents.counting.agent.CountingAgent",
             "entrypoint": "run",
             "route": "CountingAgent.run -> BackendSelector.plan -> " + " -> ".join(attempted),
             "requested_backend_mode": self._selector_default_backend(),
             "primary_backend": plan.primary_backend_name,
-            "executed_backend": executed,
-            "backend": executed,
+            "review_backend": review_backend,
+            "final_backend": final_backend,
+            "executed_backend": final_backend,
+            "backend": final_backend,
             "attempted_backends": attempted,
             "selection_reason": list(plan.reason_codes),
             "target": target.canonical_label,
@@ -197,39 +218,42 @@ class CountingAgent:
             "fallback_reason": fallback_reason,
             "status": outcome.counting.status,
         }
-        if outcome.trace:
-            trace.update(outcome.trace)
+        # Backend traces live in their own namespace so a plugin can never
+        # overwrite agent-level fields. 后端 trace 位于独立命名空间，插件无法
+        # 覆盖 Agent 级字段。
+        trace["backend_trace"] = dict(outcome.trace or {})
         if yolo_trace is not None:
             yolo_trace.update(
-                {"attempted": True, "used_for_final": executed == plan.primary_backend_name}
+                {
+                    "attempted": True,
+                    "used_for_final": final_backend == plan.primary_backend_name,
+                }
             )
             trace["yolo"] = yolo_trace
         else:
             trace["yolo"] = {"attempted": False, "used_for_final": False}
 
-        need_agent_answer = bool(
-            sample.metadata.get(_AGENT_ANSWER_METADATA_KEY, False)
-        )
-        if need_agent_answer and outcome.agent_result is None:
-            outcome = CountingBackendOutcome(
-                counting=outcome.counting,
-                agent_result=_agent_result(outcome.counting, sample.images[0].image_id),
-                trace=outcome.trace,
-            )
+        # The primary payload is always the CountingResult with a fixed
+        # filename; an AgentResult — whether produced by the backend or
+        # requested via the neutral metadata switch — is always an additional
+        # result, never the primary schema.
+        # 主载荷永远是 CountingResult 且文件名固定；AgentResult——无论来自
+        # 后端还是由中性 metadata 开关请求——始终是附加结果，绝不成为主
+        # Schema。
+        additional_results: dict[str, Any] = {}
         if outcome.agent_result is not None:
-            return AgentExecution(
-                agent_name=self.name,
-                payload=outcome.agent_result,
-                result_filename="agent_result.json",
-                additional_results={
-                    "counting_result.json": outcome.counting.model_dump(mode="json")
-                },
-                trace=trace,
+            additional_results["agent_result.json"] = outcome.agent_result.model_dump(
+                mode="json"
             )
+        elif sample.metadata.get(_AGENT_ANSWER_METADATA_KEY, False):
+            additional_results["agent_result.json"] = _agent_result(
+                outcome.counting, sample.images[0].image_id
+            ).model_dump(mode="json")
         return AgentExecution(
             agent_name=self.name,
             payload=outcome.counting,
             result_filename="counting_result.json",
+            additional_results=additional_results,
             trace=trace,
         )
 
@@ -238,9 +262,14 @@ class CountingAgent:
         sample: Any,
         context: AgentContext,
     ) -> CountTargetSpec:
-        """Resolve the target: parser prefers metadata.count_target_hint and
-        falls back to the frozen Qwen contract. 解析目标：parser 优先
-        metadata.count_target_hint，缺失时回退到冻结 Qwen 契约。"""
+        """Resolve the target: normalization hint first, legacy metadata
+        second, frozen Qwen contract last. 解析目标：优先 normalization
+        hint，其次 legacy metadata，最后冻结 Qwen 契约。"""
+        normalization_hint = (
+            sample.normalization.count_target_hint
+            if sample.normalization is not None
+            else None
+        )
         parser = CountTargetParser(
             self._client,
             self._target_prompt,
@@ -251,7 +280,8 @@ class CountingAgent:
             sample.question,
             sample_id=sample.sample_id,
             artifact_dir=context.artifact_dir,
-            metadata=sample.metadata,
+            count_target_hint=normalization_hint,
+            legacy_metadata=sample.metadata,
             budget=getattr(context, "call_budget", None),
         )
 
@@ -266,8 +296,20 @@ class CountingAgent:
     ):
         name = plan.fallback_backend_names[0]
         attempted.append(name)
-        outcome = await self._selector.backend_by_name(name).count(request, context)
-        return outcome, attempted, True, kind, f"{type(error).__name__}: {error}"
+        try:
+            backend = self._selector.backend_by_name(name)
+        except KeyError as exc:
+            raise CountingBackendUnavailableError(
+                f"fallback backend {name!r} is not registered"
+            ) from exc
+        outcome = await backend.count(request, context)
+        return (
+            outcome,
+            attempted,
+            True,
+            kind,
+            f"{type(error).__name__}: {_safe_error_text(error)}",
+        )
 
     def _selector_default_backend(self) -> str:
         return str(getattr(self._selector, "_default_backend", "auto"))
@@ -334,6 +376,15 @@ def _resolve_sample_image(sample: Any, context: AgentContext) -> Any:
     return read_normalized_image(candidate)
 
 
-def _identity_model(client: Any) -> str:
+def _identity_model(client: Any) -> str | None:
     identity = getattr(client, "cache_identity", None)
-    return identity.model if identity is not None else "counting_agent"
+    return identity.model if identity is not None else None
+
+
+def _safe_error_text(error: Exception) -> str:
+    """Keep trace error text short and path-free.
+    保持 trace 错误文本简短且不含路径。"""
+    text = str(error).strip()
+    if len(text) > 200:
+        text = text[:200] + "..."
+    return text
