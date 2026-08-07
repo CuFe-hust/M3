@@ -17,6 +17,7 @@ from agents.counting.backends.yolo_model_store import YoloModelStore
 from agents.counting.geometry import (
     build_core_halo_tiles,
     convert_local_point_to_global,
+    cores_are_neighbours,
     crop_for_tile,
 )
 from agents.counting.point_pipeline import (
@@ -67,9 +68,16 @@ class YoloOBBCountingBackend:
     def priority(self) -> int:
         return self._detector.priority
 
+    def is_enabled(self) -> bool:
+        """Return whether the detector is configured/enabled (plan-time).
+        返回检测器是否已配置/启用（计划期）。"""
+        return self._detector.enabled
+
     def is_available(self) -> bool:
         """Report configured availability without importing or loading
-        Ultralytics. 在不导入或加载 Ultralytics 的条件下报告配置可用性。"""
+        Ultralytics; real weight/dependency readiness is verified at count
+        time. 在不导入或加载 Ultralytics 的条件下报告配置可用性；权重与
+        依赖的真实就绪状态在 count 时验证。"""
         return self._detector.enabled
 
     def trace_profile(self) -> dict[str, object]:
@@ -132,6 +140,16 @@ class YoloOBBCountingBackend:
             model_max_side=self._counting.model_max_side,
         )
         model = self._store.get(self._detector)
+        # ONNX provider audit: never silently run CPU in place of a required
+        # GPU. ONNX provider 审计：绝不把 CPU 静默伪装成所需 GPU。
+        actual_providers = tuple(getattr(model, "providers", ()))
+        provider_trace: dict[str, object] = {
+            "requested_provider": (
+                "CUDA" if self._detector.require_cuda else "CPU"
+            ),
+            "actual_providers": list(actual_providers),
+            "cpu_fallback_used": bool(getattr(model, "cpu_fallback_used", False)),
+        }
         points: list[GlobalPointObservation] = []
         warnings: list[IssueRecord] = []
         succeeded: list[str] = []
@@ -158,9 +176,18 @@ class YoloOBBCountingBackend:
         effective_min_confidence = max(
             self._counting.min_confidence, self._detector.confidence
         )
+        raw_converted = list(points)
+        ownership_rejected = sum(
+            1 for point in raw_converted if not point.ownership_valid
+        )
+        confidence_rejected = sum(
+            1
+            for point in raw_converted
+            if point.ownership_valid and point.confidence < effective_min_confidence
+        )
         points = [
             apply_acceptance_policy(point, min_confidence=effective_min_confidence)
-            for point in points
+            for point in raw_converted
         ]
         border_fragment_ids = [
             point.global_id
@@ -188,7 +215,7 @@ class YoloOBBCountingBackend:
                     point_ids=border_fragment_ids,
                 )
             )
-        accepted_before_merge = sum(point.accepted for point in points)
+        acceptance_after_policy = sum(point.accepted for point in points)
         pairs, unresolved = _detector_duplicate_pairs(points, tiles, self._detector)
         points, merged_groups = finalize_representatives(points, pairs)
         if merged_groups:
@@ -215,7 +242,7 @@ class YoloOBBCountingBackend:
                     point_ids=[first, second],
                 )
             )
-        acceptance_rejected = len(points) - accepted_before_merge
+        merged_duplicate_count = sum(len(group) - 1 for group in merged_groups)
         status = (
             "failed"
             if failed and not succeeded
@@ -248,14 +275,17 @@ class YoloOBBCountingBackend:
             trace={
                 "backend_kind": "yolo_obb",
                 **self.trace_profile(),
+                **provider_trace,
                 "resolved_target_classes": sorted(allowed),
                 "tile_count": len(tiles),
                 "raw_detection_count": raw_count,
                 "unrelated_class_rejected_count": unrelated_count,
-                "acceptance_rejected_count": acceptance_rejected,
+                "ownership_rejected_count": ownership_rejected,
+                "confidence_rejected_count": confidence_rejected,
                 "border_fragment_rejected_count": len(border_fragment_ids),
-                "merged_duplicate_count": sum(len(group) - 1 for group in merged_groups),
+                "merged_duplicate_count": merged_duplicate_count,
                 "unresolved_conflict_count": len(unresolved),
+                "accepted_after_policy_count": acceptance_after_policy,
                 "accepted_count": counting.final_count,
                 "effective_min_confidence": effective_min_confidence,
             },
@@ -381,7 +411,7 @@ def _detector_duplicate_pairs(
             neighbouring_boundary = (
                 first.near_core_boundary
                 and second.near_core_boundary
-                and _neighbouring(
+                and cores_are_neighbours(
                     tile_by_id.get(first.source_tile_id),
                     tile_by_id.get(second.source_tile_id),
                 )
@@ -428,15 +458,6 @@ def _is_clipped_border_fragment(
 
 def _source_class(point: GlobalPointObservation) -> str | None:
     return point.provenance.source_class if point.provenance is not None else None
-
-
-def _neighbouring(first: TileSpec | None, second: TileSpec | None) -> bool:
-    if first is None or second is None:
-        return False
-    a, b = first.owner_core_global, second.owner_core_global
-    return (a.right == b.left or b.right == a.left) or (
-        a.bottom == b.top or b.bottom == a.top
-    )
 
 
 def _polygon_envelope_iou(

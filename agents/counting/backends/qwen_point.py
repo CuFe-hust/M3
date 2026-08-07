@@ -17,11 +17,17 @@ from PIL import Image
 from agents.counting.backends.base import (
     CountingBackendOutcome,
     CountingRequest,
+    MissingModelCacheIdentityError,
 )
 from agents.counting.point_pipeline import PointCountingOrchestrator
 from agents.counting.schema import CountTargetSpec, TileCountResponse, TileSpec
 from agents.counting.settings import CountingSettings
-from models.base import RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import (
+    ModelCacheIdentity,
+    RequestMeta,
+    VisionLanguageClient,
+    build_request_hash,
+)
 from models.images import image_to_data_url
 
 
@@ -46,6 +52,9 @@ class QwenPointCountingBackend:
         self._prompt_version = prompt_version or counting.prompt_version
         self._minimum_scan_depth = minimum_scan_depth
 
+    def is_enabled(self) -> bool:
+        return True  # always configured / 始终配置
+
     def is_available(self) -> bool:
         return True  # always available / 始终可用
 
@@ -57,6 +66,11 @@ class QwenPointCountingBackend:
         request: CountingRequest,
         context: object,
     ) -> CountingBackendOutcome:
+        # Fail fast when the client does not expose a real cache identity;
+        # the pipeline must never swallow this into a tile failure.
+        # client 未暴露真实缓存身份时快速失败；pipeline 绝不可将其吞为
+        # tile 失败。
+        _require_identity(self._client)
         callback = _PipelineTileCallback(
             self._client,
             system_prompt=self._system_prompt,
@@ -166,24 +180,31 @@ class _PipelineTileCallback:
                 ],
             },
         ]
-        identity = getattr(self._client, "cache_identity", None)
-        model = identity.model if identity is not None else "qwen_point"
-        generation = (
-            identity.generation_payload() if identity is not None else {"temperature": 0.0}
-        )
-        client_version = identity.client_version if identity is not None else "1"
+        identity = _require_identity(self._client)
         request_hash = build_request_hash(
-            model=model,
-            generation=generation,
+            model=identity.model,
+            generation=identity.generation_payload(),
             prompt_version=self._prompt_version,
             messages=messages,
             image_sha256=image_hash,
             tile_geometry=tile.model_dump(mode="json"),
             target_spec=target.model_dump(mode="json"),
-            client_version=client_version,
-            model_revision=identity.revision if identity is not None else None,
+            response_schema=TileCountResponse.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
         )
         return messages, request_hash, image_hash
+
+
+def _require_identity(client: VisionLanguageClient) -> ModelCacheIdentity:
+    """Require a real cache identity; counting never fabricates one.
+    要求真实缓存身份；计数绝不伪造。"""
+    identity = getattr(client, "cache_identity", None)
+    if identity is None:
+        raise MissingModelCacheIdentityError(
+            "qwen point backend requires client.cache_identity"
+        )
+    return identity
 
 
 def _owner_core_prompt_bounds(tile: TileSpec) -> list[int]:

@@ -220,3 +220,75 @@ def test_backend_has_no_fallback_or_prompt_catalog() -> None:
     )
     assert "fallback" not in source
     assert "PromptCatalog" not in source
+
+
+# ── 缓存身份 / cache identity (25.5) ──────────────────────────────────────
+
+
+def test_request_hash_changes_with_every_identity_field() -> None:
+    """Any change to revision, max_tokens, do_sample, client_version, response
+    schema, prompt version, target spec, or tile geometry must change the
+    request hash. revision、max_tokens、do_sample、client_version、response
+    schema、prompt version、target spec 或 tile geometry 的任何变化都必须
+    改变请求哈希。"""
+    from agents.counting.backends.qwen_point import _PipelineTileCallback
+    from agents.counting.geometry import build_core_halo_tiles
+    from agents.counting.schema import CountTargetSpec, TileCountResponse
+
+    def _hash(**identity_overrides) -> str:
+        client = _FakeClient()
+        identity = client.cache_identity
+
+        class _IdentityClient(_FakeClient):
+            @property
+            def cache_identity(self) -> ModelCacheIdentity:
+                return ModelCacheIdentity(
+                    model=identity_overrides.get("model", identity.model),
+                    generation=identity_overrides.get(
+                        "generation", identity.generation_payload()
+                    ),
+                    client_version=identity_overrides.get(
+                        "client_version", identity.client_version
+                    ),
+                    revision=identity_overrides.get("revision", identity.revision),
+                )
+
+        callback = _PipelineTileCallback(
+            _IdentityClient(),
+            system_prompt="p",
+            prompt_version=identity_overrides.get("prompt_version", "count-point-v4"),
+            counting=CountingSettings(),
+            budget=None,
+            artifact_root=Path("/tmp"),
+            sample_id="s1",
+        )
+        tile = build_core_halo_tiles(100, 100, core_size=896, halo_size=0, model_max_side=1280)[0]
+        target = CountTargetSpec(
+            canonical_label="car", inclusion_rule="r", exclusion_rule="e"
+        )
+        _, request_hash, _ = callback._build_request(
+            tile, Image.new("RGB", (100, 100)), target
+        )
+        return request_hash
+
+    base = _hash()
+    assert base != _hash(revision="rev-2")
+    assert base != _hash(generation={"temperature": 0.0, "do_sample": False, "max_tokens": 256})
+    assert base != _hash(generation={"temperature": 0.7, "do_sample": True, "max_tokens": 128})
+    assert base != _hash(client_version="2")
+    assert base != _hash(model="other-model")
+    assert base != _hash(prompt_version="other-prompt")
+
+
+def test_missing_cache_identity_fails_before_model_call(tmp_path: Path) -> None:
+    """A client without cache_identity fails before any model call.
+    无 cache_identity 的客户端在任何模型调用前失败。"""
+    from agents.counting.backends.base import MissingModelCacheIdentityError
+
+    class _BareClient:
+        async def complete_json(self, **kwargs):
+            raise AssertionError("must not be called")
+
+    backend = _backend(_BareClient())  # type: ignore[arg-type]
+    with pytest.raises(MissingModelCacheIdentityError, match="cache_identity"):
+        asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
