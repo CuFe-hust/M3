@@ -171,6 +171,25 @@
   解析仅用于锁身份，不改变实际存储位置；并发范围仍为 single Python
   process only；原子替换对 Windows 瞬态文件锁做有限重试。
 
+## Task 33.7 安全收敛
+
+- **Windows 保留 run id**：`_validate_run_id` 显式拒绝 Windows 保留设备名
+  （`_WINDOWS_RESERVED_STEMS`：CON/PRN/AUX/NUL/COM1-9/LPT1-9，含
+  `CON.txt`/`COM1.json`/`LPT9.log` 等带扩展名形式，按 stem 匹配、大小写
+  不敏感）与尾点/尾空格形式；所有平台确定性拒绝（纯 Python 单测验证，
+  不依赖 CI 平台）；pre-I/O 失败顺序不变，错误消息固定且不回显输入。
+- **set/frozenset 密钥扫描**：`_reject_secrets` 增加 `Set` 分支（set 与
+  frozenset 均覆盖），set→tuple→string 完整递归；EventWriter 与 RunStore
+  同一实现；含密钥的 set 在任何 JSON 序列化错误之前以 `sensitive value`
+  失败（不依赖序列化报错作为防线）。
+- **指标注册表不可变**：`EXPECTED_METRICS` 改为 `MappingProxyType` 且不再
+  从 `evaluation` 顶层导出（`__all__` 移除）；`EvaluationRecord` validator
+  行为不变。
+- **Wheel 公共 API 契约**：clean wheel smoke 验证 Task 33.6 新公共 API
+  （`VQADeterministicMetrics`/`GroundingDeterministicMetrics`/
+  `merge_vqa_evaluation`），并断言 canonical VQA merge 返回统一
+  `EvaluationRecord`（task="general_vqa"、类型化 deterministic metrics）。
+
 ## 尚未实现
 
 `reporting`、`application`、`main.py` 尚未创建/实现；Task 34 尚未开始；

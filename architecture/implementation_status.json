@@ -47,7 +47,8 @@
     "25.6-counting-backend-kind-public-error-finalization",
     "25.7-yolo-failure-propagation-warning-safety",
     "33.5-spatial-change-workflow-evaluation-runtime-integrity",
-    "33.6-workflow-path-safety-evaluation-record-invariants"
+    "33.6-workflow-path-safety-evaluation-record-invariants",
+    "33.7-windows-run-id-secret-container-safety"
   ],
   "implemented_files": [
     "data/__init__.py",

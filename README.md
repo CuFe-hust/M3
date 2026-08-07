@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 hardening 完成）
+## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 / 33.7 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -67,13 +67,16 @@ GitHub Actions（`.github/workflows/offline-tests.yml`，Ubuntu/Python 3.11）
 - **Caption 指标**：corpus 级 BLEU/METEOR/ROUGE/CIDEr 依赖可选
   `pycocoevalcap`，缺少时 `evaluate_caption` 抛出明确 `RuntimeError`。
 - **Workflow 安全**：`run_id` 是经过校验的跨平台 plain identifier（拒绝
-  遍历/绝对路径/drive/UNC/控制字符，任何文件写入前失败）；事件与配置的
-  密钥扫描递归处理任意 Mapping/Sequence（含 tuple）嵌套。
+  遍历/绝对路径/drive/UNC/控制字符、Windows 保留设备名（CON/PRN/AUX/NUL/
+  COM1-9/LPT1-9，含带扩展名形式）与尾点/尾空格，任何文件写入前失败）；
+  事件与配置的密钥扫描递归处理任意 Mapping/Sequence/Set（含 tuple、set、
+  frozenset 组合）嵌套。
 - **Evaluation 不变式**：`EvaluationRecord` 强制 task ↔ deterministic metric
   类型一致（构造时失败，聚合器同样 fail-closed）；VQA canonical merge 返回
   统一 `EvaluationRecord`（旧 `VQAEvaluationRecord` 仅作 legacy 兼容，可经
   `to_evaluation_record` 显式转换）；Grounding IoU 阈值每条记录只判定一次，
-  聚合复用存储标志。
+  聚合复用存储标志；task↔metrics 映射为内部不可变注册表，不可通过公共
+  顶层 API 修改。
 
 ## 模型身份配置说明
 
