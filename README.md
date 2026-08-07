@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–25 完成，25.5 hardening 完成）
+## 当前状态（Task 00–25 完成，25.5/25.6 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -12,11 +12,17 @@
 - 模型层基础：`models/`（协议/缓存/图像工具/配置声明、统一 entry、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装）
 - Agent 通用契约：`agents/`（AgentResult/VisualEvidence、AgentContext/AgentExecution、Registry、错误类型、数据集无关 VisualAgentBase）
 - 领域 Agents：`agents/general_vqa/`、`agents/caption/`、`agents/grounding/`（薄视觉 Agent，含 MCQ/Grounding 输出约束）
-- 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent，主输出恒为 CountingResult）
+- 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent，主输出恒为 CountingResult，后端使用显式 kind）
 - 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
 
+计数后端契约：每个后端显式声明 `kind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
+只有 `yolo_obb` 进入 detector plan、zero-review 与 detector fallback；
+`CountingBackendUnavailableError` 全仓唯一（`agents.errors` 权威定义，顶层导出与
+backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
+绝对路径、密钥或 Base64。
+
 **尚未实现**：spatial、change Agents、workflows、evaluation、reporting、
-application 与 CLI（`main.py`）。请勿将其当作可用功能使用。
+application 与 CLI（`main.py`）。请勿将其当作可用功能使用。Task 26 尚未开始。
 
 ## 安装与测试
 

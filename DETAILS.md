@@ -78,19 +78,32 @@
 - `CountingAgent` 主 payload 恒为 `CountingResult`，主文件名恒为
   `counting_result.json`；`AgentResult`（来自后端或 `answer_as_agent_result`
   开关）只写入 `additional_results["agent_result.json"]`（JSON-safe dict）。
+- 计数后端使用显式 `BackendKind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
+  绝不通过 name/类名/模块路径推断类型。只有 `yolo_obb` 进入 detector plan、
+  zero-review 与 detector fallback；`quantity_proposal` 不是 detector。
+- `CountingBackendUnavailableError` 全仓唯一权威类位于 `agents.errors.py`；
+  `agents` 顶层导出与 `agents.counting.backends.base` 导入为同一对象。
 - 计数目标解析优先级：`sample.normalization.count_target_hint` →
   `metadata["count_target_hint"]`（兼容）→ Qwen target parser；无效 hint
   抛出 `InvalidCountTargetHintError`，绝不静默吞掉。
+- Counting 公共入口只抛稳定错误（`AgentTaskMismatchError`、
+  `CountingBackendUnavailableError`、`AgentExecutionError` + 稳定 cause code
+  `DATA_ROOT_REQUIRED`/`IMAGE_PATH_ESCAPE`/`IMAGE_NOT_FOUND`/`IMAGE_READ_FAILED`/
+  `TARGET_PARSE_FAILED`/`PRIMARY_BACKEND_FAILED`/`FALLBACK_BACKEND_FAILED`/
+  `INVALID_BACKEND_KIND`）；trace/warnings 不含原始异常文本、绝对路径、密钥
+  或 Base64（`fallback_reason_code` + `fallback_error_type`）。
 - Backend plan 与 runtime fallback 职责分离：`BackendSelector.plan` 只基于
   配置/支持性规划；运行时权重/依赖就绪由 count 时验证，不可用经 Agent 显式
   回退（fallback 只能由 Agent 执行，Backend 不自行切换）。
 - seam finalization（`find_boundary_conflicts` → `decide_seam_pairs` →
   `finalize_representatives`）由 `PointCountingOrchestrator.count_image` 执行，
   `CountingSettings.seam_verify` 控制开关。
-- YOLO 模型按 (path, sha256) per-key 并发加载一次；ONNX provider 可配置
-  （require_cuda/allow_cpu_fallback）并写入 trace（requested/actual/cpu_fallback）。
-- 所有 Counting 模型调用使用完整 `ModelCacheIdentity`（model/generation/
-  client_version/revision）并把 response schema 纳入 request hash。
+- YOLO 模型按 (path, sha256) per-key 并发加载一次；ONNX provider 可配置：
+  `require_cuda=True` 要求非负整数 `device`（映射到 CUDA `device_id`），
+  `require_cuda=False` 要求 `device="cpu"` 且 Session 只请求 CPU；trace 记录
+  requested/resolved provider 与 device。
+- 所有 Counting 模型调用使用真实 `ModelCacheIdentity`（`require_model_cache_identity`
+  helper，鸭子类型身份明确失败）并把 response schema 纳入 request hash。
 
 ## 尚未实现
 

@@ -35,7 +35,8 @@
     "15.6-model-cache-identity-execution-safety",
     "15.7-cache-persistence-image-mime-finalization",
     "15.8-logical-model-identity-path-safety",
-    "25.5-routing-packaging-counting-runtime-integrity"
+    "25.5-routing-packaging-counting-runtime-integrity",
+    "25.6-counting-backend-kind-public-error-finalization"
   ],
   "implemented_files": [
     "data/__init__.py",
@@ -100,5 +101,6 @@
     "agents/counting/agent.py"
   ],
   "pending_files": [],
-  "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
+  "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
+  "_pending_files_note": "pending_files 为空表示当前没有已批准但尚未创建的生产路径被预先声明；workflows/evaluation/reporting/application 尚未实现（见 README）。"
 }
