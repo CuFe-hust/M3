@@ -78,3 +78,16 @@ class ChangeProposal(BaseModel):
     area_ratio: float = Field(ge=0.0, le=1.0)
     source: Literal["difference_map_v1"] = "difference_map_v1"
     evidence_filenames: list[str] = Field(default_factory=list)
+
+
+class ChangePreprocessResult(BaseModel):
+    """Serializable preprocessing result referenced by trace and artifacts.
+    由 trace 与产物引用的可序列化预处理结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    validation: PairValidationReport
+    decision: HarmonizationDecision
+    proposals: list[ChangeProposal]
+    artifact_files: dict[str, str]
+    transform_summary: dict[str, object] = Field(default_factory=dict)
