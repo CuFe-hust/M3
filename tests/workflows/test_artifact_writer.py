@@ -290,3 +290,41 @@ def test_atomic_append_jsonl_concurrent_lose_no_lines(tmp_path: Path) -> None:
     assert {row["i"] for row in rows} == set(range(100))
     assert len({row["i"] for row in rows}) == 100  # all IDs unique / 所有 ID 唯一
     assert list(tmp_path.glob("*.tmp")) == []
+
+
+# ── 锁路径身份 / lock path identity (33.6) ────────────────────────────────
+
+
+def test_lexical_alias_paths_share_lock_and_lose_no_lines(tmp_path: Path) -> None:
+    """Equivalent lexical paths ('root/events.jsonl' vs
+    'root/sub/../events.jsonl') share one canonicalized lock; 8 workers
+    appending 100 rows lose nothing. 等价词法路径（'root/events.jsonl' 与
+    'root/sub/../events.jsonl'）共享同一把规范化锁；8 个 worker 并发追加
+    100 行不丢任何一行。"""
+    import json as json_module
+    from concurrent.futures import ThreadPoolExecutor
+
+    from workflows.events import _path_lock
+
+    root = tmp_path / "root"
+    direct = root / "events.jsonl"
+    aliased = root / "sub" / ".." / "events.jsonl"
+    assert _path_lock(direct) is _path_lock(aliased)
+
+    def append(index: int) -> None:
+        # Alternate between the two lexical spellings. / 交替使用两种词法写法。
+        path = direct if index % 2 == 0 else aliased
+        atomic_append_jsonl(path, {"i": index})
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(append, range(100)))
+
+    lines = [
+        line
+        for line in (root / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    assert len(lines) == 100
+    rows = [json_module.loads(line) for line in lines]
+    assert {row["i"] for row in rows} == set(range(100))
+    assert list(root.rglob("*.tmp")) == []

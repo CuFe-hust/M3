@@ -346,3 +346,125 @@ def test_run_store_has_no_application_dependency(tmp_path: Path) -> None:
     assert "import application.settings" not in source
     assert "AppSettings" not in source
     assert "spacers_agent" not in source
+
+
+# ── run_id 路径安全 / run id path safety (33.6) ────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "../outside",
+        "..\outside",
+        "a/b",
+        "a\b",
+        "/tmp/run",
+        "C:\tmp\run",
+        "C:/tmp/run",
+        "\\server\share\run",
+        "//server/share/run",
+        ".",
+        "..",
+        "run\nid",
+        "run\x00id",
+    ],
+)
+def test_run_id_path_like_values_rejected_before_io(run_id: str, tmp_path: Path) -> None:
+    store, root = _store(tmp_path)
+    with pytest.raises(ValueError, match="safe plain identifier"):
+        store.create_run(
+            config_payload=_config_payload(),
+            model_ids={"qwen": "q"},
+            prompt_paths=[],
+            run_id=run_id,
+        )
+    # No partial run directory and nothing outside the root. / 无部分 run 目录，
+    # 根外无任何文件。
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("run_id", ["run-1", "task33.6_test", "20260807T091320Z-ab12cd34"])
+def test_run_id_plain_identifiers_accepted(run_id: str, tmp_path: Path) -> None:
+    store, root = _store(tmp_path)
+    manifest = store.create_run(
+        config_payload=_config_payload(),
+        model_ids={"qwen": "q"},
+        prompt_paths=[],
+        run_id=run_id,
+    )
+    assert manifest.run_id == run_id
+    assert (root / run_id).is_dir()
+
+
+def test_run_id_error_does_not_echo_value(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    with pytest.raises(ValueError) as error:
+        store.create_run(
+            config_payload=_config_payload(),
+            model_ids={"qwen": "q"},
+            prompt_paths=[],
+            run_id="a" * 200,
+        )
+    assert "a" * 200 not in str(error.value)
+
+
+# ── tuple / generic sequence secret scanning (33.6) ────────────────────────
+
+
+def test_config_payload_tuple_secret_rejected(tmp_path: Path) -> None:
+    store, root = _store(tmp_path)
+    with pytest.raises(ValueError, match="sensitive value"):
+        store.create_run(
+            config_payload={"x": ("sk-secret",)},
+            model_ids={"qwen": "q"},
+            prompt_paths=[],
+        )
+    # Nothing may be written. / 不得写任何文件。
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+def test_config_payload_nested_tuple_key_rejected(tmp_path: Path) -> None:
+    store, _ = _store(tmp_path)
+    for payload in (
+        {"x": ({"token": "abc"},)},
+        {"x": ["safe", ("Bearer abc",)]},
+        {"x": ({"nested": {"password": "abc"}},)},
+    ):
+        with pytest.raises(ValueError, match="sensitive"):
+            store.create_run(
+                config_payload=payload,
+                model_ids={"qwen": "q"},
+                prompt_paths=[],
+            )
+
+
+def test_config_payload_clean_tuple_accepted(tmp_path: Path) -> None:
+    store, root = _store(tmp_path)
+    manifest = store.create_run(
+        config_payload={"x": ("safe", {"state": "ok"})},
+        model_ids={"qwen": "q"},
+        prompt_paths=[],
+    )
+    assert manifest.run_id
+    assert (root / manifest.run_id / "manifest.json").is_file()
+
+
+def test_event_writer_tuple_secret_rejected(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    for payload in (
+        {"x": ("sk-secret",)},
+        {"x": ({"token": "abc"},)},
+        {"x": ["safe", ("Bearer abc",)]},
+        {"x": ({"nested": {"password": "abc"}},)},
+    ):
+        with pytest.raises(ValueError, match="sensitive"):
+            writer.write("X", details=payload)
+    assert not (tmp_path / "events.jsonl").exists() or (
+        tmp_path / "events.jsonl"
+    ).read_text(encoding="utf-8") == ""
+
+
+def test_event_writer_clean_tuple_accepted(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    record = writer.write("X", details={"x": ("safe", {"state": "ok"})})
+    assert record.event == "X"
