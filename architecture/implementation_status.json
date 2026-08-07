@@ -105,7 +105,12 @@
     "agents/spatial/geometry.py",
     "agents/spatial/agent.py",
     "agents/spatial/candidate_review.py",
-    "agents/spatial/evidence_merge.py"
+    "agents/spatial/evidence_merge.py",
+    "agents/change/__init__.py",
+    "agents/change/schema.py",
+    "agents/change/settings.py",
+    "agents/change/pair_validator.py",
+    "agents/change/harmonizer.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
