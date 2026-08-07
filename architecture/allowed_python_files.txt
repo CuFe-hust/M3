@@ -169,6 +169,7 @@ tests/agents/caption/__init__.py
 tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
+tests/agents/counting/test_settings.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
@@ -177,6 +178,7 @@ tests/architecture/test_no_new_to_legacy_imports.py
 tests/contracts/test_adapter_contract.py
 tests/contracts/test_agent_result_contract.py
 tests/contracts/test_data_schema_contract.py
+tests/contracts/test_counting_result_contract.py
 tests/contracts/test_routing_contract.py
 tests/data/test_adapter_integration.py
 tests/data/test_levir_cc_adapter.py
