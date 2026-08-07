@@ -1,10 +1,10 @@
 """Counting agent with explicit backend plans and visible fallback.
 
 具有显式后端计划与可见回退的计数 Agent。Agent 负责执行 primary、处理
-unavailable/runtime 回退与可选 zero review；后端自身绝不切换。返回
-CountingResult；需要通用 VQA answer 时（由中性 metadata 开关驱动）生成
-AgentResult 作为 primary，并把 CountingResult 放入 additional_results——
-不做任何数据集判断。
+unavailable/runtime 回退与可选 zero review；后端自身绝不切换。主 payload
+恒为 CountingResult；AgentResult 只作为附加结果。backend 类型通过显式
+kind 识别，只有 yolo_obb 进入检测器专属流程。公共入口只抛稳定错误，trace
+不含原始异常文本、路径、密钥或 Base64。
 """
 
 from __future__ import annotations
@@ -14,8 +14,8 @@ from typing import Any
 
 from agents.base import AgentContext, AgentExecution
 from agents.counting.backends.base import (
+    BackendKind,
     CountingBackendOutcome,
-    CountingBackendUnavailableError,
     CountingRequest,
 )
 from agents.counting.backends.registry import BackendRegistry
@@ -23,7 +23,9 @@ from agents.counting.backends.selector import BackendSelector
 from agents.counting.schema import CountTargetSpec, CountingResult, IssueRecord
 from agents.counting.target_parser import CountTargetParser
 from agents.errors import (
+    AgentExecutionError,
     AgentTaskMismatchError,
+    CountingBackendUnavailableError,
     DetectorClassMapMismatchError,
     DetectorTaskMismatchError,
     DetectorWeightsHashMismatchError,
@@ -33,8 +35,8 @@ from agents.errors import (
 from agents.schema import AgentName, AgentResult, VisualEvidence
 from models.images import read_normalized_image
 
-# Detector-loading failures that make the primary backend unavailable.
-# 使主后端不可用的检测器加载失败类型。
+# Detector-loading failures that make a YOLO primary backend unavailable.
+# 使 YOLO 主后端不可用的检测器加载失败类型。
 _UNAVAILABLE_ERRORS = (
     DetectorWeightsMissingError,
     DetectorWeightsHashMismatchError,
@@ -93,13 +95,17 @@ class CountingAgent:
                 sample.task,
                 supported=self.supported_tasks,
             )
-        target = await self._target(sample, context)
+        try:
+            target = await self._target(sample, context)
+        except Exception as exc:
+            raise AgentExecutionError(
+                self.name, sample.sample_id, cause="TARGET_PARSE_FAILED"
+            ) from exc
         hints: dict[str, Any] = {"quantity_estimation": True}
         plan = self._selector.plan(target, task=sample.task, hints=hints)
         if plan is None:
             raise CountingBackendUnavailableError(
-                f"No counting backend plan for task={sample.task!r}, "
-                f"target={target.canonical_label!r}"
+                target.canonical_label, reason_code="NO_BACKEND_PLAN"
             )
         request = CountingRequest(
             sample=sample,
@@ -109,41 +115,82 @@ class CountingAgent:
         )
         attempted = [plan.primary_backend_name]
         primary = self._selector.backend_by_name(plan.primary_backend_name)
+        primary_kind = _backend_kind(primary, agent_name=self.name, sample_id=sample.sample_id)
         final_backend = plan.primary_backend_name
+        final_kind: BackendKind = primary_kind
         review_backend: str | None = None
         fallback_triggered = False
         fallback_kind: str | None = None
-        fallback_reason: str | None = None
+        fallback_reason_code: str | None = None
+        fallback_error_type: str | None = None
         yolo_trace: dict[str, object] | None = (
             dict(primary.trace_profile())
-            if self._is_yolo(primary) and callable(getattr(primary, "trace_profile", None))
+            if primary_kind == "yolo_obb"
+            and callable(getattr(primary, "trace_profile", None))
             else None
         )
         try:
             outcome = await primary.count(request, context)
         except _UNAVAILABLE_ERRORS as exc:
-            if not self._fallback_to_qwen_on_unavailable or not plan.fallback_backend_names:
+            if (
+                primary_kind != "yolo_obb"
+                or not self._fallback_to_qwen_on_unavailable
+                or not plan.fallback_backend_names
+            ):
                 raise CountingBackendUnavailableError(
-                    f"backend {plan.primary_backend_name!r} unavailable and no fallback "
-                    f"allowed: {type(exc).__name__}"
+                    target.canonical_label,
+                    primary_backend=plan.primary_backend_name,
+                    reason_code="PRIMARY_BACKEND_UNAVAILABLE",
                 ) from exc
-            outcome, attempted, fallback_triggered, fallback_kind, fallback_reason = (
-                await self._fallback(plan, request, context, attempted, "unavailable", exc)
+            (
+                outcome,
+                attempted,
+                fallback_triggered,
+                fallback_kind,
+                fallback_reason_code,
+                fallback_error_type,
+                final_backend,
+                final_kind,
+            ) = await self._fallback(
+                plan,
+                request,
+                context,
+                attempted,
+                kind="unavailable",
+                error=exc,
+                target_label=target.canonical_label,
             )
-            final_backend = attempted[-1]
         except Exception as exc:
             if (
-                not self._is_yolo(primary)
+                primary_kind != "yolo_obb"
                 or not self._fallback_to_qwen_on_error
                 or not plan.fallback_backend_names
             ):
-                raise
-            outcome, attempted, fallback_triggered, fallback_kind, fallback_reason = (
-                await self._fallback(plan, request, context, attempted, "runtime_error", exc)
+                raise AgentExecutionError(
+                    self.name,
+                    sample.sample_id,
+                    cause="PRIMARY_BACKEND_FAILED",
+                ) from exc
+            (
+                outcome,
+                attempted,
+                fallback_triggered,
+                fallback_kind,
+                fallback_reason_code,
+                fallback_error_type,
+                final_backend,
+                final_kind,
+            ) = await self._fallback(
+                plan,
+                request,
+                context,
+                attempted,
+                kind="runtime_error",
+                error=exc,
+                target_label=target.canonical_label,
             )
-            final_backend = attempted[-1]
         else:
-            if self._is_yolo(primary):
+            if primary_kind == "yolo_obb":
                 yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
                 if (
                     outcome.counting.final_count == 0
@@ -167,9 +214,14 @@ class CountingAgent:
                         if review.counting.final_count > 0:
                             outcome = review
                             final_backend = review_name
+                            final_kind = _backend_kind(
+                                review_backend_obj,
+                                agent_name=self.name,
+                                sample_id=sample.sample_id,
+                            )
                             fallback_triggered = True
                             fallback_kind = "zero_review"
-                            fallback_reason = "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
+                            fallback_reason_code = "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
                             yolo_trace["zero_overridden"] = True
                         else:
                             yolo_trace["zero_overridden"] = False
@@ -183,7 +235,10 @@ class CountingAgent:
                         )
                         warning = IssueRecord(
                             code="DETECTOR_ZERO_REVIEW_FAILED",
-                            message=f"{type(exc).__name__}: {_safe_error_text(exc)}",
+                            message=(
+                                "Qwen zero review failed; detector zero result "
+                                "retained."
+                            ),
                         )
                         outcome = CountingBackendOutcome(
                             counting=outcome.counting.model_copy(
@@ -205,8 +260,10 @@ class CountingAgent:
             "route": "CountingAgent.run -> BackendSelector.plan -> " + " -> ".join(attempted),
             "requested_backend_mode": self._selector_default_backend(),
             "primary_backend": plan.primary_backend_name,
+            "primary_backend_kind": primary_kind,
             "review_backend": review_backend,
             "final_backend": final_backend,
+            "final_backend_kind": final_kind,
             "executed_backend": final_backend,
             "backend": final_backend,
             "attempted_backends": attempted,
@@ -215,7 +272,8 @@ class CountingAgent:
             "target_classes": list(plan.target_classes),
             "fallback_triggered": fallback_triggered,
             "fallback_kind": fallback_kind,
-            "fallback_reason": fallback_reason,
+            "fallback_reason_code": fallback_reason_code,
+            "fallback_error_type": fallback_error_type,
             "status": outcome.counting.status,
         }
         # Backend traces live in their own namespace so a plugin can never
@@ -291,8 +349,10 @@ class CountingAgent:
         request: CountingRequest,
         context: AgentContext,
         attempted: list[str],
+        *,
         kind: str,
         error: Exception,
+        target_label: str,
     ):
         name = plan.fallback_backend_names[0]
         attempted.append(name)
@@ -300,23 +360,45 @@ class CountingAgent:
             backend = self._selector.backend_by_name(name)
         except KeyError as exc:
             raise CountingBackendUnavailableError(
-                f"fallback backend {name!r} is not registered"
+                target_label,
+                primary_backend=name,
+                reason_code="FALLBACK_BACKEND_MISSING",
             ) from exc
-        outcome = await backend.count(request, context)
+        try:
+            outcome = await backend.count(request, context)
+        except Exception as exc:
+            raise AgentExecutionError(
+                self.name,
+                request.sample.sample_id,
+                cause="FALLBACK_BACKEND_FAILED",
+            ) from exc
         return (
             outcome,
             attempted,
             True,
             kind,
-            f"{type(error).__name__}: {_safe_error_text(error)}",
+            "PRIMARY_BACKEND_UNAVAILABLE" if kind == "unavailable" else "PRIMARY_BACKEND_FAILED",
+            type(error).__name__,
+            name,
+            _backend_kind(backend, agent_name=self.name, sample_id=request.sample.sample_id),
         )
 
     def _selector_default_backend(self) -> str:
         return str(getattr(self._selector, "_default_backend", "auto"))
 
-    @staticmethod
-    def _is_yolo(backend: object) -> bool:
-        return getattr(backend, "name", "") != "qwen_point"
+
+def _backend_kind(backend: object, *, agent_name: str, sample_id: str) -> BackendKind:
+    """Resolve the explicit backend kind; unknown kinds fail with a stable
+    error instead of being treated as detectors.
+    解析显式后端 kind；未知 kind 以稳定错误失败而非当作检测器。"""
+    kind = getattr(backend, "kind", None)
+    if kind not in {"qwen_point", "quantity_proposal", "yolo_obb"}:
+        raise AgentExecutionError(
+            agent_name,
+            sample_id,
+            cause="INVALID_BACKEND_KIND",
+        )
+    return kind  # type: ignore[return-value]
 
 
 def _agent_result(counting: CountingResult, image_id: str) -> AgentResult:
@@ -363,28 +445,24 @@ def _agent_result(counting: CountingResult, image_id: str) -> AgentResult:
 
 def _resolve_sample_image(sample: Any, context: AgentContext) -> Any:
     """Resolve the first sample image against context.data_root with escape
-    protection; never reads relative to the working directory.
-    按 context.data_root 解析样本首图并防逃逸；绝不相对工作目录读取。"""
+    protection; failures use stable error codes and never leak absolute
+    paths. 按 context.data_root 解析样本首图并防逃逸；失败使用稳定错误码，
+    绝不泄漏绝对路径。"""
+    agent_name = "counting_agent"
     if context.data_root is None:
-        raise RuntimeError("CountingAgent requires context.data_root for image resolution")
+        raise AgentExecutionError(agent_name, sample.sample_id, cause="DATA_ROOT_REQUIRED")
     root = context.data_root.resolve()
     candidate = (root / sample.images[0].path).resolve()
     if not candidate.is_relative_to(root):
-        raise RuntimeError(f"image path escapes data root: {sample.images[0].path}")
+        raise AgentExecutionError(agent_name, sample.sample_id, cause="IMAGE_PATH_ESCAPE")
     if not candidate.is_file():
-        raise RuntimeError(f"image file does not exist: {sample.images[0].path}")
-    return read_normalized_image(candidate)
+        raise AgentExecutionError(agent_name, sample.sample_id, cause="IMAGE_NOT_FOUND")
+    try:
+        return read_normalized_image(candidate)
+    except OSError as exc:
+        raise AgentExecutionError(agent_name, sample.sample_id, cause="IMAGE_READ_FAILED") from exc
 
 
 def _identity_model(client: Any) -> str | None:
     identity = getattr(client, "cache_identity", None)
     return identity.model if identity is not None else None
-
-
-def _safe_error_text(error: Exception) -> str:
-    """Keep trace error text short and path-free.
-    保持 trace 错误文本简短且不含路径。"""
-    text = str(error).strip()
-    if len(text) > 200:
-        text = text[:200] + "..."
-    return text

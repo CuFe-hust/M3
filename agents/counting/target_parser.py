@@ -14,9 +14,9 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agents.counting.backends.base import MissingModelCacheIdentityError
+from agents.counting.backends.base import require_model_cache_identity
 from agents.counting.schema import CountTargetSpec
-from models.base import ModelCacheIdentity, RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 
 
 class InvalidCountTargetHintError(ValueError):
@@ -70,7 +70,7 @@ class CountTargetParser:
         artifact_dir: Path,
         budget: Any,
     ) -> CountTargetSpec:
-        identity = _require_identity(self.client)
+        identity = require_model_cache_identity(self.client, component="target_parser")
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self.prompt},
             {"role": "user", "content": question},
@@ -160,12 +160,3 @@ def _rule_target(question: str) -> CountTargetSpec | None:
     )
 
 
-def _require_identity(client: Any) -> ModelCacheIdentity:
-    """Require a real cache identity; counting never fabricates one.
-    要求真实缓存身份；计数绝不伪造。"""
-    identity = getattr(client, "cache_identity", None)
-    if identity is None:
-        raise MissingModelCacheIdentityError(
-            "counting target parser requires client.cache_identity"
-        )
-    return identity
