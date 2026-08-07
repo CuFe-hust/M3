@@ -2,7 +2,7 @@
 
 定位 Agent — 定位视觉原语上的轻量 Agent。只支持 grounding 一个 task；
 结果使用统一 0..999 归一化坐标证据（由基类 VisualEvidence 契约强制），
-不在本模块计算任何指标。
+postprocess 强制 completed 必须携带合法定位证据，不在本模块计算任何指标。
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 from agents.base import AgentContext, AgentExecution
-from agents.schema import AgentName
+from agents.schema import AgentName, AgentResult
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import UnifiedSample
 from models.base import VisionLanguageClient
@@ -69,3 +69,29 @@ class GroundingAgent(VisualAgentBase):
                 "route": f"{type(self).__name__}.run -> VisualAgentBase.run -> complete_json",
             },
         )
+
+    async def postprocess(
+        self,
+        sample: UnifiedSample,
+        result: AgentResult,
+    ) -> AgentResult:
+        """A completed grounding result must carry valid localized evidence
+        (evidence_items geometry or top-level boxes). Missing geometry
+        downgrades to partial; an empty answer with no geometry becomes failed.
+        completed 的定位结果必须携带合法定位证据（evidence_items 几何或顶层
+        boxes）。缺失几何降级为 partial；answer 与几何均无效时为 failed。"""
+        evidence = [
+            item
+            for item in result.evidence_items
+            if item.box is not None or item.point is not None
+        ]
+        has_geometry = bool(evidence) or bool(result.boxes)
+        if has_geometry:
+            return result
+        geometry = dict(result.geometry or {})
+        geometry["grounding_constraint_violation"] = "no_localized_evidence"
+        if result.answer.strip():
+            return result.model_copy(
+                update={"status": "partial", "geometry": geometry}
+            )
+        return result.model_copy(update={"status": "failed", "geometry": geometry})

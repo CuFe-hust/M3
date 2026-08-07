@@ -2,15 +2,18 @@
 
 通用 VQA Agent — 开放问答的轻量 VisualAgentBase 子类。覆盖 general_vqa、
 scene_classification 与 multiple_choice_vqa 三个 task；选择题载荷包含
-choices 与单/多选约束。本模块不做任何专用几何后处理，也不读取 Prompt
-文件（提示文本以中性 PromptBinding 注入）。
+choices 与单/多选约束，输出在 postprocess 中按 choices 约束校验。本模块
+不做任何专用几何后处理，也不读取 Prompt 文件（提示文本以中性 PromptBinding
+注入）。
 """
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
-from agents.schema import AgentName
+from agents.errors import AgentExecutionError
+from agents.schema import AgentName, AgentResult
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import UnifiedSample
 from models.base import VisionLanguageClient
@@ -66,14 +69,114 @@ class GeneralVQAAgent(VisualAgentBase):
         task 保持中性载荷不变。"""
         payload = super().build_user_payload(sample)
         if sample.task == "multiple_choice_vqa":
-            constraints = (
-                sample.normalization.answer_constraints
-                if sample.normalization is not None
-                else {}
-            )
+            constraints = _choice_constraints(sample)
             payload["choices"] = _extract_choices(constraints)
             payload["allow_multiple"] = bool(constraints.get("allow_multiple", False))
         return payload
+
+    async def postprocess(
+        self,
+        sample: UnifiedSample,
+        result: AgentResult,
+    ) -> AgentResult:
+        """Enforce the multiple-choice output constraint: a single-choice
+        answer must map to exactly one choice; a multi-choice answer must
+        contain only choices, deduplicated in stable choice order. Violations
+        downgrade status to partial and record answer_constraint_violation.
+        强制选择题输出约束：单选答案必须唯一映射到一个选项；多选答案只能
+        包含选项、去重并按选项稳定顺序排列。违规将状态降级为 partial 并记录
+        answer_constraint_violation。"""
+        if sample.task != "multiple_choice_vqa":
+            return result
+        constraints = _choice_constraints(sample)
+        choices = _extract_choices(constraints)
+        if not choices:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause="multiple_choice_sample_without_choices",
+            )
+        allow_multiple = bool(constraints.get("allow_multiple", False))
+        violation, normalized_answer = _validate_choice_answer(
+            result.answer, choices, allow_multiple
+        )
+        if violation is None:
+            if normalized_answer is not None and normalized_answer != result.answer.strip():
+                result = result.model_copy(update={"answer": normalized_answer})
+            return result
+        geometry = dict(result.geometry or {})
+        geometry["answer_constraint_violation"] = violation
+        return result.model_copy(update={"status": "partial", "geometry": geometry})
+
+
+def _choice_constraints(sample: UnifiedSample) -> dict[str, Any]:
+    """Answer constraints for a multiple-choice sample.
+    多选题样本的答案约束。"""
+    if sample.normalization is None:
+        return {}
+    return sample.normalization.answer_constraints
+
+
+def _normalize_choice(value: str) -> str:
+    return value.strip().casefold()
+
+
+def _choice_text(choice: str) -> str:
+    """Strip a leading option letter prefix (A., B), C - ...).
+    去除选项首字母前缀（A.、B)、C - ...）。"""
+    text = choice.strip()
+    match = re.match(r"^([A-Za-z])[.)、\s-]\s*(.*)$", text)
+    if match:
+        return match.group(2).strip()
+    return text
+
+
+def _match_choice(value: str, choices: list[str]) -> str | None:
+    """Match an answer item to a choice: by normalized full text, by the
+    prefix-stripped text, or by the leading option letter (A/B/...).
+    将答案项匹配到选项：按归一化全文、去前缀文本或选项首字母（A/B/...）。"""
+    normalized = _normalize_choice(value)
+    for choice in choices:
+        if _normalize_choice(choice) == normalized:
+            return choice
+    for choice in choices:
+        if _normalize_choice(_choice_text(choice)) == normalized:
+            return choice
+    letter = value.strip().upper()
+    if len(letter) == 1 and "A" <= letter <= "Z":
+        for choice in choices:
+            if choice.strip().upper() == letter:
+                return choice
+            if _normalize_choice(choice).startswith(letter.lower()):
+                return choice
+    return None
+
+
+def _validate_choice_answer(
+    answer: str,
+    choices: list[str],
+    allow_multiple: bool,
+) -> tuple[str | None, str | None]:
+    """Return (violation, normalized_answer); both None when the answer
+    satisfies the constraint. 返回（违规描述、规范化答案）；满足约束时两者
+    均为 None。"""
+    if not allow_multiple:
+        if _match_choice(answer, choices) is not None:
+            return None, None
+        return f"answer {answer!r} does not map to a single choice", None
+    parts = [part.strip() for part in re.split(r"[,;，；]", answer) if part.strip()]
+    if not parts:
+        return "empty multiple-choice answer", None
+    matched: list[str] = []
+    for part in parts:
+        choice = _match_choice(part, choices)
+        if choice is None:
+            return f"answer item {part!r} is not among the choices", None
+        if choice not in matched:
+            matched.append(choice)
+    # Stable order follows the choice list. / 稳定顺序遵循选项列表。
+    ordered = [choice for choice in choices if choice in matched]
+    return None, ", ".join(ordered)
 
 
 def _extract_choices(constraints: dict[str, Any]) -> list[str]:

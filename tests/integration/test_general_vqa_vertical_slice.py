@@ -143,7 +143,12 @@ def test_vertical_slice_router_decision_drives_agent(tmp_path: Path) -> None:
     """The router decision's primary agent must be the agent that runs.
     路由决策的 primary agent 必须是实际运行的 Agent。"""
     for task in ("general_vqa", "scene_classification", "multiple_choice_vqa"):
-        sample, decision, execution, client = _run_vertical_slice(task, tmp_path / task)
+        constraints = None
+        if task == "multiple_choice_vqa":
+            constraints = {"type": "closed_vocabulary", "values": ["A", "B"]}
+        sample, decision, execution, client = _run_vertical_slice(
+            task, tmp_path / task, constraints
+        )
         assert decision.primary_agent == execution.agent_name
         assert decision.primary_agent == "general_vqa_agent"
 
