@@ -102,6 +102,10 @@ class YoloDetectorSettings(BaseModel):
                 "require_cuda=False requires device='cpu', "
                 f"got {self.device!r}"
             )
+        if not self.require_cuda and self.allow_cpu_fallback:
+            raise ValueError(
+                "CPU-only mode must not enable CPU fallback"
+            )
         return self
 
     @model_validator(mode="after")

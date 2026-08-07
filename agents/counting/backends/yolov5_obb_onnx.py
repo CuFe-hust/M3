@@ -14,16 +14,20 @@ from typing import Any
 from agents.errors import DetectorInferenceError, OptionalDependencyMissingError
 
 
-def _validate_device(device: str, *, allow_cpu_fallback: bool) -> None:
-    """Accept 'cpu' when explicitly allowed, or any non-negative integer CUDA
-    device id. 显式允许时接受 'cpu'，或接受任意非负整数 CUDA 设备号。"""
-    if device == "cpu":
-        if not allow_cpu_fallback:
-            raise ValueError("CPU device requires allow_cpu_fallback=True")
+def _validate_device(device: str, *, require_cuda: bool) -> None:
+    """CUDA mode requires a non-negative integer device id; CPU-only mode
+    requires device='cpu' and is never gated by allow_cpu_fallback.
+    CUDA 模式要求非负整数设备号；显式 CPU-only 模式要求 device='cpu'，且
+    绝不受 allow_cpu_fallback 门控。"""
+    if require_cuda:
+        if not device.isdigit():
+            raise ValueError(
+                "CUDA mode requires a non-negative integer device id, "
+                f"got {device!r}"
+            )
         return
-    if device.isdigit():
-        return
-    raise ValueError(f"unsupported ONNX device expression: {device!r}")
+    if device != "cpu":
+        raise ValueError(f"CPU mode requires device='cpu', got {device!r}")
 
 
 class YoloV5ObbOnnxModel:
@@ -126,7 +130,12 @@ class YoloV5ObbOnnxModel:
         payload. 运行一张固定尺寸 ONNX 图像并返回类似 Ultralytics 的 OBB 载荷。"""
         if imgsz != 1024:
             raise ValueError(f"YOLOv5-OBB ONNX requires image_size=1024, got {imgsz}")
-        _validate_device(device, allow_cpu_fallback=self._allow_cpu_fallback)
+        _validate_device(device, require_cuda=self._require_cuda)
+        if device != self._device:
+            raise ValueError(
+                "predict device differs from initialized ONNX device: "
+                f"initialized {self._device!r}, got {device!r}"
+            )
         image = self._np.asarray(source.convert("RGB"))
         prepared, ratio, padding = self._letterbox(image)
         tensor = (
