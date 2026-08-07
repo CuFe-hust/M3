@@ -134,7 +134,7 @@
   类型身份明确失败）并把 response schema 纳入 request hash。
 - YOLO tile 失败只写稳定 warning（code/tile_id/exception type，无原始异常文本）；
   全部 tile 失败时 backend 抛 `DetectorInferenceError("ALL_YOLO_TILES_FAILED")`，由
-  CountingAgent 决定显式 fallback；部分 tile 成功返回 partial 并保留证据。
+  CountingPlanExecutor 决定显式 fallback；部分 tile 成功返回 partial 并保留证据。
 - ONNX 显式 CPU-only（`require_cuda=False, device="cpu"`）与 CUDA fallback 语义分离：
   predict 校验与初始化 device 一致，CPU-only 不受 allow_cpu_fallback 门控。
 - 未知 backend kind 以固定公共错误失败（`INVALID_BACKEND_KIND`），绝不回显原始

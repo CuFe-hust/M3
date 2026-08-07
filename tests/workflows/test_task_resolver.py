@@ -305,6 +305,89 @@ def test_low_confidence_general_vqa_only_candidates() -> None:
     assert "low_confidence_general_fallback" in resolution.reason_codes
 
 
+def test_low_confidence_full_candidates_reserve_general_vqa_slot() -> None:
+    """A full candidate list must never truncate the general_vqa fallback slot.
+    候选已满时也绝不能被 [:3] 截掉 general_vqa 兜底槽位。"""
+    client = _RecordingClient(
+        model_response={
+            "task": "counting",
+            "confidence": 0.40,
+            "candidate_tasks": [
+                "spatial_relation",
+                "grounding",
+                "caption",
+            ],
+            "reason_codes": ["ambiguous"],
+        }
+    )
+    resolution = _resolve(
+        _resolver(client),
+        _request(question="What is happening here?"),
+    )
+    assert resolution.task == "counting"
+    assert resolution.candidate_tasks[0] == "counting"
+    assert resolution.candidate_tasks == [
+        "counting",
+        "spatial_relation",
+        "general_vqa",
+    ]
+    assert len(resolution.candidate_tasks) <= 3
+    assert len(resolution.candidate_tasks) == len(set(resolution.candidate_tasks))
+    assert resolution.needs_candidate_fallback is True
+
+
+def test_low_confidence_keeps_model_general_vqa_candidate() -> None:
+    """When the model itself lists general_vqa among full candidates, the
+    fallback must still be present in the final top-three.
+    模型自身已列出 general_vqa 且候选已满时，最终前三个候选中仍必须保留
+    general_vqa。"""
+    client = _RecordingClient(
+        model_response={
+            "task": "counting",
+            "confidence": 0.40,
+            "candidate_tasks": [
+                "spatial_relation",
+                "grounding",
+                "general_vqa",
+            ],
+            "reason_codes": [],
+        }
+    )
+    resolution = _resolve(_resolver(client), _request(question="What?"))
+    assert resolution.task == "counting"
+    assert resolution.candidate_tasks[0] == "counting"
+    assert "general_vqa" in resolution.candidate_tasks
+    assert len(resolution.candidate_tasks) <= 3
+    assert len(resolution.candidate_tasks) == len(set(resolution.candidate_tasks))
+    assert resolution.needs_candidate_fallback is True
+
+
+def test_low_confidence_general_vqa_top_task_keeps_first_slot() -> None:
+    """When general_vqa is the top task itself, it stays first with no
+    duplicate append and the fallback reasons are kept.
+    当 general_vqa 本身就是最可能任务时保持首位、不重复追加，并保留兜底
+    reason codes。"""
+    client = _RecordingClient(
+        model_response={
+            "task": "general_vqa",
+            "confidence": 0.40,
+            "candidate_tasks": [
+                "grounding",
+                "caption",
+                "counting",
+            ],
+            "reason_codes": [],
+        }
+    )
+    resolution = _resolve(_resolver(client), _request(question="What?"))
+    assert resolution.candidate_tasks[0] == "general_vqa"
+    assert len(resolution.candidate_tasks) <= 3
+    assert len(resolution.candidate_tasks) == len(set(resolution.candidate_tasks))
+    assert resolution.needs_candidate_fallback is True
+    assert "low_confidence" in resolution.reason_codes
+    assert "low_confidence_general_fallback" in resolution.reason_codes
+
+
 def test_candidates_stably_deduped_task_first() -> None:
     client = _RecordingClient(
         model_response={
@@ -344,19 +427,47 @@ def test_model_output_restricted_to_valid_task_names() -> None:
     assert len(client.calls) == 1
 
 
-def test_missing_cache_identity_fails_before_model_call() -> None:
+def test_missing_cache_identity_fails_before_budget_and_model_call() -> None:
     client = _NoIdentityClient()
+    budget = _FakeBudget()
     with pytest.raises(TaskResolutionError, match="MODEL_IDENTITY_REQUIRED") as info:
-        _resolve(_resolver(client), _request(question="What?"))
+        _resolve(
+            _resolver(client),
+            _request(question="What?"),
+            budget=budget,
+        )
     assert info.value.code == "MODEL_IDENTITY_REQUIRED"
     assert client.calls == []
+    assert budget.qwen_calls == 0
 
 
-def test_duck_typed_identity_fails_before_model_call() -> None:
+def test_duck_identity_fails_before_budget_and_model_call() -> None:
     client = _DuckIdentityClient()
+    budget = _FakeBudget()
     with pytest.raises(TaskResolutionError, match="MODEL_IDENTITY_REQUIRED"):
-        _resolve(_resolver(client), _request(question="What?"))
+        _resolve(
+            _resolver(client),
+            _request(question="What?"),
+            budget=budget,
+        )
     assert client.calls == []
+    assert budget.qwen_calls == 0
+
+
+def test_model_failure_consumes_one_budget_call() -> None:
+    """A model call that is actually attempted consumes exactly one budget
+    call even when it later fails. 实际尝试的模型调用即使随后失败，也恰好
+    消费一次 budget。"""
+    client = _RecordingClient(error=RuntimeError("model failed"))
+    budget = _FakeBudget()
+    with pytest.raises(TaskResolutionError, match="MODEL_RESOLUTION_FAILED"):
+        _resolve(
+            _resolver(client),
+            _request(question="What?"),
+            budget=budget,
+        )
+    assert len(client.calls) == 1
+    assert budget.qwen_calls == 1
 
 
 def test_raw_exception_text_never_leaks() -> None:

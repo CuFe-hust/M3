@@ -147,11 +147,10 @@ class TaskResolver:
         artifact_dir: Path,
         budget: CallBudget | None,
     ) -> TaskResolution:
-        """One schema-validated model call; identity is required before any
-        call and failures surface as stable codes. 一次 schema 校验的模型
-        调用；调用前必须通过身份校验，失败以稳定 code 呈现。"""
-        if budget is not None:
-            budget.reserve_qwen()
+        """One schema-validated model call; identity is required and the budget
+        is only consumed once a model call is actually attempted. 一次 schema
+        校验的模型调用；必须先通过身份校验，且只在真正尝试模型调用时才
+        消费 budget。"""
         try:
             identity = require_model_cache_identity(
                 self._client, component="task_resolver"
@@ -178,6 +177,12 @@ class TaskResolver:
             client_version=identity.client_version,
             model_revision=identity.revision,
         )
+        # The budget is consumed only when a model call is actually attempted;
+        # identity failures and hash construction never reserve a call.
+        # 只在真正尝试模型调用时才消费 budget；身份失败与哈希构造绝不预留
+        # 调用。
+        if budget is not None:
+            budget.reserve_qwen()
         try:
             raw = await self._client.complete_json(
                 messages=messages,
@@ -195,20 +200,19 @@ class TaskResolver:
         return self._build_resolution(raw)
 
     def _build_resolution(self, raw: _ModelTaskResolution) -> TaskResolution:
-        """Stable dedupe keeps the model task first; low confidence expands the
-        candidates with general_vqa and flags a candidate fallback. The
+        """Stable dedupe keeps the model task first; low confidence always
+        reserves a slot for general_vqa and flags a candidate fallback. The
         resolver never executes agents itself — that is left to the future
-        SampleRunner. 稳定去重保持模型任务居首；低置信度把 general_vqa 并入
-        候选并标记 candidate fallback。Resolver 自身绝不执行 Agent——这留给
-        未来的 SampleRunner。"""
-        candidates = list(dict.fromkeys([raw.task, *raw.candidate_tasks]))
+        SampleRunner. 稳定去重保持模型任务居首；低置信度恒为 general_vqa
+        保留一个槽位并标记 candidate fallback。Resolver 自身绝不执行
+        Agent——这留给未来的 SampleRunner。"""
         low_confidence = raw.confidence < self._confidence_threshold
-        needs_candidate_fallback = False
         if low_confidence:
-            if "general_vqa" not in candidates:
-                candidates.append("general_vqa")
+            candidates = _low_confidence_candidates(raw.task, raw.candidate_tasks)
             needs_candidate_fallback = True
-        candidates = candidates[:3]
+        else:
+            candidates = list(dict.fromkeys([raw.task, *raw.candidate_tasks]))[:3]
+            needs_candidate_fallback = False
         codes = ["low_confidence" if low_confidence else "model_high_confidence"]
         if low_confidence and raw.task == "general_vqa":
             codes.append("low_confidence_general_fallback")
@@ -221,3 +225,21 @@ class TaskResolver:
             source="model",
             reason_codes=reason_codes,
         )
+
+
+def _low_confidence_candidates(
+    task: TaskName,
+    model_candidates: list[TaskName],
+) -> list[TaskName]:
+    """Keep the model task first and the model's ordering, while always
+    reserving one of the three slots for general_vqa when the task itself is
+    not general_vqa. A full candidate list can never truncate the fallback.
+    保持模型任务居首与模型顺序，同时在 task 本身不是 general_vqa 时恒为
+    general_vqa 保留三个槽位之一；候选已满也绝不会截掉兜底。"""
+    deduped = list(dict.fromkeys([task, *model_candidates]))
+    if task == "general_vqa":
+        return deduped[:3]
+    non_general = [candidate for candidate in deduped if candidate != "general_vqa"]
+    result = non_general[:2]
+    result.append("general_vqa")
+    return result
