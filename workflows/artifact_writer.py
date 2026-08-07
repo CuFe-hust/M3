@@ -14,7 +14,7 @@ from typing import Any
 
 from agents.base import AgentExecution, _validate_plain_basename
 from data.schema import UnifiedSample
-from workflows.events import _path_lock
+from workflows.events import _atomic_replace, _path_lock
 from workflows.schema import DatasetRunSummary, SampleRunStatus
 
 # Owned artifact filenames. / 集中拥有的产物文件名。
@@ -38,7 +38,7 @@ def atomic_write_json(path: Path, value: Any) -> None:
         json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    temporary.replace(path)
+    _atomic_replace(temporary, path)
 
 
 def atomic_append_jsonl(path: Path, value: Any) -> None:
@@ -55,7 +55,7 @@ def atomic_append_jsonl(path: Path, value: Any) -> None:
         existing = path.read_text(encoding="utf-8") if path.exists() else ""
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(existing + line, encoding="utf-8")
-        temporary.replace(path)
+        _atomic_replace(temporary, path)
 
 
 class ArtifactWriter:

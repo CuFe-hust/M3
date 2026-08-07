@@ -11,11 +11,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import shutil
 import subprocess
 from collections.abc import Mapping
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 from uuid import uuid4
 
@@ -70,7 +71,7 @@ class RunStore:
         # 快照绝不能记录凭据；在任何 I/O 之前拒绝。
         _reject_secrets(config_payload, "config payload")
         _reject_secrets(model_ids, "model ids")
-        resolved_run_id = run_id or _new_run_id()
+        resolved_run_id = _validate_run_id(run_id) if run_id is not None else _new_run_id()
         run_dir = self.root / resolved_run_id
         if run_dir.exists():
             raise FileExistsError(f"Run directory already exists: {run_dir}")
@@ -99,10 +100,31 @@ class RunStore:
 
 
 def _new_run_id() -> str:
-    """Create a sortable local run identifier.
-    创建可排序的本地运行标识。"""
+    """Create a sortable local run identifier satisfying _validate_run_id.
+    创建满足 _validate_run_id 的可排序本地运行标识。"""
 
     return f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}-{uuid4().hex[:8]}"
+
+
+def _validate_run_id(value: str) -> str:
+    """Validate a user-supplied run id as a cross-platform plain identifier.
+    Rejects traversal, absolute paths, drive/UNC paths, and control
+    characters before any filesystem write; the error never echoes the raw
+    value. 将用户提供的 run id 校验为跨平台 plain identifier。在任何文件
+    系统写入前拒绝遍历、绝对路径、drive/UNC 路径与控制字符；错误消息
+    绝不回显原始值。"""
+
+    if not isinstance(value, str) or not value:
+        raise ValueError("run_id must be a safe plain identifier")
+    if value in {".", ".."}:
+        raise ValueError("run_id must be a safe plain identifier")
+    if any(character in value for character in ("\x00", "\n", "\r", "/", "\\")):
+        raise ValueError("run_id must be a safe plain identifier")
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).is_absolute():
+        raise ValueError("run_id must be a safe plain identifier")
+    if re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$", value) is None:
+        raise ValueError("run_id must be a safe plain identifier")
+    return value
 
 
 def _snapshot_prompts(prompt_paths: list[Path], destination: Path) -> dict[str, str]:

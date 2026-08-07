@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -107,23 +109,46 @@ class EventWriter:
             existing = self.path.read_text(encoding="utf-8") if self.path.exists() else ""
             temporary = self.path.with_suffix(self.path.suffix + ".tmp")
             temporary.write_text(existing + line, encoding="utf-8")
-            temporary.replace(self.path)
+            _atomic_replace(temporary, self.path)
         return record
 
 
-def _path_lock(path: Path) -> threading.Lock:
-    """Return the process-wide lock for one resolved path.
-    返回某一路径的进程内共享锁。"""
+def _atomic_replace(source: Path, target: Path) -> None:
+    """Replace target with source, retrying transient Windows file locks
+    (antivirus/indexers hold short-lived handles). The per-path lock already
+    serializes writers; this retry only absorbs filesystem-level transients.
+    用 source 替换 target，对 Windows 瞬态文件锁（杀毒/索引器持有短时句柄）
+    有限重试。按路径锁已串行化写入者；此重试只吸收文件系统级瞬态。"""
 
-    key = str(Path(path).absolute())
+    for attempt in range(5):
+        try:
+            source.replace(target)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01 * (attempt + 1))
+
+
+def _path_lock(path: Path) -> threading.Lock:
+    """Return the process-wide lock for one canonical path. The key is the
+    resolved path identity (strict=False), so lexical aliases such as
+    'a/../events.jsonl' and 'events.jsonl' share one lock; resolution is used
+    only for lock identity, never to relocate stored artifacts.
+    返回某一路径的进程内共享锁。锁键为解析后的路径身份（strict=False），
+    使 'a/../events.jsonl' 与 'events.jsonl' 等词法别名共享一把锁；解析
+    仅用于锁身份，绝不改变实际产物存储位置。"""
+
+    key = str(Path(path).resolve(strict=False))
     with _PATH_LOCKS_GUARD:
         return _PATH_LOCKS.setdefault(key, threading.Lock())
 
 
 def _reject_secrets(value: Any, where: str) -> None:
     """Recursively reject sensitive keys and high-risk value prefixes in a
-    payload; error messages never echo the offending value.
-    递归拒绝载荷中的敏感键与高风险值前缀；错误消息绝不回显违规值。"""
+    payload of any Mapping/Sequence nesting; error messages never echo the
+    offending value. 递归拒绝任意 Mapping/Sequence 嵌套载荷中的敏感键与
+    高风险值前缀；错误消息绝不回显违规值。"""
 
     if isinstance(value, str):
         normalized = value.lstrip().lower()
@@ -131,14 +156,14 @@ def _reject_secrets(value: Any, where: str) -> None:
             if normalized.startswith(prefix):
                 raise ValueError(f"{where} contains a sensitive value prefix")
         return
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         for key, item in value.items():
             normalized_key = str(key).lower().replace("-", "_").replace(" ", "_")
             if normalized_key in _SENSITIVE_KEYS:
                 raise ValueError(f"{where} contains a sensitive key")
             _reject_secrets(item, f"{where}.{key}")
         return
-    if isinstance(value, list):
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, item in enumerate(value):
             _reject_secrets(item, f"{where}[{index}]")
         return
