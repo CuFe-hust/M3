@@ -176,6 +176,8 @@ tests/agents/counting/test_point_pipeline.py
 tests/agents/counting/test_backend_registry.py
 tests/agents/counting/test_qwen_point_backend.py
 tests/agents/counting/test_quantity_proposal_backend.py
+tests/agents/counting/test_yolo_adapter.py
+tests/agents/counting/test_yolo_runtime.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
