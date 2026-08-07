@@ -17,6 +17,7 @@ from PIL import Image
 from agents.counting.geometry import (
     build_core_halo_tiles,
     convert_local_point_to_global,
+    cores_are_neighbours,
     crop_for_tile,
     should_tile_image,
     split_tile_owner_core,
@@ -92,8 +93,52 @@ class PointCountingOrchestrator:
             target=target,
             minimum_scan_depth=minimum_scan_depth,
         )
-        final_points = list(draft.raw_global_points)
         warnings = list(draft.warnings)
+        if self.counting.seam_verify:
+            conflicts = find_boundary_conflicts(
+                draft.raw_global_points, draft.processed_tiles
+            )
+            pairs, unresolved = decide_seam_pairs(conflicts)
+            final_points, merged_groups = finalize_representatives(
+                draft.raw_global_points, pairs
+            )
+            if merged_groups:
+                warnings.append(
+                    IssueRecord(
+                        code="COUNTING_SEAM_DUPLICATE_MERGED",
+                        message=(
+                            f"Merged {len(merged_groups)} strongly matching "
+                            "seam duplicate groups."
+                        ),
+                        point_ids=[
+                            point_id for group in merged_groups for point_id in group
+                        ],
+                    )
+                )
+            for first, second in unresolved:
+                warnings.append(
+                    IssueRecord(
+                        code="COUNTING_SEAM_CONFLICT_UNRESOLVED",
+                        message=(
+                            f"Seam duplicate candidate retained for review: "
+                            f"{first}|{second}"
+                        ),
+                        point_ids=[first, second],
+                    )
+                )
+            unresolved_conflicts = [f"{first}|{second}" for first, second in unresolved]
+        else:
+            # Seam finalization disabled by configuration; record it visibly.
+            # seam 最终化被配置禁用；显式记录。
+            final_points = list(draft.raw_global_points)
+            merged_groups: list[list[str]] = []
+            unresolved_conflicts: list[str] = []
+            warnings.append(
+                IssueRecord(
+                    code="SEAM_VERIFY_DISABLED",
+                    message="seam_verify=False; seam conflicts are not finalized.",
+                )
+            )
         if draft.failed_tiles and draft.succeeded_tiles:
             status: Literal["completed", "completed_with_warnings", "partial", "failed"] = "partial"
         elif draft.failed_tiles:
@@ -114,6 +159,8 @@ class PointCountingOrchestrator:
             succeeded_tiles=draft.succeeded_tiles,
             failed_tiles=draft.failed_tiles,
             global_points=final_points,
+            merged_groups=merged_groups,
+            unresolved_conflicts=unresolved_conflicts,
             warnings=warnings,
             final_count=sum(point.accepted for point in final_points),
             status=status,
@@ -364,6 +411,31 @@ def apply_acceptance_policy(
     return point.model_copy(update={"accepted": True, "rejection_reason": None})
 
 
+def decide_seam_pairs(
+    conflicts: Sequence[Any],
+    *,
+    merge_distance_factor: float = 0.5,
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Conservatively decide which boundary conflicts are strong enough to
+    auto-merge and which stay unresolved for review. Only adjacent-core,
+    near-boundary candidates reach this point; merging additionally requires
+    a very small centre distance. 保守决定哪些边界冲突足够强可自动合并、哪些
+    保留为待复核未解决。只有相邻 core 的边界候选能到达此处；合并还要求中心
+    距离非常小。"""
+    merged: list[tuple[str, str]] = []
+    unresolved: list[tuple[str, str]] = []
+    for conflict in conflicts:
+        first = conflict["first_global_id"]
+        second = conflict["second_global_id"]
+        distance = float(conflict["distance_px"])
+        threshold = float(conflict["threshold_px"])
+        if distance <= threshold * merge_distance_factor:
+            merged.append((first, second))
+        else:
+            unresolved.append((first, second))
+    return merged, unresolved
+
+
 def finalize_representatives(
     points: Sequence[GlobalPointObservation],
     same_instance_pairs: Any,
@@ -495,20 +567,7 @@ def _normalize_target_label(value: str) -> str:
 
 
 def _cores_are_neighbours(first: TileSpec, second: TileSpec) -> bool:
-    a, b = first.owner_core_global, second.owner_core_global
-    horizontal_touch = a.right == b.left or b.right == a.left
-    vertical_touch = a.bottom == b.top or b.bottom == a.top
-    horizontal_overlap = max(a.left, b.left) < min(a.right, b.right)
-    vertical_overlap = max(a.top, b.top) < min(a.bottom, b.bottom)
-    corner_touch = (
-        (a.right == b.left or b.right == a.left)
-        and (a.bottom == b.top or b.bottom == a.top)
-    )
-    return (
-        (horizontal_touch and vertical_overlap)
-        or (vertical_touch and horizontal_overlap)
-        or corner_touch
-    )
+    return cores_are_neighbours(first, second)
 
 
 def _conflict_threshold(

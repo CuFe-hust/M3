@@ -313,6 +313,28 @@ def owner_core_prompt_norm(tile: TileSpec) -> list[int]:
     ]
 
 
+def cores_are_neighbours(first: TileSpec, second: TileSpec) -> bool:
+    """Return whether two owner cores touch: shared edge with overlap on the
+    other axis, or an explicit corner touch. Distant tiles on the same grid
+    line are never neighbours.
+    返回两个 owner core 是否相邻：共享边且另一轴有重叠，或显式角点接触。
+    同网格线上的远距离 tile 绝不视为邻居。"""
+    a, b = first.owner_core_global, second.owner_core_global
+    horizontal_touch = a.right == b.left or b.right == a.left
+    vertical_touch = a.bottom == b.top or b.bottom == a.top
+    horizontal_overlap = max(a.left, b.left) < min(a.right, b.right)
+    vertical_overlap = max(a.top, b.top) < min(a.bottom, b.bottom)
+    corner_touch = (
+        (a.right == b.left or b.right == a.left)
+        and (a.bottom == b.top or b.bottom == a.top)
+    )
+    return (
+        (horizontal_touch and vertical_overlap)
+        or (vertical_touch and horizontal_overlap)
+        or corner_touch
+    )
+
+
 def convert_local_point_to_global(
     point: LocalPointObservation,
     tile: TileSpec,

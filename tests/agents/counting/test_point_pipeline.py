@@ -19,12 +19,15 @@ from agents.counting.point_pipeline import (
     PointCountingOrchestrator,
     TileCountCallback,
     apply_acceptance_policy,
+    finalize_representatives,
     find_boundary_conflicts,
 )
 from agents.counting.schema import (
     CountTargetSpec,
+    GlobalPointObservation,
     LocalPointObservation,
     TileCountResponse,
+    TileSpec,
 )
 from agents.counting.settings import CountingSettings
 
@@ -364,3 +367,139 @@ def test_find_boundary_conflicts_requires_neighbouring_cores() -> None:
     conflicts = find_boundary_conflicts(points, tiles)
     assert isinstance(conflicts, list)
     assert len(conflicts) <= 1
+
+
+# ── seam finalization / seam 最终化 (25.5) ────────────────────────────────
+
+
+def _seam_tile(tile_id: str, core_left: int, core_top: int, core_right: int, core_bottom: int) -> TileSpec:
+    from agents.counting.schema import PixelRect
+
+    core = PixelRect(left=core_left, top=core_top, right=core_right, bottom=core_bottom)
+    local = PixelRect(
+        left=0,
+        top=0,
+        right=core_right - core_left,
+        bottom=core_bottom - core_top,
+    )
+    return TileSpec(
+        tile_id=tile_id, row=0, col=0,
+        crop_global=core,
+        owner_core_global=core,
+        owner_core_local=local,
+        source_width=100, source_height=100,
+        model_input_width=100, model_input_height=100,
+    )
+
+
+def _seam_point(
+    global_id: str,
+    tile_id: str,
+    x: int,
+    y: int,
+    *,
+    near_boundary: bool,
+) -> GlobalPointObservation:
+    from agents.counting.schema import PointProvenance
+
+    return GlobalPointObservation(
+        global_id=global_id,
+        target="car",
+        source_tile_id=tile_id,
+        local_id=global_id,
+        local_x_norm=x,
+        local_y_norm=y,
+        local_radius_norm=0,
+        global_x_px=x,
+        global_y_px=y,
+        global_x_norm=x,
+        global_y_norm=y,
+        radius_px=4.0,
+        confidence=0.9,
+        ownership_valid=True,
+        near_core_boundary=near_boundary,
+        accepted=True,
+        short_evidence="e",
+        provenance=PointProvenance(
+            source="yolo_obb_center",
+            source_class="car",
+            obb_polygon_global_px=[[x - 4, y - 4], [x - 4, y + 4], [x + 4, y + 4], [x + 4, y - 4]],
+        ),
+    )
+
+
+def test_seam_finalization_merges_strong_duplicates() -> None:
+    """Two adjacent tiles reporting the same boundary instance merge into one.
+    两个相邻 tile 对同一边界实例的重复报告合并为一个。"""
+    from agents.counting.geometry import cores_are_neighbours
+    from agents.counting.point_pipeline import decide_seam_pairs, find_boundary_conflicts
+
+    left = _seam_tile("t0", 0, 0, 50, 100)
+    right = _seam_tile("t1", 50, 0, 100, 100)
+    assert cores_are_neighbours(left, right) is True
+    # Both points sit on the shared boundary (49/50) → very close.
+    # 两个点都在共享边界（49/50）→ 距离很近。
+    first = _seam_point("g0", "t0", 49, 50, near_boundary=True)
+    second = _seam_point("g1", "t1", 50, 50, near_boundary=True)
+    conflicts = find_boundary_conflicts([first, second], [left, right])
+    assert len(conflicts) == 1
+    pairs, unresolved = decide_seam_pairs(conflicts)
+    assert pairs == [("g0", "g1")]
+    assert unresolved == []
+    final_points, merged_groups = finalize_representatives([first, second], pairs)
+    assert sum(point.accepted for point in final_points) == 1
+    rejected = [p for p in final_points if not p.accepted]
+    assert rejected[0].rejection_reason == "MERGED_AT_SEAM"
+    assert merged_groups == [["g0", "g1"]]
+
+
+def test_seam_finalization_keeps_weak_conflicts_unresolved() -> None:
+    """Nearby but not strongly matching boundary points stay unresolved.
+    接近但证据不足的边界点保留为未解决。"""
+    from agents.counting.geometry import build_core_halo_tiles
+    from agents.counting.point_pipeline import decide_seam_pairs
+
+    # Two points within threshold but beyond the merge factor.
+    # 两个点在阈值内但超出合并因子。
+    first = _seam_point("g0", "t0", 49, 50, near_boundary=True)
+    second = _seam_point("g1", "t1", 65, 50, near_boundary=True)
+    left = _seam_tile("t0", 0, 0, 50, 100)
+    right = _seam_tile("t1", 50, 0, 100, 100)
+    conflicts = [
+        {
+            "conflict_id": "g0|g1",
+            "first_global_id": "g0",
+            "second_global_id": "g1",
+            "threshold_px": 40.0,
+            "distance_px": 30.0,
+        }
+    ]
+    pairs, unresolved = decide_seam_pairs(conflicts)
+    assert pairs == []
+    assert unresolved == [("g0", "g1")]
+
+
+def test_seam_disabled_skips_finalization() -> None:
+    callback = _RecordingCallback()
+    orchestrator = _orchestrator(callback, seam_verify=False)
+    result = asyncio.run(_count(orchestrator, _image(200, 200)))
+    codes = {record.code for record in result.warnings}
+    assert "SEAM_VERIFY_DISABLED" in codes
+    assert result.merged_groups == []
+
+
+def test_seam_merge_is_stable_and_reproducible() -> None:
+    """merged_groups and unresolved conflicts are sorted and reproducible.
+    merged_groups 与 unresolved 冲突排序稳定且可复现。"""
+    from agents.counting.point_pipeline import decide_seam_pairs
+
+    conflicts = [
+        {"conflict_id": "b|a", "first_global_id": "b", "second_global_id": "a",
+         "threshold_px": 10.0, "distance_px": 2.0},
+        {"conflict_id": "d|c", "first_global_id": "d", "second_global_id": "c",
+         "threshold_px": 10.0, "distance_px": 9.0},
+    ]
+    pairs1, unresolved1 = decide_seam_pairs(conflicts)
+    pairs2, unresolved2 = decide_seam_pairs(list(reversed(conflicts)))
+    assert pairs1 == pairs2
+    assert unresolved1 == unresolved2
