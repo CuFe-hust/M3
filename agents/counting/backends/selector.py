@@ -1,16 +1,23 @@
 """Deterministic and auditable counting-backend planning.
 
 确定且可审计的计数后端执行计划。Selector 只基于 mode、task、CountTargetSpec、
-通用 hints 与 backend capability 做选择；源码不包含任何数据集名或问题正则。
+通用 hints 与 backend capability 做选择；backend 类型通过显式 kind 识别，
+绝不从名称推断。源码不包含任何数据集名或问题正则。
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from agents.counting.backends.base import BackendPlan, BackendSelection
+from agents.counting.backends.base import (
+    KNOWN_BACKEND_KINDS,
+    BackendKind,
+    BackendPlan,
+    BackendSelection,
+)
 from agents.counting.backends.registry import BackendRegistry
 from agents.counting.schema import CountTargetSpec
+from agents.errors import CountingBackendUnavailableError
 
 COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
@@ -37,12 +44,14 @@ class BackendSelector:
         hints: dict[str, Any] | None = None,
     ) -> BackendPlan | None:
         """Plan a primary backend before availability checks can hide a bad
-        deployment. Non-counting tasks yield no plan.
-        在可用性检查隐藏部署错误之前规划主后端。非计数任务不产生计划。"""
+        deployment. Non-counting tasks yield no plan. Auto priority: enabled
+        YOLO → enabled quantity proposal → qwen_point.
+        在可用性检查隐藏部署错误之前规划主后端。非计数任务不产生计划。
+        auto 优先级：已启用 YOLO → 已启用数量提议 → qwen_point。"""
         if task not in COUNTING_TASKS:
             return None
         effective_hints = hints if hints is not None else _DEFAULT_HINTS
-        yolo_candidates = self._supported_detector_candidates(target, effective_hints)
+        yolo_candidates = self._yolo_candidates(target, effective_hints)
         if self._default_backend == "qwen_point":
             return self._named_plan("qwen_point", (), "explicit_qwen_point", target)
         if self._default_backend == "yolo_obb":
@@ -50,26 +59,46 @@ class BackendSelector:
                 return self._named_plan(
                     "qwen_point", (), "explicit_yolo_unsupported_target_qwen", target
                 )
-            selected = max(yolo_candidates, key=lambda backend: (backend.priority, backend.name))
+            selected = max(
+                yolo_candidates, key=lambda backend: (backend.priority, backend.name)
+            )
             return BackendPlan(
                 selected.name,
                 ("qwen_point",),
                 (
                     f"task_{task}",
                     "explicit_yolo",
-                    "highest_priority_supported_detector",
+                    "highest_priority_supported_yolo",
                 ),
                 self._target_classes(selected, target),
             )
         if yolo_candidates:
-            selected = max(yolo_candidates, key=lambda backend: (backend.priority, backend.name))
+            selected = max(
+                yolo_candidates, key=lambda backend: (backend.priority, backend.name)
+            )
             return BackendPlan(
                 selected.name,
                 ("qwen_point",),
                 (
                     f"task_{task}",
-                    "target_supported_by_detector",
-                    "highest_priority_supported_detector",
+                    "target_supported_by_yolo",
+                    "highest_priority_supported_yolo",
+                ),
+                self._target_classes(selected, target),
+            )
+        quantity_candidates = self._quantity_candidates(target, effective_hints)
+        if quantity_candidates:
+            selected = max(
+                quantity_candidates,
+                key=lambda backend: (backend.priority, backend.name),
+            )
+            return BackendPlan(
+                selected.name,
+                (),
+                (
+                    f"task_{task}",
+                    "target_supported_by_quantity_proposal",
+                    "highest_priority_supported_quantity_proposal",
                 ),
                 self._target_classes(selected, target),
             )
@@ -83,7 +112,9 @@ class BackendSelector:
         hints: dict[str, Any] | None = None,
     ) -> BackendSelection | None:
         """Return a single selection for callers that do not need a full plan.
-        为不需要完整计划的调用方返回单一选择。"""
+        Availability is checked here without changing plan-time semantics.
+        为不需要完整计划的调用方返回单一选择。此处检查可用性，但不改变
+        计划期语义。"""
         plan = self.plan(target, task=task, hints=hints)
         if plan is None:
             return None
@@ -97,25 +128,37 @@ class BackendSelector:
     def backend_by_name(self, name: str):
         """Resolve a backend through the registry public API.
         通过注册表公开 API 解析后端。"""
-        return self._registry.get(name)
+        backend = self._registry.get(name)
+        _validate_kind(backend)
+        return backend
 
-    def _supported_detector_candidates(
+    def _yolo_candidates(
         self,
         target: CountTargetSpec,
         hints: dict[str, Any],
     ) -> list[Any]:
-        """Return configured (enabled) detector backends that explicitly
-        support the target under the neutral hints. Runtime availability is
-        deliberately NOT consulted here so an unavailable detector still
-        becomes the planned primary and falls back explicitly at run time.
-        返回在中性 hints 下已启用且明确支持目标的检测器后端。此处有意不
-        查询运行时可用性，使不可用检测器仍成为计划主后端，并在运行时显式
-        回退。"""
+        """Configured, enabled YOLO backends that explicitly support the
+        target. 已配置、启用且明确支持目标的 YOLO 后端。"""
         return [
             backend
             for backend in self._registry.items()
-            if backend.name != "qwen_point"
-            and _is_enabled(backend)
+            if _validate_kind(backend) == "yolo_obb"
+            and backend.is_enabled()
+            and backend.supports(target, hints=hints)
+        ]
+
+    def _quantity_candidates(
+        self,
+        target: CountTargetSpec,
+        hints: dict[str, Any],
+    ) -> list[Any]:
+        """Configured, enabled quantity-proposal backends that explicitly
+        support the target. 已配置、启用且明确支持目标的数量提议后端。"""
+        return [
+            backend
+            for backend in self._registry.items()
+            if _validate_kind(backend) == "quantity_proposal"
+            and backend.is_enabled()
             and backend.supports(target, hints=hints)
         ]
 
@@ -140,12 +183,15 @@ class BackendSelector:
         return (target.canonical_label,)
 
 
-def _is_enabled(backend: object) -> bool:
-    """Configured/enabled check with a conservative fallback for backends
-    that predate the is_enabled split. 已配置/启用检查；对早于拆分协议的后端
-    采用保守回退。"""
-    check = getattr(backend, "is_enabled", None)
-    if callable(check):
-        return bool(check())
-    available = getattr(backend, "is_available", None)
-    return bool(available()) if callable(available) else False
+def _validate_kind(backend: object) -> BackendKind:
+    """Require an explicit, known backend kind; unknown kinds fail instead of
+    being silently treated as detectors. 要求显式、已知的后端 kind；未知 kind
+    明确失败而非静默当作检测器。"""
+    kind = getattr(backend, "kind", None)
+    if kind not in KNOWN_BACKEND_KINDS:
+        raise CountingBackendUnavailableError(
+            getattr(backend, "name", "<unknown>"),
+            primary_backend=str(kind),
+            reason_code="INVALID_BACKEND_KIND",
+        )
+    return kind  # type: ignore[return-value]

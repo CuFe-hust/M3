@@ -8,13 +8,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from PIL import Image
 
 from agents.counting.schema import CountTargetSpec, CountingResult
+from agents.errors import CountingBackendUnavailableError
 from agents.schema import AgentResult
 from data.schema import UnifiedSample
+from models.base import ModelCacheIdentity
+
+# Stable runtime capability categories; backend kind is never inferred from
+# names, class names, or module paths. 稳定运行时能力类别；后端 kind 绝不从
+# 名称、类名或模块路径推断。
+BackendKind = Literal[
+    "qwen_point",
+    "quantity_proposal",
+    "yolo_obb",
+]
+
+KNOWN_BACKEND_KINDS = frozenset(BackendKind.__args__)
 
 
 class MissingModelCacheIdentityError(RuntimeError):
@@ -23,9 +36,26 @@ class MissingModelCacheIdentityError(RuntimeError):
     客户端未暴露有效缓存身份时抛出；计数模型调用绝不使用伪造身份回退。"""
 
 
-class CountingBackendUnavailableError(RuntimeError):
-    """Raised when a configured backend cannot run and no fallback exists.
-    已配置后端无法运行且不存在回退时抛出。"""
+def require_model_cache_identity(
+    client: object,
+    *,
+    component: str,
+) -> ModelCacheIdentity:
+    """Require a real ModelCacheIdentity instance — duck-typed stand-ins are
+    rejected before any model call. 要求真实 ModelCacheIdentity 实例——鸭子
+    类型替代品在任何模型调用前被拒绝。"""
+    identity = getattr(client, "cache_identity", None)
+    if not isinstance(identity, ModelCacheIdentity):
+        raise MissingModelCacheIdentityError(
+            f"{component} requires a valid ModelCacheIdentity"
+        )
+    return identity
+
+
+class MissingModelCacheIdentityError(RuntimeError):
+    """Raised when a client does not expose a valid cache identity; counting
+    model calls never fall back to fabricated identities.
+    客户端未暴露有效缓存身份时抛出；计数模型调用绝不使用伪造身份回退。"""
 
 
 @dataclass(frozen=True)
@@ -77,6 +107,7 @@ class CountingBackend(Protocol):
     使用具体数据集名）。"""
 
     name: str
+    kind: BackendKind
     priority: int
 
     def is_enabled(self) -> bool:

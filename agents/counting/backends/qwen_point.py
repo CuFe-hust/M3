@@ -15,19 +15,15 @@ from typing import Any
 from PIL import Image
 
 from agents.counting.backends.base import (
+    BackendKind,
     CountingBackendOutcome,
     CountingRequest,
-    MissingModelCacheIdentityError,
+    require_model_cache_identity,
 )
 from agents.counting.point_pipeline import PointCountingOrchestrator
 from agents.counting.schema import CountTargetSpec, TileCountResponse, TileSpec
 from agents.counting.settings import CountingSettings
-from models.base import (
-    ModelCacheIdentity,
-    RequestMeta,
-    VisionLanguageClient,
-    build_request_hash,
-)
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 from models.images import image_to_data_url
 
 
@@ -35,6 +31,7 @@ class QwenPointCountingBackend:
     """Default tile-based point counting via Qwen. / 通过 Qwen 的默认 tile 点式计数。"""
 
     name = "qwen_point"
+    kind: BackendKind = "qwen_point"
     priority = 0  # lowest — default backend / 最低 — 默认后端
 
     def __init__(
@@ -70,7 +67,7 @@ class QwenPointCountingBackend:
         # the pipeline must never swallow this into a tile failure.
         # client 未暴露真实缓存身份时快速失败；pipeline 绝不可将其吞为
         # tile 失败。
-        _require_identity(self._client)
+        require_model_cache_identity(self._client, component="qwen_point")
         callback = _PipelineTileCallback(
             self._client,
             system_prompt=self._system_prompt,
@@ -180,7 +177,9 @@ class _PipelineTileCallback:
                 ],
             },
         ]
-        identity = _require_identity(self._client)
+        identity = require_model_cache_identity(
+            self._client, component="qwen_point"
+        )
         request_hash = build_request_hash(
             model=identity.model,
             generation=identity.generation_payload(),
@@ -196,15 +195,6 @@ class _PipelineTileCallback:
         return messages, request_hash, image_hash
 
 
-def _require_identity(client: VisionLanguageClient) -> ModelCacheIdentity:
-    """Require a real cache identity; counting never fabricates one.
-    要求真实缓存身份；计数绝不伪造。"""
-    identity = getattr(client, "cache_identity", None)
-    if identity is None:
-        raise MissingModelCacheIdentityError(
-            "qwen point backend requires client.cache_identity"
-        )
-    return identity
 
 
 def _owner_core_prompt_bounds(tile: TileSpec) -> list[int]:

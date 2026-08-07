@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from agents.counting.backends.base import (
+    BackendKind,
     CountingBackendOutcome,
     CountingRequest,
 )
@@ -59,6 +60,8 @@ class YoloOBBCountingBackend:
             name.casefold(): tuple(target.casefold() for target in targets)
             for name, targets in detector.composite_targets.items()
         }
+
+    kind: BackendKind = "yolo_obb"
 
     @property
     def name(self) -> str:
@@ -142,12 +145,12 @@ class YoloOBBCountingBackend:
         model = self._store.get(self._detector)
         # ONNX provider audit: never silently run CPU in place of a required
         # GPU. ONNX provider 审计：绝不把 CPU 静默伪装成所需 GPU。
-        actual_providers = tuple(getattr(model, "providers", ()))
         provider_trace: dict[str, object] = {
-            "requested_provider": (
-                "CUDA" if self._detector.require_cuda else "CPU"
-            ),
-            "actual_providers": list(actual_providers),
+            "requested_provider": str(getattr(model, "requested_provider", "")),
+            "requested_device": str(getattr(model, "requested_device", "")),
+            "actual_providers": list(getattr(model, "providers", ())),
+            "resolved_provider": str(getattr(model, "resolved_provider", "")),
+            "resolved_device": str(getattr(model, "resolved_device", "")),
             "cpu_fallback_used": bool(getattr(model, "cpu_fallback_used", False)),
         }
         points: list[GlobalPointObservation] = []

@@ -16,9 +16,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from agents.counting.backends.base import (
+    BackendKind,
     CountingBackendOutcome,
     CountingRequest,
-    MissingModelCacheIdentityError,
+    require_model_cache_identity,
 )
 from agents.counting.evidence import (
     accepted_count_evidence,
@@ -30,12 +31,7 @@ from agents.counting.evidence import (
 from agents.counting.schema import CountTargetSpec, CountingResult, IssueRecord
 from agents.counting.settings import CountingSettings
 from agents.schema import AgentName, AgentResult
-from models.base import (
-    ModelCacheIdentity,
-    RequestMeta,
-    VisionLanguageClient,
-    build_request_hash,
-)
+from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 from models.images import image_to_data_url
 from models.qwen_transformers import QwenTransformersError
 
@@ -64,6 +60,7 @@ class QuantityProposalBackend:
     中性的数量提议/定位计数后端。"""
 
     name = "quantity_proposal"
+    kind: BackendKind = "quantity_proposal"
     priority = 5
 
     def __init__(
@@ -293,7 +290,9 @@ class QuantityProposalBackend:
             },
         ]
         image_hash = hashlib.sha256(image_bytes).hexdigest()
-        identity = _require_identity(self._client)
+        identity = require_model_cache_identity(
+            self._client, component="quantity_proposal"
+        )
         request_hash = build_request_hash(
             model=identity.model,
             generation=identity.generation_payload(),
@@ -381,7 +380,9 @@ class QuantityProposalBackend:
                 ],
             },
         ]
-        identity = _require_identity(self._client)
+        identity = require_model_cache_identity(
+            self._client, component="quantity_proposal"
+        )
         request_hash = build_request_hash(
             model=identity.model,
             generation=identity.generation_payload(),
@@ -417,12 +418,3 @@ def _encode_image(image: Any) -> bytes:
         return buffer.getvalue()
 
 
-def _require_identity(client: VisionLanguageClient) -> ModelCacheIdentity:
-    """Require a real cache identity; counting never fabricates one.
-    要求真实缓存身份；计数绝不伪造。"""
-    identity = getattr(client, "cache_identity", None)
-    if identity is None:
-        raise MissingModelCacheIdentityError(
-            "quantity proposal backend requires client.cache_identity"
-        )
-    return identity
