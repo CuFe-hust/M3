@@ -52,12 +52,6 @@ def require_model_cache_identity(
     return identity
 
 
-class MissingModelCacheIdentityError(RuntimeError):
-    """Raised when a client does not expose a valid cache identity; counting
-    model calls never fall back to fabricated identities.
-    客户端未暴露有效缓存身份时抛出；计数模型调用绝不使用伪造身份回退。"""
-
-
 @dataclass(frozen=True)
 class CountingRequest:
     """Immutable counting request for one sample.

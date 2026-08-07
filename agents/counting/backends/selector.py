@@ -184,14 +184,15 @@ class BackendSelector:
 
 
 def _validate_kind(backend: object) -> BackendKind:
-    """Require an explicit, known backend kind; unknown kinds fail instead of
-    being silently treated as detectors. 要求显式、已知的后端 kind；未知 kind
-    明确失败而非静默当作检测器。"""
+    """Require an explicit, known backend kind; unknown kinds fail with a
+    fixed public message that never echoes raw name/kind values.
+    要求显式、已知的后端 kind；未知 kind 以固定公共消息失败，绝不回显原始
+    name/kind 值。"""
     kind = getattr(backend, "kind", None)
     if kind not in KNOWN_BACKEND_KINDS:
         raise CountingBackendUnavailableError(
-            getattr(backend, "name", "<unknown>"),
-            primary_backend=str(kind),
+            "unknown-target",
+            primary_backend="unknown-backend",
             reason_code="INVALID_BACKEND_KIND",
         )
     return kind  # type: ignore[return-value]
