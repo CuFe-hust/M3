@@ -61,6 +61,7 @@ agents/counting/target_parser.py
 agents/counting/geometry.py
 agents/counting/point_pipeline.py
 agents/counting/evidence.py
+agents/counting/executor.py
 agents/counting/backends/__init__.py
 agents/counting/backends/base.py
 agents/counting/backends/registry.py
@@ -109,6 +110,7 @@ workflows/artifact_writer.py
 workflows/judge_service.py
 workflows/sample_runner.py
 workflows/dataset_runner.py
+workflows/task_resolver.py
 
 # === evaluation ===
 evaluation/__init__.py
@@ -179,6 +181,7 @@ tests/agents/counting/__init__.py
 tests/agents/counting/test_settings.py
 tests/agents/counting/test_geometry.py
 tests/agents/counting/test_evidence.py
+tests/agents/counting/test_executor.py
 tests/agents/counting/test_point_pipeline.py
 tests/agents/counting/test_backend_registry.py
 tests/agents/counting/test_qwen_point_backend.py
@@ -227,6 +230,7 @@ tests/routing/test_router.py
 tests/workflows/test_call_budget.py
 tests/workflows/test_run_store.py
 tests/workflows/test_artifact_writer.py
+tests/workflows/test_task_resolver.py
 
 # === Evaluation tests ===
 tests/evaluation/test_counting_metrics.py
