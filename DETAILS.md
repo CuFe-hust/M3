@@ -145,6 +145,32 @@
   并运行 `tests/workflows`、`tests/evaluation`；clean wheel smoke 在源码树外验证
   `agents.spatial`/`agents.change`（无 cv2）/`workflows`/`evaluation` 导入。
 
+## Task 33.6 运行时不变式
+
+- **run_id 路径安全**：`RunStore.create_run` 在 `_validate_run_id` 中校验用户
+  提供的 run_id 为跨平台 plain identifier（字符集 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`，
+  拒绝 `.`/`..`/绝对路径/drive/UNC/NUL/CR/LF），任何 mkdir/write 前失败；
+  `_new_run_id()` 生成值同样满足该校验；错误消息固定且不回显原始输入。
+- **密钥扫描泛化**：`workflows/events._reject_secrets` 递归处理任意
+  `Mapping`/`Sequence`（str/bytes/bytearray 不作为 generic sequence），tuple
+  嵌套不再绕过；`EventWriter` 与 `RunStore` 共用同一实现。
+- **EvaluationRecord task/metrics 不变式**：构造时强制
+  `deterministic_metrics` 类型与 `task` 匹配（`EXPECTED_METRICS` 映射），
+  `metrics=None` 仍合法；错误消息不 dump 指标载荷；counting/VQA/grounding/
+  caption 聚合器全部 fail-closed，不再用 `getattr(..., default)` 静默降级。
+- **VQA canonical merge 收敛**：`merge_vqa_evaluation` 返回统一
+  `EvaluationRecord(task="general_vqa", deterministic_metrics=VQADeterministicMetrics(...))`；
+  `VQAEvaluationRecord` 仅作 legacy 兼容（读取旧产物/显式 `to_evaluation_record`
+  转换），`aggregate_vqa` 显式兼容两者；judge 仍只旁路记录。
+- **Grounding 阈值单次判定**：`grounding_deterministic_metrics` 存储未舍入的
+  原始 IoU，`iou_at_0_5` 为唯一阈值权威；`aggregate_grounding` 的 accuracy
+  直接复用存储标志，绝不二次比较；0.5 邻域边界（0.4999994/0.4999996/0.5/
+  0.5000004）测试保证 record 与 aggregate 自洽。
+- **JSONL 锁路径身份**：per-path 锁键使用 `resolve(strict=False)` 的规范化
+  路径身份，词法别名（`a/../events.jsonl` 与 `events.jsonl`）共享同一把锁；
+  解析仅用于锁身份，不改变实际存储位置；并发范围仍为 single Python
+  process only；原子替换对 Windows 瞬态文件锁做有限重试。
+
 ## 尚未实现
 
 `reporting`、`application`、`main.py` 尚未创建/实现；Task 34 尚未开始；
