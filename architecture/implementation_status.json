@@ -120,7 +120,15 @@
     "workflows/call_budget.py",
     "workflows/events.py",
     "workflows/run_store.py",
-    "workflows/artifact_writer.py"
+    "workflows/artifact_writer.py",
+    "evaluation/__init__.py",
+    "evaluation/records.py",
+    "evaluation/metrics/__init__.py",
+    "evaluation/metrics/counting.py",
+    "evaluation/metrics/vqa.py",
+    "evaluation/metrics/grounding.py",
+    "evaluation/metrics/caption.py",
+    "evaluation/metrics/aggregate.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",

@@ -228,6 +228,12 @@ tests/workflows/test_call_budget.py
 tests/workflows/test_run_store.py
 tests/workflows/test_artifact_writer.py
 
+# === Evaluation tests ===
+tests/evaluation/test_counting_metrics.py
+tests/evaluation/test_vqa_metrics.py
+tests/evaluation/test_grounding_metrics.py
+tests/evaluation/test_caption_metrics.py
+
 # === Models tests ===
 tests/models/test_model_entry.py
 tests/models/test_qwen_client_offline.py
