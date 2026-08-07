@@ -10,9 +10,23 @@ from pathlib import Path
 
 import pytest
 
-from evaluation.metrics.grounding import aggregate_grounding, box_iou
+from evaluation.metrics.grounding import (
+    aggregate_grounding,
+    box_iou,
+    grounding_deterministic_metrics,
+)
+from evaluation.records import EvaluationRecord
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _grounding_record(iou: float) -> EvaluationRecord:
+    return EvaluationRecord(
+        sample_id=f"s{iou}",
+        task="grounding",
+        deterministic_metrics=grounding_deterministic_metrics(iou),
+        judge_status="not_requested",
+    )
 
 
 def test_box_iou_perfect_overlap() -> None:
@@ -39,12 +53,12 @@ def test_box_iou_degenerate_boxes() -> None:
 
 
 def test_aggregate_grounding() -> None:
-    pairs = [
-        ([0, 0, 10, 10], [0, 0, 10, 10]),  # iou 1.0 -> success
-        ([0, 0, 10, 10], [5, 5, 15, 15]),  # iou ~0.143 -> fail
-        ([0, 0, 10, 10], [20, 20, 30, 30]),  # iou 0.0 -> fail
+    records = [
+        _grounding_record(1.0),  # iou 1.0 -> success
+        _grounding_record(25 / 175),  # iou ~0.143 -> fail
+        _grounding_record(0.0),  # iou 0.0 -> fail
     ]
-    summary = aggregate_grounding(pairs)
+    summary = aggregate_grounding(records)
     assert summary["metric"] == "axis_aligned_iou_at_0_5"
     assert summary["total"] == 3
     assert summary["accuracy"] == pytest.approx(1 / 3)
@@ -57,6 +71,14 @@ def test_aggregate_grounding_empty() -> None:
     assert summary["total"] == 0
     assert summary["mean_iou"] == 0.0
     assert summary["accuracy"] == 0.0
+
+
+def test_grounding_typed_record_serializes() -> None:
+    record = _grounding_record(0.75)
+    payload = record.model_dump(mode="json")
+    assert payload["task"] == "grounding"
+    assert payload["deterministic_metrics"] == {"iou": 0.75, "iou_at_0_5": True}
+    assert payload["judge_status"] == "not_requested"
 
 
 def test_grounding_metrics_have_no_network_side_effects() -> None:

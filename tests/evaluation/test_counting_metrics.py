@@ -192,3 +192,90 @@ def test_counting_metrics_have_no_network_side_effects() -> None:
         source = (REPO_ROOT / module).read_text(encoding="utf-8")
         for token in ("urlopen", "requests", "socket", "httpx", "api.deepseek", "http://", "https://"):
             assert token not in source, (module, token)
+
+
+# ── 统一记录契约 / unified record contract (33.5) ─────────────────────────
+
+
+def test_unified_aggregate_routes_counting_vqa_grounding() -> None:
+    from evaluation import aggregate
+    from evaluation.records import (
+        EvaluationRecord,
+        GroundingDeterministicMetrics,
+        VQADeterministicMetrics,
+    )
+
+    counting = _record(5, 5)
+    assert aggregate([counting])["metric"] == "counting_deterministic"
+
+    vqa = EvaluationRecord(
+        sample_id="s2",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
+    )
+    assert aggregate([vqa])["metric"] == "exact_match_accuracy"
+
+    grounding = EvaluationRecord(
+        sample_id="s3",
+        task="grounding",
+        deterministic_metrics=GroundingDeterministicMetrics(iou=0.8, iou_at_0_5=True),
+        judge_status="not_requested",
+    )
+    summary = aggregate([grounding])
+    assert summary["metric"] == "axis_aligned_iou_at_0_5"
+    assert summary["mean_iou"] == pytest.approx(0.8)
+
+
+def test_unified_aggregate_mixed_tasks_fail() -> None:
+    from evaluation import aggregate
+    from evaluation.records import EvaluationRecord, VQADeterministicMetrics
+
+    counting = _record(5, 5)
+    vqa = EvaluationRecord(
+        sample_id="s2",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
+    )
+    with pytest.raises(ValueError, match="one task type"):
+        aggregate([counting, vqa])
+
+
+def test_unified_aggregate_rejects_unknown_records() -> None:
+    from evaluation import aggregate
+
+    with pytest.raises(ValueError, match="homogeneous"):
+        aggregate([{"not": "a record"}])
+
+
+def test_unified_aggregate_empty_fails() -> None:
+    from evaluation import aggregate
+
+    with pytest.raises(ValueError, match="at least one"):
+        aggregate([])
+
+
+def test_counting_record_serializes_with_task() -> None:
+    record = _record(5, 3)
+    payload = record.model_dump(mode="json")
+    assert payload["task"] == "counting"
+    assert payload["deterministic_metrics"]["exact_match"] == 0
+    assert payload["judge_status"] == "not_requested"
+
+
+def test_judge_success_never_overrides_counting_metrics_in_aggregate() -> None:
+    """Even with a successful judge attached, aggregate uses only the
+    deterministic metrics. 即使附加成功 judge，汇总也只使用确定性指标。"""
+    from evaluation import aggregate
+
+    record = merge_count_evaluation(
+        sample_id="s1",
+        counting=_counting(5),
+        ground_truth=GroundTruth(count=3),
+        judge_raw="raw",
+        judge_parsed=_CountJudge(verdict="correct"),
+    )
+    summary = aggregate([record])
+    assert summary["exact_match_accuracy"] == 0.0
+    assert record.judge_inconsistency is True

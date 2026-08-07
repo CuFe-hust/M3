@@ -9,7 +9,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from evaluation.metrics.caption import aggregate_caption
 from evaluation.metrics.counting import aggregate_counting
+from evaluation.metrics.grounding import aggregate_grounding
 from evaluation.metrics.vqa import aggregate_vqa
 from evaluation.records import EvaluationRecord, VQAEvaluationRecord
 
@@ -21,19 +23,26 @@ def aggregate(records: Sequence[Any]) -> dict[str, Any]:
     loaded = list(records)
     if not loaded:
         raise ValueError("aggregate requires at least one record")
-    if all(isinstance(record, VQAEvaluationRecord) for record in loaded):
+    tasks = {_task_of(record) for record in loaded}
+    if len(tasks) != 1:
+        raise ValueError("One result file must contain one task type.")
+    task = tasks.pop()
+    if task == "counting":
+        return aggregate_counting(loaded)
+    if task == "general_vqa":
         return aggregate_vqa(loaded)
-    if all(isinstance(record, EvaluationRecord) for record in loaded):
-        tasks = {record.task for record in loaded}
-        if len(tasks) != 1:
-            raise ValueError("One result file must contain one task type.")
-        task = tasks.pop()
-        if task == "counting":
-            return aggregate_counting(loaded)
-        raise ValueError(
-            f"aggregation is not defined for task {task!r}; use "
-            "evaluation.metrics.grounding or evaluation.metrics.caption directly"
-        )
+    if task == "grounding":
+        return aggregate_grounding(loaded)
+    if task == "caption":
+        return aggregate_caption(loaded)
+    raise ValueError(f"aggregation is not defined for task {task!r}")
+
+
+def _task_of(record: Any) -> str:
+    if isinstance(record, VQAEvaluationRecord):
+        return "general_vqa"
+    if isinstance(record, EvaluationRecord):
+        return record.task
     raise ValueError(
         "records must be homogeneous EvaluationRecord or VQAEvaluationRecord"
     )

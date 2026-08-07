@@ -10,6 +10,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
+
 
 def evaluate_caption(
     references: Mapping[str, Sequence[str]],
@@ -36,3 +38,21 @@ def evaluate_caption(
         score, _ = scorer.compute_score(references, candidates)
         results[name] = score
     return results
+
+
+def aggregate_caption(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
+    """Collect per-sample candidates and references from unified caption
+    records and compute the corpus-level caption metrics.
+    从统一 caption 记录收集逐样本候选与参考答案，计算语料级描述指标。"""
+
+    references: dict[str, list[str]] = {}
+    candidates: dict[str, list[str]] = {}
+    for record in records:
+        metrics = record.deterministic_metrics
+        if not isinstance(metrics, CaptionDeterministicMetrics):
+            raise ValueError(
+                f"caption record {record.sample_id!r} lacks CaptionDeterministicMetrics"
+            )
+        references[record.sample_id] = list(metrics.references)
+        candidates[record.sample_id] = [metrics.candidate]
+    return evaluate_caption(references, candidates)

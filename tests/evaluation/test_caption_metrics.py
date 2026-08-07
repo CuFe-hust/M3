@@ -91,3 +91,53 @@ def test_caption_module_import_has_no_network_side_effects() -> None:
     for token in ("urlopen", "requests", "socket", "httpx", "api.deepseek", "http://", "https://"):
         assert token not in source, token
     assert "from pycocoevalcap" in source or "import pycocoevalcap" in source
+
+
+def test_aggregate_caption_uses_unified_records(monkeypatch) -> None:
+    """Corpus-level aggregate collects candidates/references from unified
+    caption records and routes them through evaluate_caption.
+    语料级汇总从统一 caption 记录收集候选/参考答案并交给 evaluate_caption。"""
+    _inject_fake_caption_modules(monkeypatch)
+    from evaluation.metrics.caption import aggregate_caption
+    from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
+
+    records = [
+        EvaluationRecord(
+            sample_id="a",
+            task="caption",
+            deterministic_metrics=CaptionDeterministicMetrics(
+                candidate="a car on the road", references=["a car on the road"]
+            ),
+            judge_status="not_requested",
+        ),
+        EvaluationRecord(
+            sample_id="b",
+            task="caption",
+            deterministic_metrics=CaptionDeterministicMetrics(
+                candidate="two buildings", references=["two buildings"]
+            ),
+            judge_status="not_requested",
+        ),
+    ]
+    results = aggregate_caption(records)
+    assert results["total"] == 2
+    assert results["BLEU_1"] == 0.5
+    assert results["CIDEr"] == 0.42
+
+
+def test_aggregate_caption_rejects_records_without_caption_metrics(monkeypatch) -> None:
+    _inject_fake_caption_modules(monkeypatch)
+    from evaluation.metrics.caption import aggregate_caption
+    from evaluation.records import CountDeterministicMetrics, EvaluationRecord
+
+    record = EvaluationRecord(
+        sample_id="x",
+        task="caption",
+        deterministic_metrics=CountDeterministicMetrics(
+            predicted_count=1, gold_count=1, exact_match=1,
+            absolute_error=0, relative_error=0.0, smooth_error_score=1.0,
+        ),
+        judge_status="not_requested",
+    )
+    with pytest.raises(ValueError, match="CaptionDeterministicMetrics"):
+        aggregate_caption([record])

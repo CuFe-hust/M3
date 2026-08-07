@@ -9,6 +9,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+from evaluation.records import EvaluationRecord, GroundingDeterministicMetrics
+
 
 def box_iou(first: Sequence[float], second: Sequence[float]) -> float:
     """Axis-aligned IoU of two xyxy boxes. / 两个 xyxy 框的轴对齐 IoU。"""
@@ -24,13 +26,21 @@ def box_iou(first: Sequence[float], second: Sequence[float]) -> float:
     return intersection / denominator if denominator else 0.0
 
 
-def aggregate_grounding(
-    pairs: Sequence[tuple[Sequence[float], Sequence[float]]],
-) -> dict[str, Any]:
-    """Aggregate mean IoU and IoU@0.5 accuracy over box pairs.
-    对框对汇总平均 IoU 与 IoU@0.5 准确率。"""
+def grounding_deterministic_metrics(iou: float) -> GroundingDeterministicMetrics:
+    """Wrap one box-pair IoU into the unified typed record.
+    将单对框 IoU 包装进统一类型化记录。"""
 
-    total = len(pairs)
+    value = float(iou)
+    return GroundingDeterministicMetrics(
+        iou=round(value, 6), iou_at_0_5=value >= 0.5
+    )
+
+
+def aggregate_grounding(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
+    """Aggregate mean IoU and IoU@0.5 accuracy over unified grounding
+    records. 对统一 grounding 记录汇总平均 IoU 与 IoU@0.5 准确率。"""
+
+    total = len(records)
     if not total:
         return {
             "metric": "axis_aligned_iou_at_0_5",
@@ -38,7 +48,10 @@ def aggregate_grounding(
             "mean_iou": 0.0,
             "accuracy": 0.0,
         }
-    ious = [box_iou(predicted, expected) for predicted, expected in pairs]
+    ious = [
+        float(getattr(record.deterministic_metrics, "iou", 0.0))
+        for record in records
+    ]
     success = sum(iou >= 0.5 for iou in ious)
     return {
         "metric": "axis_aligned_iou_at_0_5",
