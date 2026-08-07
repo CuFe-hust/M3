@@ -164,11 +164,13 @@ tests/__init__.py
 tests/conftest.py
 tests/agents/test_agent_registry.py
 tests/agents/test_visual_base.py
+tests/agents/general_vqa/__init__.py
 tests/agents/general_vqa/test_agent.py
 tests/agents/caption/__init__.py
 tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
+tests/agents/counting/__init__.py
 tests/agents/counting/test_settings.py
 tests/agents/counting/test_geometry.py
 tests/agents/counting/test_evidence.py
@@ -178,6 +180,9 @@ tests/agents/counting/test_qwen_point_backend.py
 tests/agents/counting/test_quantity_proposal_backend.py
 tests/agents/counting/test_yolo_adapter.py
 tests/agents/counting/test_yolo_runtime.py
+tests/agents/counting/test_backend_selector.py
+tests/agents/counting/test_target_parser.py
+tests/agents/counting/test_agent.py
 tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
