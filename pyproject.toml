@@ -22,6 +22,10 @@ dev = [
 migration = [
   "numpy>=1.26",
 ]
+change = [
+  "numpy>=1.26",
+  "opencv-python-headless>=4.10",
+]
 
 [tool.setuptools.packages.find]
 include = [

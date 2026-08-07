@@ -2,26 +2,53 @@
 
 确定且可解释的差异图候选。RGB/edge/structure 加权差异图 + 连通域过滤；
 候选数量、面积、score 与 box 坐标全部稳定可复现。不调用模型、不修改源
-数组。
+数组。cv2 与 numpy 是可选依赖（[change] extra），仅在真正计算时惰性加载，
+模块导入本身不触发。
 """
 
 from __future__ import annotations
 
-import cv2
-import numpy as np
+from typing import Any
 
 from agents.change.schema import ChangeProposal
 from agents.change.settings import ChangeProposalSettings
+from agents.errors import OptionalDependencyMissingError
+
+
+def _require_cv2():
+    """Return the cv2 module or a stable optional-dependency error.
+    返回 cv2 模块，缺失时抛出稳定的可选依赖错误。"""
+    try:
+        import cv2
+    except ImportError as error:
+        raise OptionalDependencyMissingError(
+            "change", dependency="opencv-python-headless"
+        ) from error
+    return cv2
+
+
+def _require_numpy():
+    """Return the numpy module or a stable optional-dependency error.
+    返回 numpy 模块，缺失时抛出稳定的可选依赖错误。"""
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise OptionalDependencyMissingError(
+            "change", dependency="numpy"
+        ) from error
+    return np
 
 
 def propose_changes(
-    t1: np.ndarray,
-    t2: np.ndarray,
+    t1: Any,
+    t2: Any,
     settings: ChangeProposalSettings,
-) -> tuple[np.ndarray, list[ChangeProposal]]:
+) -> tuple[Any, list[ChangeProposal]]:
     """Return normalized scores and connected-component proposals.
     返回归一化得分与连通域候选。"""
 
+    cv2 = _require_cv2()
+    np = _require_numpy()
     first, second = t1.astype(np.float32), t2.astype(np.float32)
     rgb = np.mean(np.abs(first - second), axis=2) / 255.0
     gray1 = cv2.cvtColor(t1, cv2.COLOR_RGB2GRAY).astype(np.float32) / 255.0
@@ -85,10 +112,11 @@ def propose_changes(
     return score, proposals
 
 
-def render_overlay(image: np.ndarray, proposals: list[ChangeProposal]) -> np.ndarray:
+def render_overlay(image: Any, proposals: list[ChangeProposal]) -> Any:
     """Render proposal boxes without altering the source array.
     在不修改源数组的前提下绘制候选框。"""
 
+    cv2 = _require_cv2()
     overlay = image.copy()
     for proposal in proposals:
         x1, y1, x2, y2 = proposal.pixel_box

@@ -12,11 +12,33 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import cv2
-import numpy as np
-
 from agents.change.schema import HarmonizationDecision, HarmonizationMetrics
 from agents.change.settings import ChangeHarmonizationSettings
+from agents.errors import OptionalDependencyMissingError
+
+
+def _require_cv2():
+    """Return the cv2 module or a stable optional-dependency error.
+    返回 cv2 模块，缺失时抛出稳定的可选依赖错误。"""
+    try:
+        import cv2
+    except ImportError as error:
+        raise OptionalDependencyMissingError(
+            "change", dependency="opencv-python-headless"
+        ) from error
+    return cv2
+
+
+def _require_numpy():
+    """Return the numpy module or a stable optional-dependency error.
+    返回 numpy 模块，缺失时抛出稳定的可选依赖错误。"""
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise OptionalDependencyMissingError(
+            "change", dependency="numpy"
+        ) from error
+    return np
 
 
 @dataclass(frozen=True)
@@ -54,6 +76,8 @@ class PairHarmonizer:
                 self.settings = settings.model_copy(update={"calibration_file": None})
 
     def run(self, t1: np.ndarray, t2: np.ndarray) -> HarmonizationCandidate:
+        cv2 = _require_cv2()
+        np = _require_numpy()
         raw1, raw2 = t1.copy(), t2.copy()
         mask = estimate_pif_mask(raw1, raw2, self.settings)
         ratio = float(np.mean(mask > 0))
@@ -175,6 +199,8 @@ def estimate_pif_mask(
     """Estimate PIF once from raw inputs; callers reuse this exact mask.
     仅从原图估计一次 PIF，调用方复用同一掩膜。"""
 
+    cv2 = _require_cv2()
+    np = _require_numpy()
     g1 = cv2.cvtColor(t1, cv2.COLOR_RGB2GRAY).astype(np.float32)
     g2 = cv2.cvtColor(t2, cv2.COLOR_RGB2GRAY).astype(np.float32)
     ksize = settings.pif_blur_ksize | 1
@@ -207,6 +233,7 @@ def compute_metrics(
     """Compute before/after metrics with the same raw-derived PIF mask.
     使用同一个原图 PIF 掩膜计算前后指标。"""
 
+    np = _require_numpy()
     a, b = _gray(raw1), _gray(raw2)
     x, y = _gray(out1), _gray(out2)
     selected = mask > 0
@@ -234,6 +261,11 @@ def _match_sharpness(
     t2: np.ndarray,
     settings: ChangeHarmonizationSettings,
 ) -> tuple[np.ndarray, np.ndarray, bool, bool, float, float]:
+    """Safely match sharpness by optional blur on the sharper image only.
+    仅对更清晰图像执行可选模糊的安全锐度匹配。"""
+
+    cv2 = _require_cv2()
+    np = _require_numpy()
     before = [_lapvar(t1), _lapvar(t2)]
     ratio_before = max(before) / max(min(before), 1e-6)
     if not settings.match_sharpness:
@@ -261,25 +293,31 @@ def _match_sharpness(
 
 
 def _affine(values: np.ndarray, target: np.ndarray) -> tuple[float, float]:
+    np = _require_numpy()
     source = np.percentile(values, [5, 50, 95])
     gain = float((target[2] - target[0]) / max(source[2] - source[0], 1e-6))
     return gain, float(target[1] - gain * source[1])
 
 
 def _gray(image: np.ndarray) -> np.ndarray:
+    cv2 = _require_cv2()
+    np = _require_numpy()
     return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY).astype(np.float32)
 
 
 def _lapvar(image: np.ndarray) -> float:
+    cv2 = _require_cv2()
     return float(cv2.Laplacian(_gray(image), cv2.CV_32F).var())
 
 
 def _robust_mad(values: np.ndarray) -> float:
+    np = _require_numpy()
     median = np.median(values)
     return float(np.median(np.abs(values - median)) + 1e-6)
 
 
 def _corr(first: np.ndarray, second: np.ndarray) -> float | None:
+    np = _require_numpy()
     a, b = first.reshape(-1), second.reshape(-1)
     if a.size < 2 or float(np.std(a)) <= 1e-8 or float(np.std(b)) <= 1e-8:
         return None

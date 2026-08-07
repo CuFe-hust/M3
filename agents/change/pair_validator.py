@@ -1,7 +1,8 @@
 """Read-only validation and normalization for temporal image pairs.
 
 双时相图像对的只读校验与规范化。绝不原地修改输入图；不做任何数据集
-分支（对齐状态完全由元数据与尺寸证据驱动）。
+分支（对齐状态完全由元数据与尺寸证据驱动）。numpy 是可选依赖
+（[change] extra），仅在 validate 执行时惰性加载。
 """
 
 from __future__ import annotations
@@ -9,12 +10,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-import numpy as np
 from PIL import Image, ImageOps
 
 from agents.change.schema import PairValidationReport
 from agents.counting.schema import IssueRecord
+from agents.errors import OptionalDependencyMissingError
 from data.schema import UnifiedSample
+
+
+def _require_numpy():
+    """Return the numpy module or a stable optional-dependency error.
+    返回 numpy 模块，缺失时抛出稳定的可选依赖错误。"""
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise OptionalDependencyMissingError(
+            "change", dependency="numpy"
+        ) from error
+    return np
 
 
 @dataclass(frozen=True)
@@ -31,6 +44,7 @@ class PairValidator:
     校验时相角色、文件、解码、尺寸与配准证据。"""
 
     def validate(self, sample: UnifiedSample, *, data_root: Path) -> ValidatedPair:
+        np = _require_numpy()
         warnings: list[IssueRecord] = []
         roles = [image.role for image in sample.images]
         roles_valid = len(sample.images) == 2 and roles == ["t1", "t2"]

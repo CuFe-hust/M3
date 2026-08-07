@@ -2,7 +2,8 @@
 
 变化预处理编排与样本级产物。组合 pair 校验、一致化与差异提议；只在
 artifact_dir 内写入派生产物（绝不修改源图片）；不调用视觉模型；写盘失败
-显式向上暴露。
+显式向上暴露。numpy 与 cv2 是可选依赖（[change] extra），仅在编排执行时
+惰性加载，模块导入本身不触发。
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
 
 from agents.change.difference_proposal import propose_changes, render_overlay
@@ -18,7 +18,20 @@ from agents.change.harmonizer import PairHarmonizer
 from agents.change.pair_validator import PairValidator
 from agents.change.schema import ChangePreprocessResult, HarmonizationDecision
 from agents.change.settings import AgentChangeSettings
+from agents.errors import OptionalDependencyMissingError
 from data.schema import UnifiedSample
+
+
+def _require_numpy():
+    """Return the numpy module or a stable optional-dependency error.
+    返回 numpy 模块，缺失时抛出稳定的可选依赖错误。"""
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise OptionalDependencyMissingError(
+            "change", dependency="numpy"
+        ) from error
+    return np
 
 
 def preprocess_pair(
@@ -30,6 +43,7 @@ def preprocess_pair(
 ) -> ChangePreprocessResult:
     """Validate, harmonize, gate, propose, and publish auditable files.
     校验、一致化、门控、提议并发布可审计文件。"""
+    np = _require_numpy()
     output = artifact_dir / "change_preprocess"
     output.mkdir(parents=True, exist_ok=True)
     validated = PairValidator().validate(sample, data_root=data_root)

@@ -126,3 +126,81 @@ def test_difference_proposal_has_no_dataset_or_model_branch() -> None:
     assert "dataset" not in source
     assert "spacers_agent" not in source
     assert "qwen" not in source.casefold()
+
+
+# ── 可选依赖契约 / optional dependency contract (33.5) ────────────────────
+
+
+def test_change_package_imports_without_cv2_or_numpy(monkeypatch) -> None:
+    """Blocking cv2 and numpy must not break `import agents.change`.
+    拦截 cv2 与 numpy 时 `import agents.change` 仍必须成功。"""
+    import sys
+
+    real_import = __import__
+    for name in ("cv2", "numpy"):
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    def _blocked(name, *args, **kwargs):
+        if name == "cv2" or name.startswith("cv2."):
+            raise ImportError("blocked cv2")
+        if name == "numpy" or name.startswith("numpy."):
+            raise ImportError("blocked numpy")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _blocked)
+    import agents.change  # noqa: F401
+    import agents.change.agent  # noqa: F401
+    import agents.change.pair_validator  # noqa: F401
+
+
+def test_pair_validator_import_requires_no_cv2(monkeypatch) -> None:
+    import sys
+
+    real_import = __import__
+    monkeypatch.delitem(sys.modules, "cv2", raising=False)
+
+    def _blocked(name, *args, **kwargs):
+        if name == "cv2" or name.startswith("cv2."):
+            raise ImportError("blocked cv2")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _blocked)
+    from agents.change.pair_validator import PairValidator  # noqa: F401
+
+    assert PairValidator is not None
+
+
+def test_propose_changes_missing_cv2_raises_optional_error(monkeypatch) -> None:
+    from agents.errors import OptionalDependencyMissingError
+
+    import sys
+
+    real_import = __import__
+    monkeypatch.delitem(sys.modules, "cv2", raising=False)
+
+    def _blocked(name, *args, **kwargs):
+        if name == "cv2" or name.startswith("cv2."):
+            raise ImportError("blocked cv2")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _blocked)
+    with pytest.raises(OptionalDependencyMissingError, match="opencv-python-headless"):
+        propose_changes(np.zeros((4, 4, 3), dtype=np.uint8), np.zeros((4, 4, 3), dtype=np.uint8), _settings())
+
+
+def test_propose_changes_missing_numpy_raises_optional_error(monkeypatch) -> None:
+    from agents.errors import OptionalDependencyMissingError
+
+    import sys
+
+    real_import = __import__
+    monkeypatch.delitem(sys.modules, "numpy", raising=False)
+
+    def _blocked(name, *args, **kwargs):
+        if name == "numpy" or name.startswith("numpy."):
+            raise ImportError("blocked numpy")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _blocked)
+    with pytest.raises(OptionalDependencyMissingError, match="numpy"):
+        propose_changes(None, None, _settings())
