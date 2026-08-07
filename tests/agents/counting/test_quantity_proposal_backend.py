@@ -227,27 +227,87 @@ def test_count_incomplete_mismatch_is_partial(tmp_path: Path) -> None:
 
 
 def test_count_recovers_proposal_header(tmp_path: Path) -> None:
-    """A failed proposal call recovers the integer answer header from the
-    artifact raw response. 提议调用失败时从产物 raw response 恢复整数答案。"""
+    """A parse failure recovers the integer answer header from the current
+    request's hash-scoped artifact directory. 解析失败时从当前请求的 hash
+    作用域产物目录恢复整数答案。"""
     client = _FakeClient()
-    client.fail_proposal = RuntimeError("proposal failed")
+    client.fail_proposal = ValueError("malformed JSON")
     client.proposal_answer = "2"
     client.localizer_points = [[150, 150], [400, 400]]
-    raw_dir = tmp_path / "run" / "counting_agent" / "count_proposal"
+    request = _request(tmp_path)
+    # Compute the hash-scoped directory exactly as the backend does.
+    # 与后端完全一致地计算 hash 作用域目录。
+    identity = client.cache_identity
+    import hashlib
+
+    from agents.counting.backends.quantity_proposal import _encode_image
+    from agents.counting.evidence import box_evidence  # noqa: F401
+    from models.base import build_request_hash
+    from models.images import image_to_data_url  # noqa: F401
+
+    image_bytes = _encode_image(request.image)
+    system_prompt = "Propose a count." + (
+        "\n\nReturn valid JSON only. Set agent_name to 'counting_agent'; put the "
+        "concise final answer in answer, use empty boxes/evidence when they are not "
+        "needed, and set status to 'completed'."
+    )
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": image_to_data_url(image_bytes, "image/png")}},
+                {"type": "text", "text": request.sample.question},
+            ],
+        },
+    ]
+    request_hash = build_request_hash(
+        model=identity.model,
+        generation=identity.generation_payload(),
+        prompt_version="count-proposal-v1",
+        messages=messages,
+        image_sha256=hashlib.sha256(image_bytes).hexdigest(),
+        response_schema=__import__(
+            "agents.counting.backends.quantity_proposal", fromlist=["_CountProposalResult"]
+        )._CountProposalResult.model_json_schema(),
+        client_version=identity.client_version,
+        model_revision=identity.revision,
+    )
+    raw_dir = tmp_path / "run" / "counting_agent" / "count_proposal" / request_hash
     raw_dir.mkdir(parents=True, exist_ok=True)
     (raw_dir / "raw_response.txt").write_text('{"answer": "2"', encoding="utf-8")
     backend = _backend(client)
-    outcome = asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
+    outcome = asyncio.run(backend.count(request, _context(_FakeBudget())))
     assert outcome.counting.final_count == 2
     codes = {record.code for record in outcome.counting.warnings}
     assert "COUNT_PROPOSAL_HEADER_RECOVERED" in codes
 
 
-def test_count_proposal_failure_without_recovery_raises(tmp_path: Path) -> None:
+def test_stale_raw_response_is_never_reused(tmp_path: Path) -> None:
+    """A raw response left by a previous request (different hash directory)
+    must never be recovered. 旧请求遗留（不同 hash 目录）的 raw response 绝不
+    被恢复。"""
     client = _FakeClient()
-    client.fail_proposal = RuntimeError("proposal failed")
+    client.fail_proposal = ValueError("malformed JSON")
+    stale_dir = tmp_path / "run" / "counting_agent" / "count_proposal" / ("a" * 64)
+    stale_dir.mkdir(parents=True, exist_ok=True)
+    (stale_dir / "raw_response.txt").write_text('{"answer": "99"', encoding="utf-8")
     backend = _backend(client)
-    with pytest.raises(RuntimeError, match="proposal failed"):
+    with pytest.raises(ValueError, match="malformed JSON"):
+        asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
+
+
+def test_non_parse_failure_never_recovers(tmp_path: Path) -> None:
+    """Network/filesystem-style failures must propagate unchanged without
+    attempting raw-response recovery. 网络/文件系统类失败必须原样传播，不得
+    尝试 raw response 恢复。"""
+    client = _FakeClient()
+    client.fail_proposal = RuntimeError("connection refused")
+    raw_dir = tmp_path / "run" / "counting_agent" / "count_proposal"
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    (raw_dir / "raw_response.txt").write_text('{"answer": "5"', encoding="utf-8")
+    backend = _backend(client)
+    with pytest.raises(RuntimeError, match="connection refused"):
         asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
 
 

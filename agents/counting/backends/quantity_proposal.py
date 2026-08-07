@@ -18,6 +18,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from agents.counting.backends.base import (
     CountingBackendOutcome,
     CountingRequest,
+    MissingModelCacheIdentityError,
 )
 from agents.counting.evidence import (
     accepted_count_evidence,
@@ -29,8 +30,20 @@ from agents.counting.evidence import (
 from agents.counting.schema import CountTargetSpec, CountingResult, IssueRecord
 from agents.counting.settings import CountingSettings
 from agents.schema import AgentName, AgentResult
-from models.base import RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import (
+    ModelCacheIdentity,
+    RequestMeta,
+    VisionLanguageClient,
+    build_request_hash,
+)
 from models.images import image_to_data_url
+from models.qwen_transformers import QwenTransformersError
+
+# Only parse/validation/repair failures may trigger raw-response recovery;
+# network, filesystem, permission, and budget errors must propagate unchanged.
+# 只有解析/校验/修复类失败可触发 raw response 恢复；网络、文件系统、权限
+# 与 budget 错误必须原样传播。
+_RECOVERABLE_PROPOSAL_ERRORS = (ValueError, QwenTransformersError)
 
 
 class _CountProposalResult(BaseModel):
@@ -73,6 +86,9 @@ class QuantityProposalBackend:
         self._supported_targets = frozenset(
             value.casefold() for value in supported_targets
         )
+
+    def is_enabled(self) -> bool:
+        return True  # always configured / 始终配置
 
     def is_available(self) -> bool:
         return True
@@ -277,17 +293,19 @@ class QuantityProposalBackend:
             },
         ]
         image_hash = hashlib.sha256(image_bytes).hexdigest()
+        identity = _require_identity(self._client)
         request_hash = build_request_hash(
-            model=_identity_model(self._client),
-            generation=_identity_generation(self._client),
+            model=identity.model,
+            generation=identity.generation_payload(),
             prompt_version=self._proposal_prompt_version,
             messages=messages,
             image_sha256=image_hash,
-            client_version=_identity_client_version(self._client),
-            model_revision=_identity_revision(self._client),
+            response_schema=_CountProposalResult.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
         )
         artifact_dir = (
-            request.artifact_dir / "counting_agent" / "count_proposal"
+            request.artifact_dir / "counting_agent" / "count_proposal" / request_hash
         )
         if budget is not None:
             budget.reserve_qwen()
@@ -305,7 +323,11 @@ class QuantityProposalBackend:
                 ),
             )
             return proposal, None
-        except Exception:
+        except _RECOVERABLE_PROPOSAL_ERRORS as error:
+            # Recovery reads ONLY the current request's hash-scoped artifact
+            # directory, so stale raw responses from previous requests can
+            # never be reused. 恢复只读取当前请求的 hash 作用域产物目录，
+            # 旧请求遗留的 raw response 绝不可能被复用。
             raw_path = artifact_dir / "raw_response.txt"
             recovered = recover_count_proposal_header(
                 raw_path.read_text(encoding="utf-8") if raw_path.is_file() else ""
@@ -359,15 +381,17 @@ class QuantityProposalBackend:
                 ],
             },
         ]
+        identity = _require_identity(self._client)
         request_hash = build_request_hash(
-            model=_identity_model(self._client),
-            generation=_identity_generation(self._client),
+            model=identity.model,
+            generation=identity.generation_payload(),
             prompt_version=self._localizer_prompt_version,
             messages=messages,
             image_sha256=image_hash,
             target_spec=target.model_dump(mode="json"),
-            client_version=_identity_client_version(self._client),
-            model_revision=_identity_revision(self._client),
+            response_schema=AgentResult.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
         )
         if budget is not None:
             budget.reserve_qwen()
@@ -393,21 +417,12 @@ def _encode_image(image: Any) -> bytes:
         return buffer.getvalue()
 
 
-def _identity_model(client: Any) -> str:
+def _require_identity(client: VisionLanguageClient) -> ModelCacheIdentity:
+    """Require a real cache identity; counting never fabricates one.
+    要求真实缓存身份；计数绝不伪造。"""
     identity = getattr(client, "cache_identity", None)
-    return identity.model if identity is not None else "quantity_proposal"
-
-
-def _identity_generation(client: Any) -> dict[str, Any]:
-    identity = getattr(client, "cache_identity", None)
-    return identity.generation_payload() if identity is not None else {"temperature": 0.0}
-
-
-def _identity_client_version(client: Any) -> str:
-    identity = getattr(client, "cache_identity", None)
-    return identity.client_version if identity is not None else "1"
-
-
-def _identity_revision(client: Any) -> str | None:
-    identity = getattr(client, "cache_identity", None)
-    return identity.revision if identity is not None else None
+    if identity is None:
+        raise MissingModelCacheIdentityError(
+            "quantity proposal backend requires client.cache_identity"
+        )
+    return identity
