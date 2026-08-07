@@ -364,6 +364,61 @@ def apply_acceptance_policy(
     return point.model_copy(update={"accepted": True, "rejection_reason": None})
 
 
+def finalize_representatives(
+    points: Sequence[GlobalPointObservation],
+    same_instance_pairs: Any,
+) -> tuple[list[GlobalPointObservation], list[list[str]]]:
+    """Apply explicit same-instance merges and derive the final accepted
+    point set via union-find; each group keeps its highest-confidence point.
+    通过并查集应用显式同实例合并并导出最终接受点集合；每组保留置信度最高
+    的点。"""
+    point_by_id = {point.global_id: point for point in points}
+    parent = {
+        point_id: point_id
+        for point_id, point in point_by_id.items()
+        if point.accepted
+    }
+
+    def find(point_id: str) -> str:
+        while parent[point_id] != point_id:
+            parent[point_id] = parent[parent[point_id]]
+            point_id = parent[point_id]
+        return point_id
+
+    for first, second in same_instance_pairs:
+        if first not in parent or second not in parent:
+            continue
+        root_first, root_second = find(first), find(second)
+        if root_first != root_second:
+            parent[root_second] = root_first
+
+    groups: dict[str, list[str]] = {}
+    for point_id in parent:
+        groups.setdefault(find(point_id), []).append(point_id)
+    representatives: dict[str, str] = {}
+    for root, group in groups.items():
+        representatives[root] = min(
+            group, key=lambda point_id: (-point_by_id[point_id].confidence, point_id)
+        )
+
+    final_points: list[GlobalPointObservation] = []
+    for point in points:
+        if not point.accepted:
+            final_points.append(point)
+            continue
+        representative = representatives[find(point.global_id)]
+        if point.global_id == representative:
+            final_points.append(point)
+        else:
+            final_points.append(
+                point.model_copy(
+                    update={"accepted": False, "rejection_reason": "MERGED_AT_SEAM"}
+                )
+            )
+    merged_groups = [sorted(group) for group in groups.values() if len(group) > 1]
+    return final_points, sorted(merged_groups)
+
+
 def find_boundary_conflicts(
     points: Sequence[GlobalPointObservation],
     tiles: Sequence[TileSpec],

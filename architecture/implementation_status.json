@@ -79,7 +79,11 @@
     "agents/counting/backends/base.py",
     "agents/counting/backends/registry.py",
     "agents/counting/backends/qwen_point.py",
-    "agents/counting/backends/quantity_proposal.py"
+    "agents/counting/backends/quantity_proposal.py",
+    "agents/counting/backends/yolo_adapter.py",
+    "agents/counting/backends/yolo_model_store.py",
+    "agents/counting/backends/yolo_obb.py",
+    "agents/counting/backends/yolov5_obb_onnx.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
