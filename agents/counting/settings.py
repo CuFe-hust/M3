@@ -86,6 +86,25 @@ class YoloDetectorSettings(BaseModel):
     boundary_duplicate_center_px: float = Field(default=16.0, gt=0.0)
 
     @model_validator(mode="after")
+    def validate_provider_device_contract(self) -> "YoloDetectorSettings":
+        """require_cuda=True demands a non-negative integer device; CPU mode
+        demands device='cpu' so the session never requests CUDA silently.
+        require_cuda=True 要求非负整数 device；CPU 模式要求 device='cpu'，
+        使会话绝不静默请求 CUDA。"""
+        if self.require_cuda:
+            if not self.device.isdigit():
+                raise ValueError(
+                    "require_cuda=True requires device to be a non-negative "
+                    f"integer, got {self.device!r}"
+                )
+        elif self.device != "cpu":
+            raise ValueError(
+                "require_cuda=False requires device='cpu', "
+                f"got {self.device!r}"
+            )
+        return self
+
+    @model_validator(mode="after")
     def validate_detector_contract(self) -> "YoloDetectorSettings":
         """Normalize and validate detector class declarations without I/O.
         在不访问文件系统的前提下规范并校验检测器类别声明。"""

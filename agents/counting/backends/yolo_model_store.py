@@ -89,6 +89,7 @@ class YoloModelStore:
             return YoloV5ObbOnnxModel(
                 path,
                 detector.classes,
+                device=detector.device,
                 require_cuda=detector.require_cuda,
                 allow_cpu_fallback=detector.allow_cpu_fallback,
             )

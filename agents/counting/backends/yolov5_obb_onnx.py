@@ -15,13 +15,13 @@ from agents.errors import DetectorInferenceError, OptionalDependencyMissingError
 
 
 def _validate_device(device: str, *, allow_cpu_fallback: bool) -> None:
-    """Accept CUDA device indices (0-9) or CPU when explicitly allowed.
-    接受 CUDA 设备号（0-9）或显式允许时的 CPU。"""
+    """Accept 'cpu' when explicitly allowed, or any non-negative integer CUDA
+    device id. 显式允许时接受 'cpu'，或接受任意非负整数 CUDA 设备号。"""
     if device == "cpu":
         if not allow_cpu_fallback:
             raise ValueError("CPU device requires allow_cpu_fallback=True")
         return
-    if device.isdigit() and 0 <= int(device) <= 9:
+    if device.isdigit():
         return
     raise ValueError(f"unsupported ONNX device expression: {device!r}")
 
@@ -37,6 +37,7 @@ class YoloV5ObbOnnxModel:
         weights: Path,
         classes: list[str],
         *,
+        device: str = "0",
         require_cuda: bool = True,
         allow_cpu_fallback: bool = False,
     ) -> None:
@@ -52,23 +53,43 @@ class YoloV5ObbOnnxModel:
             ) from exc
         self._cv2 = cv2
         self._np = np
+        self._device = device
         self._require_cuda = require_cuda
         self._allow_cpu_fallback = allow_cpu_fallback
         # Preload NVIDIA site-package CUDA/cuDNN libraries before creating the
         # CUDA execution provider. 在创建 CUDA 执行器前预加载 CUDA/cuDNN 库。
         ort.preload_dlls(directory="")
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        if require_cuda:
+            providers: list[object] = [
+                ("CUDAExecutionProvider", {"device_id": int(device)})
+            ]
+            if allow_cpu_fallback:
+                providers.append("CPUExecutionProvider")
+        else:
+            providers = ["CPUExecutionProvider"]
         self._session = ort.InferenceSession(str(weights), providers=providers)
-        self.providers = tuple(self._session.get_providers())
-        self._requested_provider = "CUDA" if require_cuda else "CPU"
-        if require_cuda and "CUDAExecutionProvider" not in self.providers:
+        actual = tuple(self._session.get_providers())
+        self.providers = actual
+        self.requested_provider = (
+            "CUDAExecutionProvider" if require_cuda else "CPUExecutionProvider"
+        )
+        self.requested_device = device
+        if require_cuda and "CUDAExecutionProvider" not in actual:
             if not allow_cpu_fallback:
                 raise DetectorInferenceError(
                     "CUDAExecutionProvider required but unavailable for ONNX detector"
                 )
             self.cpu_fallback_used = True
+            self.resolved_provider = "CPUExecutionProvider"
+            self.resolved_device = "cpu"
         else:
             self.cpu_fallback_used = False
+            if require_cuda:
+                self.resolved_provider = "CUDAExecutionProvider"
+                self.resolved_device = device
+            else:
+                self.resolved_provider = "CPUExecutionProvider"
+                self.resolved_device = "cpu"
         self.names = {index: name for index, name in enumerate(classes)}
         inputs = self._session.get_inputs()
         outputs = self._session.get_outputs()
