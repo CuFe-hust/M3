@@ -112,7 +112,40 @@
 - 未知 backend kind 以固定公共错误失败（`INVALID_BACKEND_KIND`），绝不回显原始
   name/kind 值。
 
+## Task 26–33 运行时完整性（33.5）契约
+
+- **Change 可选依赖**：`agents.change` 基础导入不加载 cv2/numpy（惰性
+  `_require_cv2`/`_require_numpy`，缺失抛 `OptionalDependencyMissingError`）；
+  `[change]` extra 声明 `numpy>=1.26` + `opencv-python-headless>=4.10`；
+  `PairValidator` 导入不要求 cv2。
+- **Spatial MIME**：candidate review 从真实内容 `detect_image_mime` 检测 MIME，
+  绝不按后缀猜测；损坏/未知图像导致 review 失败时保留初次结果、
+  `status=partial`、只记录稳定 error type；缺失 `ModelCacheIdentity` 仍直接失败。
+- **Spatial canonical label**：`canonical_answer` 只做归一化，不做英语单复数
+  猜测（`bus`→`bus`、`glass`→`glass`、`trucks`→`trucks`）。
+- **Change invalid pair**：`preprocess.validation.valid == False` 时
+  `ChangeAgent` 在构建证据/消费 budget/调用模型前抛
+  `AgentExecutionError(cause="INVALID_CHANGE_PAIR")`；单图/乱序/错误角色已在
+  `data.schema` 层拒绝。
+- **Workflow 文件名安全**：`write_evaluation` 复用 `agents.base` 的 POSIX+Windows
+  basename 契约并额外拒绝控制字符，路径类文件名在 I/O 前拒绝；`additional_results`
+  文件名由 `AgentExecution` 构造时同规则校验。
+- **JSONL 并发**：`events.jsonl` / `predictions.jsonl` 的
+  read-compose-write-replace 在按路径进程内锁内执行——单进程并发 writer 安全；
+  **跨进程并发追加不受当前工作流层支持**（文档契约，不声称通用原子追加）。
+- **递归敏感扫描**：`workflows/events._reject_secrets` 是唯一实现（`RunStore`
+  复用），递归拒绝 10 个敏感键（含 `image_data_url`）与 4 个值前缀
+  （`sk-`/`Bearer `/`data:image/`/`-----BEGIN PRIVATE KEY-----`），错误消息不回显
+  违规值。
+- **统一 EvaluationRecord**：`EvaluationTask = counting|general_vqa|grounding|caption`；
+  typed deterministic metrics（`Count`/`VQA`/`Grounding`/`Caption`）；`VQAEvaluationRecord`
+  保留为兼容包装（归入 `general_vqa`）；`aggregate()` 覆盖四个已实现任务且
+  mixed-task 显式失败；judge 只能旁路记录，永不覆盖 deterministic 指标。
+- **CI/打包**：compileall 覆盖 workflows/evaluation；CI 安装 `[dev,migration,change]`
+  并运行 `tests/workflows`、`tests/evaluation`；clean wheel smoke 在源码树外验证
+  `agents.spatial`/`agents.change`（无 cv2）/`workflows`/`evaluation` 导入。
+
 ## 尚未实现
 
-`spatial`、`change` Agents、`workflows`、`evaluation`、`reporting`、
-`application`、`main.py` 尚未创建/实现；任务推进时逐层创建并更新本文件。
+`reporting`、`application`、`main.py` 尚未创建/实现；Task 34 尚未开始；
+任务推进时逐层创建并更新本文件。

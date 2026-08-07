@@ -25,7 +25,15 @@
     22,
     23,
     24,
-    25
+    25,
+    26,
+    27,
+    28,
+    29,
+    30,
+    31,
+    32,
+    33
   ],
   "completed_hardening_tasks": [
     "11.5-data-official-format-parity",
@@ -37,7 +45,8 @@
     "15.8-logical-model-identity-path-safety",
     "25.5-routing-packaging-counting-runtime-integrity",
     "25.6-counting-backend-kind-public-error-finalization",
-    "25.7-yolo-failure-propagation-warning-safety"
+    "25.7-yolo-failure-propagation-warning-safety",
+    "33.5-spatial-change-workflow-evaluation-runtime-integrity"
   ],
   "implemented_files": [
     "data/__init__.py",
@@ -132,5 +141,5 @@
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
-  "_pending_files_note": "pending_files 为空表示当前没有已批准但尚未创建的生产路径被预先声明；workflows/evaluation/reporting/application 尚未实现（见 README）。"
+  "_pending_files_note": "pending_files 为空表示当前没有已批准但尚未创建的生产路径被预先声明；reporting、application 与 main.py 尚未实现（见 README），Task 34 尚未开始。"
 }

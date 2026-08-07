@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–25 完成，25.5/25.6/25.7 hardening 完成）
+## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 hardening 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -13,7 +13,11 @@
 - Agent 通用契约：`agents/`（AgentResult/VisualEvidence、AgentContext/AgentExecution、Registry、错误类型、数据集无关 VisualAgentBase）
 - 领域 Agents：`agents/general_vqa/`、`agents/caption/`、`agents/grounding/`（薄视觉 Agent，含 MCQ/Grounding 输出约束）
 - 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent，主输出恒为 CountingResult，后端使用显式 kind）
+- 空间子系统：`agents/spatial/`（通用 SpatialQuerySpec、几何规则、候选复核、证据合并与 SpatialAgent；候选复核使用真实内容 MIME，canonical label 不做词形猜测）
+- 变化子系统：`agents/change/`（PairValidator/Harmonizer/DifferenceProposal/Preprocess/Reviewer/双路径 ChangeAgent；cv2 与 numpy 为可选依赖 `[change]` extra，base 导入不触发；无效时相图对在模型调用前稳定失败）
 - 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
+- 工作流：`workflows/`（CallBudget、EventWriter/RunStore、ArtifactWriter、运行契约；JSONL 写入进程内并发安全，跨进程并发追加不受当前工作流层支持）
+- 评估：`evaluation/`（统一 EvaluationRecord 与确定性指标：counting/VQA/grounding/caption；corpus 级 caption 指标依赖可选 pycocoevalcap；judge 永不覆盖确定性指标）
 
 计数后端契约：每个后端显式声明 `kind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
 只有 `yolo_obb` 进入 detector plan、zero-review 与 detector fallback；所有 YOLO tile
@@ -23,29 +27,45 @@
 backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
 绝对路径、密钥或 Base64。
 
-**尚未实现**：spatial、change Agents、workflows、evaluation、reporting、
-application 与 CLI（`main.py`）。请勿将其当作可用功能使用。Task 26 尚未开始。
+**尚未实现**：reporting、application 与 CLI（`main.py`）。Task 34 尚未开始；
+请勿将其当作可用功能使用。
 
 ## 安装与测试
 
 ```bash
-python -m pip install -e ".[dev,migration]"
+python -m pip install -e ".[dev,migration,change]"
 python -m compileall \
   data \
   models \
   agents \
   routing \
+  workflows \
+  evaluation \
   tests \
   scripts/generate_migration_fixtures.py
 python -m pytest -q tests/architecture
 python -m pytest -q tests/contracts/test_data_schema_contract.py
 python -m pytest -q tests/parity/test_baseline_golden_fixtures.py
+python -m pytest -q tests/workflows
+python -m pytest -q tests/evaluation
 python -m pytest -q
 ```
 
 GitHub Actions（`.github/workflows/offline-tests.yml`，Ubuntu/Python 3.11）
 执行上述 Foundation tests；不运行 live 模型、真实数据集或密钥相关测试，
 也不下载真实模型权重、不运行 live GPU inference。
+
+## 运行时边界说明
+
+- **Change 可选依赖**：base wheel 的 `import agents.change` 不要求 cv2/numpy
+  （惰性加载）；运行变化预处理/一致化/提议需要 `pip install "m3[change]"`
+  （`numpy` + `opencv-python-headless`）。缺少时相关函数抛出
+  `OptionalDependencyMissingError`。
+- **JSONL 并发边界**：`events.jsonl` / `predictions.jsonl` 的写入在单 Python
+  进程内对并发 writer 安全（按路径锁 + 原子替换）；当前工作流层不支持
+  跨进程并发追加。
+- **Caption 指标**：corpus 级 BLEU/METEOR/ROUGE/CIDEr 依赖可选
+  `pycocoevalcap`，缺少时 `evaluate_caption` 抛出明确 `RuntimeError`。
 
 ## 模型身份配置说明
 
