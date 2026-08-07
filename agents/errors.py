@@ -61,15 +61,36 @@ class AgentExecutionError(RuntimeError):
 
 
 class CountingBackendUnavailableError(RuntimeError):
-    """Raised when no counting backend can handle the given target.
-    当没有计数后端可以处理给定目标时抛出。"""
+    """Raised when no counting backend can handle the given target or when a
+    configured backend cannot run and no fallback exists. This is the single
+    authoritative class — agents/counting/backends/base.py re-exports it.
+    当没有计数后端可处理给定目标、或已配置后端无法运行且无回退时抛出。
+    这是唯一权威类——agents/counting/backends/base.py 复用它。"""
 
-    def __init__(self, target_label: str, *, available: list[str] | None = None) -> None:
-        msg = f"No counting backend available for target {target_label!r}"
+    code = "COUNTING_BACKEND_UNAVAILABLE"
+
+    def __init__(
+        self,
+        target_label: str,
+        *,
+        primary_backend: str | None = None,
+        available: list[str] | None = None,
+        reason_code: str = "NO_BACKEND_AVAILABLE",
+    ) -> None:
+        if primary_backend is not None:
+            msg = (
+                f"Counting backend {primary_backend!r} unavailable for target "
+                f"{target_label!r} ({reason_code})"
+            )
+        else:
+            msg = f"No counting backend available for target {target_label!r}"
         if available:
             msg += f"; registered backends: {available}"
         super().__init__(msg)
         self.target_label = target_label
+        self.primary_backend = primary_backend
+        self.available = available
+        self.reason_code = reason_code
 
 
 class DetectorWeightsMissingError(FileNotFoundError):
