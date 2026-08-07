@@ -27,41 +27,49 @@ class YoloModelStore:
 
     def __init__(self, loader: Callable[[str], Any] | None = None) -> None:
         self._models: dict[tuple[str, str], Any] = {}
-        self._lock = threading.Lock()
+        self._locks: dict[tuple[str, str], threading.Lock] = {}
+        self._global_lock = threading.Lock()
         self._loader = loader
 
     def get(self, detector: YoloDetectorSettings) -> Any:
         """Return a digest-verified cached model without network downloads.
-        返回经摘要验证的缓存模型，且绝不进行网络下载。"""
+        Hashing, loading, and validation are serialized per cache key so the
+        same model is loaded exactly once even under concurrency; different
+        keys may load in parallel. Failed loads never poison the cache.
+        返回经摘要验证的缓存模型，且绝不进行网络下载。哈希、加载与校验按
+        缓存键串行化，使同一模型在并发下只加载一次；不同键可并行加载。
+        失败加载绝不污染缓存。"""
         path = detector.weights.resolve()
         key = (str(path), detector.sha256)
-        with self._lock:
+        with self._global_lock:
+            lock = self._locks.setdefault(key, threading.Lock())
+        with lock:
             cached = self._models.get(key)
-        if cached is not None:
-            return cached
-        if not path.is_file():
-            raise DetectorWeightsMissingError(detector.name, path.name)
-        actual = _sha256(path)
-        if actual != detector.sha256:
-            raise DetectorWeightsHashMismatchError(
-                f"Detector {detector.name!r} digest mismatch for {path.name}: "
-                f"expected {detector.sha256}, got {actual}"
-            )
-        model = self._load(path, detector)
-        actual_task = str(getattr(model, "task", ""))
-        if actual_task != detector.task:
-            raise DetectorTaskMismatchError(
-                f"Detector {detector.name!r} expected task {detector.task!r}, "
-                f"got {actual_task!r}"
-            )
-        model_names = _normalized_names(getattr(model, "names", {}))
-        expected_names = [value.casefold() for value in detector.classes]
-        if model_names != expected_names:
-            raise DetectorClassMapMismatchError(
-                f"Detector {detector.name!r} class map differs from configured classes"
-            )
-        with self._lock:
-            return self._models.setdefault(key, model)
+            if cached is not None:
+                return cached
+            if not path.is_file():
+                raise DetectorWeightsMissingError(detector.name, path.name)
+            actual = _sha256(path)
+            if actual != detector.sha256:
+                raise DetectorWeightsHashMismatchError(
+                    f"Detector {detector.name!r} digest mismatch for {path.name}: "
+                    f"expected {detector.sha256}, got {actual}"
+                )
+            model = self._load(path, detector)
+            actual_task = str(getattr(model, "task", ""))
+            if actual_task != detector.task:
+                raise DetectorTaskMismatchError(
+                    f"Detector {detector.name!r} expected task {detector.task!r}, "
+                    f"got {actual_task!r}"
+                )
+            model_names = _normalized_names(getattr(model, "names", {}))
+            expected_names = [value.casefold() for value in detector.classes]
+            if model_names != expected_names:
+                raise DetectorClassMapMismatchError(
+                    f"Detector {detector.name!r} class map differs from configured classes"
+                )
+            with self._global_lock:
+                return self._models.setdefault(key, model)
 
     def has(self, weight_path: Path, sha256: str | None = None) -> bool:
         """Return whether an exact verified model cache key is present.
@@ -78,7 +86,12 @@ class YoloModelStore:
         if detector.runtime == "onnx_yolov5_obb":
             from agents.counting.backends.yolov5_obb_onnx import YoloV5ObbOnnxModel
 
-            return YoloV5ObbOnnxModel(path, detector.classes)
+            return YoloV5ObbOnnxModel(
+                path,
+                detector.classes,
+                require_cuda=detector.require_cuda,
+                allow_cpu_fallback=detector.allow_cpu_fallback,
+            )
         try:
             from ultralytics import YOLO
         except ImportError as exc:

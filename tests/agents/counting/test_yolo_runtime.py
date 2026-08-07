@@ -167,6 +167,55 @@ def test_store_caches_verified_model(tmp_path: Path) -> None:
     assert store.has(detector.weights, detector.sha256) is True
 
 
+def test_store_loads_same_key_exactly_once_under_concurrency(tmp_path: Path) -> None:
+    """20 concurrent get() calls must load the model exactly once and all
+    callers must receive the same object. 20 个并发 get() 必须只加载一次模型，
+    且所有调用者获得同一对象。"""
+    import threading
+
+    loads: list[str] = []
+    model = _FakeRuntimeModel()
+    store = YoloModelStore(
+        loader=lambda path: loads.append(path) or model
+    )
+    detector = _detector(tmp_path)
+    results: list[Any] = []
+    barrier = threading.Barrier(20)
+
+    def _worker() -> None:
+        barrier.wait()
+        results.append(store.get(detector))
+
+    threads = [threading.Thread(target=_worker) for _ in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert loads == [str(detector.weights.resolve())]
+    assert len(results) == 20
+    assert all(result is model for result in results)
+
+
+def test_store_failed_load_can_be_retried(tmp_path: Path) -> None:
+    """A first load failure must not poison the cache; a later call may retry
+    and succeed. 首次加载失败不得污染缓存；后续调用可重试并成功。"""
+    attempts: list[str] = []
+    model = _FakeRuntimeModel()
+
+    def _flaky_loader(path: str) -> Any:
+        attempts.append(path)
+        if len(attempts) == 1:
+            raise RuntimeError("transient load failure")
+        return model
+
+    store = YoloModelStore(loader=_flaky_loader)
+    detector = _detector(tmp_path)
+    with pytest.raises(RuntimeError, match="transient"):
+        store.get(detector)
+    assert store.get(detector) is model
+    assert len(attempts) == 2
+
+
 # ── 类别解析 / class resolution ───────────────────────────────────────────
 
 

@@ -11,7 +11,19 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from agents.errors import OptionalDependencyMissingError
+from agents.errors import DetectorInferenceError, OptionalDependencyMissingError
+
+
+def _validate_device(device: str, *, allow_cpu_fallback: bool) -> None:
+    """Accept CUDA device indices (0-9) or CPU when explicitly allowed.
+    接受 CUDA 设备号（0-9）或显式允许时的 CPU。"""
+    if device == "cpu":
+        if not allow_cpu_fallback:
+            raise ValueError("CPU device requires allow_cpu_fallback=True")
+        return
+    if device.isdigit() and 0 <= int(device) <= 9:
+        return
+    raise ValueError(f"unsupported ONNX device expression: {device!r}")
 
 
 class YoloV5ObbOnnxModel:
@@ -20,7 +32,14 @@ class YoloV5ObbOnnxModel:
 
     task = "obb"
 
-    def __init__(self, weights: Path, classes: list[str]) -> None:
+    def __init__(
+        self,
+        weights: Path,
+        classes: list[str],
+        *,
+        require_cuda: bool = True,
+        allow_cpu_fallback: bool = False,
+    ) -> None:
         try:
             import cv2  # noqa: PLC0415
             import numpy as np  # noqa: PLC0415
@@ -33,12 +52,23 @@ class YoloV5ObbOnnxModel:
             ) from exc
         self._cv2 = cv2
         self._np = np
+        self._require_cuda = require_cuda
+        self._allow_cpu_fallback = allow_cpu_fallback
         # Preload NVIDIA site-package CUDA/cuDNN libraries before creating the
         # CUDA execution provider. 在创建 CUDA 执行器前预加载 CUDA/cuDNN 库。
         ort.preload_dlls(directory="")
         providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
         self._session = ort.InferenceSession(str(weights), providers=providers)
         self.providers = tuple(self._session.get_providers())
+        self._requested_provider = "CUDA" if require_cuda else "CPU"
+        if require_cuda and "CUDAExecutionProvider" not in self.providers:
+            if not allow_cpu_fallback:
+                raise DetectorInferenceError(
+                    "CUDAExecutionProvider required but unavailable for ONNX detector"
+                )
+            self.cpu_fallback_used = True
+        else:
+            self.cpu_fallback_used = False
         self.names = {index: name for index, name in enumerate(classes)}
         inputs = self._session.get_inputs()
         outputs = self._session.get_outputs()
@@ -75,6 +105,7 @@ class YoloV5ObbOnnxModel:
         payload. 运行一张固定尺寸 ONNX 图像并返回类似 Ultralytics 的 OBB 载荷。"""
         if imgsz != 1024:
             raise ValueError(f"YOLOv5-OBB ONNX requires image_size=1024, got {imgsz}")
+        _validate_device(device, allow_cpu_fallback=self._allow_cpu_fallback)
         image = self._np.asarray(source.convert("RGB"))
         prepared, ratio, padding = self._letterbox(image)
         tensor = (

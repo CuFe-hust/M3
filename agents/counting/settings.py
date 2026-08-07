@@ -78,6 +78,10 @@ class YoloDetectorSettings(BaseModel):
     image_size: int = Field(default=1024, gt=0)
     device: str = "0"
     max_detections: int = Field(default=1000, gt=0)
+    # ONNX runtime provider policy: GPU by default, CPU only when explicitly
+    # allowed. ONNX 运行时 provider 策略：默认 GPU，仅显式允许时使用 CPU。
+    require_cuda: bool = True
+    allow_cpu_fallback: bool = False
     boundary_duplicate_iou: float = Field(default=0.50, ge=0.0, le=1.0)
     boundary_duplicate_center_px: float = Field(default=16.0, gt=0.0)
 
