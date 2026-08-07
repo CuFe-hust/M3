@@ -340,3 +340,22 @@ def test_backend_has_no_fallback_or_prompt_catalog() -> None:
     ).read_text(encoding="utf-8")
     assert "fallback" not in source
     assert "PromptCatalog" not in source
+
+
+def test_duck_typed_identity_is_rejected(tmp_path: Path) -> None:
+    from agents.counting.backends.base import MissingModelCacheIdentityError
+
+    class _DuckIdentity:
+        model = "fake-model"
+        client_version = "1"
+        revision = None
+
+        def generation_payload(self):
+            return {"temperature": 0.0}
+
+    class _DuckClient(_FakeClient):
+        cache_identity = _DuckIdentity()
+
+    backend = _backend(_DuckClient())  # type: ignore[arg-type]
+    with pytest.raises(MissingModelCacheIdentityError, match="ModelCacheIdentity"):
+        asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))

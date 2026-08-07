@@ -24,7 +24,11 @@ from agents.counting.backends.registry import BackendRegistry
 from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
 from agents.counting.settings import CountingSettings
-from agents.errors import AgentTaskMismatchError, DetectorWeightsMissingError
+from agents.errors import (
+    AgentExecutionError,
+    AgentTaskMismatchError,
+    DetectorWeightsMissingError,
+)
 from agents.schema import AgentResult
 from data.schema import (
     GroundTruth,
@@ -102,11 +106,15 @@ class _FakeYoloBackend:
     行为由测试控制的检测器后端。"""
 
     name = "det-a"
+    kind = "yolo_obb"
     priority = 100
 
     def __init__(self, error: Exception | None = None, final_count: int = 1) -> None:
         self._error = error
         self._final_count = final_count
+
+    def is_enabled(self) -> bool:
+        return True
 
     def is_available(self) -> bool:
         return True
@@ -338,7 +346,7 @@ def test_run_requires_data_root(tmp_path: Path) -> None:
         call_budget=_FakeBudget(),
         data_root=None,
     )
-    with pytest.raises(RuntimeError, match="data_root"):
+    with pytest.raises(AgentExecutionError, match="DATA_ROOT_REQUIRED"):
         asyncio.run(_agent(client, registry).run(sample, context))
 
 
@@ -357,7 +365,8 @@ def test_unavailable_detector_falls_back_to_qwen(tmp_path: Path) -> None:
     assert execution.trace["attempted_backends"] == ["det-a", "qwen_point"]
     assert execution.trace["fallback_triggered"] is True
     assert execution.trace["fallback_kind"] == "unavailable"
-    assert "DetectorWeightsMissingError" in execution.trace["fallback_reason"]
+    assert execution.trace["fallback_reason_code"] == "PRIMARY_BACKEND_UNAVAILABLE"
+    assert execution.trace["fallback_error_type"] == "DetectorWeightsMissingError"
     assert execution.trace["yolo"]["attempted"] is True
     assert execution.trace["yolo"]["used_for_final"] is False
 
@@ -370,7 +379,8 @@ def test_runtime_error_on_detector_falls_back_to_qwen(tmp_path: Path) -> None:
     registry = _registry(_qwen_backend(client), yolo)
     execution = asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
     assert execution.trace["fallback_kind"] == "runtime_error"
-    assert "RuntimeError" in execution.trace["fallback_reason"]
+    assert execution.trace["fallback_reason_code"] == "PRIMARY_BACKEND_FAILED"
+    assert execution.trace["fallback_error_type"] == "RuntimeError"
 
 
 def test_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
@@ -380,7 +390,7 @@ def test_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
     yolo = _FakeYoloBackend(error=DetectorWeightsMissingError("det-a", "det.pt"))
     registry = _registry(_qwen_backend(client), yolo)
     agent = _agent(client, registry, fallback_to_qwen_on_unavailable=False)
-    with pytest.raises(CountingBackendUnavailableError, match="unavailable and no fallback"):
+    with pytest.raises(CountingBackendUnavailableError, match="PRIMARY_BACKEND_UNAVAILABLE"):
         asyncio.run(agent.run(_sample(root), _context(root)))
 
 
@@ -397,7 +407,7 @@ def test_qwen_primary_runtime_error_is_not_swallowed(tmp_path: Path) -> None:
             raise RuntimeError("qwen boom")
 
     agent = _agent(_BrokenQwen(), registry)
-    with pytest.raises(RuntimeError, match="qwen boom"):
+    with pytest.raises(AgentExecutionError, match="TARGET_PARSE_FAILED"):
         asyncio.run(agent.run(_sample(root), _context(root)))
 
 
@@ -512,3 +522,201 @@ def test_primary_payload_is_counting_result_on_all_execution_paths(tmp_path: Pat
     assert execution.result_filename == "counting_result.json"
     assert execution.trace["final_backend"] == "qwen_point"
     assert execution.trace["yolo"]["zero_overridden"] is True
+
+
+# ── 25.6 收尾契约 / 25.6 finalization ─────────────────────────────────────
+
+
+def test_public_error_identity_is_single_class() -> None:
+    """agents top-level, agents.errors, and backends.base all expose the same
+    CountingBackendUnavailableError class. agents 顶层、agents.errors 与
+    backends.base 暴露同一个 CountingBackendUnavailableError 类。"""
+    from agents import CountingBackendUnavailableError as PublicError
+    from agents.counting.backends.base import (
+        CountingBackendUnavailableError as BackendError,
+    )
+    from agents.errors import CountingBackendUnavailableError as CoreError
+
+    assert PublicError is CoreError
+    assert BackendError is CoreError
+
+
+def test_public_error_is_raised_for_missing_plan(tmp_path: Path) -> None:
+    """A missing backend plan surfaces as the public error class.
+    缺失后端计划以公共错误类呈现。"""
+    from agents import CountingBackendUnavailableError as PublicError
+    from agents.errors import CountingBackendUnavailableError as CoreError
+
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    registry = BackendRegistry()  # empty → no plan / 空注册表 → 无计划
+    with pytest.raises(CoreError) as info:
+        asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    assert isinstance(info.value, PublicError)
+    assert info.value.reason_code == "NO_BACKEND_PLAN"
+
+
+class _FakeQuantityProposalBackend:
+    """Minimal quantity-proposal backend for agent integration.
+    用于 Agent 集成的极简数量提议后端。"""
+
+    name = "quantity_proposal"
+    kind = "quantity_proposal"
+    priority = 5
+
+    def __init__(self, final_count: int = 0, error: Exception | None = None) -> None:
+        self._final_count = final_count
+        self._error = error
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True
+
+    def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
+        return True
+
+    async def count(self, request: CountingRequest, context: object) -> CountingBackendOutcome:
+        if self._error is not None:
+            raise self._error
+        from agents.counting.schema import GlobalPointObservation, PointProvenance
+
+        points: list[GlobalPointObservation] = []
+        if self._final_count > 0:
+            points = [
+                GlobalPointObservation(
+                    global_id=f"{request.sample.sample_id}:q:p{i}",
+                    target=request.target.canonical_label,
+                    source_tile_id="whole_image_overview",
+                    local_id=f"p{i}",
+                    local_x_norm=500,
+                    local_y_norm=500,
+                    local_radius_norm=0,
+                    global_x_px=request.image.width // 2,
+                    global_y_px=request.image.height // 2,
+                    global_x_norm=500,
+                    global_y_norm=500,
+                    radius_px=4.0,
+                    confidence=0.9,
+                    ownership_valid=True,
+                    near_core_boundary=False,
+                    accepted=True,
+                    short_evidence="e",
+                    provenance=PointProvenance(source="qwen_point", source_class="car"),
+                )
+                for i in range(self._final_count)
+            ]
+        return CountingBackendOutcome(
+            counting=CountingResult(
+                sample_id=request.sample.sample_id,
+                target=request.target.canonical_label,
+                question=request.sample.question,
+                source_width=request.image.width,
+                source_height=request.image.height,
+                tile_count=1,
+                succeeded_tiles=["whole_image_overview"],
+                global_points=points,
+                final_count=self._final_count,
+                status="completed" if self._final_count > 0 else "completed_with_warnings",
+            ),
+            trace={"backend_kind": "quantity_proposal"},
+        )
+
+
+def test_quantity_proposal_zero_does_not_trigger_zero_review(tmp_path: Path) -> None:
+    """Quantity proposal is not a detector: a zero result must not trigger the
+    detector zero-review path. 数量提议不是检测器：零结果不得触发检测器
+    zero review 路径。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    quantity = _FakeQuantityProposalBackend(final_count=0)
+    registry = _registry(_qwen_backend(client), quantity)
+    execution = asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    assert execution.trace["primary_backend"] == "quantity_proposal"
+    assert execution.trace["primary_backend_kind"] == "quantity_proposal"
+    assert execution.trace["final_backend"] == "quantity_proposal"
+    assert execution.trace["review_backend"] is None
+    assert execution.trace["fallback_triggered"] is False
+    assert execution.trace["yolo"] == {"attempted": False, "used_for_final": False}
+    # Only the Qwen target parse call happens; no review or tile calls.
+    # 仅发生 Qwen target 解析调用；绝无复核或 tile 调用。
+    assert client.calls == ["s1:target"]
+
+
+def test_quantity_proposal_positive_result_payload(tmp_path: Path) -> None:
+    """Quantity proposal positive result keeps CountingResult primary and
+    CountingResult filename. 数量提议正数结果保持 CountingResult 主载荷与
+    固定文件名。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    quantity = _FakeQuantityProposalBackend(final_count=3)
+    registry = _registry(_qwen_backend(client), quantity)
+    execution = asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    assert isinstance(execution.payload, CountingResult)
+    assert execution.result_filename == "counting_result.json"
+    assert execution.trace["yolo"]["attempted"] is False
+    # answer_as_agent_result appends AgentResult as additional only.
+    # answer_as_agent_result 仅把 AgentResult 追加为附加结果。
+    sample = _sample(root, answer_as_agent_result=True)
+    execution2 = asyncio.run(_agent(client, registry).run(sample, _context(root)))
+    assert isinstance(execution2.payload, CountingResult)
+    assert "agent_result.json" in execution2.additional_results
+
+
+def test_quantity_proposal_runtime_error_is_agent_error(tmp_path: Path) -> None:
+    """Quantity proposal runtime errors become AgentExecutionError and never
+    take the detector fallback path. 数量提议运行时错误转换为
+    AgentExecutionError，绝不走检测器回退路径。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    quantity = _FakeQuantityProposalBackend(error=RuntimeError("proposal boom"))
+    registry = _registry(_qwen_backend(client), quantity)
+    with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
+        asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+
+
+_SENSITIVE_ERROR_TEXT = (
+    "/home/user/private/model.pt "
+    "C:\\secret\\models\\det.onnx "
+    "sk-test-secret "
+    "Bearer abcdef "
+    "data:image/png;base64,AAAA"
+)
+
+
+def test_public_error_and_trace_are_sanitized(tmp_path: Path) -> None:
+    """Raw exception text with paths, secrets, and Base64 must never reach
+    public errors, traces, warnings, or additional results.
+    含路径、密钥与 Base64 的原始异常文本绝不进入公共错误、trace、warnings
+    或附加结果。"""
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    quantity = _FakeQuantityProposalBackend(error=RuntimeError(_SENSITIVE_ERROR_TEXT))
+    registry = _registry(_qwen_backend(client), quantity)
+    with pytest.raises(AgentExecutionError) as info:
+        asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    # The public message carries only the stable cause code; the raw exception
+    # text stays in __cause__ (standard chaining) but never in the message.
+    # 公共消息只携带稳定 cause code；原始异常文本保留在 __cause__（标准
+    # chaining），绝不进入消息。
+    public_text = str(info.value)
+    assert public_text == (
+        "Agent 'counting_agent' failed on sample 's1': PRIMARY_BACKEND_FAILED"
+    )
+    for token in ("/home/user/private", "sk-test-secret", "Bearer abcdef", "base64,AAAA"):
+        assert token not in public_text, token
+
+    # A successful run with a backend trace must also stay clean.
+    # 成功运行的后端 trace 同样保持干净。
+    ok_quantity = _FakeQuantityProposalBackend(final_count=0)
+    registry2 = _registry(_qwen_backend(client), ok_quantity)
+    execution = asyncio.run(_agent(client, registry2).run(_sample(root), _context(root)))
+    dump = str(execution.trace) + str(execution.additional_results)
+    for token in ("/home/user/private", "sk-test-secret", "Bearer abcdef", "base64,AAAA"):
+        assert token not in dump, token

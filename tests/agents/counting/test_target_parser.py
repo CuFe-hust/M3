@@ -175,7 +175,7 @@ def test_empty_string_hint_raises_stable_error() -> None:
 
 def test_missing_cache_identity_fails_before_model_call() -> None:
     client = _NoIdentityClient()
-    with pytest.raises(MissingModelCacheIdentityError, match="cache_identity"):
+    with pytest.raises(MissingModelCacheIdentityError, match="ModelCacheIdentity"):
         _parse(_parser(client), hint=None)
     assert client.calls == []
 
@@ -191,3 +191,20 @@ def test_parser_has_no_dataset_branch() -> None:
     assert "VRSBench" not in source
     assert "vrsbench" not in source
     assert "spacers_agent" not in source
+
+
+def test_duck_typed_identity_is_rejected() -> None:
+    class _DuckIdentity:
+        model = "fake-model"
+        client_version = "1"
+        revision = None
+
+        def generation_payload(self):
+            return {"temperature": 0.0}
+
+    class _DuckClient(_RecordingClient):
+        cache_identity = _DuckIdentity()
+
+    with pytest.raises(MissingModelCacheIdentityError, match="ModelCacheIdentity"):
+        _parse(_parser(_DuckClient()), hint=None)
+    assert _DuckClient().calls == []

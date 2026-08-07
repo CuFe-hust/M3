@@ -36,7 +36,11 @@ def _counting(sample_id: str = "s1", **overrides) -> CountingResult:
 
 class _FakeQwenBackend:
     name = "qwen_point"
+    kind = "qwen_point"
     priority = 0
+
+    def is_enabled(self) -> bool:
+        return True
 
     def is_available(self) -> bool:
         return True
@@ -52,11 +56,15 @@ class _FakeQwenBackend:
 
 class _FakeYoloBackend:
     name = "det-a"
+    kind = "yolo_obb"
     priority = 100
 
     def __init__(self, available: bool = True, supported: bool = True) -> None:
         self._available = available
         self._supported = supported
+
+    def is_enabled(self) -> bool:
+        return self._available
 
     def is_available(self) -> bool:
         return self._available
@@ -80,7 +88,11 @@ class _FakeQuantityBackend:
     """Supports targets only under a reliable hint. 仅在可靠 hint 下支持目标。"""
 
     name = "quantity_proposal"
+    kind = "quantity_proposal"
     priority = 5
+
+    def is_enabled(self) -> bool:
+        return True
 
     def is_available(self) -> bool:
         return True
@@ -117,7 +129,7 @@ def test_auto_prefers_highest_priority_supported_detector() -> None:
     assert plan is not None
     assert plan.primary_backend_name == "det-a"
     assert plan.fallback_backend_names == ("qwen_point",)
-    assert "highest_priority_supported_detector" in plan.reason_codes
+    assert "highest_priority_supported_yolo" in plan.reason_codes
 
 
 def test_auto_falls_back_to_qwen_without_supported_detector() -> None:
@@ -265,3 +277,57 @@ def test_selector_has_no_dataset_names_or_question_regex() -> None:
     assert "dataset" not in source
     assert "re.search" not in source
     assert "spacers_agent" not in source
+
+
+# ── 25.6 kind 分类 / kind classification ───────────────────────────────────
+
+
+def test_quantity_proposal_is_not_a_yolo_candidate() -> None:
+    """Quantity proposal never enters the yolo candidate list.
+    数量提议绝不进入 yolo 候选列表。"""
+    selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend())
+    yolo = selector._yolo_candidates(_TARGET, {"quantity_estimation": True})
+    assert [backend.name for backend in yolo] == []
+    quantity = selector._quantity_candidates(_TARGET, {"quantity_estimation": True})
+    assert [backend.name for backend in quantity] == ["quantity_proposal"]
+
+
+def test_auto_prefers_yolo_over_quantity() -> None:
+    selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(), _FakeQuantityBackend())
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "det-a"
+    assert plan.fallback_backend_names == ("qwen_point",)
+
+
+def test_auto_falls_back_to_quantity_without_yolo() -> None:
+    selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend())
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "quantity_proposal"
+    assert plan.fallback_backend_names == ()
+    assert "target_supported_by_quantity_proposal" in plan.reason_codes
+
+
+def test_auto_falls_back_to_qwen_without_detectors() -> None:
+    selector = _selector(_FakeQwenBackend())
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "qwen_point"
+
+
+def test_explicit_yolo_never_selects_quantity_proposal() -> None:
+    selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend(), default_backend="yolo_obb")
+    plan = selector.plan(_TARGET, task="counting")
+    assert plan.primary_backend_name == "qwen_point"
+    assert "explicit_yolo_unsupported_target_qwen" in plan.reason_codes
+
+
+class _UnknownKindBackend(_FakeQwenBackend):
+    name = "mystery"
+    kind = "mystery_kind"
+
+
+def test_unknown_kind_fails_stably() -> None:
+    from agents.errors import CountingBackendUnavailableError
+
+    selector = _selector(_FakeQwenBackend(), _UnknownKindBackend())
+    with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_KIND"):
+        selector.plan(_TARGET, task="counting")

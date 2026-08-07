@@ -290,5 +290,32 @@ def test_missing_cache_identity_fails_before_model_call(tmp_path: Path) -> None:
             raise AssertionError("must not be called")
 
     backend = _backend(_BareClient())  # type: ignore[arg-type]
-    with pytest.raises(MissingModelCacheIdentityError, match="cache_identity"):
+    with pytest.raises(MissingModelCacheIdentityError, match="ModelCacheIdentity"):
+        asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
+
+
+# ── 25.6 duck-typed identity / 鸭子类型身份拒绝 ───────────────────────────
+
+
+class _DuckIdentity:
+    model = "fake-model"
+    client_version = "1"
+    revision = None
+
+    def generation_payload(self):
+        return {"temperature": 0.0}
+
+
+class _DuckClient:
+    cache_identity = _DuckIdentity()
+
+    async def complete_json(self, **kwargs):
+        raise AssertionError("must not be called")
+
+
+def test_duck_typed_identity_is_rejected_before_model_call(tmp_path: Path) -> None:
+    from agents.counting.backends.base import MissingModelCacheIdentityError
+
+    backend = _backend(_DuckClient())  # type: ignore[arg-type]
+    with pytest.raises(MissingModelCacheIdentityError, match="ModelCacheIdentity"):
         asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))

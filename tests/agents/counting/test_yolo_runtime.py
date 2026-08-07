@@ -476,3 +476,138 @@ def test_backend_imports_do_not_load_weights() -> None:
 
     for heavy in ("ultralytics", "onnxruntime"):
         assert heavy not in __import__("sys").modules, heavy
+
+
+# ── 25.6 ONNX provider/device audit / ONNX provider/device 审计 ───────────
+
+
+def _install_fake_ort(monkeypatch, providers_result: list[str], captured: dict):
+    """Install a fake onnxruntime module capturing provider arguments.
+    安装捕获 provider 参数的假 onnxruntime 模块。"""
+    import sys
+    import types
+
+    fake_np = __import__("numpy")
+
+    class _FakeSession:
+        def __init__(self, path, providers=None):
+            captured["providers"] = providers
+
+        def get_providers(self):
+            return list(providers_result)
+
+        def get_inputs(self):
+            return [types.SimpleNamespace(name="input", shape=[1, 3, 1024, 1024])]
+
+        def get_outputs(self):
+            return [types.SimpleNamespace(name="output", shape=[1, 5 + 2 + 180])]
+
+        def run(self, *args, **kwargs):
+            return [fake_np.zeros((1, 5 + 2 + 180))]
+
+    class _FakeOrt:
+        @staticmethod
+        def preload_dlls(directory=""):
+            pass
+
+        @staticmethod
+        def InferenceSession(path, providers=None):
+            return _FakeSession(path, providers)
+
+    monkeypatch.setitem(sys.modules, "onnxruntime", _FakeOrt)
+    monkeypatch.setitem(
+        sys.modules,
+        "cv2",
+        types.SimpleNamespace(
+            resize=lambda *a, **k: None,
+            copyMakeBorder=lambda *a, **k: None,
+            INTER_LINEAR=1,
+            BORDER_CONSTANT=2,
+            dnn=types.SimpleNamespace(NMSBoxesRotated=lambda *a, **k: None),
+        ),
+    )
+
+
+def _onnx_model(tmp_path: Path, monkeypatch, providers_result, **detector_overrides):
+    from agents.counting.backends.yolov5_obb_onnx import YoloV5ObbOnnxModel
+
+    captured: dict = {}
+    _install_fake_ort(monkeypatch, providers_result, captured)
+    weights = tmp_path / "det.onnx"
+    weights.write_bytes(b"fake")
+    detector = _detector(tmp_path, **detector_overrides)
+    model = YoloV5ObbOnnxModel(
+        weights,
+        detector.classes,
+        device=detector.device,
+        require_cuda=detector.require_cuda,
+        allow_cpu_fallback=detector.allow_cpu_fallback,
+    )
+    return model, captured
+
+
+def test_onnx_cuda_device_binding(tmp_path: Path, monkeypatch) -> None:
+    model, captured = _onnx_model(
+        tmp_path, monkeypatch, ["CUDAExecutionProvider", "CPUExecutionProvider"],
+        device="1",
+    )
+    assert captured["providers"] == [
+        ("CUDAExecutionProvider", {"device_id": 1}),
+    ]
+    assert model.requested_provider == "CUDAExecutionProvider"
+    assert model.requested_device == "1"
+    assert model.resolved_provider == "CUDAExecutionProvider"
+    assert model.resolved_device == "1"
+    assert model.cpu_fallback_used is False
+
+
+def test_onnx_cuda_device_zero(tmp_path: Path, monkeypatch) -> None:
+    model, captured = _onnx_model(
+        tmp_path, monkeypatch, ["CUDAExecutionProvider"],
+        device="0",
+    )
+    assert captured["providers"] == [("CUDAExecutionProvider", {"device_id": 0})]
+
+
+def test_onnx_cpu_mode_never_requests_cuda(tmp_path: Path, monkeypatch) -> None:
+    model, captured = _onnx_model(
+        tmp_path, monkeypatch, ["CPUExecutionProvider"],
+        device="cpu", require_cuda=False,
+    )
+    assert captured["providers"] == ["CPUExecutionProvider"]
+    assert model.requested_provider == "CPUExecutionProvider"
+    assert model.requested_device == "cpu"
+    assert model.resolved_provider == "CPUExecutionProvider"
+    assert model.resolved_device == "cpu"
+
+
+def test_onnx_cuda_unavailable_without_fallback_fails(tmp_path: Path, monkeypatch) -> None:
+    from agents.errors import DetectorInferenceError
+
+    with pytest.raises(DetectorInferenceError, match="CUDAExecutionProvider required"):
+        _onnx_model(
+            tmp_path, monkeypatch, ["CPUExecutionProvider"],
+            device="0", allow_cpu_fallback=False,
+        )
+
+
+def test_onnx_cuda_unavailable_with_fallback_audits_cpu(tmp_path: Path, monkeypatch) -> None:
+    model, captured = _onnx_model(
+        tmp_path, monkeypatch, ["CPUExecutionProvider"],
+        device="0", allow_cpu_fallback=True,
+    )
+    assert model.cpu_fallback_used is True
+    assert model.resolved_provider == "CPUExecutionProvider"
+    assert model.resolved_device == "cpu"
+
+
+def test_onnx_settings_device_contract(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="non-negative"):
+        _detector(tmp_path, device="abc")
+    with pytest.raises(ValidationError, match="device='cpu'"):
+        _detector(tmp_path, device="0", require_cuda=False)
+    # Non-negative integers beyond 9 are accepted. / 超过 9 的非负整数可接受。
+    detector = _detector(tmp_path, device="10")
+    assert detector.device == "10"
