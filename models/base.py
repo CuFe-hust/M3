@@ -142,6 +142,30 @@ class CacheIdentifiedClient(Protocol):
     def cache_identity(self) -> ModelCacheIdentity: ...
 
 
+class MissingModelCacheIdentityError(RuntimeError):
+    """Raised when a client does not expose a valid cache identity; model calls
+    never fall back to fabricated identities.
+    客户端未暴露有效缓存身份时抛出；模型调用绝不使用伪造身份回退。"""
+
+
+def require_model_cache_identity(
+    client: object,
+    *,
+    component: str,
+) -> ModelCacheIdentity:
+    """Require a real ModelCacheIdentity instance — duck-typed stand-ins are
+    rejected before any model call. This is the single authoritative helper for
+    every model client in the runtime. 要求真实 ModelCacheIdentity 实例——鸭子
+    类型替代品在任何模型调用前被拒绝。这是整个运行时所有模型客户端的唯一
+    权威 helper。"""
+    identity = getattr(client, "cache_identity", None)
+    if not isinstance(identity, ModelCacheIdentity):
+        raise MissingModelCacheIdentityError(
+            f"{component} requires a valid ModelCacheIdentity"
+        )
+    return identity
+
+
 class _FrozenJsonMapping(Mapping[str, Any]):
     """Read-only, deep-frozen Mapping over JSON-safe values. Nested dicts
     become further _FrozenJsonMapping instances and nested lists become

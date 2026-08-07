@@ -15,6 +15,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from agents.base import CallBudget
 from agents.counting.backends.base import (
     BackendKind,
     CountingBackendOutcome,
@@ -33,13 +34,25 @@ from agents.counting.settings import CountingSettings
 from agents.schema import AgentName, AgentResult
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 from models.images import image_to_data_url
-from models.qwen_transformers import QwenTransformersError
 
-# Only parse/validation/repair failures may trigger raw-response recovery;
-# network, filesystem, permission, and budget errors must propagate unchanged.
-# 只有解析/校验/修复类失败可触发 raw response 恢复；网络、文件系统、权限
-# 与 budget 错误必须原样传播。
-_RECOVERABLE_PROPOSAL_ERRORS = (ValueError, QwenTransformersError)
+
+def _is_recoverable_proposal_error(error: Exception) -> bool:
+    """Only parse/validation/repair failures may trigger raw-response recovery;
+    network, filesystem, permission, and budget errors must propagate
+    unchanged. The models layer is the single stable source of model-client
+    errors (e.g. QwenTransformersError), so an error whose class is defined in
+    a models.* module is treated as a repairable model failure without
+    importing any concrete client module into the agent layer.
+    只有解析/校验/修复类失败可触发 raw response 恢复；网络、文件系统、权限
+    与 budget 错误必须原样传播。models.* 是模型客户端错误的唯一稳定来源
+    （如 QwenTransformersError），因此类定义在 models.* 模块中的错误被视为
+    可修复的模型失败，无需把具体客户端模块 import 进 Agent 层。"""
+    if isinstance(error, ValueError):
+        return True
+    return (
+        isinstance(error, RuntimeError)
+        and error.__class__.__module__.startswith("models.")
+    )
 
 
 class _CountProposalResult(BaseModel):
@@ -268,7 +281,7 @@ class QuantityProposalBackend:
         request: CountingRequest,
         *,
         sample_id: str,
-        budget: Any,
+        budget: CallBudget | None,
     ) -> tuple[_CountProposalResult, str | None]:
         image_bytes = _encode_image(request.image)
         system_prompt = self._proposal_prompt + (
@@ -322,7 +335,9 @@ class QuantityProposalBackend:
                 ),
             )
             return proposal, None
-        except _RECOVERABLE_PROPOSAL_ERRORS as error:
+        except Exception as error:
+            if not _is_recoverable_proposal_error(error):
+                raise
             # Recovery reads ONLY the current request's hash-scoped artifact
             # directory, so stale raw responses from previous requests can
             # never be reused. 恢复只读取当前请求的 hash 作用域产物目录，
@@ -352,7 +367,7 @@ class QuantityProposalBackend:
         sample_id: str,
         target: CountTargetSpec,
         proposal_count: int,
-        budget: Any,
+        budget: CallBudget | None,
     ) -> AgentResult:
         image_bytes = _encode_image(request.image)
         image_hash = hashlib.sha256(image_bytes).hexdigest()

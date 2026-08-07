@@ -1,5 +1,5 @@
 {
-  "description": "Import dependency rules for the new top-level packages. 新顶层包导入依赖规则。",
+  "description": "Import dependency rules for the new top-level packages. 新顶层包导入依赖规则。Domain layers depend on model contracts, never on concrete model implementations; only the composition root (application) may select concrete implementations.",
   "internal_packages": [
     "application",
     "data",
@@ -18,7 +18,7 @@
       "allow": ["models"]
     },
     "agents": {
-      "allow": ["agents", "data.schema", "models"]
+      "allow": ["agents", "data.schema", "models.base", "models.images"]
     },
     "routing": {
       "allow": ["routing", "data.schema", "agents.schema"]
@@ -28,10 +28,7 @@
         "evaluation",
         "data.schema",
         "agents.schema",
-        "agents.counting.schema",
-        "models.base",
-        "models.cache",
-        "models.settings"
+        "agents.counting.schema"
       ]
     },
     "reporting": {
@@ -53,7 +50,7 @@
         "agents",
         "routing",
         "evaluation",
-        "models"
+        "models.base"
       ]
     },
     "application": {
@@ -72,15 +69,60 @@
       "allow": ["application"]
     }
   },
+  "path_rules": {
+    "evaluation/metrics/**": {
+      "allow": [
+        "evaluation",
+        "data.schema",
+        "agents.schema",
+        "agents.counting.schema"
+      ]
+    },
+    "evaluation/judges/**": {
+      "allow": [
+        "evaluation",
+        "data.schema",
+        "agents.schema",
+        "models.base",
+        "models.cache",
+        "models.settings"
+      ]
+    }
+  },
   "forbidden_patterns": {
     "reporting": [
       "agents.*.agent",
       "models.qwen_transformers",
       "workflows.sample_runner"
     ],
-    "evaluation": ["application"],
-    "agents": ["application", "workflows"],
-    "models": ["data"],
-    "routing": ["models", "data.adapters"]
+    "evaluation": [
+      "application**",
+      "models.entry",
+      "models.qwen_transformers",
+      "models.qwen3_vl**",
+      "models.qwen3_5**"
+    ],
+    "agents": [
+      "application**",
+      "workflows**",
+      "models.entry",
+      "models.qwen_transformers",
+      "models.qwen3_vl**",
+      "models.qwen3_5**"
+    ],
+    "models": ["data**"],
+    "routing": [
+      "models**",
+      "data.adapters**",
+      "workflows**",
+      "application**"
+    ],
+    "workflows": [
+      "application**",
+      "models.entry",
+      "models.qwen_transformers",
+      "models.qwen3_vl**",
+      "models.qwen3_5**"
+    ]
   }
 }

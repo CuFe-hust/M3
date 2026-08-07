@@ -14,6 +14,7 @@ from typing import Any
 
 from PIL import Image
 
+from agents.base import CallBudget
 from agents.counting.backends.base import (
     BackendKind,
     CountingBackendOutcome,
@@ -108,7 +109,7 @@ class _PipelineTileCallback:
         system_prompt: str,
         prompt_version: str,
         counting: CountingSettings,
-        budget: Any,
+        budget: CallBudget | None,
         artifact_root: Any,
         sample_id: str,
     ) -> None:

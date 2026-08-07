@@ -272,3 +272,19 @@ def test_execution_validates_any_payload_with_agent_name() -> None:
 def test_execution_accepts_payload_without_agent_name() -> None:
     execution = _execution(payload={"answer": "ok"})
     assert execution.payload == {"answer": "ok"}
+
+
+# ── 契约签名 / contract signatures ─────────────────────────────────────────
+
+
+def test_agent_protocol_run_signature_uses_unified_sample() -> None:
+    """Agent.run is typed with the domain sample contract, never Any.
+    Agent.run 使用领域样本契约类型而非 Any。"""
+    import typing
+
+    from data.schema import UnifiedSample
+
+    hints = typing.get_type_hints(Agent.run)
+    assert hints["sample"] is UnifiedSample
+    assert hints["context"] is AgentContext
+    assert hints["return"] is AgentExecution

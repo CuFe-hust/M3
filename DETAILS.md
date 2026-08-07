@@ -12,7 +12,7 @@
 
 | 模块 | 拥有类型/函数 | 说明 |
 |---|---|---|
-| `models/base.py` | `RequestMeta`、`VisionLanguageClient`、`build_request_hash`、`sanitize_messages` | 模型客户端协议与请求哈希/脱敏 |
+| `models/base.py` | `ModelCacheIdentity`、`CacheIdentifiedClient`、`MissingModelCacheIdentityError`、`require_model_cache_identity`、`VisionLanguageClient`、`RequestMeta`、`build_request_hash`、`sanitize_messages` | 模型客户端协议、缓存身份校验（全仓唯一权威）与请求哈希/脱敏 |
 | `models/cache.py` | `CacheEntry`、`JsonResponseCache`、`ModelCacheError`、`CorruptCacheEntryError` | 原子文件缓存；损坏条目稳定错误 |
 | `models/images.py` | `read_normalized_image`、`guess_image_mime`、`image_to_data_url`、`image_sha256` | 模型输入图像工具 |
 | `models/settings.py` | `QwenSettings`、`DeepSeekSettings`、`ModelSettings` | 配置声明；默认离线（allow_download=False） |
@@ -33,8 +33,9 @@
 | `agents/counting/evidence.py` | box→点/去重/边界残片/数量解析 | 通用标签归一化，无数据集分支 |
 | `agents/counting/point_pipeline.py` | `PointCountingOrchestrator`、`find_boundary_conflicts`、`decide_seam_pairs`、`finalize_representatives` | tile 回调协议、递归分割、seam 最终化接入主流程 |
 | `agents/counting/target_parser.py` | `CountTargetParser`、`InvalidCountTargetHintError` | 目标解析优先级：normalization hint → legacy metadata → Qwen |
-| `agents/counting/agent.py` | `CountingAgent` | 显式 plan/回退/zero review；主 payload 恒为 CountingResult；AgentResult 仅附加 |
-| `agents/counting/backends/base.py` | 协议与类型 | CountingRequest/BackendPlan/Outcome；is_enabled/is_available 分离；稳定错误 |
+| `agents/counting/agent.py` | `CountingAgent` | task gate / target parse / plan / request / 调用 executor / 打包 AgentExecution 与公共 trace；主 payload 恒为 CountingResult；AgentResult 仅附加 |
+| `agents/counting/executor.py` | `CountingPlanExecutor`、`CountingExecutionResult`、`CountingExecutionPolicy` | BackendPlan 运行时执行：primary 调用、unavailable/runtime 回退、zero review；结构化执行状态，无 8 元 tuple |
+| `agents/counting/backends/base.py` | 协议与类型 | CountingRequest/BackendPlan/Outcome；is_enabled/is_available 分离；稳定错误；`require_model_cache_identity`/`MissingModelCacheIdentityError` 重导出 models.base 同一对象 |
 | `agents/counting/backends/registry.py` | `BackendRegistry` | 稳定注册顺序、重复检测、数据集中性命名 |
 | `agents/counting/backends/selector.py` | `BackendSelector` | 仅按 mode/task/target/hints 计划；计划期不隐藏不可用检测器 |
 | `agents/counting/backends/qwen_point.py` | `QwenPointCountingBackend` | tile 点计数；完整 cache identity；response schema 入 hash |
@@ -43,9 +44,10 @@
 | `agents/counting/backends/yolo_obb.py` | `YoloOBBCountingBackend` | OBB 计数；alias/composite；边界去重；provider 审计 |
 | `agents/counting/backends/yolov5_obb_onnx.py` | `YoloV5ObbOnnxModel` | 惰性 ONNX；require_cuda/allow_cpu_fallback；device 校验 |
 | `agents/counting/backends/yolo_adapter.py` | `OBBDetection`、`UltralyticsOBBModelAdapter` | 统一 OBB 输出 |
-| `routing/schema.py` | `SampleCapabilities`、`RoutePolicy`、`RoutingDecision` | 路由契约；Router 不读 question、不调用模型 |
+| `routing/schema.py` | `SampleCapabilities`、`RoutePolicy`、`RoutingDecision`、`TaskResolutionRequest`、`TaskResolution`、`ResolutionSource` | 路由契约 + 样本前任务解析契约；Router 不读 question、不调用模型；TaskResolution* 仅供 TaskResolver 使用 |
 | `routing/policies.py` | `POLICIES`、`policy_for` | 固定 task→policy 表；未知 task 显式失败 |
 | `routing/router.py` | `TaskRouter` | 同步确定性路由；requires_tiling 为策略字段 |
+| `workflows/task_resolver.py` | `TaskResolver`、`TaskResolutionError` | 样本前任务解析：explicit/rule/model 三路径；显式 task 不调用模型；空问题仅两条窄规则；低置信度只返回结构化候选，不执行 Agent |
 | `data/schema.py` | `ImageRef` | 不可变图像引用；path 统一 posix 序列化；sha256 严格 64 位 hex |
 | `data/schema.py` | `GroundTruth` | answers/count/boxes(4|8)/points(2)/labels/raw/coordinate_frame |
 | `data/schema.py` | `TaskNormalization` | 一等规范化字段（结构化 spatial_query/answer_constraints/count_target_hint） |
@@ -67,14 +69,38 @@
 
 ## 依赖方向
 
-- `data` 不依赖任何其他业务包；`models` 不依赖 data/agents；`agents` 可依赖
-  `data.schema` 与 `models`；`routing` 可依赖 `data.schema` 与 `agents.schema`。
+- `data` 不依赖任何其他业务包；`models` 不依赖 data/agents。
+- `agents` 只依赖 `models.base`/`models.images`（模型协议与纯工具），
+  禁止 `models.entry`/`models.qwen_transformers`/`models.qwen3_*`——
+  Agent 不得自己创建具体模型。
+- `routing` 不依赖 models（可依赖 `data.schema` 与 `agents.schema`）；
+  `TaskResolver` 在 workflows，不需要放宽 routing。
+- `workflows` 只依赖模型协议（`models.base`），禁止具体 Qwen 实现；
+  具体模型创建属于 composition root（`application/bootstrap.py`、
+  `application/runtime.py`）。
+- `evaluation.metrics`（path rule）无模型依赖；`evaluation.judges`（path
+  rule）可依赖批准的 `models.base`/`models.cache`/`models.settings`；
+  path rule 优先于 package 规则，无匹配时回退。
+- `reporting` 只依赖 schema/result 层，不执行 Agent。
+- `application` 是 composition root，可继续拥有宽 import 权限（settings、
+  model factory、registry/workflow assembly、command wiring）。
 - `VisualAgentBase` 返回 `AgentExecution`（payload 为 `AgentResult`）。
 - 新代码不得 import `spacers_agent`/`eval`。
 
 ## 关键运行契约
 
-- `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型。
+- `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
+  `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
+  Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
+- `TaskResolver` 三路径：显式 task（不调用模型、不消费 budget，非法显式
+  task 以 `UNKNOWN_EXPLICIT_TASK` 稳定失败）；空问题仅两条确定性规则
+  （1 图→`caption`、2 图→`change_caption`，其余图像数以
+  `EMPTY_UNRESOLVABLE_REQUEST` 失败，绝不猜 general_vqa）；缺失 task 且
+  有 question 才调用模型（完整 `ModelCacheIdentity` + response schema 入
+  hash，`MODEL_IDENTITY_REQUIRED`/`MODEL_RESOLUTION_FAILED` 稳定错误）。
+- `TaskResolver` 低置信度只返回结构化候选（`needs_candidate_fallback` +
+  含 `general_vqa` 的最多 3 个候选），多 Agent 兜底执行留给 Task 34 的
+  SampleRunner，Resolver 自身绝不执行任何业务 Agent。
 - `CountingAgent` 主 payload 恒为 `CountingResult`，主文件名恒为
   `counting_result.json`；`AgentResult`（来自后端或 `answer_as_agent_result`
   开关）只写入 `additional_results["agent_result.json"]`（JSON-safe dict）。
@@ -93,8 +119,9 @@
   `INVALID_BACKEND_KIND`）；trace/warnings 不含原始异常文本、绝对路径、密钥
   或 Base64（`fallback_reason_code` + `fallback_error_type`）。
 - Backend plan 与 runtime fallback 职责分离：`BackendSelector.plan` 只基于
-  配置/支持性规划；运行时权重/依赖就绪由 count 时验证，不可用经 Agent 显式
-  回退（fallback 只能由 Agent 执行，Backend 不自行切换）。
+  配置/支持性规划；运行时权重/依赖就绪由 count 时验证，不可用经
+  `CountingPlanExecutor` 显式回退（fallback 只能由 Executor 执行，
+  Backend 不自行切换）。
 - seam finalization（`find_boundary_conflicts` → `decide_seam_pairs` →
   `finalize_representatives`）由 `PointCountingOrchestrator.count_image` 执行，
   `CountingSettings.seam_verify` 控制开关。
@@ -102,8 +129,9 @@
   `require_cuda=True` 要求非负整数 `device`（映射到 CUDA `device_id`），
   `require_cuda=False` 要求 `device="cpu"` 且 Session 只请求 CPU；trace 记录
   requested/resolved provider 与 device。
-- 所有 Counting 模型调用使用真实 `ModelCacheIdentity`（`require_model_cache_identity`
-  helper，鸭子类型身份明确失败）并把 response schema 纳入 request hash。
+- 所有 Counting 模型调用使用真实 `ModelCacheIdentity`
+  （`require_model_cache_identity` helper 权威定义于 `models/base.py`，鸭子
+  类型身份明确失败）并把 response schema 纳入 request hash。
 - YOLO tile 失败只写稳定 warning（code/tile_id/exception type，无原始异常文本）；
   全部 tile 失败时 backend 抛 `DetectorInferenceError("ALL_YOLO_TILES_FAILED")`，由
   CountingAgent 决定显式 fallback；部分 tile 成功返回 partial 并保留证据。
@@ -193,4 +221,5 @@
 ## 尚未实现
 
 `reporting`、`application`、`main.py` 尚未创建/实现；Task 34 尚未开始；
-任务推进时逐层创建并更新本文件。
+`SampleRunner`/`DatasetRunner` 尚未实现（`TaskResolver` 尚未被 dataset
+runner 使用）；任务推进时逐层创建并更新本文件。

@@ -15,6 +15,7 @@ from workflows.schema import (
     SampleRunOutcome,
     SampleRunStatus,
 )
+from workflows.task_resolver import TaskResolutionError, TaskResolver
 
 __all__ = [
     "CallBudget",
@@ -28,5 +29,7 @@ __all__ = [
     "RunStore",
     "SampleRunOutcome",
     "SampleRunStatus",
+    "TaskResolutionError",
+    "TaskResolver",
     "make_budget_guard",
 ]

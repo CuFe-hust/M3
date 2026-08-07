@@ -7,28 +7,30 @@
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
-- 架构守卫（文件白名单 / import 依赖 DAG / 旧包禁止 / 打包发现）：`tests/architecture/`
+- 架构守卫（文件白名单 / import 依赖 DAG / 旧包禁止 / 打包发现）：`tests/architecture/`。import DAG 边界：领域层（agents/workflows/evaluation.metrics）只依赖模型协议（`models.base`/`models.images`），具体模型实现（`models.entry`/`models.qwen_transformers`/`models.qwen3_*`）只允许 composition root（application）选择；`routing` 不依赖 models；`evaluation.judges` 经 path rule 显式批准后可依赖模型契约/配置（path rule 优先于 package 规则）
 - 数据层：`data/`（统一样本契约、4 个数据集 Adapter、校验/选择/审计）
 - 模型层基础：`models/`（协议/缓存/图像工具/配置声明、统一 entry、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装）
 - Agent 通用契约：`agents/`（AgentResult/VisualEvidence、AgentContext/AgentExecution、Registry、错误类型、数据集无关 VisualAgentBase）
 - 领域 Agents：`agents/general_vqa/`、`agents/caption/`、`agents/grounding/`（薄视觉 Agent，含 MCQ/Grounding 输出约束）
-- 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent，主输出恒为 CountingResult，后端使用显式 kind）
+- 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent/CountingPlanExecutor，主输出恒为 CountingResult，后端使用显式 kind；Executor 承担 primary 执行、运行时 fallback 与 zero review）
 - 空间子系统：`agents/spatial/`（通用 SpatialQuerySpec、几何规则、候选复核、证据合并与 SpatialAgent；候选复核使用真实内容 MIME，canonical label 不做词形猜测）
 - 变化子系统：`agents/change/`（PairValidator/Harmonizer/DifferenceProposal/Preprocess/Reviewer/双路径 ChangeAgent；cv2 与 numpy 为可选依赖 `[change]` extra，base 导入不触发；无效时相图对在模型调用前稳定失败）
 - 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
-- 工作流：`workflows/`（CallBudget、EventWriter/RunStore、ArtifactWriter、运行契约；JSONL 写入进程内并发安全，跨进程并发追加不受当前工作流层支持）
+- 工作流：`workflows/`（CallBudget、EventWriter/RunStore、ArtifactWriter、TaskResolver、运行契约；JSONL 写入进程内并发安全，跨进程并发追加不受当前工作流层支持）
+- 任务解析：`TaskResolver`（仅缺失 task 时可调用本地模型；明确 task 直接通过；空问题仅 caption/change_caption 两条确定性规则；低置信度只返回结构化候选，不执行 Agent；`TaskRouter` 保持同步确定性、不读 question、不调用模型）
 - 评估：`evaluation/`（统一 EvaluationRecord 与确定性指标：counting/VQA/grounding/caption；corpus 级 caption 指标依赖可选 pycocoevalcap；judge 永不覆盖确定性指标）
 
 计数后端契约：每个后端显式声明 `kind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
 只有 `yolo_obb` 进入 detector plan、zero-review 与 detector fallback；所有 YOLO tile
-均失败时 backend 抛出稳定错误并由 CountingAgent 执行显式 fallback；tile warning
-不保存原始异常文本；
+均失败时 backend 抛出稳定错误并由 `CountingPlanExecutor` 执行显式 fallback
+（`CountingAgent` 只负责计划与打包）；tile warning 不保存原始异常文本；
 `CountingBackendUnavailableError` 全仓唯一（`agents.errors` 权威定义，顶层导出与
 backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
 绝对路径、密钥或 Base64。
 
 **尚未实现**：reporting、application 与 CLI（`main.py`）。Task 34 尚未开始；
-请勿将其当作可用功能使用。
+`SampleRunner`/`DatasetRunner` 尚未实现（`TaskResolver` 尚未被 dataset runner
+使用）。请勿将其当作可用功能使用。
 
 ## 安装与测试
 

@@ -802,3 +802,34 @@ def test_real_yolo_all_tiles_failed_without_fallback(tmp_path: Path) -> None:
     agent = _agent(client, registry, fallback_to_qwen_on_error=False)
     with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
         asyncio.run(agent.run(_sample(root), _context(root)))
+
+
+# ── 契约签名 / contract signatures ─────────────────────────────────────────
+
+
+def test_counting_agent_public_signatures_avoid_any() -> None:
+    """Counting public entry signatures use domain contracts, never Any.
+    计数公共入口签名使用领域契约类型而非 Any。"""
+    import typing
+
+    from PIL import Image
+
+    from agents.counting.agent import _resolve_sample_image
+    from data.schema import UnifiedSample
+    from models.base import VisionLanguageClient
+
+    run_hints = typing.get_type_hints(CountingAgent.run)
+    assert run_hints["sample"] is UnifiedSample
+    assert run_hints["context"] is AgentContext
+    assert run_hints["return"] is AgentExecution
+
+    init_hints = typing.get_type_hints(CountingAgent.__init__)
+    assert init_hints["client"] is VisionLanguageClient
+
+    target_hints = typing.get_type_hints(CountingAgent._target)
+    assert target_hints["sample"] is UnifiedSample
+
+    resolve_hints = typing.get_type_hints(_resolve_sample_image)
+    assert resolve_hints["sample"] is UnifiedSample
+    assert resolve_hints["context"] is AgentContext
+    assert resolve_hints["return"] is Image.Image

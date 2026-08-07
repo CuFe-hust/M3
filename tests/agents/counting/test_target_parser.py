@@ -208,3 +208,18 @@ def test_duck_typed_identity_is_rejected() -> None:
     with pytest.raises(MissingModelCacheIdentityError, match="ModelCacheIdentity"):
         _parse(_parser(_DuckClient()), hint=None)
     assert _DuckClient().calls == []
+
+
+def test_parse_budget_signature_uses_call_budget() -> None:
+    """The parser budget parameter is typed CallBudget | None, never Any.
+    解析器 budget 参数类型为 CallBudget | None 而非 Any。"""
+    import typing
+
+    from agents.base import CallBudget
+
+    hints = typing.get_type_hints(CountTargetParser.parse)
+    annotation = hints["budget"]
+    args = typing.get_args(annotation)
+    assert CallBudget in args
+    assert type(None) in args
+    assert annotation is not Any

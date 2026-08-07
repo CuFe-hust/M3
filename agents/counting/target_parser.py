@@ -14,6 +14,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from agents.base import CallBudget
 from agents.counting.backends.base import require_model_cache_identity
 from agents.counting.schema import CountTargetSpec
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash
@@ -51,7 +52,7 @@ class CountTargetParser:
         artifact_dir: Path,
         count_target_hint: dict[str, Any] | str | None = None,
         legacy_metadata: dict[str, Any] | None = None,
-        budget: Any = None,
+        budget: CallBudget | None = None,
     ) -> CountTargetSpec:
         """Resolve the target; hint hits never call Qwen.
         解析目标；hint 命中绝不调用 Qwen。"""
@@ -68,7 +69,7 @@ class CountTargetParser:
         *,
         sample_id: str,
         artifact_dir: Path,
-        budget: Any,
+        budget: CallBudget | None,
     ) -> CountTargetSpec:
         identity = require_model_cache_identity(self.client, component="target_parser")
         messages: list[dict[str, Any]] = [

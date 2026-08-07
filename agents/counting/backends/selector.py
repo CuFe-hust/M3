@@ -36,6 +36,14 @@ class BackendSelector:
         self._registry = registry
         self._default_backend = default_backend
 
+    @property
+    def default_backend(self) -> str:
+        """Configured default backend mode; public read-only access for
+        trace/reporting without private-field peeking.
+        已配置的默认后端模式；公开只读访问，供 trace/报告使用而无需偷看
+        私有字段。"""
+        return self._default_backend
+
     def plan(
         self,
         target: CountTargetSpec,

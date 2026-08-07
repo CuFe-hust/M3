@@ -771,24 +771,39 @@ def test_cuda_mode_predict_rejects_non_integer_device(tmp_path: Path, monkeypatc
 
 
 def test_identity_error_defined_exactly_once() -> None:
-    """MissingModelCacheIdentityError is declared exactly once in base.py.
-    MissingModelCacheIdentityError 在 base.py 中只声明一次。"""
+    """MissingModelCacheIdentityError and require_model_cache_identity are
+    declared exactly once, in models/base.py; the counting backend import path
+    re-exports the very same objects. MissingModelCacheIdentityError 与
+    require_model_cache_identity 只在 models/base.py 中声明一次；counting
+    backend import 路径重导出同一对象。"""
     import ast
 
-    source = (REPO_ROOT / "agents" / "counting" / "backends" / "base.py").read_text(
-        encoding="utf-8"
-    )
-    tree = ast.parse(source)
-    count = sum(
+    models_source = (REPO_ROOT / "models" / "base.py").read_text(encoding="utf-8")
+    models_tree = ast.parse(models_source)
+    class_count = sum(
         1
-        for node in tree.body
+        for node in models_tree.body
         if isinstance(node, ast.ClassDef)
         and node.name == "MissingModelCacheIdentityError"
     )
-    assert count == 1
-    # The single import point resolves to the same class. / 单一导入点解析为同一类。
-    from agents.counting.backends import base as base_module
+    function_count = sum(
+        1
+        for node in models_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "require_model_cache_identity"
+    )
+    assert class_count == 1
+    assert function_count == 1
+    # The counting import path resolves to the same objects. / counting import
+    # 路径解析为同一对象。
+    from agents.counting.backends import base as counting_base
+    from models import base as models_base
 
-    assert base_module.MissingModelCacheIdentityError is base_module.require_model_cache_identity.__globals__[
-        "MissingModelCacheIdentityError"
-    ]
+    assert (
+        counting_base.require_model_cache_identity
+        is models_base.require_model_cache_identity
+    )
+    assert (
+        counting_base.MissingModelCacheIdentityError
+        is models_base.MissingModelCacheIdentityError
+    )

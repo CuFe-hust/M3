@@ -17,6 +17,7 @@ from typing import Any, Protocol, runtime_checkable
 
 from models.base import VisionLanguageClient
 from agents.schema import AgentName
+from data.schema import UnifiedSample
 
 
 class CallBudget(Protocol):
@@ -86,7 +87,11 @@ class Agent(Protocol):
     name: AgentName
     supported_tasks: frozenset[str]
 
-    async def run(self, sample: Any, context: AgentContext) -> AgentExecution:
+    async def run(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+    ) -> AgentExecution:
         """Execute the agent pipeline for one sample. / 为单条样本执行 Agent 管线。"""
         ...
 

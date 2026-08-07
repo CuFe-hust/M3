@@ -116,3 +116,82 @@ def test_every_task_name_has_a_tested_policy() -> None:
     from routing.policies import POLICIES
 
     assert set(POLICIES) == set(_ALL_TASKS)
+
+
+# ── TaskResolution 契约 / task-resolution contract ─────────────────────────
+
+
+def _resolution(**overrides) -> "TaskResolution":
+    from routing.schema import TaskResolution
+
+    values = dict(
+        task="counting",
+        confidence=1.0,
+        candidate_tasks=["counting"],
+        needs_candidate_fallback=False,
+        source="explicit",
+        reason_codes=["explicit_task:counting"],
+    )
+    values.update(overrides)
+    return TaskResolution(**values)
+
+
+def test_resolution_accepts_valid_contract() -> None:
+    from routing.schema import TaskResolution
+
+    resolution = _resolution()
+    assert isinstance(resolution, TaskResolution)
+    assert resolution.candidate_tasks[0] == resolution.task
+
+
+def test_resolution_candidates_must_start_with_task() -> None:
+    with pytest.raises(ValidationError, match="candidate_tasks\\[0\\] must equal task"):
+        _resolution(candidate_tasks=["general_vqa"])
+
+
+def test_resolution_rejects_duplicate_candidates() -> None:
+    with pytest.raises(ValidationError, match="duplicates"):
+        _resolution(candidate_tasks=["counting", "counting"])
+
+
+def test_resolution_rejects_out_of_range_confidence() -> None:
+    with pytest.raises(ValidationError):
+        _resolution(confidence=1.5)
+    with pytest.raises(ValidationError):
+        _resolution(confidence=-0.1)
+
+
+def test_resolution_is_json_serializable() -> None:
+    import json
+
+    resolution = _resolution(
+        task="counting",
+        confidence=0.8,
+        candidate_tasks=["counting", "general_vqa"],
+        needs_candidate_fallback=True,
+        source="model",
+        reason_codes=["low_confidence"],
+    )
+    payload = json.loads(resolution.model_dump_json())
+    assert payload["candidate_tasks"] == ["counting", "general_vqa"]
+    assert payload["needs_candidate_fallback"] is True
+
+
+def test_resolution_request_requires_positive_image_count() -> None:
+    from routing.schema import TaskResolutionRequest
+
+    with pytest.raises(ValidationError):
+        TaskResolutionRequest(image_count=0)
+    request = TaskResolutionRequest(
+        question="Q", image_count=1, metadata_hints={"split": "test"}
+    )
+    assert request.metadata_hints == {"split": "test"}
+
+
+def test_resolution_request_rejects_non_json_hints() -> None:
+    from routing.schema import TaskResolutionRequest
+
+    with pytest.raises(ValidationError):
+        TaskResolutionRequest(image_count=1, metadata_hints={"bad": object()})
+    with pytest.raises(ValidationError):
+        TaskResolutionRequest(image_count=1, metadata_hints={1: "x"})
