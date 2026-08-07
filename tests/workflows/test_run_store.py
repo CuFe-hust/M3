@@ -468,3 +468,84 @@ def test_event_writer_clean_tuple_accepted(tmp_path: Path) -> None:
     writer = EventWriter(tmp_path / "events.jsonl")
     record = writer.write("X", details={"x": ("safe", {"state": "ok"})})
     assert record.event == "X"
+
+
+# ── Windows 保留 run id / windows reserved run ids (33.7) ──────────────────
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "CON",
+        "con",
+        "CON.txt",
+        "PRN",
+        "AUX",
+        "NUL",
+        "COM1",
+        "COM9",
+        "COM1.json",
+        "LPT1",
+        "LPT9",
+        "LPT9.log",
+        "run.",
+        "run ",
+    ],
+)
+def test_windows_reserved_run_ids_rejected_before_io(run_id: str, tmp_path: Path) -> None:
+    store, root = _store(tmp_path)
+    with pytest.raises(ValueError, match="safe plain identifier"):
+        store.create_run(
+            config_payload=_config_payload(),
+            model_ids={"qwen": "q"},
+            prompt_paths=[],
+            run_id=run_id,
+        )
+    assert not root.exists() or list(root.iterdir()) == []
+
+
+@pytest.mark.parametrize("run_id", ["run-1", "task33.7_test", "20260807T113000Z-ab12cd34"])
+def test_valid_run_ids_remain_accepted(run_id: str, tmp_path: Path) -> None:
+    store, root = _store(tmp_path)
+    manifest = store.create_run(
+        config_payload=_config_payload(),
+        model_ids={"qwen": "q"},
+        prompt_paths=[],
+        run_id=run_id,
+    )
+    assert manifest.run_id == run_id
+    assert (root / run_id).is_dir()
+
+
+# ── set/frozenset secret 容器 / set-like secret containers (33.7) ──────────
+
+
+def test_event_writer_rejects_set_secret_containers(tmp_path: Path) -> None:
+    writer = EventWriter(tmp_path / "events.jsonl")
+    payloads = [
+        {"x": {"sk-secret"}},
+        {"x": frozenset(["Bearer abc"])},
+        {"x": {("safe", "sk-secret")}},
+        {"x": frozenset([("safe", "Bearer abc")])},
+    ]
+    for payload in payloads:
+        with pytest.raises(ValueError, match="sensitive"):
+            writer.write("X", details=payload)
+    # Nothing must have been persisted. / 不得持久化任何内容。
+    assert not (tmp_path / "events.jsonl").exists() or (
+        tmp_path / "events.jsonl"
+    ).read_text(encoding="utf-8") == ""
+
+
+def test_run_store_rejects_set_secret_before_json_serialization(tmp_path: Path) -> None:
+    """A secret set must fail with a sensitive-value error before any JSON
+    serialization error. 含密钥的 set 必须首先以敏感值错误失败，而不是等到
+    JSON 序列化报错。"""
+    store, root = _store(tmp_path)
+    with pytest.raises(ValueError, match="sensitive"):
+        store.create_run(
+            config_payload={"x": frozenset(["sk-secret"])},
+            model_ids={"qwen": "q"},
+            prompt_paths=[],
+        )
+    assert not root.exists() or list(root.iterdir()) == []

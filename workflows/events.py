@@ -16,7 +16,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -146,9 +146,11 @@ def _path_lock(path: Path) -> threading.Lock:
 
 def _reject_secrets(value: Any, where: str) -> None:
     """Recursively reject sensitive keys and high-risk value prefixes in a
-    payload of any Mapping/Sequence nesting; error messages never echo the
-    offending value. 递归拒绝任意 Mapping/Sequence 嵌套载荷中的敏感键与
-    高风险值前缀；错误消息绝不回显违规值。"""
+    payload of any Mapping/Sequence/Set nesting; error messages never echo
+    the offending value. str is handled first so it is never treated as a
+    generic container. 递归拒绝任意 Mapping/Sequence/Set 嵌套载荷中的敏感键
+    与高风险值前缀；错误消息绝不回显违规值。str 最先处理，绝不当作通用
+    容器。"""
 
     if isinstance(value, str):
         normalized = value.lstrip().lower()
@@ -162,6 +164,10 @@ def _reject_secrets(value: Any, where: str) -> None:
             if normalized_key in _SENSITIVE_KEYS:
                 raise ValueError(f"{where} contains a sensitive key")
             _reject_secrets(item, f"{where}.{key}")
+        return
+    if isinstance(value, Set):
+        for item in value:
+            _reject_secrets(item, where)
         return
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         for index, item in enumerate(value):
