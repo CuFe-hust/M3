@@ -74,7 +74,10 @@
     "agents/counting/settings.py",
     "agents/counting/geometry.py",
     "agents/counting/evidence.py",
-    "agents/counting/point_pipeline.py"
+    "agents/counting/point_pipeline.py",
+    "agents/counting/backends/__init__.py",
+    "agents/counting/backends/base.py",
+    "agents/counting/backends/registry.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868"
