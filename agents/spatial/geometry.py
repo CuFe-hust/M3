@@ -194,13 +194,11 @@ def _normalize_label(label: str) -> str:
 
 
 def canonical_answer(label: str) -> str:
-    """Canonical answer for a selected label: the normalized label with any
-    trailing plural 's' removed. 所选标签的规范答案：归一化标签并去除末尾
-    复数 's'。"""
-    normalized = _normalize_label(label)
-    if normalized.endswith("s") and len(normalized) > 1:
-        return normalized[:-1]
-    return normalized
+    """Canonical answer for a selected label: the normalized label. No
+    English plural guessing — 'bus' stays 'bus' and 'glass' stays 'glass'.
+    所选标签的规范答案：归一化标签。不做英语单复数猜测——'bus' 保持
+    'bus'，'glass' 保持 'glass'。"""
+    return _normalize_label(label)
 
 
 def _center_y(item: VisualEvidence) -> float:

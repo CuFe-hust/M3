@@ -58,13 +58,13 @@ class _ReviewClient:
         )
 
 
-def _sample(root: Path, *, spatial_query: dict[str, Any] | None = None) -> UnifiedSample:
+def _sample(root: Path, *, spatial_query: dict[str, Any] | None = None, image_name: str = "img.png") -> UnifiedSample:
     return UnifiedSample(
         sample_id="s1",
         dataset="parity",
         split="test",
         task="spatial_relation",
-        images=[ImageRef(image_id="i1", path="img.png", role="image")],
+        images=[ImageRef(image_id="i1", path=image_name, role="image")],
         question="Which vehicle is at the top?",
         ground_truth=GroundTruth(answers=["small-vehicle"]),
         metadata={"spatial_query": spatial_query} if spatial_query else {},
@@ -269,3 +269,98 @@ def test_candidate_review_has_no_dataset_branch() -> None:
     assert "VRSBench" not in source
     assert "vrsbench" not in source
     assert "spacers_agent" not in source
+
+
+# ── 真实 MIME 契约 / real MIME contract (33.5) ─────────────────────────────
+
+
+def _review_url_prefix(root: Path, client: _ReviewClient, image_name: str = "img.png") -> str:
+    """Run one review and return the data URL prefix sent to the client.
+    运行一次复核并返回发送给客户端的 data URL 前缀。"""
+    asyncio.run(
+        _reviewer(client).review(
+            _sample(root, image_name=image_name),
+            _first_result(),
+            root.parent / "run",
+            operation="extreme_category",
+            target_label="small-vehicle",
+            data_root=root,
+            budget=_FakeBudget(),
+        )
+    )
+    messages = client.calls[0]["messages"]
+    user_content = messages[1]["content"]
+    return user_content[0]["image_url"]["url"]
+
+
+def _write_image(root: Path, name: str, fmt: str) -> Path:
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / name
+    Image.new("RGB", (32, 32), (10, 20, 30)).save(path, format=fmt)
+    return path
+
+
+def test_review_sends_png_mime_for_png_image(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_image(root, "img.png", "PNG")
+    url = _review_url_prefix(root, _ReviewClient(), image_name="img.png")
+    assert url.startswith("data:image/png;base64,")
+
+
+def test_review_sends_jpeg_mime_for_jpeg_image(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_image(root, "img.jpg", "JPEG")
+    url = _review_url_prefix(root, _ReviewClient(), image_name="img.jpg")
+    assert url.startswith("data:image/jpeg;base64,")
+
+
+def test_review_sends_webp_mime_for_webp_image(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_image(root, "img.webp", "WEBP")
+    url = _review_url_prefix(root, _ReviewClient(), image_name="img.webp")
+    assert url.startswith("data:image/webp;base64,")
+
+
+def test_review_uses_real_mime_when_suffix_lies(tmp_path: Path) -> None:
+    """A JPEG stored with a .png suffix must be sent as JPEG.
+    存为 .png 后缀的 JPEG 必须按 JPEG 发送。"""
+    root = tmp_path / "data"
+    _write_image(root, "img.png", "JPEG")
+    url = _review_url_prefix(root, _ReviewClient(), image_name="img.png")
+    assert url.startswith("data:image/jpeg;base64,")
+
+
+def test_review_detects_extensionless_png(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _write_image(root, "img", "PNG")
+    url = _review_url_prefix(root, _ReviewClient(), image_name="img")
+    assert url.startswith("data:image/png;base64,")
+
+
+def test_review_corrupt_image_fails_safely(tmp_path: Path) -> None:
+    """A corrupt image must never crash the review: the first result is kept
+    with a partial status and a stable error type.
+    损坏图像绝不使复核崩溃：保留初次结果、partial 状态与稳定错误类型。"""
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "img.png").write_bytes(b"not an image at all")
+    client = _ReviewClient()
+    first = _first_result([VisualEvidence(label="small-vehicle", box=[100, 100, 200, 200])])
+    reviewed = asyncio.run(
+        _reviewer(client).review(
+            _sample(root),
+            first,
+            tmp_path / "run",
+            operation="extreme_category",
+            target_label="small-vehicle",
+            data_root=root,
+            budget=_FakeBudget(),
+        )
+    )
+    assert reviewed.status == "partial"
+    assert reviewed.geometry["candidate_review_error_type"] in {
+        "UnsupportedImageFormatError",
+        "ValueError",
+    }
+    assert len(reviewed.evidence_items) == 1  # first evidence kept / 初次证据保留
+    assert client.calls == []

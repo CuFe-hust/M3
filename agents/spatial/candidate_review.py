@@ -30,7 +30,7 @@ from agents.spatial.evidence_merge import (
     position_review_evidence,
 )
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash
-from models.images import image_to_data_url
+from models.images import detect_image_mime, image_to_data_url
 
 
 class SpatialCandidateReviewResult(BaseModel):
@@ -272,10 +272,13 @@ class SpatialCandidateReviewer:
         """Issue the review request. / 发起复查请求。"""
         image_path = _resolve_sample_image(sample, data_root)
         image_bytes = image_path.read_bytes()
+        # Detect the real MIME from content, never from the file suffix.
+        # 从真实内容检测 MIME，绝不按文件后缀猜测。
+        mime = detect_image_mime(image_path)
         content: list[dict[str, Any]] = [
             {
                 "type": "image_url",
-                "image_url": {"url": image_to_data_url(image_bytes, "image/png")},
+                "image_url": {"url": image_to_data_url(image_bytes, mime)},
             },
             {
                 "type": "text",

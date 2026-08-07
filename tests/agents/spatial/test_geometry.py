@@ -236,10 +236,15 @@ def test_spatial_query_from_metadata() -> None:
     ) is None
 
 
-def test_canonical_answer_normalizes() -> None:
+def test_canonical_answer_normalizes_without_plural_guessing() -> None:
+    """No English plural guessing: labels pass through normalized only.
+    不做英语单复数猜测：标签仅归一化后原样通过。"""
     assert canonical_answer("small-vehicle") == "small-vehicle"
     assert canonical_answer("Small Vehicle") == "small-vehicle"
-    assert canonical_answer("trucks") == "truck"
+    assert canonical_answer("bus") == "bus"
+    assert canonical_answer("glass") == "glass"
+    assert canonical_answer("class") == "class"
+    assert canonical_answer("trucks") == "trucks"
 
 
 def test_override_only_when_evidence_complete() -> None:
