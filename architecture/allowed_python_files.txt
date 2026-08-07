@@ -170,6 +170,7 @@ tests/agents/caption/__init__.py
 tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
+tests/agents/spatial/test_geometry.py
 tests/agents/counting/__init__.py
 tests/agents/counting/test_settings.py
 tests/agents/counting/test_geometry.py
