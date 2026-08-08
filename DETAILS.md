@@ -199,6 +199,16 @@
   `SampleRunStatus.result_path` schema 级强制 plain basename（含 `/`、`\`、
   drive 前缀、`.`/`..`、控制字符即拒绝），旧版绝对路径 status 无法解析，
   resume 视为无效状态并重新执行样本。
+- **09.5 收口契约**：Reporting 样本目录一律由冻结身份 (run_task, sample_id)
+  推导（sha256 storage key，run_task 需为安全纯目录名），绝不信任
+  predictions.result_path；result_path 仅作展示且 fail-closed（run 相对 +
+  canonical 在 run 内，否则 None）；result_path=None 的 failed/skipped 终态
+  样本仍经身份目录读出 status/sample/trace 与稳定 error_code；run identity
+  契约——fresh 无 run_id 恒创建唯一 run（RunStore 自动 id），fresh 显式
+  run_id 已存在稳定失败，resume 必须显式 run_id 且校验 manifest
+  run_id/dataset/split 一致；settings snapshot 声明为 JSON-safe/
+  secret-free/separator-normalized/**host-path-preserving**（复现/调试
+  导向，不再声称 machine-portable）。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
