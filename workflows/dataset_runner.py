@@ -29,14 +29,18 @@ from pathlib import Path
 from typing import Any
 
 from agents.counting.schema import CountingResult
+from agents.schema import AgentResult
 from data.adapters.base import DatasetAdapter
 from data.schema import SampleDraft, UnifiedSample
-from evaluation.metrics.counting import merge_count_evaluation
-from evaluation.metrics.vqa import merge_vqa_evaluation
 from routing.schema import TaskResolutionRequest
 from workflows.artifact_writer import ArtifactWriter
 from workflows.call_budget import CallBudgetFactory
-from workflows.sample_runner import SampleRunner
+from workflows.sample_runner import (
+    SampleRunner,
+    _COUNTING_TASKS,
+    build_deterministic_evaluation,
+    evaluation_filename_for_task,
+)
 from workflows.schema import DatasetRunSummary, SampleRunStatus
 from workflows.task_resolver import (
     SampleMaterializationError,
@@ -188,7 +192,8 @@ class DatasetRunner:
                 sample_concurrency=sample_concurrency,
             )
         probe = self.adapter.probe(root, task)
-        self.artifact_writer.write_dataset_probe(self.run_dir, probe)
+        task_dir = self.run_dir / "tasks" / task
+        self.artifact_writer.write_dataset_probe(task_dir, probe, dataset_root=root)
         selected = select_samples(
             self.adapter.iter_samples(root, split, task),
             start_index=start_index,
@@ -234,7 +239,8 @@ class DatasetRunner:
         if not hasattr(self.adapter, "iter_drafts"):
             raise TypeError(f"adapter {self.adapter.name!r} does not yield drafts")
         probe = self.adapter.probe(root, None)
-        self.artifact_writer.write_dataset_probe(self.run_dir, probe)
+        task_dir = self.run_dir / "tasks" / "auto"
+        self.artifact_writer.write_dataset_probe(task_dir, probe, dataset_root=root)
         drafts = select_samples(
             self.adapter.iter_drafts(root, split),
             start_index=start_index,
@@ -275,28 +281,40 @@ class DatasetRunner:
         statuses: list[SampleRunStatus] = []
         fail_fast_triggered = False
 
-        def record_status(status: SampleRunStatus) -> None:
+        def record_status(status: SampleRunStatus, sample_dir: Path) -> None:
             nonlocal fail_fast_triggered
             statuses.append(status)
+            result_path = None
+            if status.result_path is not None:
+                # The row path is run-relative and always derived from the
+                # actual sample directory — never from status.task, which may
+                # be an execution task different from the storage namespace
+                # (e.g. tasks/auto/ with task=caption).
+                # 行路径为 run 相对且恒由实际样本目录推导——绝不根据
+                # status.task 拼目录（如 tasks/auto/ 下 task=caption）。
+                result_path = (
+                    sample_dir.relative_to(self.run_dir) / status.result_path
+                ).as_posix()
             self.artifact_writer.append_prediction(
                 self.run_dir,
                 sample_id=status.sample_id,
+                run_task=task,
                 task=status.task,
                 status=status,
+                result_path=result_path,
             )
             if fail_fast and status.state == "failed":
                 fail_fast_triggered = True
 
         async def run_one_item(item: Any) -> SampleRunStatus:
             async with semaphore:
+                sample_dir = samples_root / storage_key(item.sample_id)
                 try:
                     return await run_item(item, samples_root, resume=resume)
                 except asyncio.CancelledError:
                     status = _cancelled_status(item)
-                    self.artifact_writer.write_final_status(
-                        samples_root / storage_key(item.sample_id), status
-                    )
-                    record_status(status)
+                    self.artifact_writer.write_final_status(sample_dir, status)
+                    record_status(status, sample_dir)
                     raise
 
         pending: set[asyncio.Task] = set()
@@ -313,7 +331,9 @@ class DatasetRunner:
                 )
                 for done_task in done:
                     if not done_task.cancelled():
-                        record_status(done_task.result())
+                        status = done_task.result()
+                        sample_dir = samples_root / storage_key(status.sample_id)
+                        record_status(status, sample_dir)
         if pending:
             if fail_fast_triggered:
                 for pending_task in pending:
@@ -321,7 +341,9 @@ class DatasetRunner:
             done, _ = await asyncio.wait(pending)
             for done_task in done:
                 if not done_task.cancelled():
-                    record_status(done_task.result())
+                    status = done_task.result()
+                    sample_dir = samples_root / storage_key(status.sample_id)
+                    record_status(status, sample_dir)
         # fail-fast accounting: selected-but-never-started samples receive a
         # terminal skipped status so the summary counts always close.
         # fail-fast 记账：已选中但从未启动的样本写入终态 skipped，使汇总计数
@@ -329,10 +351,9 @@ class DatasetRunner:
         if not_started:
             for item in not_started:
                 status = _not_started_status(item)
-                self.artifact_writer.write_final_status(
-                    samples_root / storage_key(item.sample_id), status
-                )
-                record_status(status)
+                sample_dir = samples_root / storage_key(item.sample_id)
+                self.artifact_writer.write_final_status(sample_dir, status)
+                record_status(status, sample_dir)
         summary = DatasetRunSummary(
             run_id=self.run_dir.name,
             dataset=self.adapter.name,
@@ -562,31 +583,25 @@ class DatasetRunner:
         sample_dir: Path,
         task: str,
     ) -> None:
-        """Write the missing deterministic evaluation and re-run a missing or
-        failed VQA judge. 补写缺失的确定性评估，并重跑缺失或失败的 VQA
-        judge。"""
+        """Write the missing deterministic evaluation through the same shared
+        dispatch a fresh run uses, then re-run a missing or failed VQA judge
+        for general_vqa only. Never fabricates metrics to fill files.
+        经 fresh run 使用的同一共享分派补写缺失的确定性评估，然后仅对
+        general_vqa 重跑缺失或失败的 VQA judge。绝不为了补文件而伪造指标。"""
 
+        filename = evaluation_filename_for_task(task)
+        if filename is None:
+            return
+        evaluation_path = sample_dir / filename
+        if not evaluation_path.is_file():
+            payload = self._load_persisted_payload(sample_dir, task)
+            evaluation, _ = build_deterministic_evaluation(
+                sample=sample, execution_payload=payload
+            )
+            if evaluation is None:
+                return  # fail closed: coordinate/geometry/reference mismatch
+            self.artifact_writer.write_evaluation(sample_dir, evaluation, filename=filename)
         if task == "general_vqa":
-            evaluation_path = sample_dir / _VQA_EVALUATION_FILENAME
-            result_path = sample_dir / _AGENT_RESULT_FILENAME
-            if not evaluation_path.is_file():
-                if not result_path.is_file():
-                    raise ResumeSupplementError("AGENT_RESULT_MISSING")
-                result = json.loads(result_path.read_text(encoding="utf-8"))
-                answer = str(result.get("answer", ""))
-                evaluation = merge_vqa_evaluation(
-                    sample_id=sample.sample_id,
-                    question=sample.question,
-                    reference_answers=(
-                        list(sample.ground_truth.answers)
-                        if sample.ground_truth is not None
-                        else []
-                    ),
-                    candidate_answer=answer,
-                )
-                self.artifact_writer.write_evaluation(
-                    sample_dir, evaluation, filename=_VQA_EVALUATION_FILENAME
-                )
             judge_service = self.sample_runner.judge_service
             if judge_service is not None and self.judge_policy != "none":
                 evaluation = await asyncio.to_thread(
@@ -600,25 +615,32 @@ class DatasetRunner:
                 self.artifact_writer.write_evaluation(
                     sample_dir, evaluation, filename=_VQA_EVALUATION_FILENAME
                 )
-            return
-        if task == "counting":
-            evaluation_path = sample_dir / _COUNTING_EVALUATION_FILENAME
-            if evaluation_path.is_file():
-                return
+
+    def _load_persisted_payload(
+        self,
+        sample_dir: Path,
+        task: str,
+    ) -> object:
+        """Load the persisted execution payload for a task: counting tasks
+        read counting_result.json, every other evaluated task reads
+        agent_result.json; a missing or corrupt artifact fails with a stable
+        code. 按任务加载持久化执行载荷：计数任务读 counting_result.json，
+        其余已评估任务读 agent_result.json；缺失或损坏以稳定 code 失败。"""
+
+        if task in _COUNTING_TASKS:
             result_path = sample_dir / _COUNTING_RESULT_FILENAME
-            if not result_path.is_file():
-                raise ResumeSupplementError("COUNTING_RESULT_MISSING")
-            counting = CountingResult.model_validate(
+            model = CountingResult
+        else:
+            result_path = sample_dir / _AGENT_RESULT_FILENAME
+            model = AgentResult
+        if not result_path.is_file():
+            raise ResumeSupplementError("PERSISTED_RESULT_MISSING")
+        try:
+            return model.model_validate(
                 json.loads(result_path.read_text(encoding="utf-8"))
             )
-            evaluation = merge_count_evaluation(
-                sample_id=sample.sample_id,
-                counting=counting,
-                ground_truth=sample.ground_truth,
-            )
-            self.artifact_writer.write_evaluation(
-                sample_dir, evaluation, filename=_COUNTING_EVALUATION_FILENAME
-            )
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError) as exc:
+            raise ResumeSupplementError("PERSISTED_RESULT_INVALID") from exc
 
 
 def _cancelled_status(item: Any) -> SampleRunStatus:

@@ -54,6 +54,7 @@ class _FakeAgent:
         error: Exception | None = None,
         status: str = "completed",
         reserve_qwen: int = 0,
+        result_filename: str = "agent_result.json",
     ) -> None:
         self.name = name
         self.supported_tasks = frozenset(tasks)
@@ -61,6 +62,7 @@ class _FakeAgent:
         self._error = error
         self._status = status
         self._reserve_qwen = reserve_qwen
+        self._result_filename = result_filename
         self.calls: list[tuple[UnifiedSample, object]] = []
 
     async def run(self, sample: UnifiedSample, context: object) -> AgentExecution:
@@ -75,7 +77,7 @@ class _FakeAgent:
         return AgentExecution(
             agent_name=self.name,
             payload=payload,
-            result_filename="agent_result.json",
+            result_filename=self._result_filename,
         )
 
 
@@ -865,7 +867,10 @@ def test_grounding_valid_geometry_writes_grounding_evaluation(tmp_path: Path) ->
     sample = _sample(
         task="grounding",
         question="Where is the car?",
-        ground_truth=GroundTruth(boxes=[[10.0, 20.0, 110.0, 120.0]]),
+        ground_truth=GroundTruth(
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
     )
     outcome = _run(runner, sample, _sample_dir(tmp_path))
     assert outcome.evaluation is not None
@@ -935,3 +940,144 @@ def test_caption_without_references_no_record(tmp_path: Path) -> None:
     outcome = _run(runner, sample, _sample_dir(tmp_path))
     assert outcome.evaluation is None
     assert not (_sample_dir(tmp_path) / "caption_evaluation.json").exists()
+
+
+# ── grounding frame safety (Fix A) / grounding 坐标系安全 ───────────────────
+
+
+def _grounding_agent(boxes: list[list[float]]) -> _FakeAgent:
+    return _FakeAgent(
+        "grounding_agent",
+        ("grounding",),
+        payload=AgentResult(
+            agent_name="grounding_agent",
+            answer="located",
+            boxes=boxes,
+            status="completed",
+        ),
+    )
+
+
+def test_grounding_normalized_four_box_produces_iou(tmp_path: Path) -> None:
+    runner = _runner([_grounding_agent([[100.0, 200.0, 400.0, 500.0]])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[100.0, 200.0, 400.0, 500.0]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.deterministic_metrics.iou == 1.0
+    assert (_sample_dir(tmp_path) / "grounding_evaluation.json").is_file()
+
+
+def test_grounding_frame_mismatch_fails_closed(tmp_path: Path) -> None:
+    """normalized prediction vs source_pixels ground truth must never be
+    IoU-ed together. normalized 预测与 source_pixels 真值绝不直接计算 IoU。"""
+    runner = _runner([_grounding_agent([[100.0, 200.0, 400.0, 500.0]])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[620.0, 1100.0, 1400.0, 1800.0]],
+            coordinate_frame="source_pixels_top_left",
+        ),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
+def test_grounding_eight_value_polygon_fails_closed(tmp_path: Path) -> None:
+    runner = _runner([_grounding_agent([[100.0, 200.0, 400.0, 500.0]])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[620.0, 1100.0, 1400.0, 1800.0, 700.0, 1200.0, 800.0, 1300.0]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
+def test_grounding_non_four_prediction_box_fails_closed(tmp_path: Path) -> None:
+    runner = _runner([_grounding_agent([[10.0, 20.0, 110.0]])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
+def test_grounding_missing_frame_fails_closed(tmp_path: Path) -> None:
+    """A ground truth without a declared coordinate frame is never guessed.
+    未声明坐标系的真值绝不猜测。"""
+    runner = _runner([_grounding_agent([[100.0, 200.0, 400.0, 500.0]])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(boxes=[[100.0, 200.0, 400.0, 500.0]]),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
+def test_grounding_vrsbench_source_pixels_regression(tmp_path: Path) -> None:
+    """VRSBench-style ground truth in source_pixels_top_left must not produce
+    a grounding evaluation against a normalized prediction.
+    VRSBench 风格 source_pixels_top_left 真值绝不与 normalized 预测产出
+    grounding 评估。"""
+    runner = _runner([_grounding_agent([[100.0, 200.0, 400.0, 500.0]])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[620.0, 1100.0, 1400.0, 1800.0]],
+            coordinate_frame="source_pixels_top_left",
+        ),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
+# ── portable result paths (Fix D) / 可移植结果路径 ──────────────────────────
+
+
+def test_status_result_path_is_sample_relative_basename(tmp_path: Path) -> None:
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent])
+    outcome = _run(runner, _sample(), _sample_dir(tmp_path))
+    assert outcome.status.result_path == Path("agent_result.json")
+
+
+def test_counting_status_result_path_is_basename(tmp_path: Path) -> None:
+    counting_agent = _FakeAgent(
+        "counting_agent",
+        ("counting",),
+        payload=_counting_result(final_count=2),
+        result_filename="counting_result.json",
+    )
+    runner = _runner([counting_agent])
+    sample = _sample(
+        task="counting",
+        question="How many cars?",
+        ground_truth=GroundTruth(count=2),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.result_path == Path("counting_result.json")

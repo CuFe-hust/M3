@@ -140,12 +140,27 @@ def test_write_trace_and_evaluation(tmp_path: Path) -> None:
 
 def test_append_prediction_writes_lines_with_newlines(tmp_path: Path) -> None:
     writer = ArtifactWriter()
-    writer.append_prediction(tmp_path, sample_id="s1", task="change_caption", status=_status("succeeded"))
-    writer.append_prediction(tmp_path, sample_id="s2", task="counting", status=_status("failed", "s2"))
+    writer.append_prediction(
+        tmp_path,
+        sample_id="s1",
+        run_task="change_caption",
+        task="change_caption",
+        status=_status("succeeded"),
+        result_path="tasks/change_caption/samples/k/agent_result.json",
+    )
+    writer.append_prediction(
+        tmp_path,
+        sample_id="s2",
+        run_task="counting",
+        task="counting",
+        status=_status("failed", "s2"),
+        result_path="tasks/counting/samples/k/counting_result.json",
+    )
     lines = (tmp_path / PREDICTIONS_FILENAME).read_text(encoding="utf-8").splitlines()
     assert len(lines) == 2
     assert json.loads(lines[0])["sample_id"] == "s1"
     assert json.loads(lines[1])["status"] == "failed"
+    assert json.loads(lines[0])["run_task"] == "change_caption"
     # Every line ends with exactly one newline. / 每行恰好以一个换行结束。
     raw = (tmp_path / PREDICTIONS_FILENAME).read_bytes()
     assert raw.count(b"\n") == 2

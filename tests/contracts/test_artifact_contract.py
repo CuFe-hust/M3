@@ -108,8 +108,8 @@ def test_execution_writes_counting_payload_under_counting_filename(tmp_path: Pat
 
 
 def test_append_prediction_stable_fields_only(tmp_path: Path) -> None:
-    """A prediction row carries exactly the four stable fields.
-    预测行恰好携带四个稳定字段。"""
+    """A prediction row carries exactly the six stable execution-index fields.
+    预测行恰好携带六个稳定执行索引字段。"""
     import json
 
     from workflows.schema import SampleRunStatus
@@ -119,17 +119,26 @@ def test_append_prediction_stable_fields_only(tmp_path: Path) -> None:
         sample_id="s1",
         task="change_caption",
         state="succeeded",
-        result_path=tmp_path / "agent_result.json",
+        result_path=Path("agent_result.json"),
         updated_at="2026-01-01T00:00:00Z",
     )
-    writer.append_prediction(tmp_path, sample_id="s1", task="change_caption", status=status)
+    writer.append_prediction(
+        tmp_path,
+        sample_id="s1",
+        run_task="change_caption",
+        task="change_caption",
+        status=status,
+        result_path="tasks/change_caption/samples/k/agent_result.json",
+    )
     line = (tmp_path / PREDICTIONS_FILENAME).read_text(encoding="utf-8").strip()
     row = json.loads(line)
     assert row == {
         "sample_id": "s1",
+        "run_task": "change_caption",
         "task": "change_caption",
         "status": "succeeded",
-        "result_path": str(tmp_path / "agent_result.json"),
+        "result_path": "tasks/change_caption/samples/k/agent_result.json",
+        "updated_at": "2026-01-01T00:00:00Z",
     }
 
 
@@ -156,9 +165,11 @@ def test_all_writes_go_through_atomic_primitives() -> None:
 
 
 def test_write_dataset_probe_keeps_manifest_untouched(tmp_path: Path) -> None:
-    """The dataset probe is its own artifact: manifest.json is never modified
-    and stays parseable by the RunManifest schema. 数据集 probe 是独立产物：
-    manifest.json 绝不修改，且始终可被 RunManifest schema 解析。"""
+    """The dataset probe is its own artifact next to the task summary:
+    manifest.json is never modified and stays parseable by the RunManifest
+    schema, and sample_file is persisted dataset-relative.
+    数据集 probe 是 task 汇总同级的独立产物：manifest.json 绝不修改且始终可被
+    RunManifest schema 解析，sample_file 以 dataset 相对形式持久化。"""
     import json as json_module
 
     from data.adapters.base import AdapterProbe
@@ -172,30 +183,54 @@ def test_write_dataset_probe_keeps_manifest_untouched(tmp_path: Path) -> None:
         run_id="probe-run",
     )
     run_dir = tmp_path / "runs" / "probe-run"
+    task_dir = run_dir / "tasks" / "general_vqa"
     manifest_before = (run_dir / "manifest.json").read_text(encoding="utf-8")
     RunManifest.model_validate_json(manifest_before)
     probe = AdapterProbe(
         dataset="parity",
         version="1",
-        sample_file=Path("samples.jsonl"),
+        sample_file=tmp_path / "annotations" / "samples.jsonl",
         observed_fields=("id", "question"),
         sample_count=7,
         task="counting",
         available_tasks=("counting", "caption"),
     )
-    path = ArtifactWriter().write_dataset_probe(run_dir, probe)
-    assert path == run_dir / "dataset_probe.json"
+    path = ArtifactWriter().write_dataset_probe(
+        task_dir, probe, dataset_root=tmp_path
+    )
+    assert path == task_dir / "dataset_probe.json"
     payload = json_module.loads(path.read_text(encoding="utf-8"))
     assert payload["dataset"] == "parity"
-    assert payload["sample_file"] == "samples.jsonl"
+    assert payload["sample_file"] == "annotations/samples.jsonl"  # root-relative
     assert payload["observed_fields"] == ["id", "question"]
     assert payload["sample_count"] == 7
     assert payload["task"] == "counting"
     assert payload["available_tasks"] == ["counting", "caption"]
+    serialized = json_module.dumps(payload)
+    assert "C:\\" not in serialized and "/home/" not in serialized
     # The manifest is byte-identical and schema-valid. / manifest 字节不变且
     # schema 合法。
     assert (run_dir / "manifest.json").read_text(encoding="utf-8") == manifest_before
     RunManifest.model_validate_json(manifest_before)
+
+
+def test_write_dataset_probe_rejects_outside_root(tmp_path: Path) -> None:
+    import pytest
+
+    from data.adapters.base import AdapterProbe
+
+    probe = AdapterProbe(
+        dataset="parity",
+        version="1",
+        sample_file=tmp_path.parent / "outside.jsonl",
+        observed_fields=("id",),
+        sample_count=1,
+    )
+    with pytest.raises(ValueError, match="dataset root"):
+        ArtifactWriter().write_dataset_probe(
+            tmp_path / "tasks" / "general_vqa", probe, dataset_root=tmp_path
+        )
+    assert not (tmp_path / "tasks" / "general_vqa" / "dataset_probe.json").exists()
 
 
 def test_write_dataset_probe_rejects_sensitive_values(tmp_path: Path) -> None:
@@ -206,10 +241,12 @@ def test_write_dataset_probe_rejects_sensitive_values(tmp_path: Path) -> None:
     probe = AdapterProbe(
         dataset="sk-secret",
         version="1",
-        sample_file=Path("samples.jsonl"),
+        sample_file=tmp_path / "samples.jsonl",
         observed_fields=("id",),
         sample_count=1,
     )
     with pytest.raises(ValueError, match="sensitive"):
-        ArtifactWriter().write_dataset_probe(tmp_path, probe)
-    assert not (tmp_path / "dataset_probe.json").exists()
+        ArtifactWriter().write_dataset_probe(
+            tmp_path / "tasks" / "general_vqa", probe, dataset_root=tmp_path
+        )
+    assert not (tmp_path / "tasks" / "general_vqa" / "dataset_probe.json").exists()

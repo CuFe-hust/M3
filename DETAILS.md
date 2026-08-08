@@ -59,9 +59,9 @@
 | `evaluation/judges/base.py` | `DeepSeekJudgeResult`、`VQAAnswerJudgeResult`、`JudgeClient`、`CountEvidence`/`CountTarget`（结构子集协议）、`build_*_judge_payload`、`build_*_judge_request_hash`、`stable_error_label` | judge Schema/协议/纯载荷与稳定哈希；载荷绝不包含图像数据或路径；judges 层不导入 `agents.counting.schema`（结构协议消费计数证据） |
 | `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
 | `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
-| `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status` | 单样本执行内核：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算（可外部注入）、确定性评估（VQA/counting/grounding/caption 四类产物，fail-closed 不伪造）、可选 VQA judge（`asyncio.to_thread` 不阻塞 loop）、trace（`resolved_task`/`execution_task`）、失败只记录稳定 code |
+| `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status`、`build_deterministic_evaluation`、`evaluation_filename_for_task` | 单样本执行内核 + 共享确定性评估分派（fresh/resume 同源）：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算（可外部注入）、确定性评估（VQA/counting/grounding/caption 四类产物，fail-closed 不伪造；grounding 强制坐标系契约）、可选 VQA judge（`asyncio.to_thread` 不阻塞 loop）、trace（`resolved_task`/`execution_task`）、`result_path` 为 sample-relative basename、失败只记录稳定 code |
 | `data/adapters/manifest.py` | `ManifestDraftAdapter`、`iter_manifest_drafts`、`load_manifest_mapping` | manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models、绝不写 run artifacts）；`samples_file` 经 `resolve_dataset_relative_path` 限制在 dataset root 内；失败均为稳定 DatasetProbeError |
-| `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 经 `ArtifactWriter.write_dataset_probe` 独立写 `dataset_probe.json`（manifest.json 绝不触碰）、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并按 `status.task`（执行任务）补判缺失确定性评估/缺失或失败 VQA judge（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast 取消不遗留 running（已取消 `FAIL_FAST_CANCELLED`、未启动 `FAIL_FAST_NOT_STARTED`，全部计入 predictions 与终态）、`DatasetRunSummary` 计数强制闭合；`task=None` 为内部显式 auto-task mode；目录 `tasks/<task>/samples/<sha256[:24]>` |
+| `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 经 `ArtifactWriter.write_dataset_probe` 按 task 目录独立写 `tasks/<task>/dataset_probe.json`（sample_file dataset-relative，manifest.json 绝不触碰）、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并按 `status.task`（执行任务）经共享 dispatch 补判（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast 取消不遗留 running（`FAIL_FAST_CANCELLED`/`FAIL_FAST_NOT_STARTED` 全记账）、`DatasetRunSummary` 计数强制闭合；`task=None` 为内部显式 auto-task mode；predictions 为 append-only 执行索引（run_task/sample_id 键、run-relative result_path）；目录 `tasks/<task>/samples/<sha256[:24]>` |
 
 ## 关键约定
 
@@ -169,6 +169,18 @@
   succeeded/partial/failed/skipped）且 summary 计数闭合；`auto_task` 是显式
   运行选项（DatasetRunOptions 校验 tasks 空/非空），`task=None` 仅为内部
   auto-task mode。
+- **06.6 收口契约**：grounding deterministic 仅在 prediction 与 GT 同为
+  `normalized_0_999_top_left` 且均为 4-value xyxy 时生成（`_GROUNDING_PREDICTION_FRAME`
+  显式常量）；`source_pixels_top_left` 与 8-point polygon fail-closed，等待 official
+  evaluator / 显式坐标转换；fresh run 与 resume 经同一
+  `build_deterministic_evaluation` 共享 dispatch（resume 从持久化结果恢复载荷：
+  counting 族读 counting_result.json，其余读 agent_result.json，缺失以
+  PERSISTED_RESULT_MISSING/INVALID 稳定失败）；`dataset_probe.json` 按 task 目录
+  独立持久化且 sample_file dataset-relative（root 外稳定失败）；`status.result_path`
+  为 sample-relative basename，predictions 行 result_path 为 run-relative（由实际
+  sample 目录推导）；predictions.jsonl 是 append-only execution index，
+  `(run_task, sample_id)` 最后一行是当前状态，行含
+  sample_id/run_task/task/status/result_path/updated_at。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。

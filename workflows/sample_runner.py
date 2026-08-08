@@ -54,6 +54,80 @@ _VQA_TASKS = frozenset({"general_vqa", "multiple_choice_vqa", "scene_classificat
 # 已接线计数确定性指标的任务。
 _COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
+# Prediction coordinate frame mandated by the Agent contract
+# (agents.schema.VisualEvidence). Ground truth must declare the identical
+# frame before any IoU is computed; other frames fail closed.
+# Agent 契约（agents.schema.VisualEvidence）强制的预测坐标系。真值必须声明
+# 相同坐标系才计算 IoU；其他坐标系一律 fail-closed。
+_GROUNDING_PREDICTION_FRAME = "normalized_0_999_top_left"
+
+
+def evaluation_filename_for_task(task: str) -> str | None:
+    """Sample-level deterministic evaluation artifact for a task; None when
+    the task has no wired sample-level metric. 任务的样本级确定性评估产物名；
+    无已接线样本级指标时返回 None。"""
+
+    if task in _VQA_TASKS:
+        return _VQA_EVALUATION_FILENAME
+    if task in _COUNTING_TASKS:
+        return _COUNTING_EVALUATION_FILENAME
+    if task == "grounding":
+        return _GROUNDING_EVALUATION_FILENAME
+    if task == "caption":
+        return _CAPTION_EVALUATION_FILENAME
+    return None
+
+
+def build_deterministic_evaluation(
+    *,
+    sample: UnifiedSample,
+    execution_payload: object,
+) -> tuple[object | None, str | None]:
+    """Shared deterministic evaluator dispatch consumed by both fresh runs and
+    resume supplements, so the two paths can never drift. Returns
+    (evaluation, filename). Grounding yields None unless prediction and ground
+    truth agree on normalized_0_999_top_left with 4-value xyxy boxes; counting
+    yields None for non-CountingResult payloads; caption without references
+    yields None. 供 fresh run 与 resume 补判共用的确定性评估分派，两条路径
+    永不漂移。返回（evaluation, filename）。grounding 仅在预测与真值同为
+    normalized_0_999_top_left 且均为 4-value xyxy 时产出；counting 对非
+    CountingResult 载荷返回 None；caption 无参考答案返回 None。"""
+
+    task = sample.task
+    filename = evaluation_filename_for_task(task)
+    if filename is None:
+        return None, None
+    if task in _VQA_TASKS:
+        candidate_answer = str(getattr(execution_payload, "answer", ""))
+        references = (
+            list(sample.ground_truth.answers)
+            if sample.ground_truth is not None
+            else []
+        )
+        evaluation = merge_vqa_evaluation(
+            sample_id=sample.sample_id,
+            question=sample.question,
+            reference_answers=references,
+            candidate_answer=candidate_answer,
+        )
+        return evaluation, filename
+    if task in _COUNTING_TASKS:
+        if not isinstance(execution_payload, CountingResult):
+            return None, None  # fail closed: never fabricate counting metrics
+        evaluation = merge_count_evaluation(
+            sample_id=sample.sample_id,
+            counting=execution_payload,
+            ground_truth=sample.ground_truth,
+        )
+        return evaluation, filename
+    if task == "grounding":
+        evaluation = _grounding_evaluation(sample, execution_payload)
+        return evaluation, filename if evaluation is not None else None
+    if task == "caption":
+        evaluation = _caption_evaluation(sample, execution_payload)
+        return evaluation, filename if evaluation is not None else None
+    return None, None
+
 
 @dataclass(frozen=True)
 class _Attempt:
@@ -242,7 +316,7 @@ class SampleRunner:
         # the trace. / routing 产物必须反映实际执行的任务，绝不停留在失败的
         # top candidate；完整候选历史留在 trace。
         self.artifact_writer.write_routing(sample_dir, executed_attempt.decision)
-        result_path = self.artifact_writer.write_execution(sample_dir, execution)
+        self.artifact_writer.write_execution(sample_dir, execution)
         evaluation = await self._persist_evaluation(
             executed_attempt.sample,
             execution,
@@ -264,10 +338,14 @@ class SampleRunner:
             failure_code=None,
         )
         self.artifact_writer.write_trace(sample_dir, trace)
+        # result_path is the sample-relative result artifact (the declared
+        # result basename); machine absolute paths never enter the status.
+        # result_path 是样本相对的结果产物（声明的结果 basename）；机器绝对
+        # 路径绝不进入状态。
         final = _status(
             executed_attempt.sample,
             sample_state_from_payload(execution.payload),
-            result_path=result_path,
+            result_path=Path(execution.result_filename),
         )
         self.artifact_writer.write_final_status(sample_dir, final)
         return SampleRunOutcome(
@@ -379,84 +457,40 @@ class SampleRunner:
         budget: CallBudget,
         judge_policy: str,
     ) -> object | None:
-        """Persist the sample-level deterministic evaluation for every task
-        with a wired metric — general_vqa / multiple_choice_vqa /
-        scene_classification (VQA exact match), counting /
-        fine_grained_counting (counting), grounding (axis-aligned IoU),
-        caption (per-sample candidate+references). Only general_vqa adds the
-        optional text-only judge, which runs off the asyncio event loop and
-        never fails the sample, never replaces the deterministic match, and
-        never leaks raw exception text. Tasks without a sample-level metric
-        (spatial_relation / change_qa / change_caption) stay evaluation=None.
-        为每个已接线指标的任务持久化样本级确定性评估——general_vqa /
-        multiple_choice_vqa / scene_classification（VQA 严格匹配）、counting /
-        fine_grained_counting（计数）、grounding（轴对齐 IoU）、caption
-        （逐样本候选+参考）。只有 general_vqa 追加可选仅文本 judge，它在
-        asyncio 事件循环之外运行，绝不让样本失败、绝不替换确定性匹配、绝不
-        泄漏原始异常文本。无样本级指标的任务（spatial_relation / change_qa /
-        change_caption）保持 evaluation=None。"""
+        """Persist the sample-level deterministic evaluation through the
+        shared dispatch helper, then add the optional text-only judge for
+        general_vqa only. The judge runs off the asyncio event loop and never
+        fails the sample, never replaces the deterministic match, and never
+        leaks raw exception text. 经共享分派 helper 持久化样本级确定性评估，
+        然后仅对 general_vqa 追加可选仅文本 judge。judge 在 asyncio 事件循环
+        之外运行，绝不让样本失败、绝不替换确定性匹配、绝不泄漏原始异常文本。"""
 
         task = sample.task
-        if task in _VQA_TASKS:
-            candidate_answer = str(execution.payload.answer)
-            references = (
-                list(sample.ground_truth.answers)
-                if sample.ground_truth is not None
-                else []
-            )
-            evaluation = merge_vqa_evaluation(
-                sample_id=sample.sample_id,
-                question=sample.question,
-                reference_answers=references,
-                candidate_answer=candidate_answer,
-            )
-            if task == "general_vqa" and self.judge_service is not None:
-                try:
-                    evaluation = await asyncio.to_thread(
-                        self.judge_service.judge_vqa,
-                        sample=sample,
-                        candidate_answer=candidate_answer,
-                        sample_dir=sample_dir,
-                        judge_policy=judge_policy,
-                        call_budget=budget,
-                    )
-                except Exception as error:
-                    evaluation = {
-                        "sample_id": sample.sample_id,
-                        "judge_status": "failed",
-                        "judge_error": type(error).__name__,
-                    }
-            self.artifact_writer.write_evaluation(
-                sample_dir, evaluation, filename=_VQA_EVALUATION_FILENAME
-            )
-            return evaluation
-        if task in _COUNTING_TASKS:
-            if not isinstance(execution.payload, CountingResult):
-                return None  # fail closed: never fabricate counting metrics
-            evaluation = merge_count_evaluation(
-                sample_id=sample.sample_id,
-                counting=execution.payload,
-                ground_truth=sample.ground_truth,
-            )
-            self.artifact_writer.write_evaluation(
-                sample_dir, evaluation, filename=_COUNTING_EVALUATION_FILENAME
-            )
-            return evaluation
-        if task == "grounding":
-            evaluation = _grounding_evaluation(sample, execution)
-            if evaluation is not None:
-                self.artifact_writer.write_evaluation(
-                    sample_dir, evaluation, filename=_GROUNDING_EVALUATION_FILENAME
+        evaluation, filename = build_deterministic_evaluation(
+            sample=sample, execution_payload=execution.payload
+        )
+        if task == "general_vqa" and self.judge_service is not None:
+            candidate_answer = str(getattr(execution.payload, "answer", ""))
+            try:
+                evaluation = await asyncio.to_thread(
+                    self.judge_service.judge_vqa,
+                    sample=sample,
+                    candidate_answer=candidate_answer,
+                    sample_dir=sample_dir,
+                    judge_policy=judge_policy,
+                    call_budget=budget,
                 )
-            return evaluation
-        if task == "caption":
-            evaluation = _caption_evaluation(sample, execution)
-            if evaluation is not None:
-                self.artifact_writer.write_evaluation(
-                    sample_dir, evaluation, filename=_CAPTION_EVALUATION_FILENAME
-                )
-            return evaluation
-        return None
+            except Exception as error:
+                evaluation = {
+                    "sample_id": sample.sample_id,
+                    "judge_status": "failed",
+                    "judge_error": type(error).__name__,
+                }
+        if filename is not None:
+            self.artifact_writer.write_evaluation(
+                sample_dir, evaluation, filename=filename
+            )
+        return evaluation
 
     def _finish_failed(
         self,
@@ -538,21 +572,36 @@ def _rebuild_sample_for_task(
 
 def _grounding_evaluation(
     sample: UnifiedSample,
-    execution: AgentExecution,
+    execution_payload: object,
 ) -> EvaluationRecord | None:
-    """Axis-aligned grounding IoU from the first prediction box and the first
-    ground-truth box; missing geometry on either side yields None — a fake
-    IoU=0 is never fabricated, official oriented metrics stay upstream.
-    用第一个预测框与第一个真值框计算轴对齐 IoU；任一侧缺少几何时返回
-    None——绝不伪造 IoU=0，官方 oriented 指标留在上游评测器。"""
+    """Axis-aligned grounding IoU, computed only when prediction and ground
+    truth agree on the normalized_0_999_top_left frame with 4-value xyxy
+    boxes. source_pixels_top_left, unlabelled frames, 8-value polygons, and
+    non-4 prediction boxes all yield None — a fake IoU is never fabricated,
+    official oriented metrics stay upstream. 轴对齐 grounding IoU，仅在预测与
+    真值同为 normalized_0_999_top_left 且均为 4-value xyxy 时计算。
+    source_pixels_top_left、未声明坐标系、8-value 多边形与非 4-value 预测框
+    一律返回 None——绝不伪造 IoU，官方 oriented 指标留在上游评测器。"""
 
     ground_truth = sample.ground_truth
     gt_boxes = ground_truth.boxes if ground_truth is not None else []
-    prediction_boxes = getattr(execution.payload, "boxes", None) or []
+    prediction_boxes = getattr(execution_payload, "boxes", None) or []
     if not prediction_boxes or not gt_boxes:
         return None
+    # Frame contract: the Agent contract always emits normalized_0_999_top_left
+    # boxes; the ground truth must declare the identical frame explicitly.
+    # 坐标系契约：Agent 契约恒输出 normalized_0_999_top_left 框；真值必须
+    # 显式声明相同坐标系。
+    if ground_truth is None or ground_truth.coordinate_frame != _GROUNDING_PREDICTION_FRAME:
+        return None
+    prediction = prediction_boxes[0]
+    truth = gt_boxes[0]
+    if not isinstance(prediction, (list, tuple)) or len(prediction) != 4:
+        return None
+    if not isinstance(truth, (list, tuple)) or len(truth) != 4:
+        return None
     try:
-        iou = box_iou(prediction_boxes[0], gt_boxes[0])
+        iou = box_iou(prediction, truth)
     except (TypeError, IndexError, ValueError):
         return None
     return EvaluationRecord(
@@ -565,7 +614,7 @@ def _grounding_evaluation(
 
 def _caption_evaluation(
     sample: UnifiedSample,
-    execution: AgentExecution,
+    execution_payload: object,
 ) -> EvaluationRecord | None:
     """Per-sample caption record: candidate plus references. Corpus-level
     BLEU/METEOR/ROUGE/CIDEr stays with the report layer; no references means
@@ -580,7 +629,7 @@ def _caption_evaluation(
         sample_id=sample.sample_id,
         task="caption",
         deterministic_metrics=CaptionDeterministicMetrics(
-            candidate=str(getattr(execution.payload, "answer", "")),
+            candidate=str(getattr(execution_payload, "answer", "")),
             references=list(references),
         ),
         judge_status="not_requested",

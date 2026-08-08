@@ -428,6 +428,11 @@ def test_candidate_fallback_resume_consistency(tmp_path: Path) -> None:
     assert summary.succeeded == 1
     assert summary.failed == 0
     sample_dir = run_dir / "tasks" / "auto" / "samples" / storage_key("a1")
+    # Probe lives next to the auto task summary. / probe 位于 auto task 汇总同级。
+    auto_probe = _read_json(run_dir / "tasks" / "auto" / "dataset_probe.json")
+    assert auto_probe["dataset"] == "auto-demo"
+    assert auto_probe["sample_file"] == "samples.jsonl"  # dataset-relative
+    assert "C:\\" not in json.dumps(auto_probe)
     assert _read_json(sample_dir / "sample.json")["task"] == "general_vqa"
     status = _read_json(sample_dir / "status.json")
     assert status["task"] == "caption"
@@ -439,6 +444,21 @@ def test_candidate_fallback_resume_consistency(tmp_path: Path) -> None:
     routing = _read_json(sample_dir / "routing_decision.json")
     assert routing["primary_agent"] == "caption_agent"
     assert routing["task"] == "caption"
+    # Execution index: run_task is the storage namespace 'auto', task is the
+    # executed caption; the result path is run-relative under tasks/auto/.
+    # 执行索引：run_task 是存储命名空间 'auto'，task 是执行的 caption；
+    # 结果路径是 tasks/auto/ 下的 run 相对路径。
+    rows = [
+        json.loads(line)
+        for line in (run_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["run_task"] == "auto"
+    assert rows[0]["task"] == "caption"
+    assert rows[0]["result_path"] == (
+        f"tasks/auto/samples/{storage_key('a1')}/agent_result.json"
+    )
     # Resume: nothing re-runs and no VQA judge applies to the caption sample.
     # Resume：什么都不重跑，VQA judge 不作用于 caption 样本。
     resolver_calls_before = resolver._client.calls

@@ -46,7 +46,7 @@ class _FakeAdapter:
         return AdapterProbe(
             dataset="fake",
             version="1",
-            sample_file=Path("samples.jsonl"),
+            sample_file=root / "samples.jsonl",  # root-anchored / 锚定 root
             observed_fields=("id",),
             sample_count=len(self._samples),
             task=task,
@@ -315,7 +315,14 @@ def test_multi_task_same_sample_id_no_conflict(tmp_path: Path) -> None:
     assert (first_dir / "status.json").is_file()
     assert (second_dir / "status.json").is_file()
     assert len(stub.calls) == 2
-    assert len(_predictions(run_dir)) == 2
+    rows = _predictions(run_dir)
+    assert len(rows) == 2
+    # The execution-index key is (run_task, sample_id): the same sample id
+    # under two task namespaces forms two distinct keys.
+    # 执行索引键是 (run_task, sample_id)：同一 sample id 在两个 task 命名空间
+    # 下构成两个互不冲突的键。
+    keys = {(row["run_task"], row["sample_id"]) for row in rows}
+    assert keys == {("general_vqa", "shared-id"), ("caption", "shared-id")}
     for task in ("general_vqa", "caption"):
         summary = _read_json(run_dir / "tasks" / task / "dataset_summary.json")
         assert summary["task"] == task
@@ -376,6 +383,10 @@ def test_fail_fast_stops_new_tasks_and_cancels_in_flight(tmp_path: Path) -> None
     assert rows["s1"]["status"] == "skipped"
     assert rows["s2"]["status"] == "skipped"
     assert rows["s3"]["status"] == "skipped"
+    assert all(row["run_task"] == "general_vqa" for row in rows.values())
+    assert rows["s0"]["result_path"].startswith("tasks/general_vqa/samples/")
+    assert rows["s1"]["result_path"] is None
+    assert rows["s2"]["result_path"] is None
     # No sample is left in a permanent running state. / 无样本遗留永久 running。
     for key in ("s0", "s1", "s2", "s3"):
         state = _read_json(
@@ -399,10 +410,10 @@ def test_fail_fast_not_triggered_without_failures(tmp_path: Path) -> None:
 
 def test_manifest_stays_runmanifest_valid_and_probe_is_separate(tmp_path: Path) -> None:
     """The run manifest must stay parseable by the RunManifest schema across
-    a dataset run; the dataset probe lives in its own artifact and never
+    a dataset run; the dataset probe lives next to the task summary and never
     extends the manifest schema. 数据集运行前后 manifest.json 必须始终可被
-    RunManifest schema 解析；数据集 probe 独立存放，绝不扩展 manifest
-    schema。"""
+    RunManifest schema 解析；数据集 probe 位于 task 汇总同级，绝不扩展
+    manifest schema。"""
     from workflows.run_store import RunManifest
 
     samples = _samples(2)
@@ -414,11 +425,12 @@ def test_manifest_stays_runmanifest_valid_and_probe_is_separate(tmp_path: Path) 
     _run(runner, task="general_vqa")
     RunManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     assert "dataset_probe" not in _read_json(manifest_path)
-    probe = _read_json(run_dir / "dataset_probe.json")
+    probe = _read_json(run_dir / "tasks" / "general_vqa" / "dataset_probe.json")
     assert probe["dataset"] == "fake"
     assert probe["task"] == "general_vqa"
     assert probe["sample_count"] == 2
     assert probe["observed_fields"] == ["id"]
+    assert probe["sample_file"] == "samples.jsonl"  # dataset-relative / root 相对
 
 
 def test_summary_counts_and_predictions_rows(tmp_path: Path) -> None:
@@ -442,6 +454,31 @@ def test_summary_counts_and_predictions_rows(tmp_path: Path) -> None:
     assert {row["sample_id"] for row in rows} == {"s0", "s1", "s2"}
     assert {row["status"] for row in rows} == {"succeeded", "partial", "failed"}
     assert all(row["task"] == "general_vqa" for row in rows)
+    # Execution-index contract: run_task namespace + run-relative result paths.
+    # 执行索引契约：run_task 命名空间 + run 相对结果路径。
+    assert all(row["run_task"] == "general_vqa" for row in rows)
+    for row in rows:
+        assert row["result_path"].startswith("tasks/general_vqa/samples/")
+        assert row["result_path"].endswith("/result.json")
+        assert "C:\\" not in row["result_path"]
+        assert "tmp_path" not in row["result_path"]
+        assert row["updated_at"]
+
+
+def test_probe_per_task_not_overwritten(tmp_path: Path) -> None:
+    """dataset_probe.json lives per task directory and is never overwritten
+    across tasks. dataset_probe.json 按 task 目录独立存放，跨 task 互不覆盖。"""
+    sample = _sample("shared-id")
+    run_dir, _ = _create_run(tmp_path)
+    runner = _runner(_FakeAdapter([sample]), _StubSampleRunner(), run_dir)
+    _run(runner, task="general_vqa")
+    _run(runner, task="caption")
+    first = _read_json(run_dir / "tasks" / "general_vqa" / "dataset_probe.json")
+    second = _read_json(run_dir / "tasks" / "caption" / "dataset_probe.json")
+    assert first["task"] == "general_vqa"
+    assert second["task"] == "caption"
+    assert first["sample_file"] == "samples.jsonl"  # dataset-relative / root 相对
+    assert first != second
 
 
 # ── argument validation / 参数校验 ──────────────────────────────────────────

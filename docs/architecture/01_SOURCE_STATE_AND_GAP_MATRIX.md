@@ -1,5 +1,18 @@
 # 01 — 旧功能 / 新状态 / 缺口矩阵（只读审计）
 
+> **HISTORICAL SNAPSHOT**
+>
+> 本文是 Task 01 在 `a1ed20b319273c15fbf84c54cd159fe9e46d5daf` 时间点的
+> 只读审计记录，**不是当前实现状态**。
+>
+> 当前实现状态以：
+>
+> - `architecture/implementation_status.json`
+> - `README.md`
+> - 当前 `new_structure` HEAD
+>
+> 为准。
+
 > Task 01 产物。只读审计：确认旧实现（`try_yolo`）功能清单、新架构
 > （`new_structure`）当前状态，以及两者之间的**真正缺口**，为后续任务
 > 02–09 提供输入。本任务未修改任何生产代码、白名单与测试。

@@ -18,6 +18,7 @@ from PIL import Image
 from agents.counting.schema import CountingResult, GlobalPointObservation
 from agents.general_vqa import GeneralVQAAgent
 from agents.registry import AgentRegistry
+from agents.schema import AgentResult
 from data.adapters.base import AdapterProbe
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.judges.base import VQAAnswerJudgeResult
@@ -87,7 +88,7 @@ class _FakeAdapter:
         return AdapterProbe(
             dataset="fake",
             version="1",
-            sample_file=Path("samples.jsonl"),
+            sample_file=root / "samples.jsonl",  # root-anchored / 锚定 root
             observed_fields=("id",),
             sample_count=len(self._samples),
             task=task,
@@ -318,7 +319,7 @@ def test_resume_supplement_missing_result_marks_skipped(tmp_path: Path) -> None:
     assert client.calls == 1  # still no re-inference / 仍然不重新推理
     status = _status_of(run_dir, "general_vqa", "resume-1")
     assert status["state"] == "skipped"
-    assert status["error_code"] == "AGENT_RESULT_MISSING"
+    assert status["error_code"] == "PERSISTED_RESULT_MISSING"
 
 
 # ── resume: judge / resume：judge 补判 ──────────────────────────────────────
@@ -432,6 +433,263 @@ def test_resume_corrupt_status_reruns(tmp_path: Path) -> None:
     assert summary.succeeded == 1
     assert client.calls == 2
     assert _status_of(run_dir, "general_vqa", "resume-1")["state"] == "succeeded"
+
+
+# ── resume parity: shared deterministic dispatch (Fix B) ────────────────────
+
+
+def _seed_succeeded_sample(
+    run_dir: Path,
+    *,
+    task: str,
+    sample: UnifiedSample,
+    payload: Any,
+    result_filename: str,
+) -> Path:
+    """Manually construct a succeeded sample dir (sample.json + status.json +
+    result artifact) as if a fresh run had completed it.
+    手工构造 succeeded 样本目录（sample.json + status.json + 结果产物），
+    模拟 fresh run 已完成。"""
+    from agents.base import AgentExecution
+    from workflows.schema import SampleRunStatus
+
+    sample_dir = run_dir / "tasks" / task / "samples" / storage_key(sample.sample_id)
+    writer = ArtifactWriter()
+    writer.write_sample(sample_dir, sample)
+    writer.write_final_status(
+        sample_dir,
+        SampleRunStatus(
+            sample_id=sample.sample_id,
+            task=task,  # type: ignore[arg-type]
+            state="succeeded",
+            updated_at="2026-01-01T00:00:00Z",
+        ),
+    )
+    writer.write_execution(
+        sample_dir,
+        AgentExecution(
+            agent_name="general_vqa_agent",
+            payload=payload,
+            result_filename=result_filename,
+        ),
+    )
+    return sample_dir
+
+
+def _vqa_bucket_sample(task: str, answers: list[str]) -> UnifiedSample:
+    return UnifiedSample(
+        sample_id=f"parity-{task}",
+        dataset="fake",
+        split="test",
+        task=task,  # type: ignore[arg-type]
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="Question?",
+        ground_truth=GroundTruth(answers=answers),
+    )
+
+
+def test_resume_supplements_multiple_choice_vqa(tmp_path: Path) -> None:
+    sample = _vqa_bucket_sample("multiple_choice_vqa", ["A"])
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="multiple_choice_vqa",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="general_vqa_agent", answer="A", status="completed"
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="multiple_choice_vqa", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0  # no re-inference / 不重新推理
+    evaluation = _read_json(sample_dir / "vqa_evaluation.json")
+    assert evaluation["task"] == "general_vqa"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+    assert evaluation["judge_status"] == "not_requested"  # no judge for mcq
+
+
+def test_resume_supplements_scene_classification(tmp_path: Path) -> None:
+    sample = _vqa_bucket_sample("scene_classification", ["ok"])
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="scene_classification",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="general_vqa_agent", answer="ok", status="completed"
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="scene_classification", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "vqa_evaluation.json")
+    assert evaluation["task"] == "general_vqa"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+
+
+def test_resume_supplements_fine_grained_counting(tmp_path: Path) -> None:
+    sample = UnifiedSample(
+        sample_id="parity-fgc",
+        dataset="fake",
+        split="test",
+        task="fine_grained_counting",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="How many cars?",
+        ground_truth=GroundTruth(count=2),
+    )
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="fine_grained_counting",
+        sample=sample,
+        payload=_counting_result(),
+        result_filename="counting_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="fine_grained_counting", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "counting_evaluation.json")
+    assert evaluation["task"] == "counting"
+    assert evaluation["deterministic_metrics"]["exact_match"] == 1
+
+
+def test_resume_supplements_caption(tmp_path: Path) -> None:
+    sample = UnifiedSample(
+        sample_id="parity-caption",
+        dataset="fake",
+        split="test",
+        task="caption",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="",
+        ground_truth=GroundTruth(answers=["a street scene"]),
+    )
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="caption",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="general_vqa_agent",
+            answer="a street scene",
+            status="completed",
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="caption", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "caption_evaluation.json")
+    assert evaluation["task"] == "caption"
+    assert evaluation["deterministic_metrics"]["candidate"] == "a street scene"
+
+
+def test_resume_supplements_grounding_compatible_frame(tmp_path: Path) -> None:
+    sample = UnifiedSample(
+        sample_id="parity-grounding",
+        dataset="fake",
+        split="test",
+        task="grounding",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
+    )
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="grounding",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="general_vqa_agent",
+            answer="located",
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            status="completed",
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="grounding", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "grounding_evaluation.json")
+    assert evaluation["task"] == "grounding"
+    assert evaluation["deterministic_metrics"]["iou_at_0_5"] is True
+
+
+def test_resume_grounding_incompatible_frame_no_fake_metric(tmp_path: Path) -> None:
+    """Resume must not fabricate a grounding metric for an incompatible
+    frame; the sample stays succeeded. resume 对不兼容坐标系绝不伪造 grounding
+    指标；样本保持 succeeded。"""
+    sample = UnifiedSample(
+        sample_id="parity-grounding-px",
+        dataset="fake",
+        split="test",
+        task="grounding",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[620.0, 1100.0, 1400.0, 1800.0]],
+            coordinate_frame="source_pixels_top_left",
+        ),
+    )
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="grounding",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="general_vqa_agent",
+            answer="located",
+            boxes=[[100.0, 200.0, 400.0, 500.0]],
+            status="completed",
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="grounding", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    assert not (sample_dir / "grounding_evaluation.json").exists()
+    assert _status_of(run_dir, "grounding", "parity-grounding-px")["state"] == "succeeded"
+
+
+# ── predictions history contract (Fix E) / 预测历史契约 ─────────────────────
+
+
+def test_predictions_are_append_only_history_with_current_state(tmp_path: Path) -> None:
+    """fresh + resume produce two rows for the same (run_task, sample_id);
+    the last row is the current state and updated_at never moves backwards.
+    fresh + resume 对同一 (run_task, sample_id) 产生两行；最后一行是当前状态，
+    updated_at 不回退。"""
+    root, client, _, _, dataset_runner, run_dir = _setup(tmp_path)
+    _run(dataset_runner, root=root)
+    _run(dataset_runner, root=root, resume=True)
+    assert client.calls == 1
+    rows = [
+        json.loads(line)
+        for line in (run_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 2
+    assert all(row["run_task"] == "general_vqa" for row in rows)
+    assert all(row["sample_id"] == "resume-1" for row in rows)
+    assert rows[1]["status"] == "succeeded"
+    assert rows[1]["updated_at"] >= rows[0]["updated_at"]
+    assert rows[1]["result_path"].startswith("tasks/general_vqa/samples/")
 
 
 # ── judge off the event loop (Fix D) / judge 不阻塞事件循环 ─────────────────

@@ -117,16 +117,25 @@ class ArtifactWriter:
         run_dir: Path,
         *,
         sample_id: str,
+        run_task: str,
         task: str,
         status: SampleRunStatus,
+        result_path: str | None,
     ) -> None:
-        """Append one stable prediction index row. / 追加一条稳定预测索引记录。"""
+        """Append one execution-index row; the writer persists decided values
+        only and never derives storage locations. The index is append-only —
+        resume history is preserved, and the last row per (run_task,
+        sample_id) is the current state. 追加一行执行索引；writer 只持久化
+        已决定值，绝不推导存储位置。索引为 append-only——resume 历史保留，
+        (run_task, sample_id) 的最后一行是当前状态。"""
 
         value = {
             "sample_id": sample_id,
+            "run_task": run_task,
             "task": task,
             "status": status.state,
-            "result_path": str(status.result_path) if status.result_path else None,
+            "result_path": result_path,
+            "updated_at": status.updated_at,
         }
         atomic_append_jsonl(run_dir / PREDICTIONS_FILENAME, value)
 
@@ -135,17 +144,34 @@ class ArtifactWriter:
 
         atomic_write_json(run_dir / DATASET_SUMMARY_FILENAME, summary.model_dump(mode="json"))
 
-    def write_dataset_probe(self, run_dir: Path, probe: AdapterProbe) -> Path:
-        """Persist the dataset layout probe as its own artifact without ever
-        touching manifest.json, which must stay parseable by the RunManifest
-        schema. The payload is JSON-safe and secret-scanned.
-        将数据集布局 probe 单独持久化为独立产物，绝不触碰必须保持 RunManifest
-        schema 可解析的 manifest.json。载荷 JSON 安全且经过敏感扫描。"""
+    def write_dataset_probe(
+        self,
+        task_dir: Path,
+        probe: AdapterProbe,
+        *,
+        dataset_root: Path,
+    ) -> Path:
+        """Persist the dataset layout probe next to the task summary without
+        ever touching manifest.json, which must stay parseable by the
+        RunManifest schema. sample_file is stored dataset-relative — machine
+        absolute paths never leak; a probe file outside the dataset root fails
+        stably. 将数据集布局 probe 持久化到 task 汇总同级，绝不触碰必须保持
+        RunManifest schema 可解析的 manifest.json。sample_file 以 dataset
+        root 相对形式存储——机器绝对路径绝不泄漏；root 外的 probe 文件稳定
+        失败。"""
 
+        try:
+            sample_file = probe.sample_file.resolve().relative_to(
+                dataset_root.resolve()
+            )
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                "dataset probe sample_file must be inside the dataset root"
+            ) from exc
         payload: dict[str, Any] = {
             "dataset": probe.dataset,
             "version": probe.version,
-            "sample_file": probe.sample_file.as_posix(),
+            "sample_file": sample_file.as_posix(),
             "observed_fields": list(probe.observed_fields),
             "sample_count": probe.sample_count,
         }
@@ -154,7 +180,7 @@ class ArtifactWriter:
         if probe.available_tasks:
             payload["available_tasks"] = list(probe.available_tasks)
         _reject_secrets(payload, "dataset probe")
-        path = run_dir / DATASET_PROBE_FILENAME
+        path = task_dir / DATASET_PROBE_FILENAME
         atomic_write_json(path, payload)
         return path
 
