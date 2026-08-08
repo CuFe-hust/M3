@@ -13,13 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from data.schema import UnifiedSample
+from data.schema import SampleDraft, UnifiedSample
 
 
 class DatasetProbeError(ValueError):
     """Raised when an adapter cannot prove its declared layout.
     适配器无法证明其声明布局时抛出。"""
-
 
 @dataclass(frozen=True)
 class AdapterProbe:
@@ -45,6 +44,20 @@ class DatasetAdapter(Protocol):
     def probe(self, root: Path, task: str | None = None) -> AdapterProbe: ...
 
     def iter_samples(self, root: Path, split: str, task: str) -> Iterator[UnifiedSample]: ...
+
+
+class DraftDatasetAdapter(Protocol):
+    """Read-only adapter contract for datasets without an explicit per-sample
+    task; yields SampleDraft rows that the workflow resolves before
+    materialization. 无显式逐样本 task 数据集的只读适配器契约；产出由工作流
+    在物化前解析的 SampleDraft。"""
+
+    name: str
+    supported_tasks: set[str] | frozenset[str] | tuple[str, ...]
+
+    def probe(self, root: Path, task: str | None = None) -> AdapterProbe: ...
+
+    def iter_drafts(self, root: Path, split: str) -> Iterator[SampleDraft]: ...
 
 
 JSON_RECORD_CONTAINER_KEYS = (

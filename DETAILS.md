@@ -47,7 +47,7 @@
 | `routing/schema.py` | `SampleCapabilities`、`RoutePolicy`、`RoutingDecision`、`TaskResolutionRequest`、`TaskResolution`、`ResolutionSource` | 路由契约 + 样本前任务解析契约；Router 不读 question、不调用模型；TaskResolution* 仅供 TaskResolver 使用 |
 | `routing/policies.py` | `POLICIES`、`policy_for` | 固定 task→policy 表；未知 task 显式失败 |
 | `routing/router.py` | `TaskRouter` | 同步确定性路由；requires_tiling 为策略字段 |
-| `workflows/task_resolver.py` | `TaskResolver`、`TaskResolutionError` | 样本前任务解析：explicit/rule/model 三路径；显式 task 不调用模型；空问题仅两条窄规则；低置信度只返回结构化候选，不执行 Agent |
+| `workflows/task_resolver.py` | `TaskResolver`、`TaskResolutionError`、`materialize_sample`、`SampleMaterializationError` | 样本前任务解析：explicit/rule/model 三路径；显式 task 不调用模型；空问题仅两条窄规则；低置信度只返回结构化候选，不执行 Agent；`materialize_sample` 将 draft 物化为 UnifiedSample（角色重建、normalization=None、稳定不兼容错误） |
 | `data/schema.py` | `ImageRef` | 不可变图像引用；path 统一 posix 序列化；sha256 严格 64 位 hex |
 | `data/schema.py` | `GroundTruth` | answers/count/boxes(4|8)/points(2)/labels/raw/coordinate_frame |
 | `data/schema.py` | `TaskNormalization` | 一等规范化字段（结构化 spatial_query/answer_constraints/count_target_hint） |
@@ -55,11 +55,12 @@
 | `data/schema.py` | `ValidationIssue` | 只读审计问题记录 |
 | `data/schema.py` | `stable_sample_id` | 多图稳定样本 ID；source ID 目录名安全检查 |
 | `data/__init__.py` | 重导出 | 仅导出上述稳定类型 |
+| `data/schema.py` | `SampleDraft` | pre-sample 契约（无 task 角色校验）；task 保持必填于 UnifiedSample |
 | `evaluation/judges/base.py` | `DeepSeekJudgeResult`、`VQAAnswerJudgeResult`、`JudgeClient`、`CountEvidence`/`CountTarget`（结构子集协议）、`build_*_judge_payload`、`build_*_judge_request_hash`、`stable_error_label` | judge Schema/协议/纯载荷与稳定哈希；载荷绝不包含图像数据或路径；judges 层不导入 `agents.counting.schema`（结构协议消费计数证据） |
 | `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
 | `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
 | `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status` | 单样本执行内核：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算、确定性评估（vqa_evaluation.json / counting_evaluation.json）、可选 VQA judge、trace/status；失败只记录稳定 code |
-| `data/adapters/manifest.py` | `update_manifest_probe`、`ManifestAdapterError` | 数据层自包含 probe 写回：manifest.json 读取/最小 schema 校验/原子写回（tmp+replace）、幂等覆盖、敏感扫描；缺失/损坏/无 run_id 以稳定错误码失败 |
+| `data/adapters/manifest.py` | `update_manifest_probe`、`ManifestAdapterError`、`ManifestDraftAdapter`、`iter_manifest_drafts`、`load_manifest_mapping` | probe 写回（manifest.json 读取/最小 schema 校验/原子写回、幂等、敏感扫描）+ manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models）；失败均为稳定 DatasetProbeError/ManifestAdapterError |
 | `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 写回、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并只补缺失确定性评估/缺失或失败 VQA judge（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast cancel 不遗留 running、逐 task 汇总；目录 `tasks/<task>/samples/<sha256[:24]>` |
 
 ## 关键约定
@@ -138,6 +139,17 @@
   单进程 asyncio（Semaphore 限流 + FIRST_COMPLETED 批次）；fail-fast 后不再提交
   新任务、cancel/await 已启动任务、被取消样本写 skipped（FAIL_FAST_CANCELLED）、
   绝不遗留永久 running；补判 judge 不设逐样本预算（call_budget=None）。
+- **无 task 数据集 seam（Task 06）**：`SampleDraft` 是 pre-sample 契约（无角色
+  校验）；draft 路径固定为 SampleDraft → TaskResolver → `materialize_sample` →
+  SampleRunner，`UnifiedSample.task` 保持必填；`DraftDatasetAdapter`（iter_drafts）
+  由 `ManifestDraftAdapter`（`spacers_adapter.json` 显式字段映射）实现——task 列
+  可选、JSON/JSONL、不猜字段、不调模型、不 import workflows/models；DatasetRunner
+  `run(task=None)` 进入 draft 模式（目录 `tasks/auto/samples/<sha256[:24]>`，resume
+  查找无需重新解析）：共享默认 CallBudget 贯穿 resolver 与 agent attempts
+  （`SampleRunner.run_one(budget=...)` 注入），显式 task 零 resolver 调用，空问题
+  只走两条确定性规则；未知 task 绝不冒充 general_vqa——预 task 失败以稳定 code +
+  诚实 `unknown` 任务标签记录 failed 状态；低置信度候选（≤3、top first、
+  general_vqa 槽位）由 SampleRunner 既有 attempt plan 执行。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
@@ -269,6 +281,5 @@
 
 ## 尚未实现
 
-`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 06
-（无 task 数据集 SampleDraft/TaskResolver 接入）尚未开始；任务推进时逐层
-创建并更新本文件。
+`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 07
+（Reporting）尚未开始；任务推进时逐层创建并更新本文件。

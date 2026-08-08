@@ -24,7 +24,7 @@ from evaluation.records import EvaluationRecord
 from routing.router import TaskRouter
 from routing.schema import TaskResolution
 from workflows.artifact_writer import ArtifactWriter
-from workflows.call_budget import CallBudgetFactory
+from workflows.call_budget import CallBudget, CallBudgetFactory
 from workflows.judge_service import JudgeService
 from workflows.sample_runner import SampleRunner, sample_state_from_payload
 from workflows.schema import SampleRunOutcome
@@ -212,6 +212,7 @@ def _run(
     *,
     resolution: TaskResolution | None = None,
     judge_policy: str = "none",
+    budget: CallBudget | None = None,
 ) -> SampleRunOutcome:
     return asyncio.run(
         runner.run_one(
@@ -219,6 +220,7 @@ def _run(
             sample_dir,
             resolution=resolution,
             judge_policy=judge_policy,
+            budget=budget,
         )
     )
 
@@ -297,6 +299,17 @@ def test_sample_state_mapping() -> None:
         )
         == "failed"
     )
+
+
+def test_run_one_accepts_external_shared_budget(tmp_path: Path) -> None:
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",), reserve_qwen=2)
+    runner = _runner([agent])
+    external = CallBudget(max_qwen_calls=10, max_deepseek_calls=0)
+    outcome = _run(runner, _sample(), _sample_dir(tmp_path), budget=external)
+    assert outcome.status.state == "succeeded"
+    recorded = agent.calls[0][1].call_budget
+    assert recorded is external
+    assert external.qwen_calls_used == 2
 
 
 # ── routing fallback / 路由兜底 ─────────────────────────────────────────────

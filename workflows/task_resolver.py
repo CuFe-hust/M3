@@ -15,10 +15,10 @@ import json
 from pathlib import Path
 from typing import get_args
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agents.base import CallBudget
-from data.schema import TaskName
+from data.schema import CHANGE_TASKS, SampleDraft, TaskName, UnifiedSample
 from models.base import (
     MissingModelCacheIdentityError,
     RequestMeta,
@@ -41,6 +41,53 @@ class TaskResolutionError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(f"TASK_RESOLUTION_FAILED:{code}")
         self.code = code
+
+
+class SampleMaterializationError(ValueError):
+    """Stable error for draft→sample materialization failures; the public
+    message carries only the stable code. draft→sample 物化失败的稳定错误；
+    公共消息只携带稳定 code。"""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"SAMPLE_MATERIALIZATION_FAILED:{code}")
+        self.code = code
+
+
+def materialize_sample(draft: SampleDraft, task: str) -> UnifiedSample:
+    """Materialize a UnifiedSample for a resolved task: rebuild image roles
+    (t1/t2/context for change tasks, image/context otherwise), keep
+    normalization None, and never guess a task. Incompatible drafts (e.g. a
+    change task on a single image) raise SampleMaterializationError with a
+    stable code and no raw schema message. 为已解析任务物化 UnifiedSample：
+    重建图像角色（变化任务 t1/t2/context，其余 image/context）、
+    normalization 保持 None、绝不猜测任务。不兼容的 draft（如单图上的变化
+    任务）以稳定 code 抛 SampleMaterializationError，不带原始 schema 消息。"""
+
+    if task not in _ALL_TASK_NAMES:
+        raise SampleMaterializationError("UNKNOWN_TASK")
+    change_task = task in CHANGE_TASKS
+    if change_task and len(draft.images) < 2:
+        raise SampleMaterializationError("CHANGE_TASK_NEEDS_TWO_IMAGES")
+    roles = ["t1", "t2"] if change_task else ["image"]
+    roles.extend("context" for _ in range(len(draft.images) - len(roles)))
+    images = [
+        image.model_copy(update={"role": role})
+        for image, role in zip(draft.images, roles)
+    ]
+    try:
+        return UnifiedSample(
+            sample_id=draft.sample_id,
+            dataset=draft.dataset,
+            split=draft.split,
+            task=task,  # type: ignore[arg-type]
+            images=images,
+            question=draft.question,
+            ground_truth=draft.ground_truth,
+            metadata=draft.metadata,
+            normalization=None,
+        )
+    except ValidationError as exc:
+        raise SampleMaterializationError("SAMPLE_CONTRACT_VIOLATION") from exc
 
 
 class _ModelTaskResolution(BaseModel):

@@ -358,6 +358,37 @@ class UnifiedSample(BaseModel):
         return self
 
 
+class SampleDraft(BaseModel):
+    """Pre-sample contract for datasets without an explicit per-sample task.
+    No task-specific roles validation happens here: image roles are
+    placeholder 'image' and are rebuilt when the draft is materialized after
+    task resolution. UnifiedSample.task stays mandatory — the draft exists
+    only before resolution. 无显式逐样本 task 数据集的样本前契约。此处不做
+    task 相关角色校验：图像角色为占位 'image'，在任务解析后物化样本时重建。
+    UnifiedSample.task 保持必填——draft 只存在于解析之前。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str = Field(min_length=1)
+    dataset: str = Field(min_length=1)
+    split: str = Field(min_length=1)
+    images: list[ImageRef] = Field(min_length=1)
+    question: str = ""
+    explicit_task: TaskName | None = None
+    ground_truth: GroundTruth | None = None
+    metadata: dict[str, JsonValue] = Field(default_factory=dict)
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _reject_non_json_metadata(cls, value: Any) -> Any:
+        """Reject non-JSON values before Pydantic coercion.
+        在 Pydantic 类型转换前拒绝非 JSON 值（如 Path、bytes、set）。"""
+        if isinstance(value, dict):
+            _assert_json_safe(value, "metadata")
+        return value
+
+
+
 def stable_sample_id(
     *,
     dataset: str,

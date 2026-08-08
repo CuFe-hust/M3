@@ -146,18 +146,23 @@ class SampleRunner:
         *,
         resolution: TaskResolution | None = None,
         judge_policy: str = "none",
+        budget: CallBudget | None = None,
     ) -> SampleRunOutcome:
         """Execute routing, attempt plan, optional judge, and persistence.
         Sample-level failures are converted to a failed status with stable
-        codes and never raise raw exceptions. 执行路由、attempt plan、可选
-        judge 与持久化。样本级失败转换为携带稳定 code 的 failed 状态，绝不
-        抛出原始异常。"""
+        codes and never raise raw exceptions. An external budget (e.g. one
+        already consumed by a TaskResolver) is shared across every attempt
+        and judge call; otherwise a fresh per-sample budget is created.
+        执行路由、attempt plan、可选 judge 与持久化。样本级失败转换为携带
+        稳定 code 的 failed 状态，绝不抛出原始异常。外部预算（如已被
+        TaskResolver 消费的预算）贯穿所有 attempt 与 judge 调用；否则创建
+        新的逐样本预算。"""
 
         self.artifact_writer.write_sample(sample_dir, sample)
         self.artifact_writer.write_running_status(sample_dir, _status(sample, "running"))
         started_at = time.perf_counter()
         base_task = resolution.task if resolution is not None else sample.task
-        budget = self.call_budget_factory.create_for_sample(base_task)
+        budget = budget if budget is not None else self.call_budget_factory.create_for_sample(base_task)
         attempts, skipped = self._build_attempt_plan(sample, resolution)
         if not attempts:
             return self._finish_failed(

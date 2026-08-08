@@ -23,13 +23,16 @@ SampleRunState = Literal[
 
 
 class SampleRunStatus(BaseModel):
-    """Durable machine-readable state for one dataset sample.
-    单个数据集样本的可持久化机器可读状态。"""
+    """Durable machine-readable state for one dataset sample. task is a plain
+    string so pre-task draft failures can record the honest sentinel
+    'unknown' instead of pretending to be a known task.
+    单个数据集样本的可持久化机器可读状态。task 为普通字符串，使预 task 的
+    draft 失败可记录诚实的哨兵 'unknown' 而非冒充已知任务。"""
 
     model_config = ConfigDict(extra="forbid")
 
     sample_id: str
-    task: TaskName
+    task: str
     state: SampleRunState
     error_code: str | None = None
     error_message: str | None = None

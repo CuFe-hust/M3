@@ -31,12 +31,20 @@ from typing import Any
 from agents.counting.schema import CountingResult
 from data.adapters.base import DatasetAdapter
 from data.adapters.manifest import update_manifest_probe
-from data.schema import UnifiedSample
+from data.schema import SampleDraft, UnifiedSample
 from evaluation.metrics.counting import merge_count_evaluation
 from evaluation.metrics.vqa import merge_vqa_evaluation
+from routing.schema import TaskResolutionRequest
 from workflows.artifact_writer import ArtifactWriter
+from workflows.call_budget import CallBudgetFactory
 from workflows.sample_runner import SampleRunner
 from workflows.schema import DatasetRunSummary, SampleRunStatus
+from workflows.task_resolver import (
+    SampleMaterializationError,
+    TaskResolutionError,
+    TaskResolver,
+    materialize_sample,
+)
 
 # Storage key length: sha256(sample_id) hex digest, truncated for directory
 # names. / 存储键长度：sha256(sample_id) 十六进制摘要截断为目录名。
@@ -127,19 +135,23 @@ class DatasetRunner:
         run_dir: Path,
         artifact_writer: ArtifactWriter,
         judge_policy: str = "none",
+        task_resolver: TaskResolver | None = None,
+        call_budget_factory: CallBudgetFactory | None = None,
     ) -> None:
         self.adapter = adapter
         self.sample_runner = sample_runner
         self.run_dir = run_dir
         self.artifact_writer = artifact_writer
         self.judge_policy = judge_policy
+        self.task_resolver = task_resolver
+        self.call_budget_factory = call_budget_factory
 
     async def run(
         self,
         *,
         root: Path,
         split: str,
-        task: str,
+        task: str | None = None,
         resume: bool = False,
         limit: int | None = None,
         shard_index: int = 0,
@@ -150,9 +162,12 @@ class DatasetRunner:
         sample_concurrency: int = 1,
     ) -> DatasetRunSummary:
         """Run one task over the selected samples and persist predictions,
-        summary, and the dataset probe in the run manifest. 在选中样本上运行
-        一个任务，并持久化 predictions、summary 与 run manifest 中的数据集
-        probe。"""
+        summary, and the dataset probe in the run manifest. With task=None the
+        adapter is treated as a DraftDatasetAdapter: drafts are resolved,
+        materialized, and executed under the 'auto' task directory.
+        在选中样本上运行一个任务，并持久化 predictions、summary 与 run
+        manifest 中的数据集 probe。task=None 时把适配器视为
+        DraftDatasetAdapter：drafts 经解析、物化后在 'auto' 任务目录执行。"""
 
         if shard_count < 1:
             raise ValueError("shard_count must be >= 1")
@@ -160,6 +175,19 @@ class DatasetRunner:
             raise ValueError("shard_index must be within [0, shard_count)")
         if sample_concurrency < 1:
             raise ValueError("sample_concurrency must be >= 1")
+        if task is None:
+            return await self._run_draft_task(
+                root=root,
+                split=split,
+                resume=resume,
+                limit=limit,
+                shard_index=shard_index,
+                shard_count=shard_count,
+                start_index=start_index,
+                sample_ids=sample_ids,
+                fail_fast=fail_fast,
+                sample_concurrency=sample_concurrency,
+            )
         probe = self.adapter.probe(root, task)
         update_manifest_probe(self.run_dir, probe)
         selected = select_samples(
@@ -170,6 +198,78 @@ class DatasetRunner:
             sample_ids=sample_ids,
             limit=limit,
         )
+        return await self._run_selected(
+            selected,
+            split=split,
+            task=task,
+            resume=resume,
+            fail_fast=fail_fast,
+            sample_concurrency=sample_concurrency,
+            run_item=self._run_sample,
+        )
+
+    async def _run_draft_task(
+        self,
+        *,
+        root: Path,
+        split: str,
+        resume: bool,
+        limit: int | None,
+        shard_index: int,
+        shard_count: int,
+        start_index: int,
+        sample_ids: set[str] | None,
+        fail_fast: bool,
+        sample_concurrency: int,
+    ) -> DatasetRunSummary:
+        """Draft mode: resolve each draft (or use its explicit task),
+        materialize, and execute; all samples live under tasks/auto/ so resume
+        lookup never requires re-resolution. Draft 模式：解析每条 draft（或
+        使用其显式 task）、物化并执行；所有样本位于 tasks/auto/ 下，resume
+        查找无需重新解析。"""
+
+        if self.task_resolver is None or self.call_budget_factory is None:
+            raise ValueError(
+                "draft task mode requires task_resolver and call_budget_factory"
+            )
+        if not hasattr(self.adapter, "iter_drafts"):
+            raise TypeError(f"adapter {self.adapter.name!r} does not yield drafts")
+        probe = self.adapter.probe(root, None)
+        update_manifest_probe(self.run_dir, probe)
+        drafts = select_samples(
+            self.adapter.iter_drafts(root, split),
+            start_index=start_index,
+            shard_index=shard_index,
+            shard_count=shard_count,
+            sample_ids=sample_ids,
+            limit=limit,
+        )
+        return await self._run_selected(
+            drafts,
+            split=split,
+            task="auto",
+            resume=resume,
+            fail_fast=fail_fast,
+            sample_concurrency=sample_concurrency,
+            run_item=self._run_draft,
+        )
+
+    async def _run_selected(
+        self,
+        selected: list[Any],
+        *,
+        split: str,
+        task: str,
+        resume: bool,
+        fail_fast: bool,
+        sample_concurrency: int,
+        run_item: Any,
+    ) -> DatasetRunSummary:
+        """Shared concurrency loop: bounded asyncio batching, fail-fast
+        cancellation, per-sample predictions, and the task summary.
+        共享并发循环：有界 asyncio 批次、fail-fast 取消、逐样本 predictions
+        与任务汇总。"""
+
         task_dir = self.run_dir / "tasks" / task
         samples_root = task_dir / "samples"
         semaphore = asyncio.Semaphore(sample_concurrency)
@@ -180,28 +280,31 @@ class DatasetRunner:
             nonlocal fail_fast_triggered
             statuses.append(status)
             self.artifact_writer.append_prediction(
-                self.run_dir, sample_id=status.sample_id, task=task, status=status
+                self.run_dir,
+                sample_id=status.sample_id,
+                task=status.task,
+                status=status,
             )
             if fail_fast and status.state == "failed":
                 fail_fast_triggered = True
 
-        async def run_one_sample(sample: UnifiedSample) -> SampleRunStatus:
+        async def run_one_item(item: Any) -> SampleRunStatus:
             async with semaphore:
                 try:
-                    return await self._run_sample(sample, samples_root, task, resume=resume)
+                    return await run_item(item, samples_root, resume=resume)
                 except asyncio.CancelledError:
-                    status = _cancelled_status(sample, task)
+                    status = _cancelled_status(item)
                     self.artifact_writer.write_final_status(
-                        samples_root / storage_key(sample.sample_id), status
+                        samples_root / storage_key(item.sample_id), status
                     )
                     record_status(status)
                     raise
 
         pending: set[asyncio.Task] = set()
-        for sample in selected:
+        for item in selected:
             if fail_fast_triggered:
                 break
-            pending_task = asyncio.create_task(run_one_sample(sample))
+            pending_task = asyncio.create_task(run_one_item(item))
             pending.add(pending_task)
             if len(pending) >= sample_concurrency:
                 done, pending = await asyncio.wait(
@@ -236,7 +339,6 @@ class DatasetRunner:
         self,
         sample: UnifiedSample,
         samples_root: Path,
-        task: str,
         *,
         resume: bool,
     ) -> SampleRunStatus:
@@ -249,7 +351,7 @@ class DatasetRunner:
         if resume:
             persisted = self._read_status(sample_dir)
             if persisted is not None and persisted.state == "succeeded":
-                return await self._resume_supplement(sample, sample_dir, task)
+                return await self._resume_supplement(sample, sample_dir, sample.task)
         try:
             outcome = await self.sample_runner.run_one(
                 sample, sample_dir, judge_policy=self.judge_policy
@@ -259,10 +361,115 @@ class DatasetRunner:
             # this is a defensive net with stable codes only.
             # SampleRunner 不应因样本级失败而抛出；这里是只带稳定 code 的
             # 防御网。
-            status = _defensive_failed_status(sample, task, error)
+            status = _defensive_failed_status(sample, sample.task, error)
             self.artifact_writer.write_final_status(sample_dir, status)
             return status
         return outcome.status
+
+    async def _run_draft(
+        self,
+        draft: SampleDraft,
+        samples_root: Path,
+        *,
+        resume: bool,
+    ) -> SampleRunStatus:
+        """Run one draft through resolution, materialization, and the
+        SampleRunner. A shared default CallBudget spans the resolver call and
+        every agent attempt. Pre-task failures collapse into a failed status
+        with a stable code and an honest task label — never a guessed
+        general_vqa. 将一条 draft 经解析、物化与 SampleRunner 执行。共享默认
+        CallBudget 贯穿 resolver 调用与所有 agent attempt。预 task 失败收敛
+        为携带稳定 code 与诚实 task 标签（绝不猜测 general_vqa）的 failed
+        状态。"""
+
+        sample_dir = samples_root / storage_key(draft.sample_id)
+        if resume:
+            persisted = self._read_status(sample_dir)
+            if persisted is not None and persisted.state == "succeeded":
+                persisted_sample = self._read_persisted_sample(sample_dir)
+                if persisted_sample is not None:
+                    return await self._resume_supplement(
+                        persisted_sample, sample_dir, persisted_sample.task
+                    )
+        if draft.explicit_task is not None:
+            try:
+                sample = materialize_sample(draft, draft.explicit_task)
+            except SampleMaterializationError as error:
+                return self._write_draft_failure(
+                    draft, sample_dir, task=draft.explicit_task, code=error.code
+                )
+            outcome = await self.sample_runner.run_one(
+                sample, sample_dir, judge_policy=self.judge_policy
+            )
+            return outcome.status
+        budget = self.call_budget_factory.create_for_sample("draft")
+        try:
+            resolution = await self.task_resolver.resolve(
+                TaskResolutionRequest(
+                    explicit_task=None,
+                    question=draft.question,
+                    image_count=len(draft.images),
+                    metadata_hints=draft.metadata,
+                ),
+                sample_id=draft.sample_id,
+                artifact_dir=sample_dir / "task_resolution",
+                budget=budget,
+            )
+            sample = materialize_sample(draft, resolution.task)
+        except TaskResolutionError as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=None, code=error.code
+            )
+        except SampleMaterializationError as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=resolution.task, code=error.code
+            )
+        outcome = await self.sample_runner.run_one(
+            sample,
+            sample_dir,
+            resolution=resolution,
+            budget=budget,
+            judge_policy=self.judge_policy,
+        )
+        return outcome.status
+
+    def _write_draft_failure(
+        self,
+        draft: SampleDraft,
+        sample_dir: Path,
+        *,
+        task: str | None,
+        code: str,
+    ) -> SampleRunStatus:
+        """Persist a failed status for a pre-task draft failure; the task
+        label is the known task or the honest sentinel 'unknown' — never a
+        guessed general_vqa. 持久化预 task draft 失败的 failed 状态；task
+        标签为已知任务或诚实哨兵 'unknown'——绝不猜测 general_vqa。"""
+
+        status = SampleRunStatus(
+            sample_id=draft.sample_id,
+            task=task or "unknown",
+            state="failed",
+            error_code=code,
+            error_message=code,
+            updated_at=datetime.now(timezone.utc).isoformat(),
+        )
+        self.artifact_writer.write_final_status(sample_dir, status)
+        return status
+
+    def _read_persisted_sample(self, sample_dir: Path) -> UnifiedSample | None:
+        """Read the persisted sample for a resume supplement; corrupt or
+        missing files count as absent and trigger a re-run. 读取持久化样本
+        用于 resume 补判；损坏或缺失视为不存在并触发重跑。"""
+
+        path = sample_dir / "sample.json"
+        if not path.is_file():
+            return None
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            return UnifiedSample.model_validate(raw)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
+            return None
 
     def _read_status(self, sample_dir: Path) -> SampleRunStatus | None:
         """Read the persisted sample status; corrupt or missing files count as
@@ -374,13 +581,20 @@ class DatasetRunner:
             )
 
 
-def _cancelled_status(sample: UnifiedSample, task: str) -> SampleRunStatus:
+def _cancelled_status(item: Any) -> SampleRunStatus:
     """Final status for a sample cancelled by fail-fast; never leaves a
-    permanent running state. fail-fast 取消样本的最终状态；绝不遗留永久
-    running 状态。"""
+    permanent running state. The task label is the item's known task or the
+    honest sentinel 'unknown' for unresolved drafts. fail-fast 取消样本的最终
+    状态；绝不遗留永久 running 状态。task 标签为条目已知任务，未解析 draft
+    为诚实哨兵 'unknown'。"""
 
+    task = (
+        getattr(item, "task", None)
+        or getattr(item, "explicit_task", None)
+        or "unknown"
+    )
     return SampleRunStatus(
-        sample_id=sample.sample_id,
+        sample_id=item.sample_id,
         task=task,
         state="skipped",
         error_code="FAIL_FAST_CANCELLED",
