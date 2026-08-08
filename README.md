@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 / 33.7 hardening 完成；新计划 Task 01 审计、Task 02 白名单、Task 03 Judge 层完成）
+## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 / 33.7 hardening 完成；新计划 Task 01 审计、Task 02 白名单、Task 03 Judge 层、Task 04 SampleRunner 完成）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -16,7 +16,8 @@
 - 空间子系统：`agents/spatial/`（通用 SpatialQuerySpec、几何规则、候选复核、证据合并与 SpatialAgent；候选复核使用真实内容 MIME，canonical label 不做词形猜测）
 - 变化子系统：`agents/change/`（PairValidator/Harmonizer/DifferenceProposal/Preprocess/Reviewer/双路径 ChangeAgent；cv2 与 numpy 为可选依赖 `[change]` extra，base 导入不触发；无效时相图对在模型调用前稳定失败）
 - 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
-- 工作流：`workflows/`（CallBudget、EventWriter/RunStore、ArtifactWriter、TaskResolver、运行契约；JSONL 写入进程内并发安全，跨进程并发追加不受当前工作流层支持）
+- 工作流：`workflows/`（CallBudget、EventWriter/RunStore、ArtifactWriter、TaskResolver、SampleRunner、运行契约；JSONL 写入进程内并发安全，跨进程并发追加不受当前工作流层支持）
+- 单样本执行：`SampleRunner`（路由→attempt plan→Agent→产物→确定性评估→可选 judge→trace→状态；低置信度 TaskResolution 按最多 3 个候选构建去重 attempt plan，绝不跑所有 Agent；候选样本 model_copy 重建、不兼容稳定跳过；共享逐样本 CallBudget；失败只记录稳定 code）
 - 任务解析：`TaskResolver`（仅缺失 task 时可调用本地模型；明确 task 直接通过；空问题仅 caption/change_caption 两条确定性规则；低置信度只返回结构化候选，不执行 Agent；`TaskRouter` 保持同步确定性、不读 question、不调用模型）
 - 评估：`evaluation/`（统一 EvaluationRecord 与确定性指标：counting/VQA/grounding/caption；corpus 级 caption 指标依赖可选 pycocoevalcap；judge 永不覆盖确定性指标）
 - Judge 层：`evaluation/judges/`（文本与结构化证据 Schema、JudgeClient 协议、纯载荷/哈希构建、标准库 HTTP 的 DeepSeekJudgeClient——api_key 由 composition root 注入、绝不读环境变量、错误只含稳定 code）+ `workflows/judge_service.py`（策略 none/errors-only/all、仅真正发起 Judge 时 `reserve_deepseek`、失败保留确定性记录、resume 补判不重复；judge 异常以稳定类型名记录，绝不保存原始异常文本；`sample_dir/deepseek_vqa_judge/` 与 `samples/<id>/deepseek/` 产物：request_meta/raw_response/validation/parsed）
@@ -29,9 +30,9 @@
 backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
 绝对路径、密钥或 Base64。
 
-**尚未实现**：reporting、application 与 CLI（`main.py`）。Task 34 尚未开始；
-`SampleRunner`/`DatasetRunner` 尚未实现（`TaskResolver` 尚未被 dataset runner
-使用）。请勿将其当作可用功能使用。
+**尚未实现**：reporting、application 与 CLI（`main.py`）。新计划 Task 05
+（DatasetRunner）尚未开始；`TaskResolver` 尚未被 dataset runner 使用。
+请勿将其当作可用功能使用。
 
 ## 安装与测试
 

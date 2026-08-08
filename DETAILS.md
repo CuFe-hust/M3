@@ -58,6 +58,7 @@
 | `evaluation/judges/base.py` | `DeepSeekJudgeResult`、`VQAAnswerJudgeResult`、`JudgeClient`、`CountEvidence`/`CountTarget`（结构子集协议）、`build_*_judge_payload`、`build_*_judge_request_hash`、`stable_error_label` | judge Schema/协议/纯载荷与稳定哈希；载荷绝不包含图像数据或路径；judges 层不导入 `agents.counting.schema`（结构协议消费计数证据） |
 | `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
 | `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
+| `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status` | 单样本执行内核：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算、确定性评估（vqa_evaluation.json / counting_evaluation.json）、可选 VQA judge、trace/status；失败只记录稳定 code |
 
 ## 关键约定
 
@@ -104,6 +105,22 @@
   `vqa_evaluation.json`（统一或 legacy 形状）succeeded 原样返回，其余
   （缺失/损坏/failed/not_requested）读取 `agent_result.json` 的持久化
   answer 重判，受 judge_policy 约束。
+- **SampleRunner（Task 04）**：`run_one(sample, sample_dir, *, resolution=None, judge_policy="none")`
+  只执行单样本（不迭代数据集）；attempt plan 规则——resolution 缺省或高置信度
+  只跑 top task，低置信度按 `candidate_tasks`（≤3）路由后按 AgentName 稳定去重，
+  候选与 base task 不同时经 model_copy 重建（task 替换、normalization 清空、
+  图像角色重建：变化任务 t1/t2/context，其余 image/context），不兼容候选稳定
+  跳过（`INCOMPATIBLE_SAMPLE`/`UNROUTABLE_TASK`/`AGENTS_DEDUPLICATED`），绝不
+  原地修改 UnifiedSample；routing fallback（决策声明 fallback_agents 时 primary
+  异常触发）与 `fallback_on_partial` 策略只在本 task 内生效，候选兜底在上一
+  候选完全失败后进入下一候选；共享逐样本 `CallBudget`（attempts + judge）；
+  确定性评估：general_vqa 写 `vqa_evaluation.json`（可选 judge 旁路，judge 失败
+  绝不让样本失败），counting 写 `counting_evaluation.json`（新增产物名）；
+  失败只记录稳定 code（显式 code 或错误类名），status/trace 绝不包含原始异常
+  文本、绝对路径或密钥；产物顺序：sample.json → status=running →
+  routing_decision.json → result → evaluation → agent_trace.json → status=final；
+  trace 字段含 resolution_source（dataset_task/explicit/rule/model）、
+  low_confidence、candidate_tasks、attempt_agents、skipped_candidates、failure_code。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
@@ -235,6 +252,6 @@
 
 ## 尚未实现
 
-`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 04
-（SampleRunner）、Task 05（DatasetRunner）尚未开始（`TaskResolver` 尚未被
+`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 05
+（DatasetRunner + run_dataset 入口）尚未开始（`TaskResolver` 尚未被
 dataset runner 使用）；任务推进时逐层创建并更新本文件。
