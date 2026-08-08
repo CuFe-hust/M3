@@ -18,6 +18,49 @@ from reporting.schema import Report
 from workflows.schema import DatasetRunOptions, DatasetRunSummary
 
 
+def build_dataset_run_options(
+    *,
+    dataset: str,
+    root: Path,
+    split: str,
+    tasks: tuple[str, ...] = (),
+    auto_task: bool = False,
+    run_id: str | None = None,
+    resume: bool = False,
+    limit: int | None = None,
+    start_index: int = 0,
+    shard_index: int = 0,
+    shard_count: int = 1,
+    sample_concurrency: int = 1,
+    evaluate: bool = True,
+    judge_policy: str = "none",
+    fail_fast: bool = False,
+) -> DatasetRunOptions:
+    """Thin options construction for the public entry point: the architecture
+    rule forbids main.py from importing workflows, so construction lives here.
+    Validation (task/auto-task exclusivity) comes from DatasetRunOptions
+    itself. 公开入口的薄选项构造：架构规则禁止 main.py 导入 workflows，因此
+    构造在此完成。互斥校验（task/auto-task）由 DatasetRunOptions 自身承担。"""
+
+    return DatasetRunOptions(
+        dataset=dataset,
+        root=root,
+        split=split,
+        tasks=tasks,
+        auto_task=auto_task,
+        run_id=run_id,
+        resume=resume,
+        limit=limit,
+        start_index=start_index,
+        shard_index=shard_index,
+        shard_count=shard_count,
+        sample_concurrency=sample_concurrency,
+        evaluate=evaluate,
+        judge_policy=judge_policy if evaluate else "none",
+        fail_fast=fail_fast,
+    )
+
+
 @dataclass(frozen=True)
 class Runtime:
     """One composition-root runtime with high-level use cases.
@@ -36,6 +79,7 @@ class Runtime:
         api_key: str | None = None,
         qwen_client=None,
         config_path: Path | None = None,
+        prompts_root: Path | None = None,
     ) -> "Runtime":
         """Create the runtime from settings and an optional injected Qwen
         client (tests) and DeepSeek api_key. 从配置与可选注入的 Qwen 客户端
@@ -47,6 +91,7 @@ class Runtime:
             project_root=project_root or Path.cwd(),
             qwen_client=qwen_client,
             api_key=api_key,
+            prompts_root=prompts_root,
         )
         return cls(settings=resolved_settings, components=components)
 

@@ -71,7 +71,8 @@
 | `application/settings.py` | `AppSettings`、`load_settings` | YAML + 环境变量覆盖（环境优先）；密钥值绝不进入 snapshot/repr（只声明 api_key_env 名）；`to_config_payload`/`safe_snapshot` JSON 安全 POSIX 路径 |
 | `application/prompts.py` | `PromptCatalog`、`PromptAsset`、`PromptNotFoundError` | 17 逻辑键现役绑定、构造时一次性加载（不逐 sample 重读）、缺失明确报错、快照路径去重（general/grounding 共享 general_vqa_v2） |
 | `application/bootstrap.py` | `assemble_runtime`、`RuntimeComponents` | 唯一 composition root：Qwen 一次组装一次创建（可注入）、DeepSeek 仅注入 api_key 时创建（无 key judge 禁用）、BackendRegistry/AgentRegistry（6 Agent + 路由覆盖校验）/TaskResolver/JudgeService/SampleRunner/DatasetRunner factory/Reporting/RunStore 全组装 |
-| `application/runtime.py` | `Runtime` | 高层用例：`run_dataset(options)`（创建 manifest → 逐 task 委托 DatasetRunner，auto_task→task=None）、`build_report(run_id)`；不做 ask/serve/CLI |
+| `application/runtime.py` | `Runtime`、`build_dataset_run_options` | 高层用例：`run_dataset(options)`（创建 manifest → 逐 task 委托 DatasetRunner，auto_task→task=None）、`build_report(run_id)`、选项薄构造（main 的架构规则要求）；不做 ask/serve/CLI |
+| `main.py` | `build_parser`、`main` | 唯一公开入口 `run-dataset`：极薄接线（解析→配置→Runtime.create（Qwen 一次）→选项→run_dataset→汇总 JSON/run_dir→退出码 0/1/2/130）；只 import application + stdlib；公共错误只输出稳定类型名 |
 
 ## 关键约定
 
@@ -329,5 +330,5 @@
 
 ## 尚未实现
 
-`main.py`（最小 run-dataset 入口）尚未创建；新计划 Task 09 尚未开始；
-任务推进时逐层创建并更新本文件。
+后续为验收任务：Task 10（Windows 集成验收）、Task 11（Spark 真机验收）；
+`serve`/`ask`/运维 CLI 不实现（核心运行时稳定后可加薄壳）。

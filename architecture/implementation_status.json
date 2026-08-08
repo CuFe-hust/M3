@@ -163,9 +163,10 @@
     "application/settings.py",
     "application/prompts.py",
     "application/bootstrap.py",
-    "application/runtime.py"
+    "application/runtime.py",
+    "main.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
-  "_pending_files_note": "新计划 Task 01–07 已完成，并完成 06.5/06.6/06.6.1 hardening；Task 08（Application/Bootstrap）已完成。main.py 尚未实现（见 README），Task 09（最小 run-dataset 入口）未开始。"
+  "_pending_files_note": "新计划 Task 01–09 已完成（含 06.5/06.6/06.6.1 hardening）：核心运行时（Judge→SampleRunner→DatasetRunner→auto-task seam→Reporting→Application/Bootstrap→main.py run-dataset）已就绪。后续：Task 10 Windows 集成验收、Task 11 Spark 真机验收。"
 }

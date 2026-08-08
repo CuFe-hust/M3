@@ -3,7 +3,7 @@
 本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
 `ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
 
-## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 / 33.7 hardening 完成；新计划 Task 01–08 完成（06.5/06.6/06.6.1 hardening 含内）。Task 09 最小 run-dataset 入口尚未开始）
+## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 / 33.7 hardening 完成；新计划 Task 01–09 完成（06.5/06.6/06.6.1 hardening 含内）——核心运行时链路已就绪：Judge → SampleRunner → DatasetRunner → auto-task seam → Reporting → Application/Bootstrap → `main.py run-dataset`）
 
 - 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
 - Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
@@ -34,7 +34,16 @@
   api_key 时创建，无 key 即 judge 禁用；BackendRegistry/AgentRegistry/
   TaskResolver/JudgeService/SampleRunner/DatasetRunner factory/Reporting
   服务全部组装；路由覆盖校验）、runtime（高层用例：run_dataset 委托
-  DatasetRunner + build_report；不做 ask/serve/CLI）
+  DatasetRunner + build_report + `build_dataset_run_options`；不做 ask/serve/CLI）
+- 公开入口：`main.py run-dataset`（唯一 CLI；不实现 serve/ask/health/run-init/
+  resume-run/evaluate-run/judge-vqa-run/inspect-data/render-count/smoke-qwen 等）——
+  极薄接线：解析（`--dataset/--root/--split/--task/--auto-task/--run-id/--resume/
+  --evaluate/--judge-policy/--max-samples/--start-index/--shard-index/--shard-count/
+  --sample-concurrency/--fail-fast/--config`；`--task` 与 `--auto-task` 互斥；
+  evaluate 默认开、judge-policy 默认 none（offline by default））→ 配置 → 运行时
+  （Qwen 一次加载，多 task/样本复用）→ `build_dataset_run_options`（架构规则禁止
+  main 导入 workflows，构造在 application）→ `Runtime.run_dataset` → 汇总 JSON 与
+  run_dir → 退出码（0/1/2/130）；公共错误只输出稳定类型名，绝无原始异常/密钥
 - 数据集执行：`DatasetRunner`（selection 固定顺序 adapter 稳定序→start_index→shard→sample_ids→limit（SHA256 分片）、resume 只跳过 succeeded 且按 `status.task` 执行任务经**同一共享 dispatch** 补判缺失确定性评估（general_vqa/multiple_choice_vqa/scene_classification/counting/fine_grained_counting/caption/grounding 兼容坐标时；不兼容坐标系绝不伪造指标）与缺失或失败 VQA judge（仅 general_vqa）、单进程 asyncio 并发、fail-fast 取消不遗留 running、未启动样本记 `FAIL_FAST_NOT_STARTED`、`DatasetRunSummary` 计数强制闭合；目录 `runs/<run_id>/tasks/<task>/samples/<sha256(sample_id)[:24]>`；`task=None` 是内部显式 auto-task mode（未来外部入口经 `DatasetRunOptions.auto_task=True` 选择）；`predictions.jsonl` 是 **append-only execution index**——`(run_task, sample_id)` 最后一行代表当前状态，行字段 sample_id/run_task/task/status/result_path/updated_at；数据集 probe 经 `ArtifactWriter.write_dataset_probe` 按 task 目录独立写 `tasks/<task>/dataset_probe.json`（`sample_file` dataset-relative，root 外稳定失败）——manifest.json 保持 RunManifest schema 可解析、绝不动态扩 schema）
 - 任务解析：`TaskResolver`（仅缺失 task 时可调用本地模型；明确 task 直接通过；空问题仅 caption/change_caption 两条确定性规则；低置信度只返回结构化候选，不执行 Agent；`TaskRouter` 保持同步确定性、不读 question、不调用模型）
 - 无 task 数据集 seam：`SampleDraft`（data/schema.py，pre-sample 契约、无角色校验）+ `DraftDatasetAdapter` 协议 + `data/adapters/manifest.py` 的 manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models；`samples_file` 经 `resolve_dataset_relative_path` 严格限制在 dataset root 内，拒绝遍历/绝对路径/UNC）+ `materialize_sample`（draft→UnifiedSample，任务解析后重建图像角色）+ DatasetRunner draft 模式（共享默认 CallBudget 贯穿 resolver 与 agent attempts，未知 task 绝不冒充 general_vqa，预 task 失败以稳定 code + 诚实 `unknown` 标签记录，单样本异常隔离不炸整批；`DatasetRunOptions.auto_task` 显式契约：auto_task=True 要求 tasks 为空、False 要求非空）
