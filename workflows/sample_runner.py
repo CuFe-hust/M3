@@ -82,18 +82,26 @@ def build_deterministic_evaluation(
     *,
     sample: UnifiedSample,
     execution_payload: object,
+    execution_task: str | None = None,
 ) -> tuple[object | None, str | None]:
     """Shared deterministic evaluator dispatch consumed by both fresh runs and
     resume supplements, so the two paths can never drift. Returns
-    (evaluation, filename). Grounding yields None unless prediction and ground
+    (evaluation, filename). execution_task selects the metric family: None on
+    the fresh path uses sample.task (the sample is already rebuilt for the
+    executed task); the persisted/resume path passes the executed task
+    explicitly, because sample.task may be the canonical resolved task after a
+    candidate fallback. Grounding yields None unless prediction and ground
     truth agree on normalized_0_999_top_left with 4-value xyxy boxes; counting
     yields None for non-CountingResult payloads; caption without references
     yields None. 供 fresh run 与 resume 补判共用的确定性评估分派，两条路径
-    永不漂移。返回（evaluation, filename）。grounding 仅在预测与真值同为
-    normalized_0_999_top_left 且均为 4-value xyxy 时产出；counting 对非
-    CountingResult 载荷返回 None；caption 无参考答案返回 None。"""
+    永不漂移。返回（evaluation, filename）。execution_task 选择指标族：
+    fresh 路径传 None 使用 sample.task（样本已为执行任务重建）；持久化/
+    resume 路径显式传执行任务，因为候选兜底后 sample.task 可能是 canonical
+    resolved task。grounding 仅在预测与真值同为 normalized_0_999_top_left
+    且均为 4-value xyxy 时产出；counting 对非 CountingResult 载荷返回
+    None；caption 无参考答案返回 None。"""
 
-    task = sample.task
+    task = execution_task or sample.task
     filename = evaluation_filename_for_task(task)
     if filename is None:
         return None, None

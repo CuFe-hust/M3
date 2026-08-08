@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from agents.base import AgentExecution
 from data.schema import TaskName
@@ -44,6 +44,30 @@ class SampleRunStatus(BaseModel):
     error_message: str | None = None
     result_path: Path | None = None
     updated_at: str
+
+    @field_validator("result_path", mode="before")
+    @classmethod
+    def validate_result_path(cls, value: Any) -> Any:
+        """The persisted result path must be a plain basename: sample-relative,
+        never absolute, drive, UNC, dot-dot, nested, or control-character
+        laden. Legacy absolute paths fail validation and resume re-runs the
+        sample instead of trusting them. 持久化结果路径必须是纯 basename：
+        样本相对，绝不接受绝对、drive、UNC、dot-dot、嵌套或控制字符。旧版
+        绝对路径校验失败，resume 将重新执行样本而非信任它。"""
+        if value is None:
+            return None
+        if not isinstance(value, (str, Path)):
+            raise ValueError("result_path must be a string or Path")
+        text = str(value)
+        if not text or text in {".", ".."}:
+            raise ValueError("result_path must be a non-empty plain basename")
+        if "/" in text or "\\" in text:
+            raise ValueError("result_path must be a plain basename without separators")
+        if any(ord(character) < 32 for character in text):
+            raise ValueError("result_path must not contain control characters")
+        if len(text) >= 2 and text[0].isalpha() and text[1] == ":":
+            raise ValueError("result_path must not carry a drive prefix")
+        return Path(text)
 
 
 class DatasetRunSummary(BaseModel):

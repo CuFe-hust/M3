@@ -250,3 +250,54 @@ def test_write_dataset_probe_rejects_sensitive_values(tmp_path: Path) -> None:
             tmp_path / "tasks" / "general_vqa", probe, dataset_root=tmp_path
         )
     assert not (tmp_path / "tasks" / "general_vqa" / "dataset_probe.json").exists()
+
+
+def test_sample_run_status_result_path_accepts_plain_basenames() -> None:
+    from workflows.schema import SampleRunStatus
+
+    for value in (
+        Path("agent_result.json"),
+        "counting_result.json",
+        "custom_result.json",
+    ):
+        status = SampleRunStatus(
+            sample_id="s1",
+            task="general_vqa",
+            state="succeeded",
+            result_path=value,
+            updated_at="2026-01-01T00:00:00Z",
+        )
+        assert status.result_path == Path(value)
+
+
+def test_sample_run_status_result_path_rejects_non_basenames() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from workflows.schema import SampleRunStatus
+
+    for value in (
+        "../agent_result.json",
+        "./agent_result.json",
+        "foo/agent_result.json",
+        r"foo\agent_result.json",
+        r"C:\foo\agent_result.json",
+        "D:/foo/result.json",
+        r"\\server\share\result.json",
+        "//server/share/result.json",
+        "/result.json",
+        "file:///tmp/result.json",
+        "C:foo",
+        ".",
+        "..",
+        "",
+        "result\n.json",
+    ):
+        with pytest.raises(ValidationError):
+            SampleRunStatus(
+                sample_id="s1",
+                task="general_vqa",
+                state="succeeded",
+                result_path=value,  # type: ignore[arg-type]
+                updated_at="2026-01-01T00:00:00Z",
+            )

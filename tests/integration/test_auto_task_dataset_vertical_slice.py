@@ -88,13 +88,15 @@ class _FakeAgent:
         )
 
 
-def _make_dataset(root: Path, *, with_task: bool = True) -> None:
+def _make_dataset(root: Path, *, with_task: bool = True, with_answers: bool = False) -> None:
     root.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (4, 4), (1, 2, 3)).save(root / "img.png", format="PNG")
     Image.new("RGB", (4, 4), (1, 2, 3)).save(root / "img2.png", format="PNG")
     fields = {"id": "id", "split": "split", "question": "question", "images": "images"}
     if with_task:
         fields["task"] = "task"
+    if with_answers:
+        fields["answers"] = "answers"
     (root / "spacers_adapter.json").write_text(
         json.dumps(
             {
@@ -121,11 +123,12 @@ def _setup(
     *,
     rows: list[dict],
     with_task: bool = True,
+    with_answers: bool = False,
     resolver_responses: list[dict] | None = None,
     agent_errors: dict[str, Exception] | None = None,
 ):
     root = tmp_path / "data"
-    _make_dataset(root, with_task=with_task)
+    _make_dataset(root, with_task=with_task, with_answers=with_answers)
     _write_rows(root, rows)
     agent_errors = agent_errors or {}
     agents = [
@@ -378,6 +381,106 @@ def test_shared_budget_spans_resolver_and_agents(tmp_path: Path) -> None:
     # resolver's reservation is the only one — proving the same object was
     # shared. / resolver 的 1 次 qwen 预留即证明同一预算对象贯穿全程。
     assert recorded.qwen_calls_used >= 1
+
+
+# ── execution-task-aware resume regressions (06.6.1) ────────────────────────
+
+
+def test_resume_candidate_fallback_general_vqa_to_caption(tmp_path: Path) -> None:
+    """resolved general_vqa + executed caption: the caption evaluation must be
+    regenerated with task==caption on resume — never a general_vqa record.
+    解析 general_vqa + 执行 caption：resume 重新生成的必须是 task==caption 的
+    caption 评估——绝不产生 general_vqa 记录。"""
+    rows = [
+        {
+            "id": "a1",
+            "split": "test",
+            "question": "Describe the scene.",
+            "images": ["img.png"],
+            "answers": ["a street scene"],
+        }
+    ]
+    root, run_dir, _, dataset_runner, agents, resolver = _setup(
+        tmp_path,
+        rows=rows,
+        with_task=False,
+        with_answers=True,
+        resolver_responses=[
+            _resolution_response(
+                "general_vqa", confidence=0.4, candidates=["general_vqa", "caption"]
+            )
+        ],
+        agent_errors={"general_vqa_agent": RuntimeError("primary broke")},
+    )
+    summary = _run(dataset_runner, root=root)
+    assert summary.succeeded == 1
+    sample_dir = run_dir / "tasks" / "auto" / "samples" / storage_key("a1")
+    assert _read_json(sample_dir / "sample.json")["task"] == "general_vqa"
+    assert _read_json(sample_dir / "status.json")["task"] == "caption"
+    caption_evaluation = _read_json(sample_dir / "caption_evaluation.json")
+    assert caption_evaluation["task"] == "caption"
+    assert not (sample_dir / "vqa_evaluation.json").exists()
+    # Resume after deleting the evaluation: no resolver/agent re-calls, the
+    # caption evaluation is regenerated with the caption metric family.
+    # 删除评估后 resume：resolver/agent 零重跑，caption 评估以 caption 指标族
+    # 重新生成。
+    (sample_dir / "caption_evaluation.json").unlink()
+    resolver_calls_before = resolver._client.calls
+    summary_resume = _run(dataset_runner, root=root, resume=True)
+    assert summary_resume.succeeded == 1
+    assert resolver._client.calls == resolver_calls_before
+    assert len(agents[0].calls) == 1 and len(agents[1].calls) == 1
+    regenerated = _read_json(sample_dir / "caption_evaluation.json")
+    assert regenerated["task"] == "caption"
+    assert regenerated["deterministic_metrics"]["candidate"] == "ok"
+    assert not (sample_dir / "vqa_evaluation.json").exists()
+
+
+def test_resume_candidate_fallback_caption_to_general_vqa(tmp_path: Path) -> None:
+    """resolved caption + executed general_vqa: the VQA evaluation must be
+    regenerated with the VQA metric family on resume — never a caption record.
+    解析 caption + 执行 general_vqa：resume 重新生成的必须是 VQA 指标族的
+    评估——绝不产生 caption 记录。"""
+    rows = [
+        {
+            "id": "a1",
+            "split": "test",
+            "question": "Describe the scene.",
+            "images": ["img.png"],
+            "answers": ["a street scene"],
+        }
+    ]
+    root, run_dir, _, dataset_runner, agents, resolver = _setup(
+        tmp_path,
+        rows=rows,
+        with_task=False,
+        with_answers=True,
+        resolver_responses=[
+            _resolution_response(
+                "caption", confidence=0.4, candidates=["caption", "general_vqa"]
+            )
+        ],
+        agent_errors={"caption_agent": RuntimeError("primary broke")},
+    )
+    summary = _run(dataset_runner, root=root)
+    assert summary.succeeded == 1
+    sample_dir = run_dir / "tasks" / "auto" / "samples" / storage_key("a1")
+    assert _read_json(sample_dir / "sample.json")["task"] == "caption"
+    assert _read_json(sample_dir / "status.json")["task"] == "general_vqa"
+    vqa_evaluation = _read_json(sample_dir / "vqa_evaluation.json")
+    assert vqa_evaluation["task"] == "general_vqa"
+    assert vqa_evaluation["judge_status"] == "not_requested"
+    assert not (sample_dir / "caption_evaluation.json").exists()
+    (sample_dir / "vqa_evaluation.json").unlink()
+    resolver_calls_before = resolver._client.calls
+    summary_resume = _run(dataset_runner, root=root, resume=True)
+    assert summary_resume.succeeded == 1
+    assert resolver._client.calls == resolver_calls_before
+    assert len(agents[0].calls) == 1 and len(agents[1].calls) == 1
+    regenerated = _read_json(sample_dir / "vqa_evaluation.json")
+    assert regenerated["task"] == "general_vqa"
+    assert regenerated["judge_status"] == "not_requested"  # no judge for policy none
+    assert not (sample_dir / "caption_evaluation.json").exists()
 
 
 # ── contracts / 契约 ────────────────────────────────────────────────────────

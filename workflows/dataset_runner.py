@@ -595,8 +595,15 @@ class DatasetRunner:
         evaluation_path = sample_dir / filename
         if not evaluation_path.is_file():
             payload = self._load_persisted_payload(sample_dir, task)
+            # The persisted status.task is the execution task; pass it
+            # explicitly so the metric family never follows the canonical
+            # resolved sample.task after a candidate fallback.
+            # 持久化 status.task 即执行任务；显式传入，使指标族绝不因候选
+            # 兜底而跟随 canonical resolved sample.task。
             evaluation, _ = build_deterministic_evaluation(
-                sample=sample, execution_payload=payload
+                sample=sample,
+                execution_payload=payload,
+                execution_task=task,
             )
             if evaluation is None:
                 return  # fail closed: coordinate/geometry/reference mismatch

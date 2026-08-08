@@ -181,6 +181,13 @@
   sample 目录推导）；predictions.jsonl 是 append-only execution index，
   `(run_task, sample_id)` 最后一行是当前状态，行含
   sample_id/run_task/task/status/result_path/updated_at。
+- **06.6.1 收口契约**：`build_deterministic_evaluation(..., execution_task=None)`
+  ——fresh 路径不传（sample 已为执行任务重建），resume 路径显式传
+  `status.task`（execution task），候选兜底后绝不因 canonical resolved
+  sample.task 生成错误指标族（文件名与 EvaluationRecord.task 恒语义一致）；
+  `SampleRunStatus.result_path` schema 级强制 plain basename（含 `/`、`\`、
+  drive 前缀、`.`/`..`、控制字符即拒绝），旧版绝对路径 status 无法解析，
+  resume 视为无效状态并重新执行样本。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。

@@ -692,6 +692,47 @@ def test_predictions_are_append_only_history_with_current_state(tmp_path: Path) 
     assert rows[1]["result_path"].startswith("tasks/general_vqa/samples/")
 
 
+# ── legacy absolute result path regression (06.6.1) ─────────────────────────
+
+
+def test_resume_legacy_absolute_result_path_rejected_and_rerun(tmp_path: Path) -> None:
+    """A persisted status with an absolute result_path fails schema
+    validation; resume treats it as invalid and re-runs the sample, producing
+    a clean basename status and a run-relative prediction path.
+    带绝对 result_path 的持久化状态无法通过 schema 校验；resume 视为无效并
+    重新执行样本，产出干净的 basename 状态与 run 相对预测路径。"""
+    root, client, _, _, dataset_runner, run_dir = _setup(tmp_path)
+    sample = _vqa_sample()
+    sample_dir = run_dir / "tasks" / "general_vqa" / "samples" / storage_key("resume-1")
+    writer = ArtifactWriter()
+    writer.write_sample(sample_dir, sample)
+    (sample_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "sample_id": "resume-1",
+                "task": "general_vqa",
+                "state": "succeeded",
+                "result_path": "C:/old/run/agent_result.json",
+                "updated_at": "2026-01-01T00:00:00Z",
+            }
+        ),
+        encoding="utf-8",
+    )
+    summary = _run(dataset_runner, root=root, resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 1  # the invalid status forces a re-run / 重新执行
+    status = _read_json(sample_dir / "status.json")
+    assert status["result_path"] == "agent_result.json"
+    rows = [
+        json.loads(line)
+        for line in (run_dir / "predictions.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["result_path"].startswith("tasks/general_vqa/samples/")
+    assert "C:/old" not in json.dumps(rows)
+
+
 # ── judge off the event loop (Fix D) / judge 不阻塞事件循环 ─────────────────
 
 
