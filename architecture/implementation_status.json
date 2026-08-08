@@ -168,5 +168,5 @@
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
-  "_pending_files_note": "新计划 Task 01–09 已完成（含 06.5/06.6/06.6.1 hardening）：核心运行时（Judge→SampleRunner→DatasetRunner→auto-task seam→Reporting→Application/Bootstrap→main.py run-dataset）已就绪。后续：Task 10 Windows 集成验收、Task 11 Spark 真机验收。"
+  "_pending_files_note": "新计划 Task 01–09 已完成（含 06.5/06.6/06.6.1 hardening）：核心运行时已就绪；Task 10 Windows 验收通过；Task 11 真机验收被 ENVIRONMENT_BLOCKER 阻塞（本地 Qwen3-VL checkpoint 缺失，权重就位后重跑）；Task 12 SegFormer 独立扩展线已定位（设计记录 docs/architecture/12_SEGMENTATION_TRACK.md，未实施）。"
 }
