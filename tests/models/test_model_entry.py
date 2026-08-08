@@ -220,9 +220,10 @@ def test_baseline_offline_default() -> None:
 
 
 def test_pyproject_packages_include_data_models_agents() -> None:
-    """The wheel must ship data, models, agents, routing, workflows and
-    evaluation. wheel 必须包含 data、models、agents、routing、workflows 与
-    evaluation（已实现包由 test_package_discovery 守卫强制同步）。"""
+    """The wheel must ship data, models, agents, routing, workflows,
+    evaluation and reporting. wheel 必须包含 data、models、agents、routing、
+    workflows、evaluation 与 reporting（已实现包由 test_package_discovery
+    守卫强制同步）。"""
     import tomllib
 
     root = Path(__file__).resolve().parents[2]
@@ -230,7 +231,8 @@ def test_pyproject_packages_include_data_models_agents() -> None:
         config = tomllib.load(handle)
     include = config["tool"]["setuptools"]["packages"]["find"]["include"]
     assert include == [
-        "data*", "models*", "agents*", "routing*", "workflows*", "evaluation*"
+        "data*", "models*", "agents*", "routing*", "workflows*", "evaluation*",
+        "reporting*",
     ]
 
 

@@ -62,6 +62,12 @@
 | `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status`、`build_deterministic_evaluation`、`evaluation_filename_for_task` | 单样本执行内核 + 共享确定性评估分派（fresh/resume 同源）：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算（可外部注入）、确定性评估（VQA/counting/grounding/caption 四类产物，fail-closed 不伪造；grounding 强制坐标系契约）、可选 VQA judge（`asyncio.to_thread` 不阻塞 loop）、trace（`resolved_task`/`execution_task`）、`result_path` 为 sample-relative basename、失败只记录稳定 code |
 | `data/adapters/manifest.py` | `ManifestDraftAdapter`、`iter_manifest_drafts`、`load_manifest_mapping` | manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models、绝不写 run artifacts）；`samples_file` 经 `resolve_dataset_relative_path` 限制在 dataset root 内；失败均为稳定 DatasetProbeError |
 | `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 经 `ArtifactWriter.write_dataset_probe` 按 task 目录独立写 `tasks/<task>/dataset_probe.json`（sample_file dataset-relative，manifest.json 绝不触碰）、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并按 `status.task`（执行任务）经共享 dispatch 补判（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast 取消不遗留 running（`FAIL_FAST_CANCELLED`/`FAIL_FAST_NOT_STARTED` 全记账）、`DatasetRunSummary` 计数强制闭合；`task=None` 为内部显式 auto-task mode；predictions 为 append-only 执行索引（run_task/sample_id 键、run-relative result_path）；目录 `tasks/<task>/samples/<sha256[:24]>` |
+| `reporting/schema.py` | `Report`、`ReportSample`、`TaskSummary` | 报告类型契约（逐样本行/任务汇总/运行报告）；judge 只旁路、指标来自已持久化 EvaluationRecord |
+| `reporting/adapters.py` | `iter_current_predictions`、`load_*`（status/sample/trace/evaluation/payload）、`evaluation_filename_for_task` | 执行索引 last-wins 收敛 + 尽力而为产物读取（损坏→None，绝不抛）；本地维护评估文件名映射（架构禁止 import workflows.sample_runner） |
+| `reporting/builder.py` | `build_report` | 执行索引 + 产物增强 → `Report`；每 task 汇总（状态/fallback 率/agent 使用/judge 状态/离线指标聚合；caption 只计记录数，语料级留给可选 pycocoevalcap） |
+| `reporting/html.py` | `build_html` | 完全离线单页 HTML：全部文本转义、无 CDN/Base64、只输出稳定 code 与 run 相对路径、确定性 |
+| `reporting/exporters.py` | `write_json`、`write_csv` | 稳定布局 JSON；utf-8-sig CSV（稳定字段 + run 相对路径） |
+| `reporting/visualization.py` | `render_counting_overlay` | 源图 + CountingResult → 标注图（接受绿/拒绝红）；尺寸不匹配稳定失败；不 import CountingAgent/YOLO |
 
 ## 关键约定
 
@@ -319,5 +325,5 @@
 
 ## 尚未实现
 
-`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 07
-（Reporting）尚未开始；任务推进时逐层创建并更新本文件。
+`application` 与 `main.py` 尚未创建/实现；新计划 Task 08
+（Application/Bootstrap）尚未开始；任务推进时逐层创建并更新本文件。
