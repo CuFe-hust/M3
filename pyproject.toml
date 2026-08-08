@@ -10,6 +10,7 @@ requires-python = ">=3.11"
 dependencies = [
   "pydantic>=2.8",
   "Pillow>=10.0",
+  "PyYAML>=6.0",
   "typing-extensions>=4.12",
 ]
 
@@ -36,6 +37,7 @@ include = [
   "workflows*",
   "evaluation*",
   "reporting*",
+  "application*",
 ]
 
 [tool.pytest.ini_options]

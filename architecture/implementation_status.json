@@ -158,9 +158,14 @@
     "reporting/builder.py",
     "reporting/html.py",
     "reporting/exporters.py",
-    "reporting/visualization.py"
+    "reporting/visualization.py",
+    "application/__init__.py",
+    "application/settings.py",
+    "application/prompts.py",
+    "application/bootstrap.py",
+    "application/runtime.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
-  "_pending_files_note": "新计划 Task 01–06 已完成，并完成 06.5/06.6/06.6.1 hardening；Task 07（Reporting）已完成。application 与 main.py 尚未实现（见 README），Task 08 未开始。"
+  "_pending_files_note": "新计划 Task 01–07 已完成，并完成 06.5/06.6/06.6.1 hardening；Task 08（Application/Bootstrap）已完成。main.py 尚未实现（见 README），Task 09（最小 run-dataset 入口）未开始。"
 }
