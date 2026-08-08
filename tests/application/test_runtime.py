@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from PIL import Image
 
 from application.bootstrap import assemble_runtime
@@ -126,7 +128,9 @@ def test_runtime_run_dataset_delegates_to_dataset_runner(tmp_path: Path) -> None
     assert "auto" in results
     assert results["auto"].succeeded == 1
     assert results["auto"].total == 1
-    run_dir = tmp_path / "runs" / "auto-demo-test"
+    run_id = results["auto"].run_id
+    assert run_id != "auto-demo-test"  # unique run, never dataset-split default
+    run_dir = tmp_path / "runs" / run_id
     assert run_dir.is_dir()
     RunManifest.model_validate_json((run_dir / "manifest.json").read_text(encoding="utf-8"))
     snapshot = json.loads((run_dir / "config.snapshot.json").read_text(encoding="utf-8"))
@@ -140,7 +144,7 @@ def test_runtime_build_report(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     _make_dataset(data_root)
     runtime = _runtime(tmp_path)
-    _run(
+    results = _run(
         runtime,
         DatasetRunOptions(
             dataset="auto-demo",
@@ -150,8 +154,9 @@ def test_runtime_build_report(tmp_path: Path) -> None:
             auto_task=True,
         ),
     )
-    report = runtime.build_report("auto-demo-test")
-    assert report.run_id == "auto-demo-test"
+    run_id = results["auto"].run_id
+    report = runtime.build_report(run_id)
+    assert report.run_id == run_id
     assert report.total == 1
     assert report.succeeded == 1
     assert report.samples[0].task == "general_vqa"
@@ -202,6 +207,92 @@ def test_runtime_auto_task_mode(tmp_path: Path) -> None:
 def test_runtime_with_api_key_creates_judge_client(tmp_path: Path) -> None:
     runtime = _runtime(tmp_path, api_key="test-api-key")
     assert runtime.components.judge_client is not None
+
+
+# ── run identity contract (Fix C) / run identity 契约 ───────────────────────
+
+
+def _options(**overrides: Any) -> DatasetRunOptions:
+    values = dict(
+        dataset="auto-demo",
+        root=Path("data"),
+        split="test",
+        tasks=(),
+        auto_task=True,
+    )
+    values.update(overrides)
+    return DatasetRunOptions(**values)  # type: ignore[arg-type]
+
+
+def test_fresh_without_run_id_twice_creates_unique_runs(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    first = _run(runtime, _options(root=data_root))
+    second = _run(runtime, _options(root=data_root))
+    first_id = first["auto"].run_id
+    second_id = second["auto"].run_id
+    assert first_id != second_id
+    assert first_id != "auto-demo-test"  # never the dataset-split default
+    assert (tmp_path / "runs" / first_id / "manifest.json").is_file()
+    assert (tmp_path / "runs" / second_id / "manifest.json").is_file()
+
+
+def test_fresh_explicit_duplicate_run_id_rejected(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    options = _options(root=data_root, run_id="fixed")
+    first = _run(runtime, options)
+    assert first["auto"].succeeded == 1
+    manifest_before = (tmp_path / "runs" / "fixed" / "manifest.json").read_bytes()
+    with pytest.raises(FileExistsError):
+        _run(runtime, options)
+    # The old manifest is untouched and no second predictions file exists.
+    # 旧 manifest 未被修改，也不会产生第二个 predictions。
+    assert (tmp_path / "runs" / "fixed" / "manifest.json").read_bytes() == manifest_before
+
+
+def test_resume_requires_explicit_run_id(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    with pytest.raises(ValueError, match="resume requires"):
+        _run(runtime, _options(resume=True))
+
+
+def test_resume_missing_run_fails(tmp_path: Path) -> None:
+    runtime = _runtime(tmp_path)
+    with pytest.raises(ValueError, match="resume run does not exist"):
+        _run(runtime, _options(run_id="does-not-exist", resume=True))
+
+
+def test_resume_wrong_dataset_or_split_fails(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    _run(runtime, _options(root=data_root, run_id="fixed"))
+    with pytest.raises(ValueError, match="dataset mismatch"):
+        _run(runtime, _options(root=data_root, run_id="fixed", dataset="other", resume=True))
+    with pytest.raises(ValueError, match="split mismatch"):
+        _run(runtime, _options(root=data_root, run_id="fixed", split="train", resume=True))
+
+
+def test_normal_resume_preserves_manifest_identity(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    options = _options(root=data_root, run_id="fixed")
+    first = _run(runtime, options)
+    assert first["auto"].succeeded == 1
+    calls_after_first = runtime.components.qwen_client.calls
+    second = _run(runtime, options, resume=True)
+    assert second["auto"].run_id == "fixed"
+    assert runtime.components.qwen_client.calls == calls_after_first
+    manifest = json.loads(
+        (tmp_path / "runs" / "fixed" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["run_id"] == "fixed"
+    assert manifest["dataset"] == "auto-demo"
+    assert manifest["split"] == "test"
 
 
 class _SampleAdapter:

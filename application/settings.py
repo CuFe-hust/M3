@@ -90,11 +90,14 @@ class AppSettings(BaseModel):
     agents: AgentsSettings = Field(default_factory=AgentsSettings)
 
     def to_config_payload(self) -> dict[str, Any]:
-        """JSON-safe, machine-portable snapshot for run manifests: paths use
-        POSIX serialization with forward-slash separators on every platform,
-        no Path objects, no secret values. 供 run manifest 使用的 JSON 安全、
-        机器可移植快照：路径在所有平台统一 POSIX 正斜杠序列化、无 Path
-        对象、无密钥值。"""
+        """JSON-safe reproduction snapshot for run manifests: no secret
+        values, no Path objects, paths serialized as strings with forward
+        slashes on every platform. Configured host paths are preserved
+        verbatim — this snapshot is reproduction/debug oriented and carries
+        the host's own path semantics. 供 run manifest 使用的 JSON 安全复现
+        快照：无密钥值、无 Path 对象、路径在所有平台统一正斜杠字符串。
+        配置的主机路径原样保留——本快照面向复现/调试，承载主机自身的路径
+        语义。"""
 
         payload = self.model_dump(mode="json")
         payload["runs"]["root"] = _posix(self.runs.root)

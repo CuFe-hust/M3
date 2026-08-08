@@ -10,6 +10,7 @@ calls a model and never recomputes model results.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -179,16 +180,62 @@ def prediction_text(payload: object | None) -> str | None:
     return str(getattr(payload, "answer", None) or "").strip() or None
 
 
-def sample_dir_for_row(run_dir: Path, row: Mapping[str, Any]) -> Path | None:
-    """Derive the sample directory from the run-relative result path; rows
-    without a result path cannot be artifact-enriched. 从 run 相对结果路径
-    推导样本目录；无结果路径的行无法做产物增强。"""
+def sample_dir_for_row(
+    run_dir: Path,
+    row: Mapping[str, Any],
+) -> Path | None:
+    """Derive the sample directory from the frozen storage identity
+    (run_task, sample_id) — never from result_path, which is display-only and
+    may be absent or corrupt. 从冻结存储身份（run_task, sample_id）推导样本
+    目录——绝不使用仅用于展示且可能缺失/损坏的 result_path。"""
 
-    result_path = row.get("result_path")
-    if not isinstance(result_path, str) or not result_path:
+    run_task = row.get("run_task")
+    sample_id = row.get("sample_id")
+    if not isinstance(run_task, str) or not _safe_run_task(run_task):
         return None
-    candidate = (run_dir / result_path).parent
+    if not isinstance(sample_id, str) or not sample_id:
+        return None
+    key = hashlib.sha256(sample_id.encode("utf-8")).hexdigest()[:24]
+    return run_dir / "tasks" / run_task / "samples" / key
+
+
+def _safe_run_task(run_task: str) -> bool:
+    """A run-task namespace must be a plain directory name: separators, dot
+    segments, drive prefixes, UNC, and control characters are rejected.
+    run-task 命名空间必须是纯目录名：分隔符、dot 段、drive 前缀、UNC 与
+    控制字符一律拒绝。"""
+
+    if not run_task or run_task in {".", ".."}:
+        return False
+    if "/" in run_task or "\\" in run_task:
+        return False
+    if any(ord(character) < 32 for character in run_task):
+        return False
+    if len(run_task) >= 2 and run_task[0].isalpha() and run_task[1] == ":":
+        return False
+    return True
+
+
+def safe_result_path(run_dir: Path, value: Any) -> str | None:
+    """Fail-closed display path: keep only run-relative values whose canonical
+    resolution stays inside the run directory; corrupt index entries degrade
+    to None without failing the report. 展示路径 fail-closed：只保留 run
+    相对且 canonical 解析后仍在 run 目录内的值；损坏索引条目降级为 None，
+    不使报告失败。"""
+
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.replace("\\", "/")
+    if normalized.startswith("/"):
+        return None
+    if len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":":
+        return None
+    if any(segment in ("", ".", "..") for segment in normalized.split("/")):
+        return None
+    candidate = run_dir / value
     try:
-        return candidate if candidate.is_relative_to(run_dir) else None
-    except ValueError:
+        if not candidate.resolve().is_relative_to(run_dir.resolve()):
+            return None
+    except OSError:
         return None
+    return normalized

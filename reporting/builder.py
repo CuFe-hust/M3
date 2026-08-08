@@ -19,6 +19,7 @@ from reporting.adapters import (
     load_trace,
     prediction_text,
     read_json,
+    safe_result_path,
     sample_dir_for_row,
 )
 from reporting.schema import Report, ReportSample, TaskSummary
@@ -75,7 +76,7 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         task=task,
         state=str(row.get("status", "")),
         error_code=status.error_code if status is not None else None,
-        result_path=row.get("result_path") if isinstance(row.get("result_path"), str) else None,
+        result_path=safe_result_path(run_dir, row.get("result_path")),
         updated_at=row.get("updated_at") if isinstance(row.get("updated_at"), str) else None,
         question=sample.question if sample is not None else None,
         prediction=prediction_text(payload),

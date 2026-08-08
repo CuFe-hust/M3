@@ -360,3 +360,158 @@ def test_exporters_json_and_csv(tmp_path: Path) -> None:
     write_csv(report, csv_path)
     assert json_path.read_bytes() == json_path.read_bytes()
     assert csv_path.read_bytes() == csv_path.read_bytes()
+
+
+# ── terminal samples without result paths (Fix B) / 无结果路径的终态样本 ────
+
+
+def _terminal_sample(
+    run_dir: Path,
+    *,
+    run_task: str,
+    sample_id: str,
+    task: str,
+    state: str,
+    error_code: str,
+    trace: dict | None = None,
+    with_sample_json: bool = True,
+) -> None:
+    writer = ArtifactWriter()
+    sample_dir = run_dir / "tasks" / run_task / "samples" / _storage_key(sample_id)
+    if with_sample_json:
+        # A pre-task failure has no materialized sample at all.
+        # 预 task 失败根本没有物化样本。
+        writer.write_sample(sample_dir, _sample(sample_id, task=task))
+    writer.write_final_status(
+        sample_dir,
+        _status(sample_id, task, state, error_code=error_code, result_path=None),
+    )
+    if trace is not None:
+        writer.write_trace(sample_dir, trace)
+    writer.append_prediction(
+        run_dir,
+        sample_id=sample_id,
+        run_task=run_task,
+        task=task,
+        status=_status(sample_id, task, state, error_code=error_code, result_path=None),
+        result_path=None,
+    )
+
+
+def test_report_reads_terminal_samples_without_result_path(tmp_path: Path) -> None:
+    """failed/skipped samples with result_path=null must still surface
+    status.json error codes through the identity-based sample directory.
+    result_path=null 的 failed/skipped 样本仍必须经身份样本目录读出
+    status.json 的错误码。"""
+    run_dir = _create_run(tmp_path)
+    _write_probe(run_dir, "auto")
+    _terminal_sample(
+        run_dir,
+        run_task="auto",
+        sample_id="cancelled-1",
+        task="caption",
+        state="skipped",
+        error_code="FAIL_FAST_CANCELLED",
+    )
+    _terminal_sample(
+        run_dir,
+        run_task="auto",
+        sample_id="notstarted-1",
+        task="caption",
+        state="skipped",
+        error_code="FAIL_FAST_NOT_STARTED",
+    )
+    _terminal_sample(
+        run_dir,
+        run_task="auto",
+        sample_id="pre-task-1",
+        task="unknown",
+        state="failed",
+        error_code="EMPTY_UNRESOLVABLE_REQUEST",
+        with_sample_json=False,
+    )
+    report = build_report(run_dir)
+    samples = {item.sample_id: item for item in report.samples}
+    assert samples["cancelled-1"].state == "skipped"
+    assert samples["cancelled-1"].error_code == "FAIL_FAST_CANCELLED"
+    assert samples["notstarted-1"].error_code == "FAIL_FAST_NOT_STARTED"
+    assert samples["pre-task-1"].state == "failed"
+    assert samples["pre-task-1"].task == "unknown"
+    assert samples["pre-task-1"].error_code == "EMPTY_UNRESOLVABLE_REQUEST"
+    assert report.skipped == 2
+    assert report.failed == 1
+
+
+# ── path-escape regression (Fix A) / 路径逃逸回归 ───────────────────────────
+
+
+def test_report_never_reads_outside_run_and_result_path_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A malicious result_path must never steer reporting outside the run
+    directory: the sample directory comes from (run_task, sample_id), the
+    display path degrades to None, and sentinel content outside the run never
+    reaches the serialized report. 恶意 result_path 绝不引导 reporting 读取
+    run 目录之外：样本目录来自 (run_task, sample_id)，展示路径降级为 None，
+    run 外的哨兵内容绝不进入序列化报告。"""
+    run_dir = _create_run(tmp_path)
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = "DO_NOT_READ_OUTSIDE_RUN"
+    for filename in ("status.json", "sample.json", "agent_result.json"):
+        (outside / filename).write_text(
+            json.dumps({"sentinel": sentinel}), encoding="utf-8"
+        )
+    _write_probe(run_dir, "general_vqa")
+    writer = ArtifactWriter()
+    sample = _sample("s1")
+    sample_dir = run_dir / "tasks" / "general_vqa" / "samples" / _storage_key("s1")
+    writer.write_sample(sample_dir, sample)
+    status = _status("s1", "general_vqa", "succeeded")
+    writer.write_final_status(sample_dir, status)
+    writer.write_trace(
+        sample_dir,
+        _trace(resolved_task="general_vqa", execution_agent="general_vqa_agent"),
+    )
+    for malicious in (
+        "../outside/agent_result.json",
+        "C:/outside/agent_result.json",
+        r"\\server\share\agent_result.json",
+        "foo/../../outside/result.json",
+    ):
+        writer.append_prediction(
+            run_dir,
+            sample_id="s1",
+            run_task="general_vqa",
+            task="general_vqa",
+            status=status,
+            result_path=malicious,
+        )
+    report = build_report(run_dir)
+    assert report.total == 1
+    sample_row = report.samples[0]
+    assert sample_row.result_path is None  # corrupt index degrades / 降级
+    assert sample_row.execution_agent == "general_vqa_agent"  # identity dir used
+    serialized = json.dumps(report.model_dump(mode="json"))
+    assert sentinel not in serialized
+    assert "outside" not in serialized
+
+
+def test_report_unsafe_run_task_ignored(tmp_path: Path) -> None:
+    """Unsafe run_task namespaces must never be joined into paths.
+    不安全的 run_task 命名空间绝不拼接进路径。"""
+    run_dir = _create_run(tmp_path)
+    writer = ArtifactWriter()
+    status = _status("s1", "general_vqa", "succeeded")
+    for malicious_run_task in ("../x", "a\\b", "C:drive", "a/b"):
+        writer.append_prediction(
+            run_dir,
+            sample_id="s1",
+            run_task=malicious_run_task,
+            task="general_vqa",
+            status=status,
+            result_path="tasks/a/samples/k/agent_result.json",
+        )
+    report = build_report(run_dir)
+    assert report.total == 4
+    assert all(item.execution_agent is None for item in report.samples)

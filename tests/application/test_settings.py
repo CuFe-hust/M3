@@ -113,3 +113,24 @@ def test_safe_snapshot_is_json_safe_and_secret_free(tmp_path: Path) -> None:
 def test_to_config_payload_matches_safe_snapshot() -> None:
     settings = AppSettings()
     assert settings.to_config_payload() == settings.safe_snapshot()
+
+
+def test_snapshot_preserves_host_paths_with_forward_slashes() -> None:
+    """The snapshot is reproduction-oriented: configured host paths are
+    preserved verbatim (separator-normalized), never rewritten to portable
+    logical paths. 快照面向复现：配置的主机路径原样保留（仅归一化分隔符），
+    绝不改写成可移植逻辑路径。"""
+    from application.settings import PathSettings, RunSettings
+
+    settings = AppSettings(
+        runs=RunSettings(root=Path(r"C:\Users\me\runs")),
+        paths=PathSettings(dataset_root=Path(r"D:\data")),
+    )
+    payload = settings.to_config_payload()
+    assert payload["runs"]["root"] == "C:/Users/me/runs"
+    assert payload["paths"]["dataset_root"] == "D:/data"
+    # The documentation contract never claims machine portability.
+    # 文档契约不再声称机器可移植。
+    docstring = AppSettings.to_config_payload.__doc__ or ""
+    assert "machine-portable" not in docstring
+    assert "host" in docstring

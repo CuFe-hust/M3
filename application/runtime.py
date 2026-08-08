@@ -15,6 +15,7 @@ from application.bootstrap import RuntimeComponents, assemble_runtime
 from application.settings import AppSettings, load_settings
 from data.registry import DatasetRegistry, build_default_registry
 from reporting.schema import Report
+from workflows.run_store import RunManifest
 from workflows.schema import DatasetRunOptions, DatasetRunSummary
 
 
@@ -99,24 +100,32 @@ class Runtime:
         self,
         options: DatasetRunOptions,
     ) -> dict[str, DatasetRunSummary]:
-        """Run one dataset: create the run manifest when missing, then
-        delegate each task (or the auto-task namespace) to a DatasetRunner.
-        Judge policy only applies when evaluate is enabled.
-        运行一个数据集：缺失时创建 run manifest，然后把每个 task（或
-        auto-task 命名空间）委托给 DatasetRunner。仅 evaluate 启用时应用
-        judge 策略。"""
+        """Run one dataset under the frozen run-identity contract: a fresh
+        run without an explicit run_id always creates a unique run; a fresh
+        run with an explicit run_id fails stably when the run already exists;
+        resume requires an explicit run_id and a valid matching manifest.
+        Then each task (or the auto-task namespace) is delegated to a
+        DatasetRunner. Judge policy only applies when evaluate is enabled.
+        按冻结 run identity 契约运行一个数据集：fresh 无显式 run_id 恒创建
+        唯一 run；fresh 带显式 run_id 且已存在时稳定失败；resume 要求显式
+        run_id 与合法匹配的 manifest。随后每个 task（或 auto-task 命名空间）
+        委托给 DatasetRunner。仅 evaluate 启用时应用 judge 策略。"""
 
-        run_id = options.run_id or f"{options.dataset}-{options.split}"
-        run_dir = self.settings.runs.root / run_id
-        if not run_dir.exists():
-            self.components.run_store.create_run(
+        if options.resume:
+            if options.run_id is None:
+                raise ValueError("resume requires an explicit run_id")
+            run_id = options.run_id
+            run_dir = self.settings.runs.root / run_id
+            self._validate_existing_run(run_dir, options, run_id)
+        else:
+            manifest = self.components.run_store.create_run(
                 config_payload=self.settings.to_config_payload(),
                 model_ids={
                     "qwen": self.settings.models.qwen.effective_cache_model_id,
                     "deepseek": self.settings.models.deepseek.model,
                 },
                 prompt_paths=self.components.prompt_catalog.snapshot_paths(),
-                run_id=run_id,
+                run_id=options.run_id,
                 dataset=options.dataset,
                 split=options.split,
                 sample_filter=(
@@ -125,6 +134,8 @@ class Runtime:
                     else None
                 ),
             )
+            run_id = manifest.run_id
+            run_dir = self.settings.runs.root / run_id
         adapter = self.registry.get(options.dataset)
         judge_policy = options.judge_policy if options.evaluate else "none"
         tasks: list[str | None] = [None] if options.auto_task else list(options.tasks)
@@ -150,6 +161,36 @@ class Runtime:
                 sample_concurrency=options.sample_concurrency,
             )
         return results
+
+    def _validate_existing_run(
+        self,
+        run_dir: Path,
+        options: DatasetRunOptions,
+        run_id: str,
+    ) -> RunManifest:
+        """Resume validation: the run must exist with a parseable manifest
+        whose identity matches the requested run and dataset/split; any
+        mismatch is a stable failure so a run from dataset A can never be
+        resumed as dataset B. resume 校验：run 必须存在且 manifest 可解析，
+        其身份必须与请求的 run 及 dataset/split 一致；任何不一致都是稳定
+        失败，绝不允许把 dataset A 的 run 当作 dataset B resume。"""
+
+        manifest_path = run_dir / "manifest.json"
+        if not run_dir.is_dir() or not manifest_path.is_file():
+            raise ValueError("resume run does not exist")
+        try:
+            manifest = RunManifest.model_validate_json(
+                manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, UnicodeDecodeError, ValueError) as exc:
+            raise ValueError("resume run manifest is invalid") from exc
+        if manifest.run_id != run_id:
+            raise ValueError("resume run id mismatch")
+        if manifest.dataset is not None and manifest.dataset != options.dataset:
+            raise ValueError("resume dataset mismatch")
+        if manifest.split is not None and manifest.split != options.split:
+            raise ValueError("resume split mismatch")
+        return manifest
 
     def build_report(self, run_id: str) -> Report:
         """Build the read-only report for a run id. 为 run id 构建只读报告。"""

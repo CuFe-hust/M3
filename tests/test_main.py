@@ -261,6 +261,75 @@ def test_runtime_created_exactly_once_per_invocation(capsys, monkeypatch) -> Non
     assert len(calls) == 1
 
 
+def test_resume_without_run_id_fails_before_runtime_init(capsys, monkeypatch) -> None:
+    """--resume without --run-id is a contract failure detected before any
+    runtime/model initialization. --resume 无 --run-id 是契约失败，先于任何
+    运行时/模型初始化。"""
+
+    def boom_create(cls, **kwargs):
+        raise AssertionError("runtime must not be created")
+
+    monkeypatch.setattr(main_module.Runtime, "create", classmethod(boom_create))
+    code = main_module.main(
+        [
+            "run-dataset",
+            "--dataset",
+            "d",
+            "--root",
+            "r",
+            "--split",
+            "test",
+            "--task",
+            "caption",
+            "--resume",
+        ]
+    )
+    assert code == 2
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "--resume requires --run-id"
+
+
+def test_cli_reports_actual_run_dir_from_summary(capsys, monkeypatch) -> None:
+    """The CLI must output the actual generated run directory, never a
+    recomputed dataset-split default. CLI 必须输出实际生成的 run 目录，绝不
+    输出重新计算的 dataset-split 默认值。"""
+    from workflows.schema import DatasetRunSummary
+
+    class _FakeRuntime:
+        async def run_dataset(self, options):
+            return {
+                "auto": DatasetRunSummary(
+                    run_id="20260808T120000Z-a1b2c3d4",
+                    dataset="d",
+                    split="test",
+                    task="auto",
+                    total=1,
+                    succeeded=1,
+                    partial=0,
+                    failed=0,
+                    skipped=0,
+                )
+            }
+
+    monkeypatch.setattr(main_module.Runtime, "create", classmethod(lambda cls, **kw: _FakeRuntime()))
+    code = main_module.main(
+        [
+            "run-dataset",
+            "--dataset",
+            "d",
+            "--root",
+            "r",
+            "--split",
+            "test",
+            "--auto-task",
+        ]
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["run_dir"].endswith("20260808T120000Z-a1b2c3d4")
+    assert "d-test" not in out["run_dir"]
+
+
 def test_main_imports_only_application_and_stdlib() -> None:
     """The architecture rule: main.py must import only application plus the
     standard library. 架构规则：main.py 只能 import application 与标准库。"""

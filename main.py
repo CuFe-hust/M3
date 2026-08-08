@@ -76,6 +76,11 @@ def _run_dataset(args: argparse.Namespace) -> int:
     """run-dataset: parse → settings → runtime → options → run → summary.
     run-dataset：解析 → 配置 → 运行时 → 选项 → 运行 → 汇总。"""
 
+    if args.resume and not args.run_id:
+        # Contract failure before any runtime/model initialization.
+        # 契约失败，先于任何运行时/模型初始化。
+        _print_error("--resume requires --run-id")
+        return EXIT_ARGUMENT
     tasks = (
         tuple(item.strip() for item in args.task.split(",") if item.strip())
         if args.task
@@ -123,7 +128,11 @@ def _run_dataset(args: argparse.Namespace) -> int:
         # 公共输出绝不携带原始异常文本或密钥。
         _print_error(f"{type(error).__name__}")
         return EXIT_RUNTIME
-    run_id = options.run_id or f"{options.dataset}-{options.split}"
+    run_id = (
+        next(iter(summaries.values())).run_id
+        if summaries
+        else options.run_id or f"{options.dataset}-{options.split}"
+    )
     payload = {
         "status": "ok",
         "run_dir": str(settings.runs.root / run_id),
