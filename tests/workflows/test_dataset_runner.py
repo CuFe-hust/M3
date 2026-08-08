@@ -280,7 +280,18 @@ def test_shard_is_sha256_based_and_process_stable() -> None:
 
 
 def test_storage_key_is_short_hex_and_path_safe() -> None:
-    for sample_id in ("CON", "a/b", "..", "a:b", "C:\\x", "name.", "name ", "a" * 200):
+    for sample_id in (
+        "CON",
+        "a/b",
+        "..",
+        "a:b",
+        "C:\\x",
+        "name.",
+        "name ",
+        "样本",
+        "样本 with 空格",
+        "a" * 200,
+    ):
         key = storage_key(sample_id)
         assert len(key) == 24
         assert all(character in "0123456789abcdef" for character in key)

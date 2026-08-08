@@ -361,12 +361,16 @@ def test_run_store_has_no_application_dependency(tmp_path: Path) -> None:
         "/tmp/run",
         "C:\tmp\run",
         "C:/tmp/run",
-        "\\server\share\run",
+        r"\\server\share\run",
         "//server/share/run",
         ".",
         "..",
         "run\nid",
         "run\x00id",
+        "run id",
+        "运行",
+        "运行 run",
+        "run:id",
     ],
 )
 def test_run_id_path_like_values_rejected_before_io(run_id: str, tmp_path: Path) -> None:
