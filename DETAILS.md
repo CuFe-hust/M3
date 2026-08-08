@@ -59,6 +59,8 @@
 | `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
 | `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
 | `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status` | 单样本执行内核：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算、确定性评估（vqa_evaluation.json / counting_evaluation.json）、可选 VQA judge、trace/status；失败只记录稳定 code |
+| `data/adapters/manifest.py` | `update_manifest_probe`、`ManifestAdapterError` | 数据层自包含 probe 写回：manifest.json 读取/最小 schema 校验/原子写回（tmp+replace）、幂等覆盖、敏感扫描；缺失/损坏/无 run_id 以稳定错误码失败 |
+| `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 写回、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并只补缺失确定性评估/缺失或失败 VQA judge（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast cancel 不遗留 running、逐 task 汇总；目录 `tasks/<task>/samples/<sha256[:24]>` |
 
 ## 关键约定
 
@@ -121,6 +123,21 @@
   routing_decision.json → result → evaluation → agent_trace.json → status=final；
   trace 字段含 resolution_source（dataset_task/explicit/rule/model）、
   low_confidence、candidate_tasks、attempt_agents、skipped_candidates、failure_code。
+- **DatasetRunner（Task 05）**：`run(*, root, split, task, resume, limit, shard_index,
+  shard_count, start_index, sample_ids, fail_fast, sample_concurrency)` 只编排一个
+  task；selection 固定顺序（adapter 稳定顺序 → start_index → shard → sample_ids →
+  limit），shard 用 `sha256(sample_id) % shard_count`（非 Python hash，跨进程稳定）；
+  目录布局 `runs/<run_id>/tasks/<task>/samples/<sha256(sample_id)[:24]>`（不直接使用
+  sample_id，Windows 危险名与多 task 同 id 不冲突），`predictions.jsonl` 在 run 根、
+  `dataset_summary.json` 在 task 目录；每次运行前 `adapter.probe` 经
+  `data/adapters/manifest.update_manifest_probe` 写回 manifest.json 的 dataset_probe
+  （数据层自包含实现，仅校验最小 schema：run_id 非空字符串）；resume：succeeded
+  默认不重新推理，只补缺失的 vqa/counting 确定性评估与缺失/失败的 VQA judge
+  （补判异常 → state=skipped + 稳定 code，重判失败保留 succeeded），
+  partial/failed/running/pending/缺失/损坏状态一律重跑 SampleRunner；并发只承诺
+  单进程 asyncio（Semaphore 限流 + FIRST_COMPLETED 批次）；fail-fast 后不再提交
+  新任务、cancel/await 已启动任务、被取消样本写 skipped（FAIL_FAST_CANCELLED）、
+  绝不遗留永久 running；补判 judge 不设逐样本预算（call_budget=None）。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
@@ -252,6 +269,6 @@
 
 ## 尚未实现
 
-`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 05
-（DatasetRunner + run_dataset 入口）尚未开始（`TaskResolver` 尚未被
-dataset runner 使用）；任务推进时逐层创建并更新本文件。
+`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 06
+（无 task 数据集 SampleDraft/TaskResolver 接入）尚未开始；任务推进时逐层
+创建并更新本文件。
