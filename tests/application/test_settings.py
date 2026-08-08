@@ -69,9 +69,15 @@ def test_windows_paths_are_coerced() -> None:
         None,
         environ={"DATASET_ROOT": "C:\\Users\\me\\datasets", "OUTPUT_ROOT": "C:\\runs"},
     )
-    assert settings.paths.dataset_root == Path("C:/Users/me/datasets")
-    assert settings.runs.root == Path("C:/runs")
     assert isinstance(settings.paths.dataset_root, Path)
+    # The machine-portable snapshot always uses forward slashes, on every
+    # platform (as_posix alone keeps backslashes on POSIX hosts).
+    # 机器可移植快照在所有平台统一正斜杠（仅 as_posix 在 POSIX 主机会保留
+    # 反斜杠）。
+    payload = settings.to_config_payload()
+    assert payload["paths"]["dataset_root"] == "C:/Users/me/datasets"
+    assert payload["runs"]["root"] == "C:/runs"
+    assert "\\" not in payload["paths"]["dataset_root"]
 
 
 def test_invalid_yaml_fails_stable(tmp_path: Path) -> None:

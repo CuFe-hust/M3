@@ -91,13 +91,14 @@ class AppSettings(BaseModel):
 
     def to_config_payload(self) -> dict[str, Any]:
         """JSON-safe, machine-portable snapshot for run manifests: paths use
-        POSIX serialization, no Path objects, no secret values.
-        供 run manifest 使用的 JSON 安全、机器可移植快照：路径使用 POSIX
-        序列化、无 Path 对象、无密钥值。"""
+        POSIX serialization with forward-slash separators on every platform,
+        no Path objects, no secret values. 供 run manifest 使用的 JSON 安全、
+        机器可移植快照：路径在所有平台统一 POSIX 正斜杠序列化、无 Path
+        对象、无密钥值。"""
 
         payload = self.model_dump(mode="json")
-        payload["runs"]["root"] = self.runs.root.as_posix()
-        payload["paths"]["dataset_root"] = self.paths.dataset_root.as_posix()
+        payload["runs"]["root"] = _posix(self.runs.root)
+        payload["paths"]["dataset_root"] = _posix(self.paths.dataset_root)
         return payload
 
     def safe_snapshot(self) -> dict[str, Any]:
@@ -161,6 +162,14 @@ def _load_yaml(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError("settings YAML must map to an object")
     return raw
+
+
+def _posix(path: Path) -> str:
+    """POSIX serialization with forward-slash separators on every platform
+    (as_posix alone keeps backslashes on POSIX hosts). 所有平台统一正斜杠
+    的 POSIX 序列化（仅 as_posix 在 POSIX 主机上会保留反斜杠）。"""
+
+    return path.as_posix().replace("\\", "/")
 
 
 def _deep_merge(target: dict[str, Any], source: dict[str, Any]) -> None:
