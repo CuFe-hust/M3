@@ -355,7 +355,7 @@ def test_run_store_has_no_application_dependency(tmp_path: Path) -> None:
     "run_id",
     [
         "../outside",
-        "..\outside",
+        r"..\outside",
         "a/b",
         "a\b",
         "/tmp/run",

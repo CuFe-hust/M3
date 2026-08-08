@@ -58,7 +58,14 @@
 backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
 绝对路径、密钥或 Base64。
 
-**尚未实现**：`main.py`（最小 run-dataset 入口）。新计划 Task 09 尚未开始。
+**尚未实现**：
+- **semantic segmentation runtime: not implemented**——SegFormer/OEM/iSAID
+  是独立扩展线（见 `docs/architecture/12_SEGMENTATION_TRACK.md`），不阻塞
+  core release candidate。
+- `serve`/`ask`/运维 CLI 不实现（核心运行时稳定后可加薄壳）。
+- 验收状态：Task 10 Windows 集成验收通过（WINDOWS_INTEGRATION_READY）；
+  Task 11 Spark 真机验收被 ENVIRONMENT_BLOCKER 阻塞（本地
+  Qwen3-VL-4B-Instruct checkpoint 权重缺失，就位后重跑）。
 
 ## 安装与测试
 
