@@ -132,6 +132,7 @@
     "workflows/call_budget.py",
     "workflows/events.py",
     "workflows/run_store.py",
+    "workflows/judge_service.py",
     "workflows/artifact_writer.py",
     "workflows/task_resolver.py",
     "evaluation/__init__.py",
@@ -141,9 +142,12 @@
     "evaluation/metrics/vqa.py",
     "evaluation/metrics/grounding.py",
     "evaluation/metrics/caption.py",
-    "evaluation/metrics/aggregate.py"
+    "evaluation/metrics/aggregate.py",
+    "evaluation/judges/__init__.py",
+    "evaluation/judges/base.py",
+    "evaluation/judges/deepseek.py"
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
-  "_pending_files_note": "pending_files 为空表示当前没有已批准但尚未创建的生产路径被预先声明；reporting、application 与 main.py 尚未实现（见 README），Task 34 尚未开始。"
+  "_pending_files_note": "新计划 Task 01（只读审计）与 Task 02（白名单）已完成；Task 03（Judge 层）已完成（evaluation/judges/* + workflows/judge_service.py）。reporting、application 与 main.py 尚未实现（见 README），SampleRunner/DatasetRunner 尚未实现（Task 04/05 未开始）。"
 }

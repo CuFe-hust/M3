@@ -150,17 +150,14 @@ def test_path_rules_take_precedence_over_package_rules() -> None:
     assert not _is_allowed("models.base", fallback)
 
 
-def test_future_judge_paths_are_covered_without_existing_on_disk() -> None:
-    """A future judge/metrics file resolves through its path rule even before
-    the file exists; absent files never fail the scan. 未来 judge/metrics 文件
-    即使不存在也按其 path rule 解析；不存在的文件绝不导致扫描失败。"""
+def test_judge_and_metrics_paths_resolve_through_path_rules() -> None:
+    """Judge/metrics files resolve through their path rules whether or not
+    they exist on disk; absent files never fail the scan. judge/metrics 文件
+    无论是否存在都按其 path rule 解析；不存在的文件绝不导致扫描失败。"""
     rules = _rules()
     assert _is_allowed("models.base", _resolve_allow(rules, "evaluation", "evaluation/judges/__init__.py"))
     assert _is_allowed("models.cache", _resolve_allow(rules, "evaluation", "evaluation/judges/deepseek.py"))
     assert not _is_allowed("models.base", _resolve_allow(rules, "evaluation", "evaluation/metrics/aggregate.py"))
-    # No judge implementation file exists yet, and none is required.
-    # 尚不存在任何 judge 实现文件，也不要求存在。
-    assert not (REPO_ROOT / "evaluation" / "judges" / "deepseek.py").is_file()
 
 
 # ── 领域层只依赖模型契约 / domain layers depend on model contracts only ───

@@ -55,6 +55,9 @@
 | `data/schema.py` | `ValidationIssue` | 只读审计问题记录 |
 | `data/schema.py` | `stable_sample_id` | 多图稳定样本 ID；source ID 目录名安全检查 |
 | `data/__init__.py` | 重导出 | 仅导出上述稳定类型 |
+| `evaluation/judges/base.py` | `DeepSeekJudgeResult`、`VQAAnswerJudgeResult`、`JudgeClient`、`CountEvidence`/`CountTarget`（结构子集协议）、`build_*_judge_payload`、`build_*_judge_request_hash`、`stable_error_label` | judge Schema/协议/纯载荷与稳定哈希；载荷绝不包含图像数据或路径；judges 层不导入 `agents.counting.schema`（结构协议消费计数证据） |
+| `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
+| `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
 
 ## 关键约定
 
@@ -89,6 +92,18 @@
 
 ## 关键运行契约
 
+- **Judge 层（Task 03）**：`DeepSeekJudgeClient` 为同步客户端（标准库
+  urllib，阻塞式——可选评测层，默认并发 1 可接受）；api_key 由
+  composition root 注入，客户端与 JudgeService 绝不读取环境变量；
+  `judge_json(..., system_prompt=...)` 按调用显式传 prompt（VQA 判卷使用
+  vqa judge prompt，修复旧实现误用计数 prompt 的问题）；只有 `judge_vqa`
+  参与逐样本预算（`reserve_deepseek` 仅在真正发起 Judge 时），
+  `judge_counting` 为事后路径不设预算；预算耗尽/任何 judge 异常一律转
+  稳定 `judge_error`（仅类名），返回 judge_status=failed 记录，绝不抛出、
+  绝不覆盖确定性指标、绝不保存原始异常文本；`judge_vqa_resume` 对
+  `vqa_evaluation.json`（统一或 legacy 形状）succeeded 原样返回，其余
+  （缺失/损坏/failed/not_requested）读取 `agent_result.json` 的持久化
+  answer 重判，受 judge_policy 约束。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
@@ -220,6 +235,6 @@
 
 ## 尚未实现
 
-`reporting`、`application`、`main.py` 尚未创建/实现；Task 34 尚未开始；
-`SampleRunner`/`DatasetRunner` 尚未实现（`TaskResolver` 尚未被 dataset
-runner 使用）；任务推进时逐层创建并更新本文件。
+`reporting`、`application`、`main.py` 尚未创建/实现；新计划 Task 04
+（SampleRunner）、Task 05（DatasetRunner）尚未开始（`TaskResolver` 尚未被
+dataset runner 使用）；任务推进时逐层创建并更新本文件。
