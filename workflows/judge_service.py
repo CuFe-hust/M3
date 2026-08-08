@@ -17,11 +17,11 @@ from agents.counting.schema import CountTargetSpec, CountingResult
 from data.schema import GroundTruth, UnifiedSample
 from evaluation.judges.base import (
     JudgeClient,
+    DeepSeekJudgeResult,
     VQAAnswerJudgeResult,
     build_count_judge_payload,
     build_judge_request_hash,
     build_vqa_judge_payload,
-    build_vqa_judge_request_hash,
     stable_error_label,
 )
 from evaluation.metrics.counting import merge_count_evaluation
@@ -91,8 +91,10 @@ class JudgeService:
                     request_hash=build_judge_request_hash(
                         model=self._model_id,
                         prompt_text=self._judge_prompt,
+                        prompt_version="deepseek-judge-v1",
                         sample_id=sample_id,
                         payload=payload,
+                        response_schema=DeepSeekJudgeResult.model_json_schema(),
                     ),
                     prompt_version="deepseek-judge-v1",
                     sample_id=sample_id,
@@ -164,11 +166,13 @@ class JudgeService:
                 response_model=VQAAnswerJudgeResult,
                 request_meta=RequestMeta(
                     request_id=f"{sample.sample_id}:deepseek-vqa",
-                    request_hash=build_vqa_judge_request_hash(
+                    request_hash=build_judge_request_hash(
                         model=self._model_id,
                         prompt_text=self._vqa_judge_prompt,
+                        prompt_version="deepseek-vqa-judge-v1",
                         sample_id=sample.sample_id,
                         payload=payload,
+                        response_schema=VQAAnswerJudgeResult.model_json_schema(),
                     ),
                     prompt_version="deepseek-vqa-judge-v1",
                     sample_id=sample.sample_id,

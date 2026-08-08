@@ -59,9 +59,9 @@
 | `evaluation/judges/base.py` | `DeepSeekJudgeResult`、`VQAAnswerJudgeResult`、`JudgeClient`、`CountEvidence`/`CountTarget`（结构子集协议）、`build_*_judge_payload`、`build_*_judge_request_hash`、`stable_error_label` | judge Schema/协议/纯载荷与稳定哈希；载荷绝不包含图像数据或路径；judges 层不导入 `agents.counting.schema`（结构协议消费计数证据） |
 | `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
 | `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
-| `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status` | 单样本执行内核：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算、确定性评估（vqa_evaluation.json / counting_evaluation.json）、可选 VQA judge、trace/status；失败只记录稳定 code |
-| `data/adapters/manifest.py` | `update_manifest_probe`、`ManifestAdapterError`、`ManifestDraftAdapter`、`iter_manifest_drafts`、`load_manifest_mapping` | probe 写回（manifest.json 读取/最小 schema 校验/原子写回、幂等、敏感扫描）+ manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models）；失败均为稳定 DatasetProbeError/ManifestAdapterError |
-| `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 写回、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并只补缺失确定性评估/缺失或失败 VQA judge（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast cancel 不遗留 running、逐 task 汇总；目录 `tasks/<task>/samples/<sha256[:24]>` |
+| `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status` | 单样本执行内核：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算（可外部注入）、确定性评估（VQA/counting/grounding/caption 四类产物，fail-closed 不伪造）、可选 VQA judge（`asyncio.to_thread` 不阻塞 loop）、trace（`resolved_task`/`execution_task`）、失败只记录稳定 code |
+| `data/adapters/manifest.py` | `ManifestDraftAdapter`、`iter_manifest_drafts`、`load_manifest_mapping` | manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models、绝不写 run artifacts）；`samples_file` 经 `resolve_dataset_relative_path` 限制在 dataset root 内；失败均为稳定 DatasetProbeError |
+| `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 经 `ArtifactWriter.write_dataset_probe` 独立写 `dataset_probe.json`（manifest.json 绝不触碰）、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并按 `status.task`（执行任务）补判缺失确定性评估/缺失或失败 VQA judge（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast 取消不遗留 running（已取消 `FAIL_FAST_CANCELLED`、未启动 `FAIL_FAST_NOT_STARTED`，全部计入 predictions 与终态）、`DatasetRunSummary` 计数强制闭合；`task=None` 为内部显式 auto-task mode；目录 `tasks/<task>/samples/<sha256[:24]>` |
 
 ## 关键约定
 
@@ -131,25 +131,44 @@
   目录布局 `runs/<run_id>/tasks/<task>/samples/<sha256(sample_id)[:24]>`（不直接使用
   sample_id，Windows 危险名与多 task 同 id 不冲突），`predictions.jsonl` 在 run 根、
   `dataset_summary.json` 在 task 目录；每次运行前 `adapter.probe` 经
-  `data/adapters/manifest.update_manifest_probe` 写回 manifest.json 的 dataset_probe
-  （数据层自包含实现，仅校验最小 schema：run_id 非空字符串）；resume：succeeded
+  `ArtifactWriter.write_dataset_probe` 独立写 `dataset_probe.json`（数据层绝不
+  触碰 manifest.json——manifest 始终可被 RunManifest schema 重新解析、绝不
+  动态扩 schema）；resume：succeeded
   默认不重新推理，只补缺失的 vqa/counting 确定性评估与缺失/失败的 VQA judge
-  （补判异常 → state=skipped + 稳定 code，重判失败保留 succeeded），
+  （补判异常 → state=skipped + 稳定 code，重判失败保留 succeeded；补判类型按
+  `status.task` 执行任务决定，绝不按 sample.json 的解析任务），
   partial/failed/running/pending/缺失/损坏状态一律重跑 SampleRunner；并发只承诺
   单进程 asyncio（Semaphore 限流 + FIRST_COMPLETED 批次）；fail-fast 后不再提交
   新任务、cancel/await 已启动任务、被取消样本写 skipped（FAIL_FAST_CANCELLED）、
-  绝不遗留永久 running；补判 judge 不设逐样本预算（call_budget=None）。
+  未启动样本写 skipped（FAIL_FAST_NOT_STARTED）并全部计入 predictions 与终态，
+  绝不遗留永久 running；`DatasetRunSummary` 强制
+  total == succeeded + partial + failed + skipped；补判 judge 不设逐样本预算
+  （call_budget=None）且经 `asyncio.to_thread` 不阻塞事件循环。
 - **无 task 数据集 seam（Task 06）**：`SampleDraft` 是 pre-sample 契约（无角色
   校验）；draft 路径固定为 SampleDraft → TaskResolver → `materialize_sample` →
   SampleRunner，`UnifiedSample.task` 保持必填；`DraftDatasetAdapter`（iter_drafts）
   由 `ManifestDraftAdapter`（`spacers_adapter.json` 显式字段映射）实现——task 列
-  可选、JSON/JSONL、不猜字段、不调模型、不 import workflows/models；DatasetRunner
-  `run(task=None)` 进入 draft 模式（目录 `tasks/auto/samples/<sha256[:24]>`，resume
-  查找无需重新解析）：共享默认 CallBudget 贯穿 resolver 与 agent attempts
+  可选、JSON/JSONL、不猜字段、不调模型、不 import workflows/models、samples_file
+  经 `resolve_dataset_relative_path` 限制在 dataset root 内；DatasetRunner
+  `run(task=None)` 是**内部显式 auto-task mode**（未来外部入口经
+  `DatasetRunOptions.auto_task=True` 选择，auto_task=True 要求 tasks 为空、
+  False 要求非空），目录 `tasks/auto/samples/<sha256[:24]>`，resume
+  查找无需重新解析：共享默认 CallBudget 贯穿 resolver 与 agent attempts
   （`SampleRunner.run_one(budget=...)` 注入），显式 task 零 resolver 调用，空问题
   只走两条确定性规则；未知 task 绝不冒充 general_vqa——预 task 失败以稳定 code +
-  诚实 `unknown` 任务标签记录 failed 状态；低置信度候选（≤3、top first、
+  诚实 `unknown` 任务标签（`RunTaskName` 类型）记录 failed 状态；单样本意外异常
+  收敛为稳定 failed 状态、绝不终止整个数据集运行；低置信度候选（≤3、top first、
   general_vqa 槽位）由 SampleRunner 既有 attempt plan 执行。
+- **06.5 收口契约**：`data` 层绝不写 run artifacts（probe 由
+  `ArtifactWriter.write_dataset_probe` 写 `dataset_probe.json`，manifest.json
+  始终可被 RunManifest schema 重新解析、绝不动态扩 schema）；judge canonical
+  hash 覆盖 model/prompt 文本与版本/sample_id/完整 payload/response schema；
+  async 边界的 judge 调用一律 `asyncio.to_thread`；resume 补判按
+  `status.task`（执行任务）而非 sample.json 的解析任务；`fallback_used` 涵盖
+  candidate index > 0；fail-fast 后所有 selected 样本必有终态（
+  succeeded/partial/failed/skipped）且 summary 计数闭合；`auto_task` 是显式
+  运行选项（DatasetRunOptions 校验 tasks 空/非空），`task=None` 仅为内部
+  auto-task mode。
 - `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
   `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
   Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。

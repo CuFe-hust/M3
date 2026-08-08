@@ -30,7 +30,6 @@ from typing import Any
 
 from agents.counting.schema import CountingResult
 from data.adapters.base import DatasetAdapter
-from data.adapters.manifest import update_manifest_probe
 from data.schema import SampleDraft, UnifiedSample
 from evaluation.metrics.counting import merge_count_evaluation
 from evaluation.metrics.vqa import merge_vqa_evaluation
@@ -189,7 +188,7 @@ class DatasetRunner:
                 sample_concurrency=sample_concurrency,
             )
         probe = self.adapter.probe(root, task)
-        update_manifest_probe(self.run_dir, probe)
+        self.artifact_writer.write_dataset_probe(self.run_dir, probe)
         selected = select_samples(
             self.adapter.iter_samples(root, split, task),
             start_index=start_index,
@@ -235,7 +234,7 @@ class DatasetRunner:
         if not hasattr(self.adapter, "iter_drafts"):
             raise TypeError(f"adapter {self.adapter.name!r} does not yield drafts")
         probe = self.adapter.probe(root, None)
-        update_manifest_probe(self.run_dir, probe)
+        self.artifact_writer.write_dataset_probe(self.run_dir, probe)
         drafts = select_samples(
             self.adapter.iter_drafts(root, split),
             start_index=start_index,
@@ -301,9 +300,11 @@ class DatasetRunner:
                     raise
 
         pending: set[asyncio.Task] = set()
+        not_started: list[Any] = []
         for item in selected:
             if fail_fast_triggered:
-                break
+                not_started.append(item)
+                continue
             pending_task = asyncio.create_task(run_one_item(item))
             pending.add(pending_task)
             if len(pending) >= sample_concurrency:
@@ -321,6 +322,17 @@ class DatasetRunner:
             for done_task in done:
                 if not done_task.cancelled():
                     record_status(done_task.result())
+        # fail-fast accounting: selected-but-never-started samples receive a
+        # terminal skipped status so the summary counts always close.
+        # fail-fast 记账：已选中但从未启动的样本写入终态 skipped，使汇总计数
+        # 永远闭合。
+        if not_started:
+            for item in not_started:
+                status = _not_started_status(item)
+                self.artifact_writer.write_final_status(
+                    samples_root / storage_key(item.sample_id), status
+                )
+                record_status(status)
         summary = DatasetRunSummary(
             run_id=self.run_dir.name,
             dataset=self.adapter.name,
@@ -351,7 +363,12 @@ class DatasetRunner:
         if resume:
             persisted = self._read_status(sample_dir)
             if persisted is not None and persisted.state == "succeeded":
-                return await self._resume_supplement(sample, sample_dir, sample.task)
+                # Supplement by the executed task (status.task), never the
+                # resolved task: candidate fallback may have executed a
+                # different task than the sample declares.
+                # 按执行任务（status.task）补判，绝不按解析任务：候选兜底可能
+                # 执行了与样本声明不同的任务。
+                return await self._resume_supplement(sample, sample_dir, persisted.task)
         try:
             outcome = await self.sample_runner.run_one(
                 sample, sample_dir, judge_policy=self.judge_policy
@@ -388,8 +405,11 @@ class DatasetRunner:
             if persisted is not None and persisted.state == "succeeded":
                 persisted_sample = self._read_persisted_sample(sample_dir)
                 if persisted_sample is not None:
+                    # Supplement by the executed task from the status, never
+                    # the resolved task on the persisted sample.
+                    # 按状态中的执行任务补判，绝不按持久化样本上的解析任务。
                     return await self._resume_supplement(
-                        persisted_sample, sample_dir, persisted_sample.task
+                        persisted_sample, sample_dir, persisted.task
                     )
         if draft.explicit_task is not None:
             try:
@@ -398,10 +418,19 @@ class DatasetRunner:
                 return self._write_draft_failure(
                     draft, sample_dir, task=draft.explicit_task, code=error.code
                 )
-            outcome = await self.sample_runner.run_one(
-                sample, sample_dir, judge_policy=self.judge_policy
-            )
+            try:
+                outcome = await self.sample_runner.run_one(
+                    sample, sample_dir, judge_policy=self.judge_policy
+                )
+            except Exception as error:
+                return self._write_draft_failure(
+                    draft,
+                    sample_dir,
+                    task=draft.explicit_task,
+                    code=_stable_error_code(error),
+                )
             return outcome.status
+        task_known: str | None = None
         budget = self.call_budget_factory.create_for_sample("draft")
         try:
             resolution = await self.task_resolver.resolve(
@@ -415,6 +444,7 @@ class DatasetRunner:
                 artifact_dir=sample_dir / "task_resolution",
                 budget=budget,
             )
+            task_known = resolution.task
             sample = materialize_sample(draft, resolution.task)
         except TaskResolutionError as error:
             return self._write_draft_failure(
@@ -422,15 +452,24 @@ class DatasetRunner:
             )
         except SampleMaterializationError as error:
             return self._write_draft_failure(
-                draft, sample_dir, task=resolution.task, code=error.code
+                draft, sample_dir, task=task_known, code=error.code
             )
-        outcome = await self.sample_runner.run_one(
-            sample,
-            sample_dir,
-            resolution=resolution,
-            budget=budget,
-            judge_policy=self.judge_policy,
-        )
+        except Exception as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=task_known, code=_stable_error_code(error)
+            )
+        try:
+            outcome = await self.sample_runner.run_one(
+                sample,
+                sample_dir,
+                resolution=resolution,
+                budget=budget,
+                judge_policy=self.judge_policy,
+            )
+        except Exception as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=task_known, code=_stable_error_code(error)
+            )
         return outcome.status
 
     def _write_draft_failure(
@@ -550,7 +589,8 @@ class DatasetRunner:
                 )
             judge_service = self.sample_runner.judge_service
             if judge_service is not None and self.judge_policy != "none":
-                evaluation = judge_service.judge_vqa_resume(
+                evaluation = await asyncio.to_thread(
+                    judge_service.judge_vqa_resume,
                     sample=sample,
                     candidate_answer="",
                     sample_dir=sample_dir,
@@ -599,6 +639,27 @@ def _cancelled_status(item: Any) -> SampleRunStatus:
         state="skipped",
         error_code="FAIL_FAST_CANCELLED",
         error_message="FAIL_FAST_CANCELLED",
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _not_started_status(item: Any) -> SampleRunStatus:
+    """Terminal status for a selected sample that never started under
+    fail-fast; keeps summary accounting closed and lets resume re-run it.
+    fail-fast 下已选中但从未启动样本的终态；保持汇总记账闭合并允许 resume
+    重跑。"""
+
+    task = (
+        getattr(item, "task", None)
+        or getattr(item, "explicit_task", None)
+        or "unknown"
+    )
+    return SampleRunStatus(
+        sample_id=item.sample_id,
+        task=task,
+        state="skipped",
+        error_code="FAIL_FAST_NOT_STARTED",
+        error_message="FAIL_FAST_NOT_STARTED",
         updated_at=datetime.now(timezone.utc).isoformat(),
     )
 

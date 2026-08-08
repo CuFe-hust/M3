@@ -48,7 +48,8 @@
     "25.7-yolo-failure-propagation-warning-safety",
     "33.5-spatial-change-workflow-evaluation-runtime-integrity",
     "33.6-workflow-path-safety-evaluation-record-invariants",
-    "33.7-windows-run-id-secret-container-safety"
+    "33.7-windows-run-id-secret-container-safety",
+    "06.5-workflow-contract-hardening"
   ],
   "implemented_files": [
     "data/__init__.py",
@@ -152,5 +153,5 @@
   ],
   "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
-  "_pending_files_note": "新计划 Task 01–06 已完成（审计、白名单、Judge 层、SampleRunner、DatasetRunner、无 task 数据集 seam）。reporting、application 与 main.py 尚未实现（见 README），Task 07（Reporting）未开始。"
+  "_pending_files_note": "新计划 Task 01–06 已完成，并完成 06.5 workflow contract hardening。Task 07 Reporting 尚未开始。"
 }

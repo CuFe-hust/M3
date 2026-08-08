@@ -158,16 +158,69 @@ def validate_manifest_mapping(
     required_fields: Iterable[str] = ("id", "split", "task", "question", "images"),
 ) -> Mapping[str, str]:
     """Validate an explicit versioned mapping manifest and return its fields.
-    校验显式版本化映射清单并返回字段映射。不推测字段名。"""
+    fields must be a mapping of str semantic keys to non-empty str column
+    names, and samples_file must be a non-empty string; nothing is guessed.
+    校验显式版本化映射清单并返回字段映射。fields 必须是把 str 语义键映射到
+    非空 str 列名的映射，samples_file 必须是非空字符串；不推测任何字段名。"""
     if manifest.get("dataset") != dataset or manifest.get("version") != version:
         raise DatasetProbeError(
             f"Expected dataset={dataset!r} and version={version!r} in adapter manifest"
         )
     samples_value = manifest.get("samples_file")
     fields = manifest.get("fields")
-    if not isinstance(samples_value, str) or not isinstance(fields, Mapping):
-        raise DatasetProbeError("Adapter manifest requires string samples_file and object fields")
+    if not isinstance(samples_value, str) or not samples_value:
+        raise DatasetProbeError(
+            "Adapter manifest requires a non-empty string samples_file"
+        )
+    if not isinstance(fields, Mapping):
+        raise DatasetProbeError("Adapter manifest requires an object fields")
+    for key, column in fields.items():
+        if not isinstance(key, str) or not key:
+            raise DatasetProbeError(
+                "field mappings must use non-empty string semantic keys"
+            )
+        if not isinstance(column, str) or not column:
+            raise DatasetProbeError(
+                f"mapped field {key!r} must be a non-empty string column name"
+            )
     missing = sorted(set(required_fields) - set(fields))
     if missing:
         raise DatasetProbeError(f"Adapter manifest misses required field mappings: {missing}")
     return fields
+
+
+def resolve_dataset_relative_path(
+    root: Path,
+    relative: str,
+    *,
+    field_name: str,
+) -> Path:
+    """Resolve a declared relative path strictly inside the dataset root.
+    Rejects empty values, dot/dot-dot segments, POSIX absolute paths, Windows
+    drive absolutes, and UNC paths; after resolution the target must stay
+    within root.resolve(). Checks are platform-independent so Ubuntu CI also
+    recognizes Windows-style paths. 在 dataset root 内严格解析声明的相对路径。
+    拒绝空值、dot/dot-dot 段、POSIX 绝对路径、Windows drive 绝对路径与 UNC
+    路径；resolve 后目标必须位于 root.resolve() 内。检查与平台无关，Ubuntu
+    CI 同样识别 Windows 风格路径。"""
+
+    if not isinstance(relative, str) or not relative:
+        raise DatasetProbeError(f"{field_name} must be a non-empty string")
+    normalized = relative.replace("\\", "/")
+    if normalized.startswith("/"):
+        raise DatasetProbeError(f"{field_name} must be a relative path")
+    if len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":":
+        raise DatasetProbeError(f"{field_name} must be a relative path")
+    segments = normalized.split("/")
+    if any(segment in ("", ".", "..") for segment in segments):
+        raise DatasetProbeError(
+            f"{field_name} must not contain empty, dot, or dot-dot segments"
+        )
+    target = root / normalized
+    try:
+        resolved = target.resolve()
+    except OSError as exc:
+        raise DatasetProbeError(f"{field_name} cannot be resolved") from exc
+    if not resolved.is_relative_to(root.resolve()):
+        raise DatasetProbeError(f"{field_name} escapes the dataset root")
+    return target

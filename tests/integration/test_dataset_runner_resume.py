@@ -111,6 +111,18 @@ def _vqa_sample() -> UnifiedSample:
     )
 
 
+def _vqa_sample2() -> UnifiedSample:
+    return UnifiedSample(
+        sample_id="resume-2",
+        dataset="fake",
+        split="test",
+        task="general_vqa",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="Is there a road?",
+        ground_truth=GroundTruth(answers=["yes"]),
+    )
+
+
 def _counting_result() -> CountingResult:
     points = []
     for index in range(2):
@@ -206,9 +218,22 @@ def _setup(
     return root, client, adapter, sample_runner, dataset_runner, run_dir
 
 
-def _run(dataset_runner: DatasetRunner, *, root: Path, task: str = "general_vqa", resume: bool = False):
+def _run(
+    dataset_runner: DatasetRunner,
+    *,
+    root: Path,
+    task: str = "general_vqa",
+    resume: bool = False,
+    sample_concurrency: int = 1,
+):
     return asyncio.run(
-        dataset_runner.run(root=root, split="test", task=task, resume=resume, sample_concurrency=1)
+        dataset_runner.run(
+            root=root,
+            split="test",
+            task=task,
+            resume=resume,
+            sample_concurrency=sample_concurrency,
+        )
     )
 
 
@@ -407,6 +432,50 @@ def test_resume_corrupt_status_reruns(tmp_path: Path) -> None:
     assert summary.succeeded == 1
     assert client.calls == 2
     assert _status_of(run_dir, "general_vqa", "resume-1")["state"] == "succeeded"
+
+
+# ── judge off the event loop (Fix D) / judge 不阻塞事件循环 ─────────────────
+
+
+def test_judge_runs_off_the_event_loop(tmp_path: Path) -> None:
+    """A blocking judge must not stall the asyncio loop: with
+    sample_concurrency=2 both samples must enter the judge in parallel, which
+    a threading barrier proves deterministically. 阻塞 judge 不得卡住事件
+    循环：sample_concurrency=2 时两个样本必须并行进入 judge，用 threading
+    barrier 确定性证明。"""
+    import threading
+
+    class _BlockingJudgeClient(_FakeJudgeClient):
+        def __init__(self, verdict) -> None:
+            super().__init__(verdict)
+            self.barrier = threading.Barrier(2, timeout=10)
+            self.passed = False
+
+        def judge_json(self, payload, *, response_model, request_meta, system_prompt=None):
+            self.barrier.wait(timeout=10)
+            self.passed = True
+            return super().judge_json(
+                payload,
+                response_model=response_model,
+                request_meta=request_meta,
+                system_prompt=system_prompt,
+            )
+
+    judge_client = _BlockingJudgeClient(VQAAnswerJudgeResult(score=1))
+    judge_service = JudgeService(
+        judge_prompt="p", vqa_judge_prompt="v", judge_client=judge_client
+    )
+    samples = [_vqa_sample(), _vqa_sample2()]
+    root, _, _, _, dataset_runner, _ = _setup(
+        tmp_path,
+        judge_service=judge_service,
+        judge_policy="all",
+        adapter_samples=samples,
+    )
+    summary = _run(dataset_runner, root=root, sample_concurrency=2)
+    assert summary.succeeded == 2
+    assert summary.failed == 0
+    assert judge_client.passed is True  # both judges entered concurrently
 
 
 # ── helpers: minimal schema objects for manual sample dirs ──────────────────

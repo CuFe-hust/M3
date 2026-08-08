@@ -22,7 +22,6 @@ from evaluation.judges.base import (
     build_count_judge_payload,
     build_judge_request_hash,
     build_vqa_judge_payload,
-    build_vqa_judge_request_hash,
     stable_error_label,
 )
 from evaluation.judges.deepseek import (
@@ -268,59 +267,99 @@ def test_text_only_guard_rejects_image_markers() -> None:
 # ── request hashes / 请求哈希 ───────────────────────────────────────────────
 
 
-def test_hashes_are_deterministic_and_hex() -> None:
-    payload = _vqa_payload()
-    first = build_vqa_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s1", payload=payload
+def _vqa_hash(**overrides: object) -> str:
+    values = dict(
+        model="m",
+        prompt_text="p",
+        prompt_version="deepseek-vqa-judge-v1",
+        sample_id="s1",
+        payload=_vqa_payload(),
+        response_schema=VQAAnswerJudgeResult.model_json_schema(),
     )
-    second = build_vqa_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s1", payload=payload
-    )
-    assert first == second
-    assert len(first) == 64
-    assert all(character in "0123456789abcdef" for character in first)
+    values.update(overrides)
+    return build_judge_request_hash(**values)  # type: ignore[arg-type]
 
 
-def test_vqa_hash_sensitive_to_every_input() -> None:
-    payload = _vqa_payload()
-    base = build_vqa_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s1", payload=payload
-    )
-    other_payload = dict(payload)
-    other_payload["prediction"] = {"answer": "no"}
-    assert build_vqa_judge_request_hash(
-        model="x", prompt_text="p", sample_id="s1", payload=payload
-    ) != base
-    assert build_vqa_judge_request_hash(
-        model="m", prompt_text="x", sample_id="s1", payload=payload
-    ) != base
-    assert build_vqa_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s2", payload=payload
-    ) != base
-    assert build_vqa_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s1", payload=other_payload
-    ) != base
-
-
-def test_counting_hash_sensitive_to_payload_parts() -> None:
+def _counting_hash(**overrides: object) -> str:
     points = (_point("p0", accepted=True), _point("p1", accepted=True))
     payload = build_count_judge_payload(
-        question="q",
+        question="How many cars?",
         target=_target(),
         display_answer="2",
         counting=_counting(points, final_count=2),
         ground_truth=GroundTruth(count=2),
         min_confidence=0.2,
     )
-    base = build_judge_request_hash(model="m", prompt_text="p", sample_id="s1", payload=payload)
-    altered = dict(payload)
-    altered["prediction"] = {"final_count": 3}
-    assert build_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s1", payload=altered
-    ) != base
-    assert build_judge_request_hash(
-        model="m", prompt_text="p", sample_id="s2", payload=payload
-    ) != base
+    values = dict(
+        model="m",
+        prompt_text="p",
+        prompt_version="deepseek-judge-v1",
+        sample_id="s1",
+        payload=payload,
+        response_schema=DeepSeekJudgeResult.model_json_schema(),
+    )
+    values.update(overrides)
+    return build_judge_request_hash(**values)  # type: ignore[arg-type]
+
+
+def test_hashes_are_deterministic_and_hex() -> None:
+    first = _vqa_hash()
+    second = _vqa_hash()
+    assert first == second
+    assert len(first) == 64
+    assert all(character in "0123456789abcdef" for character in first)
+
+
+def test_vqa_hash_sensitive_to_every_input() -> None:
+    base = _vqa_hash()
+    assert _vqa_hash(model="x") != base
+    assert _vqa_hash(prompt_text="x") != base
+    assert _vqa_hash(prompt_version="other-version") != base
+    assert _vqa_hash(sample_id="s2") != base
+    other_payload = dict(_vqa_payload())
+    other_payload["question"] = "Different question?"
+    assert _vqa_hash(payload=other_payload) != base
+    other_schema = dict(VQAAnswerJudgeResult.model_json_schema())
+    other_schema["title"] = "ChangedSchema"
+    assert _vqa_hash(response_schema=other_schema) != base
+
+
+def test_counting_hash_sensitive_to_every_payload_part() -> None:
+    base = _counting_hash()
+    payload = dict(base_payload := _counting_payload_for_hash())
+    payload["prediction"] = {"final_count": 3}
+    assert _counting_hash(payload=payload) != base
+    payload = dict(base_payload)
+    payload["question"] = "How many trucks?"
+    assert _counting_hash(payload=payload) != base
+    payload = dict(base_payload)
+    payload["target_spec"] = {"canonical_label": "truck"}
+    assert _counting_hash(payload=payload) != base
+    payload = dict(base_payload)
+    payload["evidence_summary"] = {"tile_count": 9}
+    assert _counting_hash(payload=payload) != base
+    payload = dict(base_payload)
+    payload["ground_truth"] = {"count": 5, "answers": []}
+    assert _counting_hash(payload=payload) != base
+    other_schema = dict(DeepSeekJudgeResult.model_json_schema())
+    other_schema["title"] = "ChangedSchema"
+    assert _counting_hash(response_schema=other_schema) != base
+    assert _counting_hash(model="x") != base
+    assert _counting_hash(prompt_text="x") != base
+    assert _counting_hash(prompt_version="other") != base
+    assert _counting_hash(sample_id="s2") != base
+
+
+def _counting_payload_for_hash() -> dict:
+    points = (_point("p0", accepted=True), _point("p1", accepted=True))
+    return build_count_judge_payload(
+        question="How many cars?",
+        target=_target(),
+        display_answer="2",
+        counting=_counting(points, final_count=2),
+        ground_truth=GroundTruth(count=2),
+        min_confidence=0.2,
+    )
 
 
 # ── judge result schemas / judge 结果 Schema ────────────────────────────────

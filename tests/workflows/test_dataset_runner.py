@@ -347,10 +347,16 @@ def test_fail_fast_stops_new_tasks_and_cancels_in_flight(tmp_path: Path) -> None
     stub = _StubSampleRunner(delays={"s1": 0.4}, fail_ids={"s0"})
     runner = _runner(_FakeAdapter(samples), stub, run_dir)
     summary = _run(runner, fail_fast=True, sample_concurrency=2)
+    # Accounting is always closed: 1 failed + 1 cancelled + 2 not-started.
+    # 记账永远闭合：1 failed + 1 cancelled + 2 not-started。
     assert summary.total == 4
     assert summary.failed == 1
-    assert summary.skipped == 1
+    assert summary.skipped == 3
     assert summary.succeeded == 0
+    assert summary.partial == 0
+    assert summary.total == (
+        summary.succeeded + summary.partial + summary.failed + summary.skipped
+    )
     # Only s0 (failed) and s1 (cancelled) were ever submitted; s2/s3 never ran.
     # 只有 s0（失败）与 s1（被取消）被提交；s2/s3 从未运行。
     called_ids = [call[0].sample_id for call in stub.calls]
@@ -360,10 +366,18 @@ def test_fail_fast_stops_new_tasks_and_cancels_in_flight(tmp_path: Path) -> None
     )
     assert cancelled_status["state"] == "skipped"
     assert cancelled_status["error_code"] == "FAIL_FAST_CANCELLED"
+    for sample_id in ("s2", "s3"):
+        not_started = _read_json(
+            run_dir / "tasks" / "general_vqa" / "samples" / storage_key(sample_id) / "status.json"
+        )
+        assert not_started["state"] == "skipped"
+        assert not_started["error_code"] == "FAIL_FAST_NOT_STARTED"
     rows = {row["sample_id"]: row for row in _predictions(run_dir)}
     assert rows["s1"]["status"] == "skipped"
+    assert rows["s2"]["status"] == "skipped"
+    assert rows["s3"]["status"] == "skipped"
     # No sample is left in a permanent running state. / 无样本遗留永久 running。
-    for key in ("s0", "s1"):
+    for key in ("s0", "s1", "s2", "s3"):
         state = _read_json(
             run_dir / "tasks" / "general_vqa" / "samples" / storage_key(key) / "status.json"
         )["state"]
@@ -383,18 +397,28 @@ def test_fail_fast_not_triggered_without_failures(tmp_path: Path) -> None:
 # ── probe / summary / predictions ───────────────────────────────────────────
 
 
-def test_probe_written_to_run_manifest(tmp_path: Path) -> None:
+def test_manifest_stays_runmanifest_valid_and_probe_is_separate(tmp_path: Path) -> None:
+    """The run manifest must stay parseable by the RunManifest schema across
+    a dataset run; the dataset probe lives in its own artifact and never
+    extends the manifest schema. 数据集运行前后 manifest.json 必须始终可被
+    RunManifest schema 解析；数据集 probe 独立存放，绝不扩展 manifest
+    schema。"""
+    from workflows.run_store import RunManifest
+
     samples = _samples(2)
     run_dir, _ = _create_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    RunManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
     adapter = _FakeAdapter(samples)
     runner = _runner(adapter, _StubSampleRunner(), run_dir)
     _run(runner, task="general_vqa")
-    assert adapter.probe_calls == 1
-    manifest = _read_json(run_dir / "manifest.json")
-    probe = manifest["dataset_probe"]
+    RunManifest.model_validate_json(manifest_path.read_text(encoding="utf-8"))
+    assert "dataset_probe" not in _read_json(manifest_path)
+    probe = _read_json(run_dir / "dataset_probe.json")
     assert probe["dataset"] == "fake"
     assert probe["task"] == "general_vqa"
     assert probe["sample_count"] == 2
+    assert probe["observed_fields"] == ["id"]
 
 
 def test_summary_counts_and_predictions_rows(tmp_path: Path) -> None:
@@ -452,3 +476,61 @@ def test_unexpected_runner_exception_records_stable_code(tmp_path: Path) -> None
     assert status["error_message"] == "RuntimeError"
     text = json.dumps(status)
     assert "secret" not in text and "sk-" not in text and "C:\\" not in text
+
+
+# ── auto-task explicit contract (Fix H) / auto-task 显式契约 ────────────────
+
+
+def test_dataset_run_options_auto_task_contract() -> None:
+    from workflows.schema import DatasetRunOptions
+
+    with pytest.raises(ValueError, match="auto_task"):
+        DatasetRunOptions(
+            dataset="d", root=Path("."), split="test", tasks=(), auto_task=False
+        )
+    with pytest.raises(ValueError, match="auto_task"):
+        DatasetRunOptions(
+            dataset="d", root=Path("."), split="test", tasks=("counting",), auto_task=True
+        )
+    DatasetRunOptions(
+        dataset="d", root=Path("."), split="test", tasks=("counting",), auto_task=False
+    )
+    DatasetRunOptions(
+        dataset="d", root=Path("."), split="test", tasks=(), auto_task=True
+    )
+
+
+def test_dataset_runner_task_none_is_internal_auto_task_mode(tmp_path: Path) -> None:
+    """task=None is the explicit internal auto-task mode, never a user
+    default; without a resolver it fails at configuration time.
+    task=None 是内部显式 auto-task 模式而非用户缺省；缺少 resolver 时在
+    配置期失败。"""
+    run_dir, _ = _create_run(tmp_path)
+    runner = _runner(_FakeAdapter([]), _StubSampleRunner(), run_dir)
+    with pytest.raises(ValueError, match="draft task mode"):
+        _run(runner, task=None)
+
+
+# ── status task typing (Fix K) / 状态任务类型收紧 ───────────────────────────
+
+
+def test_sample_run_status_task_rejects_typos_and_accepts_unknown() -> None:
+    from pydantic import ValidationError
+
+    from workflows.schema import SampleRunStatus
+
+    SampleRunStatus(
+        sample_id="s1",
+        task="unknown",
+        state="failed",
+        error_code="EMPTY_UNRESOLVABLE_REQUEST",
+        updated_at="2026-01-01T00:00:00Z",
+    )
+    for typo in ("coutning", "captino", "whatever", "general vqa"):
+        with pytest.raises(ValidationError):
+            SampleRunStatus(
+                sample_id="s1",
+                task=typo,  # type: ignore[arg-type]
+                state="failed",
+                updated_at="2026-01-01T00:00:00Z",
+            )

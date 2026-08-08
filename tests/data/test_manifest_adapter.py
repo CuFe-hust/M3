@@ -1,8 +1,10 @@
-"""Contract tests for the data-layer run-manifest dataset-probe adapter.
+"""Contract tests for the data-layer manifest-driven draft adapter and
+samples_file path containment.
 
-数据层 run manifest dataset_probe 适配层契约测试：正常写回、缺失/损坏/
-违反最小 schema 的 manifest 稳定失败、幂等覆盖、旧格式兼容升级、JSON-safe
-序列化与敏感扫描、原子写入无临时文件残留、错误不回显内容。
+数据层 manifest 驱动的 draft 适配器与 samples_file 路径包含契约测试：显式
+字段映射、task 可选、JSON/JSONL、字段不猜测、稳定失败、路径绝不逃逸
+dataset root。run manifest 的写回不属于数据层（见
+workflows.artifact_writer.write_dataset_probe）。
 """
 
 from __future__ import annotations
@@ -12,143 +14,83 @@ from pathlib import Path
 
 import pytest
 
-from data.adapters.base import AdapterProbe
+from data.adapters.base import DatasetProbeError, resolve_dataset_relative_path
 from data.adapters.manifest import (
-    DatasetProbeError,
     ManifestDraftAdapter,
-    ManifestAdapterError,
     iter_manifest_drafts,
-    update_manifest_probe,
 )
-from workflows.run_store import RunStore
 
 
-def _create_run(tmp_path: Path) -> tuple[Path, dict]:
-    store = RunStore(tmp_path / "runs", tmp_path)
-    manifest = store.create_run(
-        config_payload={"models": {"qwen": "qwen-model"}},
-        model_ids={"qwen": "qwen-model"},
-        prompt_paths=[],
-        run_id="probe-run",
-    )
-    run_dir = tmp_path / "runs" / "probe-run"
-    return run_dir, json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+# ── samples_file path containment / samples_file 路径包含 ──────────────────
 
 
-def _probe(**overrides: object) -> AdapterProbe:
-    values = dict(
-        dataset="parity",
-        version="1",
-        sample_file=Path("samples.jsonl"),
-        observed_fields=("id", "question", "images"),
-        sample_count=12,
-    )
-    values.update(overrides)
-    return AdapterProbe(**values)  # type: ignore[arg-type]
+@pytest.mark.parametrize(
+    "relative",
+    [
+        "../outside.jsonl",
+        "../../secret.json",
+        r"C:\other\data.jsonl",
+        "D:/other/data.json",
+        r"\\server\share\data.jsonl",
+        "//server/share/data.jsonl",
+        "/var/tmp/data.jsonl",
+        "nested/../outside.jsonl",
+        "data/../x.jsonl",
+        "a//b.jsonl",
+        "nested/",
+        "",
+    ],
+)
+def test_resolve_dataset_relative_path_rejects_escape_candidates(
+    tmp_path: Path, relative: str
+) -> None:
+    with pytest.raises(DatasetProbeError):
+        resolve_dataset_relative_path(tmp_path, relative, field_name="samples_file")
 
 
-def test_update_manifest_probe_writes_dataset_probe(tmp_path: Path) -> None:
-    run_dir, original = _create_run(tmp_path)
-    updated = update_manifest_probe(
-        run_dir, _probe(task="counting", available_tasks=("counting", "caption"))
-    )
-    payload = updated["dataset_probe"]
-    assert payload["dataset"] == "parity"
-    assert payload["version"] == "1"
-    assert payload["sample_file"] == "samples.jsonl"
-    assert payload["observed_fields"] == ["id", "question", "images"]
-    assert payload["sample_count"] == 12
-    assert payload["task"] == "counting"
-    assert payload["available_tasks"] == ["counting", "caption"]
-    persisted = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert persisted["dataset_probe"] == payload
-    # Other manifest fields are preserved. / 其余 manifest 字段保留。
-    assert persisted["run_id"] == original["run_id"]
-    assert persisted["config_hash"] == original["config_hash"]
-    assert list(run_dir.glob("*.tmp")) == []
+@pytest.mark.parametrize("relative", ["samples.jsonl", "nested/samples.jsonl"])
+def test_resolve_dataset_relative_path_accepts_nested_relative(
+    tmp_path: Path, relative: str
+) -> None:
+    target = resolve_dataset_relative_path(tmp_path, relative, field_name="samples_file")
+    assert target == tmp_path / relative
+    assert target.resolve().is_relative_to(tmp_path.resolve())
 
 
-def test_update_manifest_probe_is_idempotent(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    update_manifest_probe(run_dir, _probe(sample_count=1))
-    updated = update_manifest_probe(run_dir, _probe(sample_count=2))
-    assert updated["dataset_probe"]["sample_count"] == 2
-    persisted = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert persisted["dataset_probe"]["sample_count"] == 2
+def test_manifest_samples_file_escape_rejected(tmp_path: Path) -> None:
+    root = _make_dataset_root(tmp_path, with_task=True)
+    manifest = json.loads((root / "spacers_adapter.json").read_text(encoding="utf-8"))
+    manifest["samples_file"] = "../outside.jsonl"
+    (root / "spacers_adapter.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match="relative|dot-dot"):
+        list(iter_manifest_drafts(root, dataset="auto-demo", split="test"))
 
 
-def test_optional_probe_fields_omitted_when_empty(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    updated = update_manifest_probe(run_dir, _probe())
-    assert "task" not in updated["dataset_probe"]
-    assert "available_tasks" not in updated["dataset_probe"]
+def test_manifest_mapped_field_non_string_rejected(tmp_path: Path) -> None:
+    root = _make_dataset_root(tmp_path, with_task=True)
+    manifest = json.loads((root / "spacers_adapter.json").read_text(encoding="utf-8"))
+    manifest["fields"]["id"] = 5
+    (root / "spacers_adapter.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match="column name"):
+        list(iter_manifest_drafts(root, dataset="auto-demo", split="test"))
 
 
-def test_missing_manifest_fails_with_stable_code(tmp_path: Path) -> None:
-    run_dir = tmp_path / "runs" / "missing"
-    run_dir.mkdir(parents=True)
-    with pytest.raises(ManifestAdapterError) as error:
-        update_manifest_probe(run_dir, _probe())
-    assert error.value.code == "MANIFEST_MISSING"
-    assert "MANIFEST_ADAPTER_FAILED:MANIFEST_MISSING" in str(error.value)
+def test_manifest_mapped_field_empty_string_rejected(tmp_path: Path) -> None:
+    root = _make_dataset_root(tmp_path, with_task=True)
+    manifest = json.loads((root / "spacers_adapter.json").read_text(encoding="utf-8"))
+    manifest["fields"]["id"] = ""
+    (root / "spacers_adapter.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match="column name"):
+        list(iter_manifest_drafts(root, dataset="auto-demo", split="test"))
 
 
-def test_invalid_manifest_json_fails(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    (run_dir / "manifest.json").write_text("{not json", encoding="utf-8")
-    with pytest.raises(ManifestAdapterError) as error:
-        update_manifest_probe(run_dir, _probe())
-    assert error.value.code == "MANIFEST_INVALID"
-
-
-def test_non_dict_manifest_fails(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    (run_dir / "manifest.json").write_text("[1, 2]", encoding="utf-8")
-    with pytest.raises(ManifestAdapterError) as error:
-        update_manifest_probe(run_dir, _probe())
-    assert error.value.code == "MANIFEST_INVALID"
-
-
-def test_manifest_without_run_id_fails(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    (run_dir / "manifest.json").write_text('{"config_hash": "abc"}', encoding="utf-8")
-    with pytest.raises(ManifestAdapterError) as error:
-        update_manifest_probe(run_dir, _probe())
-    assert error.value.code == "MANIFEST_SCHEMA"
-
-
-def test_manifest_error_never_echoes_content(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    (run_dir / "manifest.json").write_text('{"run_id": 7, "boom": "secret-raw"}', encoding="utf-8")
-    with pytest.raises(ManifestAdapterError) as error:
-        update_manifest_probe(run_dir, _probe())
-    assert "boom" not in str(error.value)
-    assert "secret-raw" not in str(error.value)
-
-
-def test_probe_secret_value_rejected_before_write(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    with pytest.raises(ValueError, match="sensitive"):
-        update_manifest_probe(run_dir, _probe(dataset="sk-secret"))
-    persisted = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert "dataset_probe" not in persisted
-
-
-def test_probe_secret_value_in_observed_fields_rejected(tmp_path: Path) -> None:
-    run_dir, _ = _create_run(tmp_path)
-    with pytest.raises(ValueError, match="sensitive"):
-        update_manifest_probe(
-            run_dir, _probe(dataset="d", observed_fields=("id", "sk-secret"))
-        )
-    persisted = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert "dataset_probe" not in persisted
-
-
-def test_legacy_manifest_without_probe_key_is_upgraded(tmp_path: Path) -> None:
-    run_dir, legacy = _create_run(tmp_path)
-    assert "dataset_probe" not in legacy  # RunStore never writes it
-    updated = update_manifest_probe(run_dir, _probe())
-    assert updated["dataset_probe"]["dataset"] == "parity"
+def test_manifest_empty_samples_file_rejected(tmp_path: Path) -> None:
+    root = _make_dataset_root(tmp_path, with_task=True)
+    manifest = json.loads((root / "spacers_adapter.json").read_text(encoding="utf-8"))
+    manifest["samples_file"] = ""
+    (root / "spacers_adapter.json").write_text(json.dumps(manifest), encoding="utf-8")
+    with pytest.raises(DatasetProbeError, match="samples_file"):
+        list(iter_manifest_drafts(root, dataset="auto-demo", split="test"))
 
 
 # ── manifest-driven draft adapter / manifest 驱动的 draft 适配器 ─────────────

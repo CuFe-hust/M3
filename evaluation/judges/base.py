@@ -201,38 +201,25 @@ def build_judge_request_hash(
     *,
     model: str,
     prompt_text: str,
+    prompt_version: str,
     sample_id: str,
-    payload: dict[str, Any],
+    payload: Mapping[str, Any],
+    response_schema: Mapping[str, Any],
 ) -> str:
-    """Hash the exact counting-judge inputs without adding image payloads to
-    the cache key. 对精确计数 judge 输入计算哈希，且不向缓存键添加图像载荷。"""
-
-    stable = {
-        "model": model,
-        "prompt_sha256": _stable_hash(prompt_text),
-        "sample_id": sample_id,
-        "prediction_sha256": _stable_hash(payload.get("prediction")),
-        "ground_truth_sha256": _stable_hash(payload.get("ground_truth")),
-        "deterministic_metrics_sha256": _stable_hash(payload.get("deterministic_metrics")),
-    }
-    return _stable_hash(stable)
-
-
-def build_vqa_judge_request_hash(
-    *,
-    model: str,
-    prompt_text: str,
-    sample_id: str,
-    payload: dict[str, Any],
-) -> str:
-    """Hash all text-only VQA judge inputs for stable resume behavior.
-    对全部纯文本 VQA judge 输入计算哈希，以支持稳定 resume。"""
+    """Canonical judge request hash: every input that shapes the judge call —
+    model identity, prompt text and version, sample id, the full payload, and
+    the response schema — contributes to the cache key. Same inputs always
+    produce the same hash. 规范 judge 请求哈希：塑造 judge 调用的每个输入——
+    模型身份、prompt 文本与版本、sample id、完整载荷与 response schema——
+    都进入缓存键。相同输入恒产生相同哈希。"""
 
     return _stable_hash(
         {
             "model": model,
             "prompt_sha256": _stable_hash(prompt_text),
+            "prompt_version": prompt_version,
             "sample_id": sample_id,
             "payload": payload,
+            "response_schema": response_schema,
         }
     )

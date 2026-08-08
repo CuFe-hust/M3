@@ -13,8 +13,9 @@ from pathlib import Path
 from typing import Any
 
 from agents.base import AgentExecution, _validate_plain_basename
+from data.adapters.base import AdapterProbe
 from data.schema import UnifiedSample
-from workflows.events import _atomic_replace, _path_lock
+from workflows.events import _atomic_replace, _path_lock, _reject_secrets
 from workflows.schema import DatasetRunSummary, SampleRunStatus
 
 # Owned artifact filenames. / 集中拥有的产物文件名。
@@ -26,6 +27,7 @@ COUNTING_RESULT_FILENAME = "counting_result.json"
 AGENT_TRACE_FILENAME = "agent_trace.json"
 PREDICTIONS_FILENAME = "predictions.jsonl"
 DATASET_SUMMARY_FILENAME = "dataset_summary.json"
+DATASET_PROBE_FILENAME = "dataset_probe.json"
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -132,6 +134,29 @@ class ArtifactWriter:
         """Persist the dataset summary. / 持久化数据集汇总。"""
 
         atomic_write_json(run_dir / DATASET_SUMMARY_FILENAME, summary.model_dump(mode="json"))
+
+    def write_dataset_probe(self, run_dir: Path, probe: AdapterProbe) -> Path:
+        """Persist the dataset layout probe as its own artifact without ever
+        touching manifest.json, which must stay parseable by the RunManifest
+        schema. The payload is JSON-safe and secret-scanned.
+        将数据集布局 probe 单独持久化为独立产物，绝不触碰必须保持 RunManifest
+        schema 可解析的 manifest.json。载荷 JSON 安全且经过敏感扫描。"""
+
+        payload: dict[str, Any] = {
+            "dataset": probe.dataset,
+            "version": probe.version,
+            "sample_file": probe.sample_file.as_posix(),
+            "observed_fields": list(probe.observed_fields),
+            "sample_count": probe.sample_count,
+        }
+        if probe.task is not None:
+            payload["task"] = probe.task
+        if probe.available_tasks:
+            payload["available_tasks"] = list(probe.available_tasks)
+        _reject_secrets(payload, "dataset probe")
+        path = run_dir / DATASET_PROBE_FILENAME
+        atomic_write_json(path, payload)
+        return path
 
 
 def _json_value(value: object) -> Any:

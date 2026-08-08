@@ -408,11 +408,23 @@ def test_candidate_fallback_runs_next_task_after_primary_failure(tmp_path: Path)
         resolution=resolution,
     )
     assert outcome.status.state == "succeeded"
+    # Fix G: a candidate-task fallback counts as fallback_used.
+    # Fix G：候选任务兜底计入 fallback_used。
+    assert outcome.fallback_used is True
     assert len(vqa_agent.calls) == 1
     assert len(caption_agent.calls) == 1
     assert outcome.execution is not None
     assert outcome.execution.agent_name == "caption_agent"
+    # Fix F: the routing artifact reflects the executed task, the trace keeps
+    # both the resolved and the executed task.
+    # Fix F：routing 产物反映实际执行任务，trace 同时保留解析与执行任务。
+    routing = _read_json(_sample_dir(tmp_path) / "routing_decision.json")
+    assert routing["primary_agent"] == "caption_agent"
+    assert routing["task"] == "caption"
     trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
+    assert trace["resolved_task"] == "general_vqa"
+    assert trace["execution_task"] == "caption"
+    assert trace["task_type"] == "general_vqa"  # fixed semantics: resolved task
     assert trace["candidate_tasks"] == ["general_vqa", "caption"]
     assert trace["attempt_agents"] == [["general_vqa_agent"], ["caption_agent"]]
     assert trace["execution_agent"] == "caption_agent"
@@ -757,3 +769,169 @@ def test_all_attempts_failed_records_last_stable_code(tmp_path: Path) -> None:
     trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
     assert trace["failure_code"] == "RuntimeError"
     assert "secret" not in json.dumps(trace)
+
+
+# ── evaluation coverage (Fix E) / 评估覆盖 ──────────────────────────────────
+
+
+def test_fine_grained_counting_uses_counting_evaluation(tmp_path: Path) -> None:
+    counting_agent = _FakeAgent(
+        "counting_agent",
+        ("counting", "fine_grained_counting"),
+        payload=_counting_result(final_count=2),
+    )
+    runner = _runner([counting_agent])
+    sample = _sample(
+        task="fine_grained_counting",
+        question="How many cars?",
+        ground_truth=GroundTruth(count=2),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "counting"
+    assert outcome.evaluation.deterministic_metrics is not None
+    assert outcome.evaluation.deterministic_metrics.exact_match == 1
+    assert (_sample_dir(tmp_path) / "counting_evaluation.json").is_file()
+
+
+def test_fine_grained_counting_non_counting_payload_fails_closed(tmp_path: Path) -> None:
+    """A non-CountingResult payload on a counting task must not fabricate
+    metrics. 计数任务上非 CountingResult 载荷绝不伪造指标。"""
+    agent = _FakeAgent(
+        "counting_agent", ("counting", "fine_grained_counting")
+    )  # AgentResult payload
+    runner = _runner([agent])
+    sample = _sample(
+        task="fine_grained_counting",
+        question="How many cars?",
+        ground_truth=GroundTruth(count=2),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "counting_evaluation.json").exists()
+
+
+def test_multiple_choice_vqa_uses_vqa_evaluation(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "general_vqa_agent",
+        ("general_vqa", "multiple_choice_vqa"),
+        payload=AgentResult(
+            agent_name="general_vqa_agent", answer="A", status="completed"
+        ),
+    )
+    runner = _runner([agent])
+    sample = _sample(
+        task="multiple_choice_vqa",
+        question="Pick one.",
+        answers=["A"],
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "general_vqa"  # canonical metric task
+    assert outcome.evaluation.deterministic_metrics is not None
+    assert outcome.evaluation.deterministic_metrics.exact_match is True
+    assert (_sample_dir(tmp_path) / "vqa_evaluation.json").is_file()
+
+
+def test_scene_classification_uses_vqa_evaluation(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "general_vqa_agent",
+        ("general_vqa", "scene_classification"),
+        payload=AgentResult(
+            agent_name="general_vqa_agent", answer="ok", status="completed"
+        ),
+    )
+    runner = _runner([agent])
+    sample = _sample(task="scene_classification", question="What is this?", answers=["ok"])
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "general_vqa"
+    assert outcome.evaluation.deterministic_metrics.exact_match is True
+
+
+def test_grounding_valid_geometry_writes_grounding_evaluation(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "grounding_agent",
+        ("grounding",),
+        payload=AgentResult(
+            agent_name="grounding_agent",
+            answer="located",
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            status="completed",
+        ),
+    )
+    runner = _runner([agent])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(boxes=[[10.0, 20.0, 110.0, 120.0]]),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "grounding"
+    assert outcome.evaluation.deterministic_metrics is not None
+    assert outcome.evaluation.deterministic_metrics.iou == 1.0
+    assert outcome.evaluation.deterministic_metrics.iou_at_0_5 is True
+    evaluation = _read_json(_sample_dir(tmp_path) / "grounding_evaluation.json")
+    assert evaluation["task"] == "grounding"
+
+
+def test_grounding_missing_gt_no_fake_metric(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "grounding_agent",
+        ("grounding",),
+        payload=AgentResult(
+            agent_name="grounding_agent",
+            answer="located",
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            status="completed",
+        ),
+    )
+    runner = _runner([agent])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(boxes=[]),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
+def test_caption_writes_per_sample_caption_evaluation(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "caption_agent",
+        ("caption",),
+        payload=AgentResult(
+            agent_name="caption_agent", answer="a street scene", status="completed"
+        ),
+    )
+    runner = _runner([agent])
+    sample = _sample(
+        task="caption",
+        question="",
+        answers=["a street scene"],
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "caption"
+    metrics = outcome.evaluation.deterministic_metrics
+    assert metrics.candidate == "a street scene"
+    assert metrics.references == ["a street scene"]
+    evaluation = _read_json(_sample_dir(tmp_path) / "caption_evaluation.json")
+    assert evaluation["task"] == "caption"
+    assert evaluation["deterministic_metrics"]["candidate"] == "a street scene"
+
+
+def test_caption_without_references_no_record(tmp_path: Path) -> None:
+    agent = _FakeAgent("caption_agent", ("caption",))
+    runner = _runner([agent])
+    sample = _sample(
+        task="caption", question="", ground_truth=GroundTruth(answers=[])
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "caption_evaluation.json").exists()

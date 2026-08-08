@@ -11,15 +11,7 @@ from evaluation.judges.base import (
     build_count_judge_payload,
     build_judge_request_hash,
     build_vqa_judge_payload,
-    build_vqa_judge_request_hash,
     stable_error_label,
-)
-from evaluation.judges.deepseek import (
-    DeepSeekJudgeClient,
-    DeepSeekJudgeError,
-    EmptyJudgeResponseError,
-    JudgeTransportError,
-    urllib_judge_transport,
 )
 
 __all__ = [
@@ -36,7 +28,6 @@ __all__ = [
     "build_count_judge_payload",
     "build_judge_request_hash",
     "build_vqa_judge_payload",
-    "build_vqa_judge_request_hash",
     "stable_error_label",
     "urllib_judge_transport",
 ]

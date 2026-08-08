@@ -397,3 +397,94 @@ def test_unified_sample_task_still_required() -> None:
     }
     with pytest.raises(ValidationError):
         UnifiedSample.model_validate(payload)
+
+
+# ── candidate fallback resume consistency (Fix F) ───────────────────────────
+
+
+def test_candidate_fallback_resume_consistency(tmp_path: Path) -> None:
+    """resolved general_vqa + failed primary + caption candidate success: the
+    canonical sample keeps the resolved task, the status/trace/routing record
+    the executed task, and resume never re-resolves, never re-infers, and
+    never applies VQA judge semantics to the caption execution.
+    解析 general_vqa + primary 失败 + caption 候选成功：canonical sample 保留
+    解析任务，status/trace/routing 记录执行任务；resume 不重新解析、不重新
+    推理、不对 caption 执行应用 VQA judge 语义。"""
+    rows = [
+        {"id": "a1", "split": "test", "question": "Is there a road?", "images": ["img.png"]}
+    ]
+    root, run_dir, _, dataset_runner, agents, resolver = _setup(
+        tmp_path,
+        rows=rows,
+        with_task=False,
+        resolver_responses=[
+            _resolution_response(
+                "general_vqa", confidence=0.4, candidates=["general_vqa", "caption"]
+            )
+        ],
+        agent_errors={"general_vqa_agent": RuntimeError("primary broke")},
+    )
+    summary = _run(dataset_runner, root=root)
+    assert summary.succeeded == 1
+    assert summary.failed == 0
+    sample_dir = run_dir / "tasks" / "auto" / "samples" / storage_key("a1")
+    assert _read_json(sample_dir / "sample.json")["task"] == "general_vqa"
+    status = _read_json(sample_dir / "status.json")
+    assert status["task"] == "caption"
+    trace = _read_json(sample_dir / "agent_trace.json")
+    assert trace["resolved_task"] == "general_vqa"
+    assert trace["execution_task"] == "caption"
+    assert trace["task_type"] == "general_vqa"
+    assert trace["fallback_used"] is True
+    routing = _read_json(sample_dir / "routing_decision.json")
+    assert routing["primary_agent"] == "caption_agent"
+    assert routing["task"] == "caption"
+    # Resume: nothing re-runs and no VQA judge applies to the caption sample.
+    # Resume：什么都不重跑，VQA judge 不作用于 caption 样本。
+    resolver_calls_before = resolver._client.calls
+    summary_resume = _run(dataset_runner, root=root, resume=True)
+    assert summary_resume.succeeded == 1
+    assert resolver._client.calls == resolver_calls_before
+    assert len(agents[0].calls) == 1  # general_vqa_agent ran once in run 1
+    assert len(agents[1].calls) == 1  # caption_agent ran once in run 1
+    assert len(agents[2].calls) == 0  # change_agent never involved
+    assert not (sample_dir / "vqa_evaluation.json").exists()
+    assert _read_json(sample_dir / "status.json")["state"] == "succeeded"
+
+
+# ── draft failure isolation (Fix I) / draft 异常隔离 ────────────────────────
+
+
+def test_draft_single_sample_failure_does_not_break_dataset(tmp_path: Path) -> None:
+    """A single draft whose SampleRunner raises unexpectedly must collapse
+    into a stable failed status without terminating the dataset run.
+    单个 draft 的 SampleRunner 意外异常必须收敛为稳定 failed 状态，不终止
+    整个数据集运行。"""
+
+    class _RaisingRunner:
+        async def run_one(
+            self, sample, sample_dir, *, resolution=None, judge_policy="none", budget=None
+        ):
+            raise RuntimeError("secret raw detail")
+
+    rows = [
+        {"id": "a1", "split": "test", "question": "Is there a road?", "images": ["img.png"], "task": "general_vqa"}
+    ]
+    root, run_dir, _, _, _, resolver = _setup(tmp_path, rows=rows, with_task=True)
+    dataset_runner = DatasetRunner(
+        adapter=ManifestDraftAdapter("auto-demo", {"general_vqa", "caption"}),
+        sample_runner=_RaisingRunner(),  # type: ignore[arg-type]
+        run_dir=run_dir,
+        artifact_writer=ArtifactWriter(),
+        task_resolver=resolver,
+        call_budget_factory=CallBudgetFactory(),
+    )
+    summary = _run(dataset_runner, root=root)
+    assert summary.failed == 1
+    assert summary.total == summary.failed  # accounting stays closed
+    status = _read_json(
+        run_dir / "tasks" / "auto" / "samples" / storage_key("a1") / "status.json"
+    )
+    assert status["state"] == "failed"
+    assert status["error_code"] == "RuntimeError"
+    assert "secret raw" not in json.dumps(status)

@@ -13,6 +13,7 @@ candidate_tasks（最多 3 个）构建 attempt plan，路由后按 AgentName �
 
 from __future__ import annotations
 
+import asyncio
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -26,7 +27,9 @@ from agents.counting.schema import CountingResult
 from agents.registry import AgentRegistry
 from data.schema import CHANGE_TASKS, UnifiedSample
 from evaluation.metrics.counting import merge_count_evaluation
+from evaluation.metrics.grounding import box_iou, grounding_deterministic_metrics
 from evaluation.metrics.vqa import merge_vqa_evaluation
+from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
 from models.base import VisionLanguageClient
 from routing.router import TaskRouter
 from routing.schema import RoutingDecision, TaskResolution
@@ -41,6 +44,15 @@ MAX_ATTEMPTS = 3
 
 _VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
 _COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
+_GROUNDING_EVALUATION_FILENAME = "grounding_evaluation.json"
+_CAPTION_EVALUATION_FILENAME = "caption_evaluation.json"
+
+# Tasks wired to the VQA exact-match deterministic metric.
+# 已接线 VQA 严格匹配确定性指标的任务。
+_VQA_TASKS = frozenset({"general_vqa", "multiple_choice_vqa", "scene_classification"})
+# Tasks wired to the counting deterministic metric.
+# 已接线计数确定性指标的任务。
+_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
 
 @dataclass(frozen=True)
@@ -193,7 +205,7 @@ class SampleRunner:
         failure_code: str | None = None
         primary_reason: str | None = None
         fallback_used = False
-        for attempt in attempts:
+        for candidate_index, attempt in enumerate(attempts):
             candidate_execution, attempt_failure, attempt_fallback = (
                 await self._run_attempt(attempt, context)
             )
@@ -202,7 +214,9 @@ class SampleRunner:
                 continue
             execution = candidate_execution
             executed_attempt = attempt
-            fallback_used = attempt_fallback
+            fallback_used = (
+                fallback_used or candidate_index > 0 or attempt_fallback
+            )
             primary_reason = attempt_failure
             if sample_state_from_payload(execution.payload) != "failed":
                 break
@@ -223,6 +237,11 @@ class SampleRunner:
                 fallback_used=fallback_used,
             )
 
+        # The routing artifact must reflect the task that actually executed,
+        # never the failed top candidate; the full candidate history stays in
+        # the trace. / routing 产物必须反映实际执行的任务，绝不停留在失败的
+        # top candidate；完整候选历史留在 trace。
+        self.artifact_writer.write_routing(sample_dir, executed_attempt.decision)
         result_path = self.artifact_writer.write_execution(sample_dir, execution)
         evaluation = await self._persist_evaluation(
             executed_attempt.sample,
@@ -235,6 +254,7 @@ class SampleRunner:
             execution,
             executed_attempt,
             resolution=resolution,
+            resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
             evaluation=evaluation,
             fallback_used=fallback_used,
@@ -359,28 +379,41 @@ class SampleRunner:
         budget: CallBudget,
         judge_policy: str,
     ) -> object | None:
-        """Persist the sample-level deterministic evaluation; general_vqa adds
-        the optional text-only judge. Judge failures are recorded as stable
-        judge_status=failed and never replace the deterministic match, never
-        fail the sample, and never leak raw exception text.
-        持久化样本级确定性评估；general_vqa 追加可选仅文本 judge。Judge 失败
-        记录为稳定 judge_status=failed，绝不替换确定性匹配、绝不让样本失败、
-        绝不泄漏原始异常文本。"""
+        """Persist the sample-level deterministic evaluation for every task
+        with a wired metric — general_vqa / multiple_choice_vqa /
+        scene_classification (VQA exact match), counting /
+        fine_grained_counting (counting), grounding (axis-aligned IoU),
+        caption (per-sample candidate+references). Only general_vqa adds the
+        optional text-only judge, which runs off the asyncio event loop and
+        never fails the sample, never replaces the deterministic match, and
+        never leaks raw exception text. Tasks without a sample-level metric
+        (spatial_relation / change_qa / change_caption) stay evaluation=None.
+        为每个已接线指标的任务持久化样本级确定性评估——general_vqa /
+        multiple_choice_vqa / scene_classification（VQA 严格匹配）、counting /
+        fine_grained_counting（计数）、grounding（轴对齐 IoU）、caption
+        （逐样本候选+参考）。只有 general_vqa 追加可选仅文本 judge，它在
+        asyncio 事件循环之外运行，绝不让样本失败、绝不替换确定性匹配、绝不
+        泄漏原始异常文本。无样本级指标的任务（spatial_relation / change_qa /
+        change_caption）保持 evaluation=None。"""
 
-        if sample.task == "general_vqa":
-            candidate_answer = (
-                str(execution.payload.final_count)
-                if isinstance(execution.payload, CountingResult)
-                else str(execution.payload.answer)
-            )
+        task = sample.task
+        if task in _VQA_TASKS:
+            candidate_answer = str(execution.payload.answer)
             references = (
                 list(sample.ground_truth.answers)
                 if sample.ground_truth is not None
                 else []
             )
-            if self.judge_service is not None:
+            evaluation = merge_vqa_evaluation(
+                sample_id=sample.sample_id,
+                question=sample.question,
+                reference_answers=references,
+                candidate_answer=candidate_answer,
+            )
+            if task == "general_vqa" and self.judge_service is not None:
                 try:
-                    evaluation = self.judge_service.judge_vqa(
+                    evaluation = await asyncio.to_thread(
+                        self.judge_service.judge_vqa,
                         sample=sample,
                         candidate_answer=candidate_answer,
                         sample_dir=sample_dir,
@@ -393,18 +426,13 @@ class SampleRunner:
                         "judge_status": "failed",
                         "judge_error": type(error).__name__,
                     }
-            else:
-                evaluation = merge_vqa_evaluation(
-                    sample_id=sample.sample_id,
-                    question=sample.question,
-                    reference_answers=references,
-                    candidate_answer=candidate_answer,
-                )
             self.artifact_writer.write_evaluation(
                 sample_dir, evaluation, filename=_VQA_EVALUATION_FILENAME
             )
             return evaluation
-        if sample.task == "counting":
+        if task in _COUNTING_TASKS:
+            if not isinstance(execution.payload, CountingResult):
+                return None  # fail closed: never fabricate counting metrics
             evaluation = merge_count_evaluation(
                 sample_id=sample.sample_id,
                 counting=execution.payload,
@@ -413,6 +441,20 @@ class SampleRunner:
             self.artifact_writer.write_evaluation(
                 sample_dir, evaluation, filename=_COUNTING_EVALUATION_FILENAME
             )
+            return evaluation
+        if task == "grounding":
+            evaluation = _grounding_evaluation(sample, execution)
+            if evaluation is not None:
+                self.artifact_writer.write_evaluation(
+                    sample_dir, evaluation, filename=_GROUNDING_EVALUATION_FILENAME
+                )
+            return evaluation
+        if task == "caption":
+            evaluation = _caption_evaluation(sample, execution)
+            if evaluation is not None:
+                self.artifact_writer.write_evaluation(
+                    sample_dir, evaluation, filename=_CAPTION_EVALUATION_FILENAME
+                )
             return evaluation
         return None
 
@@ -437,6 +479,7 @@ class SampleRunner:
             None,
             None,
             resolution=resolution,
+            resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
             evaluation=None,
             fallback_used=fallback_used,
@@ -493,11 +536,63 @@ def _rebuild_sample_for_task(
         return None
 
 
+def _grounding_evaluation(
+    sample: UnifiedSample,
+    execution: AgentExecution,
+) -> EvaluationRecord | None:
+    """Axis-aligned grounding IoU from the first prediction box and the first
+    ground-truth box; missing geometry on either side yields None — a fake
+    IoU=0 is never fabricated, official oriented metrics stay upstream.
+    用第一个预测框与第一个真值框计算轴对齐 IoU；任一侧缺少几何时返回
+    None——绝不伪造 IoU=0，官方 oriented 指标留在上游评测器。"""
+
+    ground_truth = sample.ground_truth
+    gt_boxes = ground_truth.boxes if ground_truth is not None else []
+    prediction_boxes = getattr(execution.payload, "boxes", None) or []
+    if not prediction_boxes or not gt_boxes:
+        return None
+    try:
+        iou = box_iou(prediction_boxes[0], gt_boxes[0])
+    except (TypeError, IndexError, ValueError):
+        return None
+    return EvaluationRecord(
+        sample_id=sample.sample_id,
+        task="grounding",
+        deterministic_metrics=grounding_deterministic_metrics(iou),
+        judge_status="not_requested",
+    )
+
+
+def _caption_evaluation(
+    sample: UnifiedSample,
+    execution: AgentExecution,
+) -> EvaluationRecord | None:
+    """Per-sample caption record: candidate plus references. Corpus-level
+    BLEU/METEOR/ROUGE/CIDEr stays with the report layer; no references means
+    no record is fabricated. 逐样本 caption 记录：候选与参考答案。语料级
+    BLEU/METEOR/ROUGE/CIDEr 留在报告层；无参考答案时不伪造记录。"""
+
+    ground_truth = sample.ground_truth
+    references = ground_truth.answers if ground_truth is not None else []
+    if not references:
+        return None
+    return EvaluationRecord(
+        sample_id=sample.sample_id,
+        task="caption",
+        deterministic_metrics=CaptionDeterministicMetrics(
+            candidate=str(getattr(execution.payload, "answer", "")),
+            references=list(references),
+        ),
+        judge_status="not_requested",
+    )
+
+
 def _trace_payload(
     execution: AgentExecution | None,
     attempt: _Attempt | None,
     *,
     resolution: TaskResolution | None,
+    resolved_task: str,
     inference_seconds: float,
     evaluation: object | None,
     fallback_used: bool,
@@ -508,8 +603,11 @@ def _trace_payload(
 ) -> dict[str, Any]:
     """Compose the auditable trace from already-decided runtime facts; every
     value is JSON-safe and carries no raw paths, secrets, or exception text.
+    task_type is fixed to the resolved task; resolved_task and execution_task
+    are explicit so candidate fallback (resolved != executed) stays auditable.
     根据已确定的运行时事实组装可审计 trace；所有值 JSON 安全且不含原始路径、
-    密钥或异常文本。"""
+    密钥或异常文本。task_type 固定为解析任务；resolved_task 与 execution_task
+    显式记录，使候选兜底（解析 != 执行）保持可审计。"""
 
     judge_status = getattr(evaluation, "judge_status", None)
     if isinstance(evaluation, dict):
@@ -518,9 +616,8 @@ def _trace_payload(
     trace.update(
         {
             "router_used": True,
-            "task_type": resolution.task if resolution is not None else (
-                attempt.task if attempt is not None else "unknown"
-            ),
+            "task_type": resolved_task,
+            "resolved_task": resolved_task,
             "qwen_backend": "transformers",
             "inference_seconds": inference_seconds,
             "execution_task": attempt.task if attempt is not None else None,
