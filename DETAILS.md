@@ -430,11 +430,19 @@ part of the single public `main.py` runtime.
 - `scripts/evaluate_qwen3vl_merger_lora.py` loads the base Qwen3-VL checkpoint
   with an optional LoRA adapter and runs greedy inference on the VRSBench test
   JSONL (caption and/or VQA). It writes canonical sample/prediction JSONL plus
-  a summary with per-task counts, failures, mean latency, and VQA exact match.
+  a summary with per-task counts, failures, mean latency, caption metrics
+  (BLEU-1..4 / METEOR / ROUGE-L / CIDEr), VQA overall accuracy, and VQA
+  accuracy per question type. By default it evaluates only the first 200 test
+  images (`--max-images`, ordered by the caption annotation file; 0 disables
+  the cap). METEOR uses the official pycocoevalcap Java scorer when Java is
+  installed and falls back to nltk otherwise.
   `scripts/evaluate_qwen3vl_merger_lora.py` 加载基础 Qwen3-VL 权重并可选挂载
   LoRA 适配器，在 VRSBench 测试 JSONL（caption 和/或 VQA）上做贪心推理。
   输出规范化 sample/prediction JSONL 以及摘要（分任务计数、失败数、平均耗时、
-  VQA 精确匹配率）。
+  caption 的 BLEU-1..4 / METEOR / ROUGE-L / CIDEr、VQA 整体准确率与按问题类型
+  准确率）。默认只评估测试集前 200 张图片（`--max-images`，按 caption 标注文件
+  顺序；0 表示不设上限）。METEOR 在安装 Java 时使用官方 pycocoevalcap Java
+  评分器，否则回退到 nltk。
 - `scripts/export_finetune_report.py` reads the Hugging Face
   `trainer_state.json` (train/eval loss, learning rate, gradient norm per
   step) plus every `*.summary.json` and prediction JSONL under the evaluation
@@ -444,6 +452,27 @@ part of the single public `main.py` runtime.
   （每步训练/验证 loss、学习率、梯度范数）以及评测输出目录下的全部
   `*.summary.json` 与预测 JSONL，导出 Markdown 报告、机器可读 JSON、
   每步指标 CSV，以及（装有 matplotlib 时）PNG 训练曲线图。
+- `scripts/convert_levir_cc_annotations.py` flattens the official
+  `LevirCCcaptions.json` into one JSONL line per image pair with explicit A/B
+  image paths, `changeflag`, raw captions, global `sentids`, and optional
+  official token lists.
+  `scripts/convert_levir_cc_annotations.py` 将官方 `LevirCCcaptions.json`
+  拍平为每个图像对一行 JSONL，包含显式 A/B 图像路径、`changeflag`、原始
+  caption、全局 `sentids` 以及可选的官方 token 列表。
+- `scripts/filter_changechat_loc_rows.py` removes the ChangeChat-105k 3x3 grid
+  localization rows from a JSON annotation file while preserving open QA rows
+  that merely mention "location". The input file is never overwritten.
+  `scripts/filter_changechat_loc_rows.py` 从 ChangeChat-105k JSON 标注中删除
+  3×3 网格定位行，同时保留仅提到 “location” 的开放问答；不会覆盖输入文件。
+- `scripts/prepare_changechat_val.py` converts the official LEVIR-CC val
+  captions into the ChangeChat-105k train JSON schema (one caption instruction
+  row per official caption, same `image` / `changeflag` / `conversations`
+  fields). Only caption rows are produced; generated QA rows are not part of
+  the official annotation and cannot be reconstructed.
+  `scripts/prepare_changechat_val.py` 将官方 LEVIR-CC val caption 转换为
+  ChangeChat-105k train JSON 结构（每条官方 caption 一行指令，字段与
+  `image` / `changeflag` / `conversations` 一致）。仅生成 caption 行；
+  生成式 QA 行不属于官方标注，无法重建。
 
 ## 3. Current Core Interface Contracts
 

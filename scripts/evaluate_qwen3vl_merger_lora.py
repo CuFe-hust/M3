@@ -3,10 +3,15 @@
 
 The script loads the base Qwen3-VL checkpoint, optionally wraps it with a
 LoRA adapter (``--adapter-path``), and generates greedy predictions for the
-official/local VRSBench test JSONL (caption and/or VQA). Results are written
-as canonical sample/prediction JSONL plus a JSON summary.
+official/local VRSBench test JSONL (caption and/or VQA), limited to the first
+``--max-images`` test images by default. Caption results report
+BLEU-1..4 / METEOR / ROUGE-L / CIDEr; VQA results report overall exact-match
+accuracy plus per-question-type accuracy. Results are written as canonical
+sample/prediction JSONL plus a JSON summary.
 脚本加载基础 Qwen3-VL 权重，可选挂载 LoRA 适配器（``--adapter-path``），
-并在 VRSBench 测试 JSONL（caption 和/或 VQA）上做贪心推理。结果以规范化
+并在 VRSBench 测试 JSONL（caption 和/或 VQA）上做贪心推理，默认只使用前
+``--max-images`` 张测试图片。caption 报告 BLEU-1..4 / METEOR / ROUGE-L /
+CIDEr；VQA 报告整体精确匹配准确率与按问题类型准确率。结果以规范化
 sample/prediction JSONL 以及 JSON 摘要写出。
 """
 
@@ -15,6 +20,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sys
 import time
 import unicodedata
@@ -78,6 +84,14 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Cap samples per task for smoke runs.",
+    )
+    parser.add_argument(
+        "--max-images",
+        type=int,
+        default=200,
+        help="Use only the first N test images (ordered by the caption "
+        "annotation file) for caption and VQA; 0 means no image cap. "
+        "Default 200.",
     )
     parser.add_argument(
         "--max-new-tokens-caption",
@@ -205,10 +219,142 @@ def record_to_sample(record: dict[str, Any], task: str) -> CanonicalSample:
             "source": "VRSBench",
             "split": "test",
             "task": task,
+            "question_type": record.get("task"),
+            "original_type": (record.get("source") or {}).get("original_type"),
             "image_path": str(image_path),
             "annotation": record.get("source"),
         },
     )
+
+
+def ordered_test_image_ids(data_root: Path, max_images: int) -> list[str]:
+    """Return the first ``max_images`` unique test image ids in caption order.
+    按 caption 标注文件顺序返回前 ``max_images`` 个不重复测试图片 ID。
+    """
+    caption_path = data_root / "VRSBench_test_caption.jsonl"
+    if not caption_path.is_file():
+        raise SystemExit(
+            f"Caption annotation file not found: {caption_path}; the caption "
+            "file defines the test image order."
+        )
+    image_ids: list[str] = []
+    seen: set[str] = set()
+    for record in read_jsonl(caption_path):
+        image_id = record.get("image_id") or Path(record["image"]).name
+        if image_id in seen:
+            continue
+        seen.add(image_id)
+        image_ids.append(image_id)
+        if max_images and len(image_ids) >= max_images:
+            break
+    return image_ids
+
+
+def load_task_records(
+    data_root: Path, task: str, image_ids: list[str] | None
+) -> list[dict[str, Any]]:
+    """Load one task's test records, optionally keeping only selected images.
+    读取一个任务的测试记录，可只保留指定图片对应的记录。
+    """
+    records = read_jsonl(data_root / f"VRSBench_test_{task}.jsonl")
+    if image_ids is None:
+        return records
+    allowed = set(image_ids)
+    return [
+        record
+        for record in records
+        if (record.get("image_id") or Path(record["image"]).name) in allowed
+    ]
+
+
+def compute_meteor(gts: dict[str, list[str]], res: dict[str, list[str]]) -> float:
+    """Compute METEOR via the official Java scorer when Java exists, else nltk.
+    Java 可用时使用官方 pycocoevalcap METEOR（Java），否则回退到 nltk METEOR。
+    """
+    if shutil.which("java"):
+        from pycocoevalcap.meteor.meteor import Meteor
+
+        scorer = Meteor()
+        try:
+            score, _ = scorer.compute_score(gts, res)
+            return float(score)
+        finally:
+            scorer.__del__()
+    try:
+        import nltk
+        from nltk.translate.meteor_score import meteor_score
+    except ImportError as error:
+        raise RuntimeError(
+            "METEOR requires either java (official pycocoevalcap scorer) or "
+            "nltk (Python fallback); install nltk and its wordnet data."
+        ) from error
+    try:
+        nltk.data.find("corpora/wordnet")
+    except LookupError as error:
+        raise RuntimeError(
+            "nltk wordnet data is missing; run nltk.download('wordnet')."
+        ) from error
+    scores = []
+    for image_id in gts:
+        hypothesis = res[image_id][0].split()
+        references = [reference.split() for reference in gts[image_id]]
+        scores.append(meteor_score(references, hypothesis))
+    return float(sum(scores) / len(scores))
+
+
+def compute_caption_metrics(
+    sample_answer_pairs: list[tuple[CanonicalSample, str]],
+) -> dict[str, float]:
+    """Compute BLEU-1..4 / METEOR / ROUGE-L / CIDEr over succeeded captions.
+    对成功的 caption 样本计算 BLEU-1..4 / METEOR / ROUGE-L / CIDEr。
+    """
+    from pycocoevalcap.bleu.bleu import Bleu
+    from pycocoevalcap.cider.cider import Cider
+    from pycocoevalcap.rouge.rouge import Rouge
+
+    gts: dict[str, list[str]] = {}
+    res: dict[str, list[str]] = {}
+    for sample, answer in sample_answer_pairs:
+        gts[sample.id] = list(sample.answers)
+        res[sample.id] = [answer]
+    if not gts:
+        return {}
+    bleu_scores, _ = Bleu(4).compute_score(gts, res)
+    rouge_score, _ = Rouge().compute_score(gts, res)
+    cider_score, _ = Cider().compute_score(gts, res)
+    meteor_score = compute_meteor(gts, res)
+    return {
+        "bleu_1": round(float(bleu_scores[0]), 6),
+        "bleu_2": round(float(bleu_scores[1]), 6),
+        "bleu_3": round(float(bleu_scores[2]), 6),
+        "bleu_4": round(float(bleu_scores[3]), 6),
+        "meteor": round(float(meteor_score), 6),
+        "rouge_l": round(float(rouge_score), 6),
+        "cider": round(float(cider_score), 6),
+    }
+
+
+def compute_vqa_accuracy_by_type(
+    sample_exact_pairs: list[tuple[CanonicalSample, bool]],
+) -> dict[str, dict[str, float | int]]:
+    """Aggregate VQA exact-match accuracy per question type.
+    按问题类型汇总 VQA 精确匹配准确率。
+    """
+    by_type: dict[str, dict[str, int]] = {}
+    for sample, exact in sample_exact_pairs:
+        question_type = str(sample.meta.get("question_type") or "unknown")
+        stats = by_type.setdefault(question_type, {"total": 0, "exact_matches": 0})
+        stats["total"] += 1
+        if exact:
+            stats["exact_matches"] += 1
+    result: dict[str, dict[str, float | int]] = {}
+    for question_type, stats in by_type.items():
+        result[question_type] = {
+            "total": stats["total"],
+            "exact_matches": stats["exact_matches"],
+            "accuracy": round(stats["exact_matches"] / stats["total"], 4),
+        }
+    return result
 
 
 def normalize_answer(text: str) -> str:
@@ -229,6 +375,16 @@ def build_messages(sample: CanonicalSample) -> list[dict[str, Any]]:
     return [{"role": "user", "content": content}]
 
 
+def resolve_image_path(image_path: str, image_folder: Path) -> Path:
+    """Resolve a possibly relative image path against the dataset root.
+    将可能为相对路径的图片路径拼接到数据集根目录。
+    """
+    path = Path(image_path)
+    if not path.is_absolute():
+        path = image_folder / path
+    return path
+
+
 def infer_one(
     model: Any,
     processor: Any,
@@ -236,12 +392,13 @@ def infer_one(
     max_new_tokens: int,
     image_min_pixels: int,
     image_max_pixels: int,
+    image_folder: Path,
     device: str,
 ) -> tuple[str, float]:
     """Generate one greedy prediction and return (text, duration_seconds).
     生成一条贪心预测并返回 (文本, 耗时秒)。
     """
-    image_path = str(sample.images[0])
+    image_path = resolve_image_path(sample.images[0], image_folder)
     image = Image.open(image_path).convert("RGB")
     messages = build_messages(sample)
     text = processor.apply_chat_template(
@@ -319,21 +476,30 @@ def main() -> int:
         local_files_only=args.local_files_only,
     )
 
+    image_ids = ordered_test_image_ids(args.data_root, args.max_images)
+    print(
+        f"Selected {len(image_ids)} test images "
+        f"(max_images={args.max_images or 'no cap'})"
+    )
+
     args.output_path.parent.mkdir(parents=True, exist_ok=True)
     summary: dict[str, Any] = {
         "model_id": args.model_id,
         "adapter_path": args.adapter_path,
         "data_root": str(args.data_root),
         "tasks": list(args.tasks),
+        "max_images": args.max_images,
+        "num_images": len(image_ids),
         "output_path": str(args.output_path),
         "results": {},
     }
     total_records = 0
     total_failures = 0
+    caption_pairs: list[tuple[CanonicalSample, str]] = []
+    vqa_exact_pairs: list[tuple[CanonicalSample, bool]] = []
     with args.output_path.open("w", encoding="utf-8") as output:
         for task in args.tasks:
-            annotation_path = args.data_root / f"VRSBench_test_{task}.jsonl"
-            records = read_jsonl(annotation_path)
+            records = load_task_records(args.data_root, task, image_ids)
             if args.max_samples is not None:
                 records = records[: args.max_samples]
             max_new_tokens = (
@@ -360,6 +526,7 @@ def main() -> int:
                         max_new_tokens=max_new_tokens,
                         image_min_pixels=args.image_min_pixels,
                         image_max_pixels=args.image_max_pixels,
+                        image_folder=args.data_root,
                         device=str(device),
                     )
                 except Exception as error:  # noqa: BLE001 - failures are persisted per sample
@@ -388,10 +555,14 @@ def main() -> int:
                     continue
                 task_stats["succeeded"] += 1
                 task_durations.append(duration)
-                if task == "vqa":
+                if task == "caption":
+                    caption_pairs.append((sample, answer))
+                elif task == "vqa":
                     reference = sample.answers[0]
-                    if normalize_answer(answer) == normalize_answer(reference):
+                    exact = normalize_answer(answer) == normalize_answer(reference)
+                    if exact:
                         exact_matches += 1
+                    vqa_exact_pairs.append((sample, exact))
                 prediction = CanonicalPrediction(
                     id=sample.id,
                     task_type=task,
@@ -415,9 +586,15 @@ def main() -> int:
                     )
                     + "\n"
                 )
-            if task == "vqa" and task_stats["succeeded"]:
+            if task == "caption" and task_stats["succeeded"]:
+                task_stats["metrics"] = compute_caption_metrics(caption_pairs)
+            elif task == "vqa" and task_stats["succeeded"]:
                 task_stats["exact_match"] = round(
                     exact_matches / task_stats["succeeded"], 4
+                )
+                task_stats["all_accuracy"] = task_stats["exact_match"]
+                task_stats["accuracy_by_type"] = compute_vqa_accuracy_by_type(
+                    vqa_exact_pairs
                 )
             if task_durations:
                 task_stats["mean_inference_seconds"] = round(

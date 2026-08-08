@@ -6,6 +6,7 @@ Pillow>=10.0.0
 numpy>=1.26
 opencv-python>=4.8
 pycocoevalcap>=1.2
+nltk>=3.9  # Python METEOR fallback when Java is unavailable for pycocoevalcap
 pytest>=8.0.0
 pydantic>=2.8
 pydantic-settings>=2.4

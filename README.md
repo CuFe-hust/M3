@@ -247,6 +247,54 @@ python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
 `AgentExecution` → `ArtifactWriter` and optional `JudgeService`. The runtime has no deprecated
 workflow, counting, or expert-module compatibility path.
 
+## LEVIR-CC Annotation Readability Conversion
+
+Flatten the official nested COCO-style `LevirCCcaptions.json` into one JSONL
+line per image pair:
+
+```bash
+python scripts/convert_levir_cc_annotations.py \
+  --root datasets/Levir-CC-dataset
+```
+
+Default output is `datasets/Levir-CC-dataset/LevirCCcaptions_readable.jsonl`.
+Use `--include-tokens` to also retain the official tokenized sentences, and
+`--annotation` / `--output` to override input and output paths.
+默认输出为 `datasets/Levir-CC-dataset/LevirCCcaptions_readable.jsonl`。
+加 `--include-tokens` 可同时保留官方分词结果；可用 `--annotation` /
+`--output` 覆盖输入与输出路径。
+
+Remove the ChangeChat-105k 3x3 grid localization rows from the train JSON
+without modifying the source file:
+
+```bash
+python scripts/filter_changechat_loc_rows.py
+```
+
+Default input is `datasets/Levir-CC-dataset/changechat-105k/changechat_105k_train.json`
+and default output is `.../changechat_105k_train_no_loc.json`; both paths can be
+overridden with `--input` / `--output`.
+该命令从 ChangeChat-105k train JSON 中删除 3×3 网格定位行且不改动源文件。
+默认输入为 `datasets/Levir-CC-dataset/changechat-105k/changechat_105k_train.json`，
+默认输出为 `.../changechat_105k_train_no_loc.json`；可用 `--input` / `--output`
+覆盖路径。
+
+Convert the official LEVIR-CC val captions into the same JSON schema as
+`changechat_105k_train.json` (caption instruction rows only):
+
+```bash
+python scripts/prepare_changechat_val.py
+```
+
+Default output is
+`datasets/Levir-CC-dataset/changechat-105k/changechat_105k_val.json`.
+The script produces five caption rows per val image pair and does not
+reconstruct the generated count/open/localization/dialogue rows.
+该命令将官方 LEVIR-CC val caption 转换为与 `changechat_105k_train.json`
+相同的 JSON 结构（仅 caption 指令行）。默认输出为
+`datasets/Levir-CC-dataset/changechat-105k/changechat_105k_val.json`；
+每个 val 图像对生成 5 条 caption 行，不重建生成式 count/open/定位/对话行。
+
 ## Merger-Layer LoRA Fine-Tuning (Qwen3-VL-8B)
 
 Qwen3-VL-8B has four vision merger modules: the final `visual.merger` plus the
@@ -329,16 +377,23 @@ python scripts/evaluate_qwen3vl_merger_lora.py \
   --adapter-path outputs/finetune/qwen3-vl-8b-merger-lora \
   --data-root /data/vrsbench \
   --tasks caption vqa \
+  --max-images 200 \
   --output-path outputs/eval/qwen3-vl-8b-merger-lora/vrsbench_test.jsonl
 ```
 
-The script writes one canonical `{"sample", "prediction"}` JSONL line per test
-record, plus a `.summary.json` with per-task counts, failure counts, mean
-latency, and VQA exact match. Use `--max-samples N` for a smoke run and
+By default the script evaluates the first 200 test images (ordered by the
+caption annotation file; pass `--max-images 0` to disable the cap) and writes
+one canonical `{"sample", "prediction"}` JSONL line per test record, plus a
+`.summary.json` with per-task counts, failures, mean latency, caption metrics
+(BLEU-1..4 / METEOR / ROUGE-L / CIDEr), VQA overall accuracy, and VQA accuracy
+per question type. Use `--max-samples N` for an additional smoke cap and
 `--device cuda:0` on the remote 4090 node.
-脚本为每条测试记录写一行规范化的 `{"sample", "prediction"}` JSONL，并输出
-`.summary.json`（分任务计数、失败数、平均耗时、VQA 精确匹配）。冒烟测试可用
-`--max-samples N`，远端 4090 节点可加 `--device cuda:0`。
+脚本默认评估测试集前 200 张图片（按 caption 标注文件顺序，传
+`--max-images 0` 可关闭该上限），为每条测试记录写一行规范化的
+`{"sample", "prediction"}` JSONL，并输出 `.summary.json`（分任务计数、失败数、
+平均耗时、caption 的 BLEU-1..4 / METEOR / ROUGE-L / CIDEr、VQA 整体准确率与
+按问题类型准确率）。还可使用 `--max-samples N` 做冒烟上限，远端 4090 节点可加
+`--device cuda:0`。
 
 After training and evaluation finish, export the training curves and test
 statistics in one step:
