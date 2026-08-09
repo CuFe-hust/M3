@@ -34,7 +34,7 @@ from reporting.schema import Report
 from routing.schema import SampleCapabilities, TaskResolutionRequest
 from workflows.artifact_writer import atomic_write_json
 from workflows.run_store import RunManifest
-from workflows.schema import DatasetRunOptions, DatasetRunSummary
+from workflows.schema import DatasetRunOptions, DatasetRunSummary, RunRequest
 
 # Only the first level of a manual image directory is scanned. / 手动图片目录只扫描第一层。
 MAX_MANUAL_IMAGES = 8
@@ -325,6 +325,50 @@ def _utc_now() -> str:
     )
 
 
+def _build_run_request(options: DatasetRunOptions) -> RunRequest:
+    """Map the concrete dataset run options into the persisted invocation
+    artifact. judge_policy/rate are stored as the original intent; the
+    evaluate gate is re-applied on resume by the runtime itself.
+    将具体数据集运行选项映射为持久化调用产物。judge_policy/rate 按原始意图
+    存储；evaluate 门控在 resume 时由 runtime 重新应用。"""
+
+    if options.auto_task:
+        task_mode: str = "auto"
+        tasks: list[str] = []
+    elif options.tasks is None:
+        task_mode = "adapter_default"
+        tasks = []
+    else:
+        task_mode = "explicit"
+        tasks = list(options.tasks)
+    return RunRequest(
+        dataset=options.dataset,
+        dataset_root=_posix(options.root),
+        split=options.split,
+        task_mode=task_mode,  # type: ignore[arg-type]
+        tasks=tasks,
+        auto_task=options.auto_task,
+        sample_ids=sorted(options.sample_ids) if options.sample_ids else None,
+        limit=options.limit,
+        start_index=options.start_index,
+        shard_index=options.shard_index,
+        shard_count=options.shard_count,
+        sample_concurrency=options.sample_concurrency,
+        evaluate=options.evaluate,
+        judge_policy=options.judge_policy,
+        judge_sample_rate=options.judge_sample_rate,
+        render_errors=options.render_errors,
+        fail_fast=options.fail_fast,
+    )
+
+
+def _posix(path: Path) -> str:
+    """POSIX serialization with forward-slash separators on every platform.
+    所有平台统一正斜杠的 POSIX 序列化。"""
+
+    return path.as_posix().replace("\\", "/")
+
+
 @dataclass(frozen=True)
 class Runtime:
     """One composition-root runtime with high-level use cases.
@@ -399,6 +443,13 @@ class Runtime:
             )
             run_id = manifest.run_id
             run_dir = self.settings.runs.root / run_id
+            # Persist the concrete invocation after identity is established
+            # and before any sample/model execution; failure fails the fresh
+            # run before inference. 在身份确立后、任何样本/模型执行前持久化
+            # 具体调用；失败使 fresh run 在推理前失败。
+            self.components.run_store.write_run_request(
+                run_dir, _build_run_request(options)
+            )
         adapter = self.registry.get(options.dataset)
         judge_policy = options.judge_policy if options.evaluate else "none"
         if options.auto_task:
@@ -434,7 +485,23 @@ class Runtime:
             )
         if options.render_errors:
             self.render_error_overlays(run_dir, data_root=options.root)
+        self._persist_report(run_dir)
         return results
+
+    def _persist_report(self, run_dir: Path) -> None:
+        """Build and persist the unified current-generation report bundle
+        after a terminal dataset run; the report builder stays read-only with
+        respect to execution artifacts. Persistence failures propagate as
+        stable command failures instead of silently claiming success.
+        在数据集运行终态后构建并持久化统一当前代报告 bundle；报告构建器对
+        执行产物保持只读。持久化失败作为稳定命令失败传播，绝不静默宣称
+        成功。"""
+
+        from reporting.builder import build_report
+        from reporting.exporters import persist_report_bundle
+
+        report = build_report(run_dir)
+        persist_report_bundle(run_dir, report)
 
     def render_error_overlays(
         self,
@@ -451,7 +518,7 @@ class Runtime:
         ``render_errors_notes.json``。"""
 
         from agents.counting.schema import CountingResult
-        from reporting.adapters import iter_current_predictions
+        from reporting.adapters import iter_current_predictions, load_status
         from reporting.visualization import render_counting_overlay
         from workflows.dataset_runner import storage_key
         from workflows.sample_runner import _COUNTING_TASKS
@@ -467,11 +534,18 @@ class Runtime:
             sample_dir = (
                 run_dir / "tasks" / run_task / "samples" / storage_key(sample_id)
             )
-            if run_task not in _COUNTING_TASKS:
+            # The storage namespace never decides execution semantics: in
+            # auto-task mode run_task is "auto" while the executed task comes
+            # from status.task / prediction.task. 存储命名空间绝不决定执行
+            # 语义：auto-task 模式下 run_task 是 "auto"，执行任务来自
+            # status.task / prediction.task。
+            status = load_status(sample_dir)
+            execution_task = status.task if status is not None else row.get("task")
+            if execution_task not in _COUNTING_TASKS:
                 notes.append(
                     {
                         "sample_id": sample_id,
-                        "task": run_task,
+                        "task": execution_task or run_task,
                         "note": "render_errors_skipped:unsupported_task",
                     }
                 )
@@ -481,7 +555,7 @@ class Runtime:
                 notes.append(
                     {
                         "sample_id": sample_id,
-                        "task": run_task,
+                        "task": execution_task,
                         "note": "render_errors_skipped:no_counting_result",
                     }
                 )
@@ -495,7 +569,7 @@ class Runtime:
                     notes.append(
                         {
                             "sample_id": sample_id,
-                            "task": run_task,
+                            "task": execution_task,
                             "note": "render_errors_skipped:no_source_image",
                         }
                     )
@@ -510,7 +584,7 @@ class Runtime:
                 notes.append(
                     {
                         "sample_id": sample_id,
-                        "task": run_task,
+                        "task": execution_task,
                         "note": f"render_errors_failed:{type(error).__name__}",
                     }
                 )
@@ -522,23 +596,28 @@ class Runtime:
         sample_dir: Path,
         data_root: Path,
     ) -> Path | None:
-        """Resolve the first sample image from the persisted sample against
-        the dataset root; corrupt or missing samples yield None (stable skip).
-        从持久化样本解析首图（相对数据集根）；损坏或缺失返回 None（稳定
-        跳过）。"""
+        """Resolve the first sample image against the dataset root with a
+        canonical containment check. The persisted sample is validated as a
+        UnifiedSample; the candidate path is resolved and must stay inside
+        the dataset root and exist. Anything else yields None (stable skip),
+        and no absolute machine path is ever reported.
+        以 canonical containment 校验按数据集根解析首图。持久化样本经
+        UnifiedSample 校验；候选路径 resolve 后必须位于数据集根内且存在。
+        否则返回 None（稳定跳过），绝不报告任何主机绝对路径。"""
 
         sample_path = sample_dir / "sample.json"
         try:
             raw = json.loads(sample_path.read_text(encoding="utf-8"))
-            images = raw.get("images") if isinstance(raw, dict) else None
-            first = images[0] if isinstance(images, list) and images else None
-            path = first.get("path") if isinstance(first, dict) else None
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError, IndexError):
+            sample = UnifiedSample.model_validate(raw)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
             return None
-        if not isinstance(path, str) or not path:
+        if not sample.images:
             return None
-        candidate = data_root / path
-        return candidate if candidate.is_file() else None
+        root = data_root.resolve()
+        candidate = (root / sample.images[0].path).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            return None
+        return candidate
 
     async def ask(
         self,

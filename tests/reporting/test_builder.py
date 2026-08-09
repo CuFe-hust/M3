@@ -597,8 +597,12 @@ def test_exporters_deepseek_audit_stable_metadata_no_secret(tmp_path: Path) -> N
     assert len(lines) == 1  # only the judged sample / 仅已 judge 样本
     row = json.loads(lines[0])
     assert row["sample_id"] == "a2"
-    assert row["request_id"] == "a2:deepseek-vqa"
-    assert len(row["request_hash"]) == 64
+    # without run_dir there is no persisted RequestMeta: identity stays null,
+    # never a synthesized value. 无 run_dir 时没有持久化 RequestMeta：身份
+    # 保持 null，绝不合成值。
+    assert row["request_id"] is None
+    assert row["request_hash"] is None
+    assert row["prompt_version"] is None
     assert row["judge_status"] == "succeeded"
     assert row["judge_parsed"]["score"] == 1
     text = path.read_text(encoding="utf-8")

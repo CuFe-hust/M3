@@ -19,6 +19,7 @@ from pathlib import Path
 
 from application.prompts import PromptCatalog
 from application.settings import load_settings
+from agents.counting.schema import CountingResult, CountTargetSpec
 from data.schema import UnifiedSample
 from evaluation.judges.deepseek import DeepSeekJudgeClient
 from evaluation.records import EvaluationRecord
@@ -34,13 +35,14 @@ from reporting.builder import build_report
 from workflows.artifact_writer import ArtifactWriter
 from workflows.judge_service import JudgeService
 from workflows.run_store import RunManifest
-from workflows.sample_runner import build_deterministic_evaluation
+from workflows.sample_runner import _COUNTING_TASKS, build_deterministic_evaluation
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
 EXIT_INTERRUPTED = 130
 
 _VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
+_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
 _AGENT_RESULT_FILENAME = "agent_result.json"
 
 
@@ -235,7 +237,96 @@ def _evaluate_run(
                     force=force_judge,
                 )
             )
+        elif judge_service is not None and execution_task in _COUNTING_TASKS:
+            judge_results.append(
+                _judge_counting_one(
+                    judge_service,
+                    sample,
+                    payload,
+                    sample_dir,
+                    existing=evaluation_before,
+                    force=force_judge,
+                )
+            )
     return evaluated, not_applicable, judge_results
+
+
+def _judge_counting_one(
+    judge_service: JudgeService,
+    sample: UnifiedSample,
+    payload: object,
+    sample_dir: Path,
+    *,
+    existing: EvaluationRecord | None,
+    force: bool,
+) -> dict:
+    """Judge one counting sample through JudgeService.judge_counting; a
+    persisted succeeded judge is skipped unless force. The ground truth stays
+    authoritative, the persisted CountingResult.target provides the label, and
+    an exact persisted CountTargetSpec is preferred over a stable neutral
+    reconstruction. Judge failures keep the deterministic record and are
+    recorded as a stable judge_error; zero Qwen calls.
+    经 JudgeService.judge_counting 审核一个计数样本；持久化 succeeded judge
+    除非 force 否则跳过。ground truth 保持权威，持久化 CountingResult.target
+    提供标签，精确持久化 CountTargetSpec 优先于稳定中性重建。judge 失败
+    保留确定性记录并记录稳定 judge_error；零 Qwen 调用。"""
+
+    if not force and existing is not None and existing.judge_status == "succeeded":
+        return {"sample_id": sample.sample_id, "status": "skipped_succeeded"}
+    if not isinstance(payload, CountingResult):
+        return {
+            "sample_id": sample.sample_id,
+            "judge_status": "failed",
+            "judge_error": "TypeError",
+        }
+    try:
+        target = _count_target_for(sample, payload)
+        record = judge_service.judge_counting(
+            sample_id=sample.sample_id,
+            question=sample.question,
+            target=target,
+            display_answer=str(payload.final_count),
+            counting=payload,
+            ground_truth=sample.ground_truth,
+            artifact_dir=sample_dir / "deepseek",
+        )
+        artifact_writer = ArtifactWriter()
+        artifact_writer.write_evaluation(
+            sample_dir, record, filename=_COUNTING_EVALUATION_FILENAME
+        )
+        return {
+            "sample_id": sample.sample_id,
+            "judge_status": record.judge_status,
+            "judge_error": record.judge_error,
+        }
+    except Exception as error:
+        return {
+            "sample_id": sample.sample_id,
+            "judge_status": "failed",
+            "judge_error": type(error).__name__,
+        }
+
+
+def _count_target_for(
+    sample: UnifiedSample,
+    payload: CountingResult,
+) -> CountTargetSpec:
+    """Prefer the exact persisted CountTargetSpec hint; otherwise reconstruct
+    a stable neutral spec from the persisted canonical label — never invent
+    visual facts. 优先使用精确持久化 CountTargetSpec hint；否则从持久化
+    canonical 标签重建稳定中性 spec——绝不虚构视觉事实。"""
+
+    hint = (sample.metadata or {}).get("count_target_hint")
+    if isinstance(hint, dict):
+        try:
+            return CountTargetSpec.model_validate(hint)
+        except ValueError:
+            pass
+    return CountTargetSpec(
+        canonical_label=payload.target,
+        inclusion_rule=f"count all {payload.target}",
+        exclusion_rule="exclude none",
+    )
 
 
 def _judge_one(

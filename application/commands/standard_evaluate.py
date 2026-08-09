@@ -57,10 +57,20 @@ def run_standard_evaluate(args: argparse.Namespace) -> int:
         ).expanduser().resolve()
         run_id = _associated_run_id(settings, result_path)
         if run_id is not None:
-            # Refresh the unified report only for a current run; the report
-            # builder is read-only and never touches the run artifacts.
-            # 仅对当前 run 刷新统一报告；报告构建器只读，绝不触碰 run 产物。
-            build_report(settings.runs.root / run_id)
+            # Persist the refreshed unified report bundle for the current
+            # run, including the namespaced external standard report. The
+            # report builder is read-only and never touches run artifacts.
+            # 为当前 run 持久化刷新的统一报告 bundle（含命名空间化的外部
+            # 标准报告）。报告构建器只读，绝不触碰 run 产物。
+            from reporting.builder import build_report
+            from reporting.exporters import persist_report_bundle
+
+            run_dir = settings.runs.root / run_id
+            persist_report_bundle(
+                run_dir,
+                build_report(run_dir),
+                external_standard=report,
+            )
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED
     except Exception as error:

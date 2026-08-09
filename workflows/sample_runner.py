@@ -241,16 +241,21 @@ class SampleRunner:
         resolution: TaskResolution | None = None,
         judge_policy: str = "none",
         budget: CallBudget | None = None,
+        evaluate: bool = True,
     ) -> SampleRunOutcome:
         """Execute routing, attempt plan, optional judge, and persistence.
         Sample-level failures are converted to a failed status with stable
         codes and never raise raw exceptions. An external budget (e.g. one
         already consumed by a TaskResolver) is shared across every attempt
         and judge call; otherwise a fresh per-sample budget is created.
+        evaluate=False writes inference artifacts only and skips the
+        deterministic evaluation artifact — the narrow switch used by
+        count-image; dataset execution keeps the default True.
         执行路由、attempt plan、可选 judge 与持久化。样本级失败转换为携带
         稳定 code 的 failed 状态，绝不抛出原始异常。外部预算（如已被
         TaskResolver 消费的预算）贯穿所有 attempt 与 judge 调用；否则创建
-        新的逐样本预算。"""
+        新的逐样本预算。evaluate=False 只写推理产物并跳过确定性评估产物——
+        这是 count-image 使用的窄开关；数据集执行保持默认 True。"""
 
         self.artifact_writer.write_sample(sample_dir, sample)
         self.artifact_writer.write_running_status(sample_dir, _status(sample, "running"))
@@ -325,13 +330,15 @@ class SampleRunner:
         # top candidate；完整候选历史留在 trace。
         self.artifact_writer.write_routing(sample_dir, executed_attempt.decision)
         self.artifact_writer.write_execution(sample_dir, execution)
-        evaluation = await self._persist_evaluation(
-            executed_attempt.sample,
-            execution,
-            sample_dir,
-            budget=budget,
-            judge_policy=judge_policy,
-        )
+        evaluation = None
+        if evaluate:
+            evaluation = await self._persist_evaluation(
+                executed_attempt.sample,
+                execution,
+                sample_dir,
+                budget=budget,
+                judge_policy=judge_policy,
+            )
         trace = _trace_payload(
             execution,
             executed_attempt,

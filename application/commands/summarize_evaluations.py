@@ -1,10 +1,12 @@
 """Public `summarize-evaluations` CLI command: deterministic evaluation
-aggregation for one run.
+aggregation for one run or one record file.
 
-公开 `summarize-evaluations` CLI 命令：单个 run 的确定性评估聚合。解析
-run 内全部当前 EvaluationRecord（含 legacy VQAEvaluationRecord 兼容形状）；
-任何损坏记录稳定失败；按 task 同构分组后经 evaluation.metrics.aggregate
-确定性聚合；纯本地计算，无模型调用。
+公开 `summarize-evaluations` CLI 命令：单个 run 或单份记录文件的确定性
+评估聚合。两种互斥源模式：--run-id（扫描 run 内全部当前 EvaluationRecord，
+含 legacy VQAEvaluationRecord 兼容形状）或 --input（EvaluationRecord
+JSONL 文件，每行一条记录）；损坏记录稳定失败；按 task 同构分组经
+evaluation.metrics.aggregate 确定性聚合；--output 可选持久化结果；
+纯本地计算，无模型调用。
 """
 
 from __future__ import annotations
@@ -34,17 +36,24 @@ _KNOWN_EVALUATION_FILENAMES = (
 
 
 def run_summarize_evaluations(args: argparse.Namespace) -> int:
-    """Aggregate every evaluation record of one run and print the result.
-    聚合一个 run 的全部评估记录并输出结果。"""
+    """Aggregate evaluation records from one run or one file and print the
+    result. 聚合一个 run 或一份文件的评估记录并输出结果。"""
 
     try:
-        settings = load_settings(
-            Path(args.config) if getattr(args, "config", None) else None,
-        )
-        run_dir = settings.runs.root / args.run_id
-        if not run_dir.is_dir():
-            raise ValueError("run does not exist")
-        records = _collect_evaluation_records(run_dir)
+        if bool(args.run_id) == bool(args.input):
+            raise ValueError("exactly one of --run-id or --input is required")
+        if args.run_id:
+            settings = load_settings(
+                Path(args.config) if getattr(args, "config", None) else None,
+            )
+            run_dir = settings.runs.root / args.run_id
+            if not run_dir.is_dir():
+                raise ValueError("run does not exist")
+            records = _collect_evaluation_records(run_dir)
+            source = {"run_id": args.run_id}
+        else:
+            records = _collect_records_from_file(Path(args.input))
+            source = {"input": str(Path(args.input))}
         if not records:
             raise ValueError("no evaluation records found")
         groups: dict[str, list[Any]] = {}
@@ -59,6 +68,20 @@ def run_summarize_evaluations(args: argparse.Namespace) -> int:
             task: aggregate(group)
             for task, group in sorted(groups.items())
         }
+        payload = {
+            "status": "ok",
+            **source,
+            "record_count": len(records),
+            "aggregates": aggregates,
+        }
+        if args.output is not None:
+            output = Path(args.output)
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+                + "\n",
+                encoding="utf-8",
+            )
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED
     except Exception as error:
@@ -68,17 +91,7 @@ def run_summarize_evaluations(args: argparse.Namespace) -> int:
         )
         return EXIT_RUNTIME
     print(
-        json.dumps(
-            {
-                "status": "ok",
-                "run_id": args.run_id,
-                "record_count": len(records),
-                "aggregates": aggregates,
-            },
-            ensure_ascii=False,
-            indent=2,
-            sort_keys=True,
-        )
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     )
     return EXIT_OK
 
@@ -112,6 +125,30 @@ def _collect_evaluation_records(run_dir: Path) -> list[Any]:
                 record = _parse_record(raw)
                 if record is not None:
                     records.append(record)
+    return records
+
+
+def _collect_records_from_file(path: Path) -> list[Any]:
+    """Parse one EvaluationRecord JSONL file; a malformed line fails stably.
+    解析一份 EvaluationRecord JSONL 文件；损坏行稳定失败。"""
+
+    if not path.is_file():
+        raise ValueError("input file does not exist")
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ValueError("input file is unreadable") from exc
+    records: list[Any] = []
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            raw = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"malformed evaluation record at line {line_number}") from exc
+        record = _parse_record(raw)
+        if record is not None:
+            records.append(record)
     return records
 
 

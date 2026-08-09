@@ -2,16 +2,21 @@
 
 公开 `count-image` CLI 命令：单图点导出计数。使用当前 CountingAgent 与当前
 run/sample 存储布局（`runs/<run_id>/tasks/counting/samples/<sha256[:24]>`），
-绝不使用旧布局。SampleRunner 自动产出 sample/status/routing/counting_result/
-agent_trace 与（有 GT 时）counting_evaluation；--render 附加 overlay。
-resume 遇 succeeded 当前结果零 Qwen 调用；--force 重跑；旧版绝对路径
-status 校验失败视为无效并重跑；budget 覆盖仅请求局部。
+绝不使用旧布局。SampleRunner 产出 sample/status/routing/counting_result/
+agent_trace；--evaluate 时才产出 counting_evaluation；--render 附加 overlay。
+
+运行身份遵循冻结契约：fresh 无 --run-id 恒创建唯一 RunStore run id（绝不
+用 sample_id 默认）；fresh 显式 --run-id 已存在稳定失败；--resume 必须显式
+--run-id 且校验既有 run 的 manifest 与 count-image 调用身份（run_request）；
+--force 只在 resume 的既有 run 内重跑样本，绝不弱化 fresh 身份规则。budget
+与 seam_verify 覆盖仅请求局部。
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -27,8 +32,8 @@ from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 from reporting.visualization import render_counting_overlay
 from workflows.call_budget import CallBudget
 from workflows.dataset_runner import storage_key
-from workflows.run_store import RunStore
-from workflows.schema import SampleRunStatus
+from workflows.run_store import RunManifest, RunStore
+from workflows.schema import RunRequest, SampleRunStatus
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
@@ -70,6 +75,7 @@ async def _run(args: argparse.Namespace) -> int:
         raise FileNotFoundError("image file does not exist")
     with Image.open(image_path) as source:
         width, height = source.size
+    image_sha256 = hashlib.sha256(image_path.read_bytes()).hexdigest()
 
     sample_id = stable_sample_id(
         dataset="single-image",
@@ -79,8 +85,42 @@ async def _run(args: argparse.Namespace) -> int:
         question=args.question,
         source_index=0,
     )
-    run_id = args.run_id or sample_id
-    run_dir = settings.runs.root / run_id
+    store = RunStore(settings.runs.root, project_root)
+    if args.resume:
+        # Resume requires an explicit run id and a matching count-image
+        # invocation; never guess a run by sample id.
+        # resume 要求显式 run id 与匹配的 count-image 调用；绝不按 sample id
+        # 猜测 run。
+        if not args.run_id:
+            raise ValueError("--resume requires --run-id")
+        run_id = args.run_id
+        run_dir = settings.runs.root / run_id
+        _validate_resume_run(store, run_dir, run_id, sample_id, image_sha256)
+    else:
+        catalog = PromptCatalog(project_root / "prompts")
+        manifest = store.create_run(
+            config_payload=settings.to_config_payload(),
+            model_ids={
+                "qwen": settings.models.qwen.effective_cache_model_id,
+                "deepseek": settings.models.deepseek.model,
+            },
+            prompt_paths=catalog.snapshot_paths(),
+            run_id=args.run_id,
+            dataset="single-image",
+            split="adhoc",
+        )
+        run_id = manifest.run_id
+        run_dir = settings.runs.root / run_id
+        store.write_run_request(
+            run_dir,
+            _count_image_request(
+                sample_id=sample_id,
+                image_sha256=image_sha256,
+                question=args.question,
+                image_dir=image_path.parent,
+                evaluate=args.evaluate,
+            ),
+        )
     sample_dir = run_dir / "tasks" / "counting" / "samples" / storage_key(sample_id)
 
     if args.resume and not args.force:
@@ -99,17 +139,6 @@ async def _run(args: argparse.Namespace) -> int:
                 }
             )
             return EXIT_OK
-    if not run_dir.exists():
-        catalog = PromptCatalog(project_root / "prompts")
-        RunStore(settings.runs.root, project_root).create_run(
-            config_payload=settings.to_config_payload(),
-            model_ids={
-                "qwen": settings.models.qwen.effective_cache_model_id,
-                "deepseek": settings.models.deepseek.model,
-            },
-            prompt_paths=catalog.snapshot_paths(),
-            run_id=run_id,
-        )
 
     metadata: dict[str, Any] = {}
     if args.target_spec:
@@ -154,7 +183,11 @@ async def _run(args: argparse.Namespace) -> int:
     )
     runner = runtime.components.sample_runner_factory(data_root=image_path.parent)
     outcome = await runner.run_one(
-        sample, sample_dir, judge_policy="none", budget=budget
+        sample,
+        sample_dir,
+        judge_policy="none",
+        budget=budget,
+        evaluate=args.evaluate,
     )
     execution = outcome.execution
     if execution is None or not isinstance(execution.payload, CountingResult):
@@ -185,6 +218,64 @@ async def _run(args: argparse.Namespace) -> int:
         }
     )
     return EXIT_OK
+
+
+def _count_image_request(
+    *,
+    sample_id: str,
+    image_sha256: str,
+    question: str,
+    image_dir: Path,
+    evaluate: bool,
+) -> RunRequest:
+    """The persisted single-image invocation identity. The image itself is
+    referenced by its stable content hash, never by a host absolute path.
+    持久化单图调用身份。图像以稳定内容哈希引用，绝不使用主机绝对路径。"""
+
+    return RunRequest(
+        dataset="single-image",
+        dataset_root=image_dir.as_posix().replace("\\", "/"),
+        split="adhoc",
+        task_mode="explicit",
+        tasks=["counting"],
+        auto_task=False,
+        evaluate=evaluate,
+        judge_policy="none",
+        command="count-image",
+        image_identity=image_sha256,
+        question=question,
+        sample_id=sample_id,
+    )
+
+
+def _validate_resume_run(
+    store: RunStore,
+    run_dir: Path,
+    run_id: str,
+    sample_id: str,
+    image_sha256: str,
+) -> None:
+    """The resumed run must exist, carry a valid matching manifest, and match
+    the expected single-image counting invocation identity.
+    resume 的 run 必须存在、携带合法匹配的 manifest，并匹配预期的单图计数
+    调用身份。"""
+
+    manifest_path = run_dir / "manifest.json"
+    if not run_dir.is_dir() or not manifest_path.is_file():
+        raise ValueError("resume run does not exist")
+    try:
+        manifest = RunManifest.model_validate_json(
+            manifest_path.read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("resume run manifest is invalid") from exc
+    if manifest.run_id != run_id:
+        raise ValueError("resume run id mismatch")
+    request = store.read_run_request(run_dir)
+    if request.command != "count-image":
+        raise ValueError("resume run is not a count-image invocation")
+    if request.sample_id != sample_id or request.image_identity != image_sha256:
+        raise ValueError("resume run invocation mismatch")
 
 
 def _build_budget(runtime: Runtime, args: argparse.Namespace) -> CallBudget:

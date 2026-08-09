@@ -42,6 +42,10 @@ _CSV_COLUMNS = (
 _MME_CONTAINER_KEYS = ("samples", "data", "annotations", "items", "images")
 _MME_QUESTION_ID_KEYS = ("Question_id", "question_id")
 
+# Counting task family for judge artifact directory selection.
+# 用于 judge 产物目录选择的计数任务族。
+_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
+
 
 def write_json(report: Report, path: Path) -> Path:
     """Write the report as stable-layout JSON. 以稳定布局写出 JSON 报告。"""
@@ -103,45 +107,98 @@ def write_samples_jsonl(report: Report, path: Path) -> Path:
     return path
 
 
-def write_deepseek_audit(report: Report, path: Path) -> Path:
+def write_deepseek_audit(
+    report: Report,
+    path: Path,
+    *,
+    run_dir: Path | None = None,
+) -> Path:
     """Write one auditable DeepSeek record per judged sample. Rows carry only
-    stable metadata — request id/hash, judge status, stable error, and the
-    validated structured judge_parsed output. Never auth keys, never raw
-    responses or secrets. 为每个被 judge 的样本写一条可审计 DeepSeek 记录。
-    行只携带稳定元数据——request id/hash、judge 状态、稳定错误与校验后的
-    结构化 judge_parsed。绝不输出 auth 键、原始响应或密钥。"""
+    stable metadata — request id/hash/prompt version from the actual persisted
+    RequestMeta (never synthesized from the verdict), judge status, stable
+    error, and the validated structured judge_parsed output. Never auth keys,
+    never raw responses or secrets; missing RequestMeta yields null identity
+    fields instead of fabricated values.
+    为每个被 judge 的样本写一条可审计 DeepSeek 记录。行只携带稳定元数据——
+    来自实际持久化 RequestMeta 的 request id/hash/prompt version（绝不从
+    判决合成）、judge 状态、稳定错误与校验后的结构化 judge_parsed。绝不
+    输出 auth 键、原始响应或密钥；缺失 RequestMeta 时身份字段输出 null
+    而非伪造值。"""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8", newline="") as handle:
         for sample in report.samples:
-            row = _deepseek_audit_row(sample)
+            row = _deepseek_audit_row(sample, run_dir=run_dir)
             if row is not None:
                 handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
     return path
 
 
-def _deepseek_audit_row(sample: ReportSample) -> dict[str, Any] | None:
+def _deepseek_audit_row(
+    sample: ReportSample,
+    *,
+    run_dir: Path | None,
+) -> dict[str, Any] | None:
     """Build one stable audit row; samples without a judge pass yield None.
-    构建一条稳定审计行；未参与 judge 的样本返回 None。"""
+    Request identity comes from the persisted RequestMeta of the matching
+    judge artifact directory; without it the identity fields stay null.
+    构建一条稳定审计行；未参与 judge 的样本返回 None。请求身份来自匹配
+    judge 产物目录中的持久化 RequestMeta；缺失时身份字段保持 null。"""
 
     evaluation = sample.evaluation
     if evaluation is None or evaluation.judge_status == "not_requested":
         return None
-    parsed = _json_value(evaluation.judge_parsed)
-    canonical = (
-        json.dumps(parsed, ensure_ascii=False, sort_keys=True)
-        if parsed is not None
-        else ""
-    )
+    request_meta = _load_request_meta(sample, run_dir) if run_dir is not None else None
     return {
         "sample_id": sample.sample_id,
         "task": sample.task,
-        "request_id": f"{sample.sample_id}:deepseek-vqa",
-        "request_hash": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        "request_id": (
+            request_meta.get("request_id") if isinstance(request_meta, dict) else None
+        ),
+        "request_hash": (
+            request_meta.get("request_hash")
+            if isinstance(request_meta, dict)
+            else None
+        ),
+        "prompt_version": (
+            request_meta.get("prompt_version")
+            if isinstance(request_meta, dict)
+            else None
+        ),
         "judge_status": evaluation.judge_status,
         "judge_error": evaluation.judge_error,
-        "judge_parsed": parsed,
+        "judge_parsed": _json_value(evaluation.judge_parsed),
     }
+
+
+def _load_request_meta(
+    sample: ReportSample,
+    run_dir: Path,
+) -> dict[str, Any] | None:
+    """Read the actual persisted RequestMeta for the sample's judge artifact
+    directory. The sample directory is derived from the frozen storage
+    identity inside the run; arbitrary paths from model/user output are never
+    trusted. 读取样本 judge 产物目录中的实际持久化 RequestMeta。样本目录
+    由 run 内冻结存储身份推导；绝不信任来自模型/用户输出的任意路径。"""
+
+    from reporting.adapters import sample_dir_for_row
+
+    sample_dir = sample_dir_for_row(
+        run_dir,
+        {"run_task": sample.run_task, "sample_id": sample.sample_id},
+    )
+    if sample_dir is None:
+        return None
+    task = sample.task
+    if task in _COUNTING_TASKS:
+        meta_path = sample_dir / "deepseek" / "request_meta.json"
+    else:
+        meta_path = sample_dir / "deepseek_vqa_judge" / "request_meta.json"
+    try:
+        raw = json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return raw if isinstance(raw, dict) else None
 
 
 def write_metadata_json(
@@ -217,6 +274,44 @@ def write_external_standard_report(
         encoding="utf-8",
     )
     return path
+
+
+def persist_report_bundle(
+    run_dir: Path,
+    report: Report,
+    *,
+    external_standard: Mapping[str, Any] | None = None,
+) -> Path:
+    """Persist the unified current-generation report bundle under
+    ``runs/<run_id>/report/``: report.html, report.json, samples.csv,
+    samples.jsonl, metadata.json, deepseek_audit.jsonl (when judge records
+    exist) and external_standard.json (when provided). The report builder
+    stays read-only with respect to execution artifacts; only the report
+    output directory is written. 将统一当前代报告 bundle 持久化到
+    ``runs/<run_id>/report/``：report.html、report.json、samples.csv、
+    samples.jsonl、metadata.json、deepseek_audit.jsonl（存在 judge 记录时）
+    与 external_standard.json（提供时）。报告构建器对执行产物保持只读；
+    只写报告输出目录。"""
+
+    from reporting.html import build_html
+
+    report_dir = run_dir / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    write_json(report, report_dir / "report.json")
+    (report_dir / "report.html").write_text(
+        build_html(report) + "\n", encoding="utf-8"
+    )
+    write_csv(report, report_dir / "samples.csv")
+    write_samples_jsonl(report, report_dir / "samples.jsonl")
+    write_metadata_json(report, report_dir / "metadata.json", run_dir=run_dir)
+    write_deepseek_audit(
+        report, report_dir / "deepseek_audit.jsonl", run_dir=run_dir
+    )
+    if external_standard is not None:
+        write_external_standard_report(
+            external_standard, report_dir / "external_standard.json"
+        )
+    return report_dir
 
 
 def write_mme_official_export(

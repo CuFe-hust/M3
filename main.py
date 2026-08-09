@@ -124,9 +124,11 @@ def build_parser() -> argparse.ArgumentParser:
     render_count.add_argument("--result", required=True)
     render_count.add_argument("--output", required=True)
     summarize_evaluations = subparsers.add_parser(
-        "summarize-evaluations", help="aggregate evaluation records of one run"
+        "summarize-evaluations", help="aggregate evaluation records of one run or file"
     )
-    summarize_evaluations.add_argument("--run-id", required=True)
+    summarize_evaluations.add_argument("--run-id", default=None, help="scan one run")
+    summarize_evaluations.add_argument("--input", default=None, help="EvaluationRecord JSONL file")
+    summarize_evaluations.add_argument("--output", default=None, help="write the summary here")
     standard_evaluate = subparsers.add_parser(
         "standard-evaluate", help="run the external team standard evaluator"
     )

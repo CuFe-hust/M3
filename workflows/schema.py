@@ -152,6 +152,72 @@ class DatasetRunOptions:
             raise ValueError("judge_sample_rate must be within [0.0, 1.0]")
 
 
+class RunRequest(BaseModel):
+    """The concrete user/runtime invocation for one dataset run, persisted as
+    ``runs/<run_id>/run_request.json``. This is not a replacement for the
+    manifest: manifest.json carries run identity/reproducibility metadata,
+    config.snapshot.json carries the application configuration snapshot, and
+    run_request.json carries the actual invocation — including the real
+    dataset root and the original judge policy/rate — so resume-run can
+    reconstruct DatasetRunOptions without guessing.
+    单个数据集运行的具体用户/运行时调用，持久化为
+    ``runs/<run_id>/run_request.json``。它不是 manifest 的替代品：
+    manifest.json 承载运行身份/可复现元数据，config.snapshot.json 承载应用
+    配置快照，run_request.json 承载实际调用——包括真实数据集根与原始
+    judge 策略/率——使 resume-run 无需猜测即可重建 DatasetRunOptions。
+
+    dataset_root preserves the host path form (POSIX separators), consistent
+    with the existing host-path-preserving snapshot decision; it is never
+    claimed to be machine-independent. dataset_root 保留主机路径形式（正斜杠
+    分隔），与既有 host-path-preserving 快照决策一致；绝不声称与机器无关。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    dataset: str = Field(min_length=1)
+    dataset_root: str = Field(min_length=1)
+    split: str = Field(min_length=1)
+    task_mode: Literal["explicit", "adapter_default", "auto"]
+    tasks: list[str] = Field(default_factory=list)
+    auto_task: bool = False
+    sample_ids: list[str] | None = None
+    limit: int | None = Field(default=None, ge=0)
+    start_index: int = Field(default=0, ge=0)
+    shard_index: int = Field(default=0, ge=0)
+    shard_count: int = Field(default=1, ge=1)
+    sample_concurrency: int = Field(default=1, ge=1)
+    evaluate: bool = True
+    judge_policy: str = "none"
+    judge_sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    render_errors: bool = False
+    fail_fast: bool = False
+    # Single-image invocation identity (count-image only; dataset runs leave
+    # these None). 单图调用身份（仅 count-image；数据集运行保持 None）。
+    command: str | None = None
+    image_identity: str | None = None
+    question: str | None = None
+    sample_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_invocation(self) -> "RunRequest":
+        """Enforce the task-mode/tasks consistency and shard bounds; invalid
+        persisted invocations must fail stably instead of being guessed.
+        强制 task-mode/tasks 一致性与分片边界；非法持久化调用必须稳定失败
+        而非被猜测。"""
+        if self.shard_index >= self.shard_count:
+            raise ValueError("shard_index must be within [0, shard_count)")
+        if self.task_mode == "auto":
+            if not self.auto_task or self.tasks:
+                raise ValueError("auto task mode requires auto_task and empty tasks")
+        elif self.task_mode == "explicit":
+            if self.auto_task or not self.tasks:
+                raise ValueError("explicit task mode requires tasks and no auto_task")
+        else:  # adapter_default
+            if self.auto_task or self.tasks:
+                raise ValueError("adapter_default task mode requires no tasks or auto_task")
+        return self
+
+
 @dataclass(frozen=True)
 class SampleRunOutcome:
     """All observable outputs from one SampleRunner invocation.

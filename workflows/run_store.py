@@ -23,6 +23,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict
 
 from workflows.events import EventWriter, _reject_secrets
+from workflows.schema import RunRequest
 
 
 class RunManifest(BaseModel):
@@ -97,6 +98,35 @@ class RunStore:
             "RUN_CREATED", details={"run_id": resolved_run_id}
         )
         return manifest
+
+    def write_run_request(self, run_dir: Path, request: RunRequest) -> Path:
+        """Persist the concrete run invocation atomically; called after run
+        identity is established and before any sample/model execution, so a
+        persistence failure fails the fresh run before inference.
+        原子持久化具体运行调用；在运行身份确立后、任何样本/模型执行前调用，
+        使持久化失败在推理前就使 fresh run 失败。"""
+
+        path = run_dir / "run_request.json"
+        _write_json(path, request.model_dump(mode="json"))
+        return path
+
+    def read_run_request(self, run_dir: Path) -> RunRequest:
+        """Read and validate the persisted run invocation; missing or corrupt
+        artifacts fail stably — the invocation is never guessed from settings,
+        directory names, or summaries. 读取并校验持久化运行调用；缺失或损坏
+        稳定失败——绝不由配置、目录名或汇总猜测调用。"""
+
+        path = run_dir / "run_request.json"
+        if not path.is_file():
+            raise ValueError("run request is missing")
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("run request is invalid") from exc
+        try:
+            return RunRequest.model_validate(raw)
+        except ValueError as exc:
+            raise ValueError("run request is invalid") from exc
 
 
 def _new_run_id() -> str:
