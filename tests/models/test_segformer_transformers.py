@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import builtins
 import hashlib
+import json
 import socket
 import subprocess
 import sys
@@ -15,7 +16,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from models.base import ModelAssetHashMismatchError, ModelAssetMissingError
+from models.base import (
+    DenseSemanticOutput,
+    ModelAssetHashMismatchError,
+    ModelAssetMissingError,
+)
 from models.segformer_transformers import (
     SegFormerDependencyError,
     SegFormerDeviceError,
@@ -23,8 +28,12 @@ from models.segformer_transformers import (
     SegFormerLoadError,
     SegFormerMetadataError,
     SegFormerTransformersClient,
+    _extract_feature_grid,
     _load_transformers_runtime,
+    _prepare_processor_inputs,
+    _run_dense_transformers_tile,
     _run_transformers_inference,
+    _tile_grid,
 )
 from models.settings import SegFormerSettings
 
@@ -57,6 +66,41 @@ def _settings(root: Path, *, weight_bytes: bytes = b"segformer", **overrides: An
     }
     values.update(overrides)
     return SegFormerSettings(**values)
+
+
+def _write_metadata(
+    settings: SegFormerSettings,
+    *,
+    labels: tuple[str, ...],
+    authoritative: bool,
+) -> None:
+    (settings.model_path / "config.json").write_text(
+        json.dumps(
+            {
+                "architectures": ["SegformerForSemanticSegmentation"],
+                "model_type": "segformer",
+                "id2label": {
+                    str(index): f"LABEL_{index}" for index in range(len(labels))
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    if authoritative:
+        (settings.model_path / "classes.json").write_text(
+            json.dumps(
+                {
+                    "num_classes": len(labels),
+                    "id2name": {
+                        str(index): label for index, label in enumerate(labels)
+                    },
+                    "name2id": {
+                        label: index for index, label in enumerate(labels)
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
 
 
 def _prediction(width: int = 3, height: int = 2):
@@ -203,6 +247,12 @@ class _FakeTensor:
         return self.value.shape
 
     def to(self, device: str) -> "_FakeTensor":
+        return self
+
+    def detach(self) -> "_FakeTensor":
+        return self
+
+    def float(self) -> "_FakeTensor":
         return self
 
     def __getitem__(self, index: Any) -> "_FakeTensor":
@@ -436,3 +486,188 @@ def test_loader_error_does_not_leak_absolute_path(tmp_path: Path) -> None:
 
     assert str(settings.model_path.resolve()) not in str(error.value)
     assert str(error.value) == "SegFormer runtime could not be loaded: RuntimeError"
+
+
+def test_tile_grid_is_deterministic_and_fully_covers_edges() -> None:
+    first = _tile_grid(11, 7, tile_size=5, tile_overlap=2)
+    second = _tile_grid(11, 7, tile_size=5, tile_overlap=2)
+    assert first == second
+    assert first[0] == (0, 0, 5, 5)
+    assert first[-1] == (6, 2, 11, 7)
+    coverage = np.zeros((7, 11), dtype=np.int32)
+    for x1, y1, x2, y2 in first:
+        coverage[y1:y2, x1:x2] += 1
+    assert np.all(coverage > 0)
+    assert _tile_grid(3, 2, tile_size=8, tile_overlap=2) == ((0, 0, 3, 2),)
+    with pytest.raises(SegFormerInferenceError, match="TILE_GEOMETRY_INVALID"):
+        _tile_grid(3, 2, tile_size=8, tile_overlap=8)
+
+
+def test_processor_keeps_a_768_tile_at_its_original_size() -> None:
+    observed: dict[str, Any] = {}
+
+    class Processor:
+        def __call__(self, **kwargs: Any):
+            observed.update(kwargs)
+            return {
+                "pixel_values": _FakeTensor(
+                    np.zeros((1, 3, 768, 768), dtype=np.float32)
+                )
+            }
+
+    tile = Image.new("RGB", (768, 768))
+    inputs = _prepare_processor_inputs(Processor(), tile, "cpu")
+    assert inputs["pixel_values"].shape[-2:] == (768, 768)
+    assert observed["do_resize"] is False
+    assert observed["return_tensors"] == "pt"
+
+
+def test_processor_silent_resize_fails_closed() -> None:
+    processor = lambda **kwargs: {
+        "pixel_values": _FakeTensor(np.zeros((1, 3, 512, 512), dtype=np.float32))
+    }
+    with pytest.raises(SegFormerInferenceError, match="PROCESSOR_RESIZED_TILE"):
+        _prepare_processor_inputs(processor, Image.new("RGB", (768, 768)), "cpu")
+
+
+def test_feature_grid_accepts_bchw_and_never_guesses_token_shape() -> None:
+    grid = _extract_feature_grid(
+        (_FakeTensor(np.zeros((1, 4, 3, 5), dtype=np.float32)),),
+        0,
+    )
+    assert grid.shape == (4, 3, 5)
+    tokens = _FakeTensor(np.zeros((1, 16, 4), dtype=np.float32))
+    with pytest.raises(SegFormerInferenceError, match="FEATURE_GRID_UNRESOLVED"):
+        _extract_feature_grid((tokens,), 0)
+
+
+def test_dense_tile_runner_requests_hidden_states_and_native_tile_size(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    torch_module = ModuleType("torch")
+    torch_module.inference_mode = lambda: _InferenceContext()
+    torch_module.softmax = lambda value, dim: _FakeTensor(
+        np.full((1, 2, 2, 3), 0.5, dtype=np.float32)
+    )
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+
+    class Processor:
+        def __call__(self, **kwargs: Any):
+            observed["processor"] = kwargs
+            return {
+                "pixel_values": _FakeTensor(
+                    np.zeros((1, 3, 6, 8), dtype=np.float32)
+                )
+            }
+
+    class Model:
+        def __call__(self, **kwargs: Any):
+            observed["model"] = kwargs
+            return SimpleNamespace(
+                logits=_FakeTensor(np.zeros((1, 2, 2, 3), dtype=np.float32)),
+                hidden_states=(
+                    _FakeTensor(np.zeros((1, 4, 1, 2), dtype=np.float32)),
+                ),
+            )
+
+    probabilities, features = _run_dense_transformers_tile(
+        Model(), Processor(), Image.new("RGB", (8, 6)), "cpu", 0, 2
+    )
+    assert probabilities.shape == (2, 2, 3)
+    assert features.shape == (4, 1, 2)
+    assert observed["processor"]["do_resize"] is False
+    assert observed["model"]["output_hidden_states"] is True
+    assert observed["model"]["return_dict"] is True
+
+
+def test_tiled_dense_inference_averages_without_holes_and_normalizes(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[int, int]] = []
+
+    def dense_runner(model, processor, tile, device, stage, channels):
+        calls.append(tile.size)
+        probabilities = np.empty((2, 2, 2), dtype=np.float32)
+        probabilities[0] = 0.25
+        probabilities[1] = 0.75
+        features = np.full((3, 1, 1), len(calls), dtype=np.float32)
+        return probabilities, features
+
+    settings = _settings(tmp_path / "checkpoint")
+    client = SegFormerTransformersClient(
+        settings,
+        _CLASS_MAP,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        dense_tile_runner=dense_runner,
+    )
+    result = client.infer(
+        Image.new("RGB", (7, 5)),
+        tile_size=4,
+        tile_overlap=1,
+        feature_stage=2,
+    )
+    assert isinstance(result, DenseSemanticOutput)
+    assert calls == [(4, 4)] * 4
+    assert result.original_size == (7, 5)
+    assert result.probabilities.dtype == result.features.dtype == np.float32
+    assert result.probabilities.shape == (2, 2, 4)
+    assert result.features.shape == (3, 1, 2)
+    assert np.isfinite(result.probabilities).all()
+    assert np.isfinite(result.features).all()
+    assert np.all(result.probabilities >= 0)
+    assert np.allclose(result.probabilities.sum(axis=0), 1.0)
+    assert result.class_names == ("background", "vehicle")
+    assert result.semantic_stride == (7 / 4, 5 / 2)
+    assert result.feature_stride == (7 / 2, 5.0)
+    assert result.diagnostics["tile_count"] == 4
+
+
+def test_classes_file_is_authoritative_and_oem_placeholders_are_not_exposed(
+    tmp_path: Path,
+) -> None:
+    runner = lambda *args: (
+        np.full((2, 1, 1), 0.5, dtype=np.float32),
+        np.ones((3, 1, 1), dtype=np.float32),
+    )
+    isaid_settings = _settings(tmp_path / "isaid")
+    _write_metadata(
+        isaid_settings,
+        labels=("background", "vehicle"),
+        authoritative=True,
+    )
+    isaid = SegFormerTransformersClient(
+        isaid_settings,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        dense_tile_runner=runner,
+    ).infer(Image.new("RGB", (2, 2)), tile_size=2, tile_overlap=0, feature_stage=0)
+    assert isaid.class_names == ("background", "vehicle")
+
+    oem_settings = _settings(tmp_path / "oem", classes_filename=None)
+    _write_metadata(
+        oem_settings,
+        labels=("unknown-0", "unknown-1"),
+        authoritative=False,
+    )
+    oem = SegFormerTransformersClient(
+        oem_settings,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        dense_tile_runner=runner,
+    ).infer(Image.new("RGB", (2, 2)), tile_size=2, tile_overlap=0, feature_stage=0)
+    assert oem.class_names == ()
+    assert oem.probabilities.shape[0] == 2
+
+
+def test_dense_cache_identity_never_contains_physical_checkpoint_path(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path / "private-machine" / "checkpoint")
+    client = SegFormerTransformersClient(settings, _CLASS_MAP)
+    identity = client.cache_identity
+    assert identity.model == "segformer-test-local"
+    assert identity.generation_payload() == {
+        "backend": "segformer_transformers",
+        "dtype": "auto",
+    }
+    assert identity.revision == "revision-1"
+    assert str(settings.model_path) not in repr(identity)

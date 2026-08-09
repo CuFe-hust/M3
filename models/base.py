@@ -418,6 +418,42 @@ class VisionLanguageClient(Protocol):
         """
 
 
+@dataclass(frozen=True)
+class DenseSemanticOutput:
+    """CPU dense semantic tensors and their actual image-relative grids.
+
+    Arrays intentionally remain ``Any`` so the shared contract imports neither
+    NumPy nor torch. Concrete backends must return finite float32 arrays with
+    ``probabilities`` shaped ``[C,Hs,Ws]`` and ``features`` shaped
+    ``[D,Hf,Wf]``. 稠密语义 CPU 张量及其相对原图的实际网格；共享契约不导入
+    NumPy/torch，具体 backend 负责保证 float32、有限值与形状约定。
+    """
+
+    probabilities: Any
+    features: Any
+    semantic_stride: tuple[float, float]
+    feature_stride: tuple[float, float]
+    original_size: tuple[int, int]
+    class_names: tuple[str, ...]
+    diagnostics: Mapping[str, Any]
+
+
+class DenseSemanticClient(Protocol):
+    """Abstract image-to-dense-semantics model contract."""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity: ...
+
+    def infer(
+        self,
+        image: Any,
+        *,
+        tile_size: int,
+        tile_overlap: int,
+        feature_stage: int,
+    ) -> DenseSemanticOutput: ...
+
+
 class SemanticSegmentationOutput(Protocol):
     """In-memory semantic prediction; dense maps are deliberately not JSON models.
     内存中的语义预测；稠密像素图刻意不定义为 JSON 模型。"""

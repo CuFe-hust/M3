@@ -8,13 +8,14 @@ builder 可用且不复制 Agent 逻辑。
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
 from pydantic import BaseModel
 
 from models.entry import create_model, list_models, register
-from models.settings import QwenSettings
+from models.settings import QwenSettings, SegFormerSettings
 
 
 class _DummySettings(BaseModel):
@@ -27,6 +28,7 @@ def test_register_and_list_models() -> None:
     assert "qwen_transformers" in names
     assert "qwen3_vl_baseline" in names
     assert "qwen3_5_transformers" in names
+    assert "segformer_transformers" in names
     assert len(names) == len(set(names))
 
 
@@ -48,6 +50,36 @@ def test_import_entry_does_not_load_heavy_libraries() -> None:
     导入 models.entry 不得加载 transformers 或 torch。"""
     for heavy in ("transformers", "torch"):
         assert heavy not in sys.modules
+
+
+def test_import_entry_does_not_import_concrete_segformer_module() -> None:
+    script = (
+        "import sys; import models.entry; "
+        "print('models.segformer_transformers' in sys.modules)"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.stdout.strip() == "False"
+
+
+def test_segformer_builder_is_lazy_until_construction(tmp_path: Path) -> None:
+    client = create_model(
+        "segformer_transformers",
+        settings=SegFormerSettings(
+            model_path=tmp_path / "missing-is-allowed-at-construction",
+            logical_model_id="segformer-entry-test",
+            weights_sha256="0" * 64,
+            device="cpu",
+        ),
+    )
+    from models.segformer_transformers import SegFormerTransformersClient
+
+    assert isinstance(client, SegFormerTransformersClient)
+    assert client.loaded is False
 
 
 def test_builders_are_lazy() -> None:

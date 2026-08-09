@@ -7,6 +7,8 @@ Importing this package must not import transformers or torch.
 
 from models.base import (
     CacheIdentifiedClient,
+    DenseSemanticClient,
+    DenseSemanticOutput,
     ModelCacheIdentity,
     ModelT,
     RequestMeta,
@@ -24,12 +26,13 @@ from models.images import (
     image_to_data_url,
     read_normalized_image,
 )
-from models.segformer_transformers import SegFormerTransformersClient
 from models.settings import DeepSeekSettings, ModelSettings, QwenSettings, SegFormerSettings
 
 __all__ = [
     "CacheEntry",
     "CacheIdentifiedClient",
+    "DenseSemanticClient",
+    "DenseSemanticOutput",
     "CacheWriteError",
     "DeepSeekSettings",
     "JsonResponseCache",
@@ -40,7 +43,6 @@ __all__ = [
     "QwenSettings",
     "RequestMeta",
     "SegFormerSettings",
-    "SegFormerTransformersClient",
     "SemanticSegmentationClient",
     "SemanticSegmentationOutput",
     "UnsupportedImageFormatError",

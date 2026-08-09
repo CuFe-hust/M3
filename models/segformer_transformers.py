@@ -18,7 +18,11 @@ from typing import Any
 
 from PIL import Image
 
-from models.base import validate_local_model_asset
+from models.base import (
+    DenseSemanticOutput,
+    ModelCacheIdentity,
+    validate_local_model_asset,
+)
 from models.images import read_normalized_image
 from models.settings import SegFormerSettings
 
@@ -135,6 +139,7 @@ class _CheckpointMetadata:
 
 RuntimeLoader = Callable[[SegFormerSettings], tuple[Any, Any, str]]
 InferenceRunner = Callable[[Any, Any, Image.Image, str, int], Any]
+DenseTileRunner = Callable[[Any, Any, Image.Image, str, int, int], tuple[Any, Any]]
 
 _PLACEHOLDER_LABEL = re.compile(r"^LABEL_\d+$", re.IGNORECASE)
 _SHARED_RUNTIMES: dict[tuple[object, ...], tuple[Any, Any, str, bool]] = {}
@@ -510,7 +515,7 @@ def _load_transformers_runtime(settings: SegFormerSettings) -> tuple[Any, Any, s
         ) from error
     device = _resolve_device(torch, settings)
     model_kwargs: dict[str, Any] = {
-        "local_files_only": True,
+        "local_files_only": not settings.allow_download,
         "revision": settings.revision,
     }
     if settings.dtype != "auto":
@@ -526,7 +531,7 @@ def _load_transformers_runtime(settings: SegFormerSettings) -> tuple[Any, Any, s
         )
         processor = AutoImageProcessor.from_pretrained(
             str(settings.processor_path or settings.model_path),
-            local_files_only=True,
+            local_files_only=not settings.allow_download,
             revision=settings.revision,
         )
         model.to(device)
@@ -570,7 +575,7 @@ def _run_transformers_inference(
         import torch.nn.functional as functional
     except ImportError as error:
         raise SegFormerDependencyError("SegFormer inference requires torch") from error
-    inputs = processor(images=image, return_tensors="pt")
+    inputs = processor(images=image, return_tensors="pt", do_resize=False)
     if hasattr(inputs, "to"):
         inputs = inputs.to(device)
     elif isinstance(inputs, Mapping):
@@ -677,22 +682,386 @@ def _inspect_confidence_map(confidence_map: Any) -> tuple[int, int]:
     return height, width
 
 
+def _tile_grid(
+    width: int,
+    height: int,
+    *,
+    tile_size: int,
+    tile_overlap: int,
+) -> tuple[tuple[int, int, int, int], ...]:
+    """Return a deterministic, edge-anchored, full-coverage tile grid."""
+
+    if (
+        not isinstance(tile_size, int)
+        or isinstance(tile_size, bool)
+        or tile_size <= 0
+        or not isinstance(tile_overlap, int)
+        or isinstance(tile_overlap, bool)
+        or tile_overlap < 0
+        or tile_overlap >= tile_size
+        or width <= 0
+        or height <= 0
+    ):
+        raise SegFormerInferenceError("SEGFORMER_TILE_GEOMETRY_INVALID")
+
+    def starts(length: int) -> tuple[int, ...]:
+        if length <= tile_size:
+            return (0,)
+        step = tile_size - tile_overlap
+        values = list(range(0, length - tile_size + 1, step))
+        edge = length - tile_size
+        if values[-1] != edge:
+            values.append(edge)
+        return tuple(values)
+
+    xs = starts(width)
+    ys = starts(height)
+    return tuple(
+        (x1, y1, min(x1 + tile_size, width), min(y1 + tile_size, height))
+        for y1 in ys
+        for x1 in xs
+    )
+
+
+def _prepare_processor_inputs(
+    processor: Any,
+    tile: Image.Image,
+    device: str,
+) -> Any:
+    """Preprocess one tile without allowing a hidden resize."""
+
+    inputs = processor(
+        images=tile,
+        return_tensors="pt",
+        do_resize=False,
+    )
+    pixel_values = (
+        inputs.get("pixel_values") if isinstance(inputs, Mapping) else None
+    )
+    shape = getattr(pixel_values, "shape", ())
+    if (
+        len(shape) != 4
+        or int(shape[0]) != 1
+        or int(shape[-2]) != tile.height
+        or int(shape[-1]) != tile.width
+    ):
+        raise SegFormerInferenceError("SEGFORMER_PROCESSOR_RESIZED_TILE")
+    if hasattr(inputs, "to"):
+        return inputs.to(device)
+    return {
+        key: value.to(device) if hasattr(value, "to") else value
+        for key, value in inputs.items()
+    }
+
+
+def _extract_feature_grid(
+    hidden_states: Any,
+    feature_stage: int,
+) -> Any:
+    """Select one proven BCHW feature stage; never guess token geometry."""
+
+    if not isinstance(feature_stage, int) or isinstance(feature_stage, bool):
+        raise SegFormerInferenceError("SEGFORMER_FEATURE_STAGE_INVALID")
+    if not isinstance(hidden_states, (tuple, list)) or not hidden_states:
+        raise SegFormerInferenceError("SEGFORMER_HIDDEN_STATES_MISSING")
+    try:
+        selected = hidden_states[feature_stage]
+    except IndexError:
+        raise SegFormerInferenceError("SEGFORMER_FEATURE_STAGE_INVALID") from None
+    shape = getattr(selected, "shape", ())
+    if len(shape) == 3:
+        # A token sequence has no unambiguous H/W without model-provided grid
+        # metadata. In particular, sqrt(tokens) is deliberately forbidden.
+        raise SegFormerInferenceError("SEGFORMER_FEATURE_GRID_UNRESOLVED")
+    if (
+        len(shape) != 4
+        or int(shape[0]) != 1
+        or int(shape[1]) <= 0
+        or int(shape[2]) <= 0
+        or int(shape[3]) <= 0
+    ):
+        raise SegFormerInferenceError("SEGFORMER_FEATURE_GRID_INVALID")
+    return selected[0]
+
+
+def _run_dense_transformers_tile(
+    model: Any,
+    processor: Any,
+    tile: Image.Image,
+    device: str,
+    feature_stage: int,
+    expected_channels: int,
+) -> tuple[Any, Any]:
+    """Return one tile's native-grid probabilities and hidden features."""
+
+    try:
+        import torch
+    except ImportError as error:
+        raise SegFormerDependencyError(
+            "SegFormer dense inference requires torch"
+        ) from error
+
+    inputs = _prepare_processor_inputs(processor, tile, device)
+    with torch.inference_mode():
+        outputs = model(
+            **inputs,
+            output_hidden_states=True,
+            return_dict=True,
+        )
+        logits = getattr(outputs, "logits", None)
+        shape = getattr(logits, "shape", ())
+        if (
+            len(shape) != 4
+            or int(shape[0]) != 1
+            or int(shape[1]) != expected_channels
+            or int(shape[2]) <= 0
+            or int(shape[3]) <= 0
+        ):
+            raise SegFormerInferenceError("SEGFORMER_LOGITS_SHAPE_INVALID")
+        features = _extract_feature_grid(
+            getattr(outputs, "hidden_states", None),
+            feature_stage,
+        )
+        probabilities = torch.softmax(logits, dim=1)[0]
+
+    def cpu_float32(value: Any) -> Any:
+        detached = value.detach() if hasattr(value, "detach") else value
+        return detached.to("cpu").float().numpy()
+
+    return cpu_float32(probabilities), cpu_float32(features)
+
+
+def _float32_chw(value: Any, *, name: str) -> Any:
+    """Validate one finite CHW array and return an owned float32 view."""
+
+    try:
+        import numpy as np
+    except ImportError as error:
+        raise SegFormerDependencyError("SegFormer dense output requires numpy") from error
+    array = np.asarray(value, dtype=np.float32)
+    if array.ndim != 3 or any(int(size) <= 0 for size in array.shape):
+        raise SegFormerInferenceError(f"SEGFORMER_{name}_SHAPE_INVALID")
+    if not np.isfinite(array).all():
+        raise SegFormerInferenceError(f"SEGFORMER_{name}_NONFINITE")
+    return np.ascontiguousarray(array)
+
+
+def _resize_chw(value: Any, width: int, height: int) -> Any:
+    """Bilinearly resize CHW float32 data without assuming a model stride."""
+
+    import numpy as np
+
+    if value.shape[1:] == (height, width):
+        return value
+    channels = [
+        np.asarray(
+            Image.fromarray(value[index]).resize(
+                (width, height),
+                resample=Image.Resampling.BILINEAR,
+            ),
+            dtype=np.float32,
+        )
+        for index in range(int(value.shape[0]))
+    ]
+    return np.stack(channels, axis=0)
+
+
+def _stitch_dense_tiles(
+    tiles: list[tuple[tuple[int, int, int, int], Any]],
+    *,
+    image_width: int,
+    image_height: int,
+    name: str,
+) -> Any:
+    """Average overlapping native-grid tile outputs on an inferred global grid."""
+
+    import numpy as np
+
+    if not tiles:
+        raise SegFormerInferenceError("SEGFORMER_TILE_OUTPUT_MISSING")
+    first_box, first = tiles[0]
+    first = _float32_chw(first, name=name)
+    x1, y1, x2, y2 = first_box
+    tile_width = x2 - x1
+    tile_height = y2 - y1
+    global_width = max(1, round(image_width * int(first.shape[2]) / tile_width))
+    global_height = max(1, round(image_height * int(first.shape[1]) / tile_height))
+    channels = int(first.shape[0])
+    accumulator = np.zeros((channels, global_height, global_width), dtype=np.float32)
+    weight_sum = np.zeros((global_height, global_width), dtype=np.float32)
+
+    for box, raw in tiles:
+        value = _float32_chw(raw, name=name)
+        if int(value.shape[0]) != channels:
+            raise SegFormerInferenceError(f"SEGFORMER_{name}_CHANNEL_MISMATCH")
+        bx1, by1, bx2, by2 = box
+        gx1 = round(bx1 * global_width / image_width)
+        gy1 = round(by1 * global_height / image_height)
+        gx2 = round(bx2 * global_width / image_width)
+        gy2 = round(by2 * global_height / image_height)
+        gx1 = min(max(gx1, 0), global_width - 1)
+        gy1 = min(max(gy1, 0), global_height - 1)
+        gx2 = min(max(gx2, gx1 + 1), global_width)
+        gy2 = min(max(gy2, gy1 + 1), global_height)
+        resized = _resize_chw(value, gx2 - gx1, gy2 - gy1)
+        accumulator[:, gy1:gy2, gx1:gx2] += resized
+        weight_sum[gy1:gy2, gx1:gx2] += 1.0
+
+    if not np.all(weight_sum > 0):
+        raise SegFormerInferenceError("SEGFORMER_STITCH_HOLE")
+    return np.ascontiguousarray(accumulator / weight_sum[None, :, :], dtype=np.float32)
+
+
 class SegFormerTransformersClient(SegFormerRuntime):
-    """Strict public client requiring an externally verified class map."""
+    """Offline tiled dense client plus the legacy mask compatibility API."""
+
+    _CLIENT_VERSION = "dense-v1"
 
     def __init__(
         self,
         settings: SegFormerSettings,
-        id_to_label: Mapping[int, str],
+        id_to_label: Mapping[int, str] | None = None,
         *,
         loader: RuntimeLoader | None = None,
         inference_runner: InferenceRunner | None = None,
+        dense_tile_runner: DenseTileRunner | None = None,
     ) -> None:
+        self._authoritative_labels = (
+            _verified_external_labels(id_to_label) if id_to_label is not None else None
+        )
+        self._dense_tile_runner = dense_tile_runner
+        self._cache_identity = ModelCacheIdentity(
+            model=settings.logical_model_id,
+            generation={
+                "backend": "segformer_transformers",
+                "dtype": settings.dtype,
+            },
+            client_version=self._CLIENT_VERSION,
+            revision=settings.revision,
+        )
         super().__init__(
             settings,
             id_to_label=id_to_label,
             loader=loader,
             inference_runner=inference_runner,
+        )
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        """Stable path-free identity used by composition and caching layers."""
+
+        return self._cache_identity
+
+    def infer(
+        self,
+        image: Any,
+        *,
+        tile_size: int,
+        tile_overlap: int,
+        feature_stage: int,
+    ) -> DenseSemanticOutput:
+        """Infer native-grid probabilities and features using averaged tiles."""
+
+        normalized = (
+            read_normalized_image(image)
+            if isinstance(image, Path)
+            else image.convert("RGB")
+            if isinstance(image, Image.Image)
+            else None
+        )
+        if normalized is None:
+            raise TypeError("image must be a PIL image or pathlib.Path")
+        coordinates = _tile_grid(
+            normalized.width,
+            normalized.height,
+            tile_size=tile_size,
+            tile_overlap=tile_overlap,
+        )
+        self.load()
+        assert self._model is not None
+        assert self._processor is not None
+        assert self._metadata is not None
+        assert self._resolved_device is not None
+        expected_channels = len(self._metadata.labels)
+        runner = self._dense_tile_runner or _run_dense_transformers_tile
+        probability_tiles: list[tuple[tuple[int, int, int, int], Any]] = []
+        feature_tiles: list[tuple[tuple[int, int, int, int], Any]] = []
+        for box in coordinates:
+            tile = normalized.crop(box)
+            try:
+                probabilities, features = runner(
+                    self._model,
+                    self._processor,
+                    tile,
+                    self._resolved_device,
+                    feature_stage,
+                    expected_channels,
+                )
+            except SegFormerError:
+                raise
+            except Exception as error:
+                raise SegFormerInferenceError(
+                    f"SegFormer dense tile inference failed: {type(error).__name__}"
+                ) from None
+            probability_tiles.append((box, probabilities))
+            feature_tiles.append((box, features))
+
+        probabilities = _stitch_dense_tiles(
+            probability_tiles,
+            image_width=normalized.width,
+            image_height=normalized.height,
+            name="PROBABILITIES",
+        )
+        if int(probabilities.shape[0]) != expected_channels:
+            raise SegFormerInferenceError("SEGFORMER_PROBABILITIES_CHANNEL_MISMATCH")
+        features = _stitch_dense_tiles(
+            feature_tiles,
+            image_width=normalized.width,
+            image_height=normalized.height,
+            name="FEATURES",
+        )
+        import numpy as np
+
+        if np.any(probabilities < -1e-6):
+            raise SegFormerInferenceError("SEGFORMER_PROBABILITIES_NEGATIVE")
+        probabilities = np.maximum(probabilities, 0.0).astype(np.float32, copy=False)
+        class_sum = probabilities.sum(axis=0, keepdims=True)
+        if not np.isfinite(class_sum).all() or np.any(class_sum <= 0):
+            raise SegFormerInferenceError("SEGFORMER_PROBABILITIES_INVALID_SUM")
+        probabilities = np.ascontiguousarray(probabilities / class_sum, dtype=np.float32)
+        features = np.ascontiguousarray(features, dtype=np.float32)
+
+        if self._authoritative_labels is not None:
+            class_names = self._authoritative_labels
+        elif self.settings.classes_filename is not None:
+            class_names = self._metadata.labels
+        else:
+            class_names = ()
+        if class_names and len(class_names) != int(probabilities.shape[0]):
+            raise SegFormerMetadataError(
+                "authoritative class count differs from probability channels"
+            )
+        return DenseSemanticOutput(
+            probabilities=probabilities,
+            features=features,
+            semantic_stride=(
+                normalized.width / int(probabilities.shape[2]),
+                normalized.height / int(probabilities.shape[1]),
+            ),
+            feature_stride=(
+                normalized.width / int(features.shape[2]),
+                normalized.height / int(features.shape[1]),
+            ),
+            original_size=normalized.size,
+            class_names=class_names,
+            diagnostics={
+                "backend": "segformer_transformers",
+                "tile_count": len(coordinates),
+                "tile_size": tile_size,
+                "tile_overlap": tile_overlap,
+                "feature_stage": feature_stage,
+                "device": self._resolved_device,
+            },
         )
 
 

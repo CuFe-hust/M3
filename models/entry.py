@@ -19,6 +19,7 @@ ModelName = Literal[
     "qwen_transformers",
     "qwen3_vl_baseline",
     "qwen3_5_transformers",
+    "segformer_transformers",
 ]
 
 ModelBuilder = Callable[..., object]
@@ -86,6 +87,19 @@ def build_qwen3_5_transformers_client(
         cache=cache,
         **kwargs,
     )
+
+
+@register("segformer_transformers")
+def build_segformer_transformers_client(
+    *,
+    settings: Any,
+    **kwargs: Any,
+) -> Any:
+    """Build the local dense SegFormer client without eager concrete imports."""
+
+    from models.segformer_transformers import SegFormerTransformersClient
+
+    return SegFormerTransformersClient(settings, **kwargs)
 
 
 def create_model(name: str, **kwargs: Any) -> Any:
