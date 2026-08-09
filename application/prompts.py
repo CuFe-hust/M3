@@ -26,7 +26,7 @@ _BINDINGS: dict[str, tuple[str, str]] = {
     "general": ("general_vqa_v2.md", "v2"),
     "grounding": ("general_vqa_v2.md", "v2"),
     "caption": ("caption_v1.md", "v1"),
-    "seam": ("seam_verify_v1.md", "v1"),
+    "seam": ("seam_review_v2.md", "v2"),
     "task_resolver": ("task_resolver_v1.md", "v1"),
     "count_judge": ("deepseek_judge_v1.md", "v1"),
     "vqa_judge": ("deepseek_vqa_judge_v2.md", "v2"),

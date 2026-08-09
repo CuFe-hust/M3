@@ -46,8 +46,10 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.version("general") == "v2"
     assert catalog.version("task_resolver") == "v1"
     assert catalog.version("vqa_judge") == "v2"
+    assert catalog.version("seam") == "v2"
     assert catalog.version("change") == "v2"
     assert catalog.asset("change").path.name == "change_dual_path_v2.md"
+    assert catalog.asset("seam").path.name == "seam_review_v2.md"
     assert catalog.asset("vqa_judge").path.name == "deepseek_vqa_judge_v2.md"
     assert (REPO_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").is_file()
 
@@ -85,6 +87,21 @@ def test_change_prompt_v2_keeps_auxiliary_evidence_non_authoritative() -> None:
         "not proof",
     ):
         assert required in prompt
+
+
+def test_seam_review_v2_is_local_and_decision_only() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["seam"].casefold()
+    for required in (
+        "local seam crop",
+        "never count or rescan the full image",
+        "same_instance",
+        "different_instances",
+        "uncertain",
+        '{"decision":"same_instance"}',
+    ):
+        assert required in prompt
+    for forbidden in ("canonical_point", "confidence", "short_reason"):
+        assert forbidden not in prompt
 
 
 def test_catalog_unknown_key_fails_stable() -> None:
@@ -125,7 +142,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "spatial_candidate_review_v5.md",
         "general_vqa_v2.md",
         "caption_v1.md",
-        "seam_verify_v1.md",
+        "seam_review_v2.md",
         "task_resolver_v1.md",
         "deepseek_judge_v1.md",
         "deepseek_vqa_judge_v2.md",

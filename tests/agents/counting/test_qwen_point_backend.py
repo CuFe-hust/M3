@@ -19,7 +19,11 @@ from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.backends.base import CountingBackendOutcome, CountingRequest
 from agents.counting.schema import (
     CountTargetSpec,
+    GlobalPointObservation,
     LocalPointObservation,
+    PixelRect,
+    PointProvenance,
+    SeamDecision,
     TileCountResponse,
 )
 from agents.counting.settings import CountingSettings, CountingTargetStrategy
@@ -65,6 +69,7 @@ class _FakeClient:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
         self.responses: list[TileCountResponse] = []
+        self.seam_decisions: list[str] = []
         self.failures: list[BaseException] = []
 
     @property
@@ -88,6 +93,9 @@ class _FakeClient:
         if self.responses:
             response = self.responses.pop(0)
             return response_model.model_validate(response.model_dump(mode="json"))
+        if response_model is SeamDecision:
+            decision = self.seam_decisions.pop(0) if self.seam_decisions else "uncertain"
+            return response_model.model_validate({"decision": decision})
         return response_model.model_validate(
             {"target": "car", "tile_id": request_meta.tile_id, "reported_count": 0}
         )
@@ -332,6 +340,158 @@ def test_budget_consumed_per_model_call(tmp_path: Path) -> None:
     assert len(client.calls) == 9
     assert budget.qwen_calls == 9
     assert outcome.counting.tile_count == 9
+
+
+def _global_seam_point(global_id: str, x: int) -> GlobalPointObservation:
+    return GlobalPointObservation(
+        global_id=global_id,
+        target="car",
+        source_tile_id=f"tile-{global_id}",
+        local_id=global_id,
+        local_x_norm=500,
+        local_y_norm=500,
+        local_radius_norm=20,
+        global_x_px=x,
+        global_y_px=50,
+        global_x_norm=x * 10,
+        global_y_norm=500,
+        radius_px=4.0,
+        confidence=0.9,
+        ownership_valid=True,
+        near_core_boundary=True,
+        accepted=True,
+        short_evidence="boundary candidate",
+        provenance=PointProvenance(source="qwen_point"),
+    )
+
+
+def test_qwen_seam_reviewer_uses_local_crop_and_minimal_schema(tmp_path: Path) -> None:
+    from agents.counting.backends.qwen_point import _QwenSeamReviewCallback
+
+    client = _FakeClient()
+    client.seam_decisions = ["same_instance"]
+    budget = _FakeBudget()
+    callback = _QwenSeamReviewCallback(
+        client,
+        system_prompt="Review only the local pair.",
+        prompt_version="seam-v2",
+        budget=budget,
+        artifact_root=tmp_path,
+        sample_id="s1",
+    )
+    crop_global = PixelRect(left=40, top=40, right=64, bottom=64)
+    decision = asyncio.run(
+        callback.review(
+            conflict_id="g0|g1",
+            image=Image.new("RGB", (24, 24), (10, 20, 30)),
+            crop_global=crop_global,
+            first=_global_seam_point("g0", 49),
+            second=_global_seam_point("g1", 54),
+        )
+    )
+    assert decision.decision == "same_instance"
+    assert budget.qwen_calls == 1
+    assert callback.same_count == 1
+    assert client.calls[0]["response_model"] is SeamDecision
+    meta = client.calls[0]["request_meta"]
+    assert meta.prompt_version == "seam-v2"
+    assert meta.request_hash
+    payload = json.loads(client.calls[0]["messages"][1]["content"][1]["text"])
+    assert payload["crop_global"] == crop_global.model_dump(mode="json")
+    assert set(payload) == {
+        "conflict_id",
+        "crop_global",
+        "first",
+        "second",
+        "instruction",
+    }
+
+
+def test_seam_request_hash_covers_prompt_crop_geometry_and_identity(tmp_path: Path) -> None:
+    from agents.counting.backends.qwen_point import _QwenSeamReviewCallback
+
+    def request_hash(
+        *,
+        prompt_version: str = "seam-v2",
+        color: tuple[int, int, int] = (1, 2, 3),
+        first_x: int = 49,
+        revision: str | None = None,
+    ) -> str:
+        class _RevisionClient(_FakeClient):
+            @property
+            def cache_identity(self) -> ModelCacheIdentity:
+                return ModelCacheIdentity(
+                    model="fake-model",
+                    generation={"temperature": 0.0},
+                    client_version="1",
+                    revision=revision,
+                )
+
+        callback = _QwenSeamReviewCallback(
+            _RevisionClient(),
+            system_prompt="local review",
+            prompt_version=prompt_version,
+            budget=None,
+            artifact_root=tmp_path,
+            sample_id="s1",
+        )
+        _messages, value, _image_hash = callback._build_request(
+            conflict_id="g0|g1",
+            image=Image.new("RGB", (24, 24), color),
+            crop_global=PixelRect(left=40, top=40, right=64, bottom=64),
+            first=_global_seam_point("g0", first_x),
+            second=_global_seam_point("g1", 54),
+        )
+        return value
+
+    base = request_hash()
+    assert base != request_hash(prompt_version="seam-v3")
+    assert base != request_hash(color=(3, 2, 1))
+    assert base != request_hash(first_x=48)
+    assert base != request_hash(revision="rev-2")
+
+
+def test_seam_budget_exhaustion_happens_before_model_call(tmp_path: Path) -> None:
+    from agents.counting.backends.qwen_point import _QwenSeamReviewCallback
+    from workflows.call_budget import CallBudget, CallBudgetExceeded
+
+    client = _FakeClient()
+    callback = _QwenSeamReviewCallback(
+        client,
+        system_prompt="local review",
+        prompt_version="seam-v2",
+        budget=CallBudget(max_qwen_calls=0),
+        artifact_root=tmp_path,
+        sample_id="s1",
+    )
+    with pytest.raises(CallBudgetExceeded):
+        asyncio.run(
+            callback.review(
+                conflict_id="g0|g1",
+                image=Image.new("RGB", (24, 24)),
+                crop_global=PixelRect(left=40, top=40, right=64, bottom=64),
+                first=_global_seam_point("g0", 49),
+                second=_global_seam_point("g1", 54),
+            )
+        )
+    assert client.calls == []
+    assert callback.failure_count == 1
+
+
+def test_public_trace_does_not_expose_seam_prompt_or_image(tmp_path: Path) -> None:
+    prompt = "SENSITIVE LOCAL SEAM PROMPT"
+    backend = _backend(
+        _FakeClient(),
+        seam_prompt=prompt,
+        seam_prompt_version="seam-v2",
+    )
+    outcome = asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
+    serialized = json.dumps(outcome.trace, sort_keys=True)
+    assert outcome.trace["seam_review_enabled"] is True
+    assert outcome.trace["seam_review_attempt_count"] == 0
+    assert prompt not in serialized
+    assert "data:image" not in serialized
+    assert "base64" not in serialized
 
 
 # ── 边界 / boundaries ─────────────────────────────────────────────────────

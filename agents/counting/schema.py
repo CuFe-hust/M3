@@ -206,6 +206,18 @@ class IssueRecord(BaseModel):
     point_ids: list[str] = Field(default_factory=list)
 
 
+class SeamDecision(BaseModel):
+    """Minimal visual judgment for one ambiguous local seam pair."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    decision: Literal[
+        "same_instance",
+        "different_instances",
+        "uncertain",
+    ]
+
+
 class CountingDraft(BaseModel):
     """Collected tile evidence before seam and review finalization.
     seam 与复核最终化前收集的 tile 证据。"""

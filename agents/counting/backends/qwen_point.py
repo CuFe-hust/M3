@@ -18,7 +18,14 @@ from agents.counting.backends.base import (
     require_model_cache_identity,
 )
 from agents.counting.point_pipeline import PointCountingOrchestrator
-from agents.counting.schema import CountTargetSpec, TileCountResponse, TileSpec
+from agents.counting.schema import (
+    CountTargetSpec,
+    GlobalPointObservation,
+    PixelRect,
+    SeamDecision,
+    TileCountResponse,
+    TileSpec,
+)
 from agents.counting.settings import CountingSettings, CountingTargetStrategy
 from models.base import RequestMeta, VisionLanguageClient, build_request_hash
 from models.images import image_to_data_url
@@ -40,6 +47,8 @@ class QwenPointCountingBackend:
         prompt_version: str | None = None,
         empty_review_prompt: str | None = None,
         empty_review_prompt_version: str | None = None,
+        seam_prompt: str | None = None,
+        seam_prompt_version: str | None = None,
         strategy_resolver: Callable[[CountTargetSpec], CountingTargetStrategy]
         | None = None,
     ) -> None:
@@ -51,6 +60,8 @@ class QwenPointCountingBackend:
         self._empty_review_prompt_version = (
             empty_review_prompt_version or self._prompt_version
         )
+        self._seam_prompt = seam_prompt
+        self._seam_prompt_version = seam_prompt_version
         self._strategy_resolver = strategy_resolver
 
     def is_enabled(self) -> bool:
@@ -97,10 +108,24 @@ class QwenPointCountingBackend:
                 else None
             ),
         )
+        seam_callback = (
+            _QwenSeamReviewCallback(
+                self._client,
+                system_prompt=self._seam_prompt,
+                prompt_version=self._seam_prompt_version or "seam-review-v1",
+                budget=getattr(context, "call_budget", None),
+                artifact_root=request.artifact_dir,
+                sample_id=request.sample.sample_id,
+            )
+            if self._seam_prompt is not None
+            and self._counting.seam_review_enabled
+            else None
+        )
         orchestrator = PointCountingOrchestrator(
             callback,
             counting=self._counting,
             empty_tile_reviewer=callback if verify_empty else None,
+            seam_reviewer=seam_callback,
         )
         counting = await orchestrator.count_image(
             request.image,
@@ -125,6 +150,22 @@ class QwenPointCountingBackend:
                 "upscale_used": callback.upscale_used,
                 "original_size": original_size,
                 "transmitted_size": transmitted_size,
+                "seam_review_enabled": seam_callback is not None,
+                "seam_review_attempt_count": (
+                    seam_callback.attempt_count if seam_callback is not None else 0
+                ),
+                "seam_review_same_count": (
+                    seam_callback.same_count if seam_callback is not None else 0
+                ),
+                "seam_review_different_count": (
+                    seam_callback.different_count if seam_callback is not None else 0
+                ),
+                "seam_review_uncertain_count": (
+                    seam_callback.uncertain_count if seam_callback is not None else 0
+                ),
+                "seam_review_failure_count": (
+                    seam_callback.failure_count if seam_callback is not None else 0
+                ),
             },
         )
 
@@ -320,6 +361,161 @@ class _PipelineTileCallback:
             key=lambda pair: pair[1][0] * pair[1][1],
         )
         return list(original), list(transmitted)
+
+
+class _QwenSeamReviewCallback:
+    """Review one ambiguous pair from a local crop without recounting."""
+
+    def __init__(
+        self,
+        client: VisionLanguageClient,
+        *,
+        system_prompt: str,
+        prompt_version: str,
+        budget: CallBudget | None,
+        artifact_root: Any,
+        sample_id: str,
+    ) -> None:
+        self._client = client
+        self._system_prompt = system_prompt
+        self._prompt_version = prompt_version
+        self._budget = budget
+        self._artifact_root = artifact_root
+        self._sample_id = sample_id
+        self.attempt_count = 0
+        self.same_count = 0
+        self.different_count = 0
+        self.uncertain_count = 0
+        self.failure_count = 0
+
+    async def review(
+        self,
+        *,
+        conflict_id: str,
+        image: Image.Image,
+        crop_global: PixelRect,
+        first: GlobalPointObservation,
+        second: GlobalPointObservation,
+    ) -> SeamDecision:
+        self.attempt_count += 1
+        try:
+            messages, request_hash, image_hash = self._build_request(
+                conflict_id=conflict_id,
+                image=image,
+                crop_global=crop_global,
+                first=first,
+                second=second,
+            )
+            if self._budget is not None:
+                self._budget.reserve_qwen()
+            decision = await self._client.complete_json(
+                messages=messages,
+                response_model=SeamDecision,
+                request_meta=RequestMeta(
+                    request_id=f"{self._sample_id}:seam:{request_hash[:16]}",
+                    request_hash=request_hash,
+                    prompt_version=self._prompt_version,
+                    sample_id=self._sample_id,
+                    image_sha256=image_hash,
+                    artifact_dir=(
+                        self._artifact_root / "seams" / request_hash
+                    ),
+                ),
+            )
+            decision = SeamDecision.model_validate(decision)
+        except Exception:
+            self.failure_count += 1
+            raise
+        if decision.decision == "same_instance":
+            self.same_count += 1
+        elif decision.decision == "different_instances":
+            self.different_count += 1
+        else:
+            self.uncertain_count += 1
+        return decision
+
+    def _build_request(
+        self,
+        *,
+        conflict_id: str,
+        image: Image.Image,
+        crop_global: PixelRect,
+        first: GlobalPointObservation,
+        second: GlobalPointObservation,
+    ) -> tuple[list[dict[str, Any]], str, str]:
+        with io.BytesIO() as buffer:
+            image.save(buffer, format="JPEG", quality=95)
+            image_bytes = buffer.getvalue()
+        image_hash = hashlib.sha256(image_bytes).hexdigest()
+        geometry = {
+            "conflict_id": conflict_id,
+            "crop_global": crop_global.model_dump(mode="json"),
+            "first": _seam_point_geometry(first, crop_global),
+            "second": _seam_point_geometry(second, crop_global),
+        }
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": self._system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_to_data_url(image_bytes)},
+                    },
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                **geometry,
+                                "instruction": (
+                                    "Judge only this pair as same_instance, "
+                                    "different_instances, or uncertain."
+                                ),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+            },
+        ]
+        identity = require_model_cache_identity(
+            self._client, component="qwen_seam_review"
+        )
+        request_hash = build_request_hash(
+            model=identity.model,
+            generation=identity.generation_payload(),
+            prompt_version=self._prompt_version,
+            messages=messages,
+            image_sha256=image_hash,
+            tile_geometry=geometry,
+            response_schema=SeamDecision.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
+        )
+        return messages, request_hash, image_hash
+
+
+def _seam_point_geometry(
+    point: GlobalPointObservation,
+    crop_global: PixelRect,
+) -> dict[str, Any]:
+    width = max(1, crop_global.width - 1)
+    height = max(1, crop_global.height - 1)
+    return {
+        "global_id": point.global_id,
+        "target": point.target,
+        "crop_x_norm": round(
+            (point.global_x_px - crop_global.left) / width * 999
+        ),
+        "crop_y_norm": round(
+            (point.global_y_px - crop_global.top) / height * 999
+        ),
+        "radius_px": point.radius_px,
+        "confidence": point.confidence,
+        "source": (
+            point.provenance.source if point.provenance is not None else None
+        ),
+    }
 
 
 def _upscale_image(image: Image.Image, max_side: int | None) -> Image.Image:

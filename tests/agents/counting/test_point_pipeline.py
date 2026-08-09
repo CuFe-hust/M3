@@ -19,6 +19,7 @@ from agents.counting.point_pipeline import (
     PointCountingOrchestrator,
     TileCountCallback,
     apply_acceptance_policy,
+    decide_seam_pairs,
     finalize_representatives,
     find_boundary_conflicts,
 )
@@ -26,6 +27,7 @@ from agents.counting.schema import (
     CountTargetSpec,
     GlobalPointObservation,
     LocalPointObservation,
+    SeamDecision,
     TileCountResponse,
     TileSpec,
 )
@@ -456,6 +458,7 @@ def _seam_point(
     y: int,
     *,
     near_boundary: bool,
+    source: str = "qwen_point",
 ) -> GlobalPointObservation:
     from agents.counting.schema import PointProvenance
 
@@ -478,9 +481,13 @@ def _seam_point(
         accepted=True,
         short_evidence="e",
         provenance=PointProvenance(
-            source="yolo_obb_center",
+            source=source,
             source_class="car",
-            obb_polygon_global_px=[[x - 4, y - 4], [x - 4, y + 4], [x + 4, y + 4], [x + 4, y - 4]],
+            obb_polygon_global_px=(
+                [[x - 4, y - 4], [x - 4, y + 4], [x + 4, y + 4], [x + 4, y - 4]]
+                if source == "yolo_obb_center"
+                else None
+            ),
         ),
     )
 
@@ -560,3 +567,164 @@ def test_seam_merge_is_stable_and_reproducible() -> None:
     pairs2, unresolved2 = decide_seam_pairs(list(reversed(conflicts)))
     assert pairs1 == pairs2
     assert unresolved1 == unresolved2
+
+
+class _SeamReviewer:
+    def __init__(self, decision: str = "uncertain", error: Exception | None = None):
+        self.decision = decision
+        self.error = error
+        self.calls: list[dict[str, object]] = []
+
+    async def review(self, **kwargs) -> SeamDecision:
+        self.calls.append(kwargs)
+        if self.error is not None:
+            raise self.error
+        return SeamDecision(decision=self.decision)
+
+
+def _seam_conflict(distance: float, threshold: float = 10.0) -> dict[str, object]:
+    return {
+        "conflict_id": "g0|g1",
+        "first_global_id": "g0",
+        "second_global_id": "g1",
+        "threshold_px": threshold,
+        "distance_px": distance,
+    }
+
+
+def _resolve_seam(
+    conflict: dict[str, object],
+    *,
+    reviewer: _SeamReviewer | None,
+):
+    first = _seam_point("g0", "t0", 49, 50, near_boundary=True)
+    second = _seam_point("g1", "t1", 54, 50, near_boundary=True)
+    orchestrator = PointCountingOrchestrator(
+        _RecordingCallback(),
+        counting=CountingSettings(seam_crop_margin_px=8),
+        seam_reviewer=reviewer,
+    )
+    resolved = asyncio.run(
+        orchestrator._resolve_seam_conflicts(
+            [conflict],
+            _image(100, 100),
+            [first, second],
+        )
+    )
+    return resolved, reviewer
+
+
+def test_strong_seam_match_merges_without_visual_call() -> None:
+    (merged, unresolved, warnings), reviewer = _resolve_seam(
+        _seam_conflict(2.0),
+        reviewer=_SeamReviewer("different_instances"),
+    )
+    assert merged == [("g0", "g1")]
+    assert unresolved == []
+    assert warnings == []
+    assert reviewer is not None and reviewer.calls == []
+
+
+def test_clear_separate_seam_pair_uses_no_visual_call() -> None:
+    (merged, unresolved, warnings), reviewer = _resolve_seam(
+        _seam_conflict(9.0),
+        reviewer=_SeamReviewer("same_instance"),
+    )
+    assert merged == []
+    assert unresolved == []
+    assert warnings == []
+    assert reviewer is not None and reviewer.calls == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "expected_merged", "expected_unresolved"),
+    [
+        ("same_instance", [("g0", "g1")], []),
+        ("different_instances", [], []),
+        ("uncertain", [], [("g0", "g1")]),
+    ],
+)
+def test_ambiguous_seam_pair_uses_visual_decision(
+    decision: str,
+    expected_merged: list[tuple[str, str]],
+    expected_unresolved: list[tuple[str, str]],
+) -> None:
+    (merged, unresolved, warnings), reviewer = _resolve_seam(
+        _seam_conflict(5.0),
+        reviewer=_SeamReviewer(decision),
+    )
+    assert merged == expected_merged
+    assert unresolved == expected_unresolved
+    assert warnings == []
+    assert reviewer is not None and len(reviewer.calls) == 1
+    assert reviewer.calls[0]["image"].size == (22, 17)
+
+
+def test_seam_reviewer_exception_is_unresolved_with_stable_warning() -> None:
+    (merged, unresolved, warnings), _reviewer = _resolve_seam(
+        _seam_conflict(5.0),
+        reviewer=_SeamReviewer(error=RuntimeError("sensitive details")),
+    )
+    assert merged == []
+    assert unresolved == [("g0", "g1")]
+    assert warnings[0].code == "COUNTING_SEAM_REVIEW_FAILED"
+    assert warnings[0].message == "Seam review failed: RuntimeError"
+    assert "sensitive details" not in warnings[0].message
+
+
+def test_seam_budget_exhaustion_is_unresolved_with_stable_warning() -> None:
+    from workflows.call_budget import CallBudgetExceeded
+
+    (merged, unresolved, warnings), _reviewer = _resolve_seam(
+        _seam_conflict(5.0),
+        reviewer=_SeamReviewer(error=CallBudgetExceeded("budget details")),
+    )
+    assert merged == []
+    assert unresolved == [("g0", "g1")]
+    assert warnings[0].message == "Seam review failed: CallBudgetExceeded"
+
+
+def test_ambiguous_seam_without_callback_stays_deterministic_unresolved() -> None:
+    (merged, unresolved, warnings), _reviewer = _resolve_seam(
+        _seam_conflict(5.0),
+        reviewer=None,
+    )
+    assert merged == []
+    assert unresolved == [("g0", "g1")]
+    assert warnings == []
+
+
+def test_yolo_obb_pair_is_not_reprocessed_by_point_seam_logic() -> None:
+    left = _seam_tile("t0", 0, 0, 50, 100)
+    right = _seam_tile("t1", 50, 0, 100, 100)
+    first = _seam_point(
+        "g0", "t0", 49, 50, near_boundary=True, source="yolo_obb_center"
+    )
+    second = _seam_point(
+        "g1", "t1", 50, 50, near_boundary=True, source="yolo_obb_center"
+    )
+    assert find_boundary_conflicts([first, second], [left, right]) == []
+
+
+def test_semantic_centroids_use_shared_seam_candidate_logic() -> None:
+    left = _seam_tile("t0", 0, 0, 50, 100)
+    right = _seam_tile("t1", 50, 0, 100, 100)
+    first = _seam_point(
+        "g0",
+        "t0",
+        49,
+        50,
+        near_boundary=True,
+        source="semantic_component_centroid",
+    )
+    second = _seam_point(
+        "g1",
+        "t1",
+        50,
+        50,
+        near_boundary=True,
+        source="semantic_component_centroid",
+    )
+    conflicts = find_boundary_conflicts([first, second], [left, right])
+    assert len(conflicts) == 1
+    assert decide_seam_pairs(conflicts)[0] == [("g0", "g1")]

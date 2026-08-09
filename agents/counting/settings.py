@@ -29,6 +29,12 @@ class CountingSettings(BaseModel):
     sequential: bool = True
     concurrency: int = Field(default=1, ge=1)
     seam_verify: bool = True
+    seam_review_enabled: bool = True
+    seam_auto_merge_distance_factor: float = Field(default=0.35, gt=0.0, lt=1.0)
+    seam_review_max_distance_factor: float = Field(default=0.75, gt=0.0, le=1.0)
+    seam_conflict_min_distance_px: float = Field(default=6.0, gt=0.0)
+    seam_conflict_max_distance_px: float = Field(default=64.0, gt=0.0)
+    seam_conflict_core_ratio: float = Field(default=0.01, gt=0.0, le=1.0)
     recursive_split_enabled: bool = True
     max_recursive_depth: int = Field(default=2, ge=0)
     min_core_size: int = Field(default=224, gt=0)
@@ -72,6 +78,19 @@ class CountingSettings(BaseModel):
         if self.small_object_min_scan_depth > self.max_recursive_depth:
             raise ValueError(
                 "small_object_min_scan_depth cannot exceed max_recursive_depth"
+            )
+        if (
+            self.seam_auto_merge_distance_factor
+            >= self.seam_review_max_distance_factor
+        ):
+            raise ValueError(
+                "seam_auto_merge_distance_factor must be smaller than "
+                "seam_review_max_distance_factor"
+            )
+        if self.seam_conflict_min_distance_px > self.seam_conflict_max_distance_px:
+            raise ValueError(
+                "seam_conflict_min_distance_px cannot exceed "
+                "seam_conflict_max_distance_px"
             )
 
 

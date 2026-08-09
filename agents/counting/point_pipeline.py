@@ -29,6 +29,7 @@ from agents.counting.schema import (
     GlobalPointObservation,
     IssueRecord,
     PixelRect,
+    SeamDecision,
     TileCountResponse,
     TileSpec,
 )
@@ -62,6 +63,20 @@ class EmptyTileReviewCallback(Protocol):
     ) -> TileCountResponse: ...
 
 
+class SeamReviewCallback(Protocol):
+    """Optional visual judgment for one ambiguous local seam pair."""
+
+    async def review(
+        self,
+        *,
+        conflict_id: str,
+        image: Image.Image,
+        crop_global: PixelRect,
+        first: GlobalPointObservation,
+        second: GlobalPointObservation,
+    ) -> SeamDecision: ...
+
+
 @dataclass(frozen=True)
 class _TileOutcome:
     points: list[GlobalPointObservation]
@@ -81,10 +96,12 @@ class PointCountingOrchestrator:
         *,
         counting: CountingSettings,
         empty_tile_reviewer: EmptyTileReviewCallback | None = None,
+        seam_reviewer: SeamReviewCallback | None = None,
     ) -> None:
         self.callback = callback
         self.counting = counting
         self.empty_tile_reviewer = empty_tile_reviewer
+        self.seam_reviewer = seam_reviewer
 
     async def count_image(
         self,
@@ -110,9 +127,16 @@ class PointCountingOrchestrator:
         warnings = list(draft.warnings)
         if self.counting.seam_verify:
             conflicts = find_boundary_conflicts(
-                draft.raw_global_points, draft.processed_tiles
+                draft.raw_global_points,
+                draft.processed_tiles,
+                counting=self.counting,
             )
-            pairs, unresolved = decide_seam_pairs(conflicts)
+            pairs, unresolved, seam_warnings = await self._resolve_seam_conflicts(
+                conflicts,
+                image.convert("RGB"),
+                draft.raw_global_points,
+            )
+            warnings.extend(seam_warnings)
             final_points, merged_groups = finalize_representatives(
                 draft.raw_global_points, pairs
             )
@@ -134,7 +158,7 @@ class PointCountingOrchestrator:
                     IssueRecord(
                         code="COUNTING_SEAM_CONFLICT_UNRESOLVED",
                         message=(
-                            f"Seam duplicate candidate retained for review: "
+                            f"Seam duplicate candidate remains unresolved: "
                             f"{first}|{second}"
                         ),
                         point_ids=[first, second],
@@ -179,6 +203,89 @@ class PointCountingOrchestrator:
             final_count=sum(point.accepted for point in final_points),
             status=status,
         )
+
+    async def _resolve_seam_conflicts(
+        self,
+        conflicts: Sequence[Any],
+        image: Image.Image,
+        points: Sequence[GlobalPointObservation],
+    ) -> tuple[
+        list[tuple[str, str]],
+        list[tuple[str, str]],
+        list[IssueRecord],
+    ]:
+        merged, ambiguous, _separate = classify_seam_conflicts(
+            conflicts,
+            auto_merge_distance_factor=(
+                self.counting.seam_auto_merge_distance_factor
+            ),
+            review_max_distance_factor=(
+                self.counting.seam_review_max_distance_factor
+            ),
+        )
+        if (
+            self.seam_reviewer is None
+            or not self.counting.seam_review_enabled
+        ):
+            return merged, ambiguous, []
+        point_by_id = {point.global_id: point for point in points}
+        conflict_by_pair = {
+            _seam_pair(conflict): conflict for conflict in conflicts
+        }
+        unresolved: list[tuple[str, str]] = []
+        warnings: list[IssueRecord] = []
+        for pair in ambiguous:
+            first = point_by_id.get(pair[0])
+            second = point_by_id.get(pair[1])
+            conflict = conflict_by_pair.get(pair)
+            if first is None or second is None or conflict is None:
+                unresolved.append(pair)
+                warnings.append(
+                    IssueRecord(
+                        code="COUNTING_SEAM_REVIEW_FAILED",
+                        message="Seam review failed: ConflictEvidenceMissing",
+                        point_ids=list(pair),
+                    )
+                )
+                continue
+            crop_global = _seam_crop_rect(
+                image,
+                first,
+                second,
+                margin_px=self.counting.seam_crop_margin_px,
+            )
+            crop = image.crop(
+                (
+                    crop_global.left,
+                    crop_global.top,
+                    crop_global.right,
+                    crop_global.bottom,
+                )
+            )
+            try:
+                decision = await self.seam_reviewer.review(
+                    conflict_id=str(conflict["conflict_id"]),
+                    image=crop,
+                    crop_global=crop_global,
+                    first=first,
+                    second=second,
+                )
+                decision = SeamDecision.model_validate(decision)
+            except Exception as error:
+                unresolved.append(pair)
+                warnings.append(
+                    IssueRecord(
+                        code="COUNTING_SEAM_REVIEW_FAILED",
+                        message=f"Seam review failed: {type(error).__name__}",
+                        point_ids=list(pair),
+                    )
+                )
+                continue
+            if decision.decision == "same_instance":
+                merged.append(pair)
+            elif decision.decision == "uncertain":
+                unresolved.append(pair)
+        return sorted(merged), sorted(unresolved), warnings
 
     async def collect_points(
         self,
@@ -474,7 +581,8 @@ def apply_acceptance_policy(
 def decide_seam_pairs(
     conflicts: Sequence[Any],
     *,
-    merge_distance_factor: float = 0.5,
+    merge_distance_factor: float = 0.35,
+    review_distance_factor: float = 0.75,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
     """Conservatively decide which boundary conflicts are strong enough to
     auto-merge and which stay unresolved for review. Only adjacent-core,
@@ -482,18 +590,43 @@ def decide_seam_pairs(
     a very small centre distance. 保守决定哪些边界冲突足够强可自动合并、哪些
     保留为待复核未解决。只有相邻 core 的边界候选能到达此处；合并还要求中心
     距离非常小。"""
+    merged, ambiguous, _separate = classify_seam_conflicts(
+        conflicts,
+        auto_merge_distance_factor=merge_distance_factor,
+        review_max_distance_factor=review_distance_factor,
+    )
+    return merged, ambiguous
+
+
+def classify_seam_conflicts(
+    conflicts: Sequence[Any],
+    *,
+    auto_merge_distance_factor: float,
+    review_max_distance_factor: float,
+) -> tuple[
+    list[tuple[str, str]],
+    list[tuple[str, str]],
+    list[tuple[str, str]],
+]:
+    """Split candidates into deterministic merge, review, and separate zones."""
+
+    if not 0.0 < auto_merge_distance_factor < review_max_distance_factor <= 1.0:
+        raise ValueError("invalid seam distance factors")
     merged: list[tuple[str, str]] = []
-    unresolved: list[tuple[str, str]] = []
+    ambiguous: list[tuple[str, str]] = []
+    separate: list[tuple[str, str]] = []
     for conflict in conflicts:
-        first = conflict["first_global_id"]
-        second = conflict["second_global_id"]
-        distance = float(conflict["distance_px"])
+        pair = _seam_pair(conflict)
         threshold = float(conflict["threshold_px"])
-        if distance <= threshold * merge_distance_factor:
-            merged.append((first, second))
+        distance = float(conflict["distance_px"])
+        ratio = distance / threshold if threshold > 0.0 else float("inf")
+        if ratio <= auto_merge_distance_factor:
+            merged.append(pair)
+        elif ratio <= review_max_distance_factor:
+            ambiguous.append(pair)
         else:
-            unresolved.append((first, second))
-    return merged, unresolved
+            separate.append(pair)
+    return sorted(merged), sorted(ambiguous), sorted(separate)
 
 
 def finalize_representatives(
@@ -554,9 +687,12 @@ def finalize_representatives(
 def find_boundary_conflicts(
     points: Sequence[GlobalPointObservation],
     tiles: Sequence[TileSpec],
+    *,
+    counting: CountingSettings | None = None,
 ) -> list[Any]:
     """Find only adjacent-core, near-boundary duplicate candidates without
     clustering. 仅查找相邻 core 边界附近的重复候选，不执行全图聚类。"""
+    policy = counting or CountingSettings()
     tile_by_id = {tile.tile_id: tile for tile in tiles}
     accepted = [
         point for point in points if point.accepted and point.near_core_boundary
@@ -570,9 +706,11 @@ def find_boundary_conflicts(
             second_tile = tile_by_id.get(second.source_tile_id)
             if second_tile is None or first.target.casefold() != second.target.casefold():
                 continue
+            if _is_yolo_obb_pair(first, second):
+                continue
             if not _cores_are_neighbours(first_tile, second_tile):
                 continue
-            threshold = _conflict_threshold(first, second, first_tile)
+            threshold = _conflict_threshold(first, second, first_tile, policy)
             distance = (
                 (first.global_x_px - second.global_x_px) ** 2
                 + (first.global_y_px - second.global_y_px) ** 2
@@ -634,10 +772,59 @@ def _conflict_threshold(
     first: GlobalPointObservation,
     second: GlobalPointObservation,
     tile: TileSpec,
+    counting: CountingSettings,
 ) -> float:
-    base = 6.0
+    base = counting.seam_conflict_min_distance_px
     if first.radius_px > 0 and second.radius_px > 0:
-        return min(max(min(first.radius_px, second.radius_px), base), 64.0)
+        return min(
+            max(min(first.radius_px, second.radius_px), base),
+            counting.seam_conflict_max_distance_px,
+        )
     return max(
-        base, 0.01 * min(tile.owner_core_global.width, tile.owner_core_global.height)
+        base,
+        counting.seam_conflict_core_ratio
+        * min(tile.owner_core_global.width, tile.owner_core_global.height),
     )
+
+
+def _seam_pair(conflict: Any) -> tuple[str, str]:
+    return tuple(
+        sorted(
+            (
+                str(conflict["first_global_id"]),
+                str(conflict["second_global_id"]),
+            )
+        )
+    )
+
+
+def _is_yolo_obb_pair(
+    first: GlobalPointObservation,
+    second: GlobalPointObservation,
+) -> bool:
+    return (
+        first.provenance is not None
+        and second.provenance is not None
+        and first.provenance.source == "yolo_obb_center"
+        and second.provenance.source == "yolo_obb_center"
+    )
+
+
+def _seam_crop_rect(
+    image: Image.Image,
+    first: GlobalPointObservation,
+    second: GlobalPointObservation,
+    *,
+    margin_px: int,
+) -> PixelRect:
+    left = max(0, min(first.global_x_px, second.global_x_px) - margin_px)
+    top = max(0, min(first.global_y_px, second.global_y_px) - margin_px)
+    right = min(
+        image.width,
+        max(first.global_x_px, second.global_x_px) + margin_px + 1,
+    )
+    bottom = min(
+        image.height,
+        max(first.global_y_px, second.global_y_px) + margin_px + 1,
+    )
+    return PixelRect(left=left, top=top, right=right, bottom=bottom)
