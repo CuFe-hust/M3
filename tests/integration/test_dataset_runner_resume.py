@@ -445,6 +445,7 @@ def _seed_succeeded_sample(
     sample: UnifiedSample,
     payload: Any,
     result_filename: str,
+    execution_task: str | None = None,
 ) -> Path:
     """Manually construct a succeeded sample dir (sample.json + status.json +
     result artifact) as if a fresh run had completed it.
@@ -460,7 +461,7 @@ def _seed_succeeded_sample(
         sample_dir,
         SampleRunStatus(
             sample_id=sample.sample_id,
-            task=task,  # type: ignore[arg-type]
+            task=execution_task or task,  # type: ignore[arg-type]
             state="succeeded",
             updated_at="2026-01-01T00:00:00Z",
         ),
@@ -468,7 +469,7 @@ def _seed_succeeded_sample(
     writer.write_execution(
         sample_dir,
         AgentExecution(
-            agent_name="general_vqa_agent",
+            agent_name=getattr(payload, "agent_name", "general_vqa_agent"),
             payload=payload,
             result_filename=result_filename,
         ),
@@ -484,6 +485,21 @@ def _vqa_bucket_sample(task: str, answers: list[str]) -> UnifiedSample:
         task=task,  # type: ignore[arg-type]
         images=[ImageRef(image_id="i0", path="img.png", role="image")],
         question="Question?",
+        ground_truth=GroundTruth(answers=answers),
+    )
+
+
+def _change_bucket_sample(task: str, answers: list[str]) -> UnifiedSample:
+    return UnifiedSample(
+        sample_id=f"parity-{task}",
+        dataset="fake",
+        split="test",
+        task=task,  # type: ignore[arg-type]
+        images=[
+            ImageRef(image_id="i0", path="t1.png", role="t1"),
+            ImageRef(image_id="i1", path="t2.png", role="t2"),
+        ],
+        question="" if task == "change_caption" else "What changed?",
         ground_truth=GroundTruth(answers=answers),
     )
 
@@ -526,6 +542,51 @@ def test_resume_supplements_scene_classification(tmp_path: Path) -> None:
         result_filename="agent_result.json",
     )
     summary = _run(dataset_runner, root=root, task="scene_classification", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "vqa_evaluation.json")
+    assert evaluation["task"] == "general_vqa"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+
+
+def test_resume_supplements_change_qa_without_qwen(tmp_path: Path) -> None:
+    sample = _change_bucket_sample("change_qa", ["road added"])
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="change_qa",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="change_agent", answer="road added", status="completed"
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="change_qa", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "vqa_evaluation.json")
+    assert evaluation["task"] == "general_vqa"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+
+
+def test_resume_uses_persisted_spatial_execution_task(tmp_path: Path) -> None:
+    sample = _vqa_bucket_sample("general_vqa", ["north"])
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="general_vqa",
+        execution_task="spatial_relation",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="spatial_agent", answer="north", status="completed"
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="general_vqa", resume=True)
     assert summary.succeeded == 1
     assert client.calls == 0
     evaluation = _read_json(sample_dir / "vqa_evaluation.json")
@@ -591,6 +652,30 @@ def test_resume_supplements_caption(tmp_path: Path) -> None:
     evaluation = _read_json(sample_dir / "caption_evaluation.json")
     assert evaluation["task"] == "caption"
     assert evaluation["deterministic_metrics"]["candidate"] == "a street scene"
+
+
+def test_resume_supplements_change_caption_without_qwen(tmp_path: Path) -> None:
+    sample = _change_bucket_sample("change_caption", ["a road was added"])
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="change_caption",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="change_agent",
+            answer="a road was added",
+            status="completed",
+        ),
+        result_filename="agent_result.json",
+    )
+    summary = _run(dataset_runner, root=root, task="change_caption", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "caption_evaluation.json")
+    assert evaluation["task"] == "caption"
+    assert evaluation["deterministic_metrics"]["candidate"] == "a road was added"
 
 
 def test_resume_supplements_grounding_compatible_frame(tmp_path: Path) -> None:

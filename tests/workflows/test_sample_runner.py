@@ -852,6 +852,49 @@ def test_scene_classification_uses_vqa_evaluation(tmp_path: Path) -> None:
     assert outcome.evaluation.deterministic_metrics.exact_match is True
 
 
+@pytest.mark.parametrize(
+    ("candidate", "expected"),
+    [("road added", True), ("no visible change", False)],
+)
+def test_change_qa_uses_generic_vqa_exact_match(
+    tmp_path: Path,
+    candidate: str,
+    expected: bool,
+) -> None:
+    agent = _FakeAgent(
+        "change_agent",
+        ("change_qa",),
+        payload=AgentResult(
+            agent_name="change_agent", answer=candidate, status="completed"
+        ),
+    )
+    outcome = _run(_runner([agent]), _change_sample(), _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "general_vqa"
+    assert outcome.evaluation.deterministic_metrics.exact_match is expected
+    assert (_sample_dir(tmp_path) / "vqa_evaluation.json").is_file()
+
+
+def test_spatial_relation_uses_vqa_evaluation(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "spatial_agent",
+        ("spatial_relation",),
+        payload=AgentResult(
+            agent_name="spatial_agent", answer="north", status="completed"
+        ),
+    )
+    sample = _sample(
+        task="spatial_relation",
+        question="Where is A relative to B?",
+        answers=["north"],
+    )
+    outcome = _run(_runner([agent]), sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "general_vqa"
+    assert outcome.evaluation.deterministic_metrics.exact_match is True
+    assert (_sample_dir(tmp_path) / "vqa_evaluation.json").is_file()
+
+
 def test_grounding_valid_geometry_writes_grounding_evaluation(tmp_path: Path) -> None:
     agent = _FakeAgent(
         "grounding_agent",
@@ -938,6 +981,50 @@ def test_caption_without_references_no_record(tmp_path: Path) -> None:
         task="caption", question="", ground_truth=GroundTruth(answers=[])
     )
     outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "caption_evaluation.json").exists()
+
+
+def test_change_caption_writes_caption_evaluation(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "change_agent",
+        ("change_caption",),
+        payload=AgentResult(
+            agent_name="change_agent", answer="a road was added", status="completed"
+        ),
+    )
+    sample = _sample(
+        task="change_caption",
+        sample_id="change-caption-1",
+        question="",
+        answers=["a road was added"],
+        images=[
+            _image("i0", "t1.png", "t1"),
+            _image("i1", "t2.png", "t2"),
+        ],
+    )
+    outcome = _run(_runner([agent]), sample, _sample_dir(tmp_path))
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "caption"
+    metrics = outcome.evaluation.deterministic_metrics
+    assert metrics.candidate == "a road was added"
+    assert metrics.references == ["a road was added"]
+    assert (_sample_dir(tmp_path) / "caption_evaluation.json").is_file()
+
+
+def test_change_caption_without_references_no_record(tmp_path: Path) -> None:
+    agent = _FakeAgent("change_agent", ("change_caption",))
+    sample = _sample(
+        task="change_caption",
+        sample_id="change-caption-no-reference",
+        question="",
+        images=[
+            _image("i0", "t1.png", "t1"),
+            _image("i1", "t2.png", "t2"),
+        ],
+        ground_truth=GroundTruth(answers=[]),
+    )
+    outcome = _run(_runner([agent]), sample, _sample_dir(tmp_path))
     assert outcome.evaluation is None
     assert not (_sample_dir(tmp_path) / "caption_evaluation.json").exists()
 

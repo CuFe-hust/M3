@@ -2378,6 +2378,84 @@ def test_evaluate_run_fills_missing_deterministic_zero_qwen(
     assert set(out["report"]) >= {"total", "succeeded", "failed"}
 
 
+def test_evaluate_run_e2_families_zero_qwen(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    samples = [
+        {
+            "sample_id": "change-qa",
+            "sample": {
+                "sample_id": "change-qa",
+                "dataset": "d",
+                "split": "test",
+                "task": "change_qa",
+                "images": [
+                    {"image_id": "i0", "path": "t1.png", "role": "t1"},
+                    {"image_id": "i1", "path": "t2.png", "role": "t2"},
+                ],
+                "question": "What changed?",
+                "ground_truth": {"answers": ["road added"]},
+            },
+            "payload_file": "agent_result.json",
+            "payload": {
+                "agent_name": "change_agent",
+                "answer": "road added",
+                "status": "completed",
+            },
+        },
+        {
+            "sample_id": "spatial",
+            "sample": {
+                "sample_id": "spatial",
+                "dataset": "d",
+                "split": "test",
+                "task": "spatial_relation",
+                "images": [
+                    {"image_id": "i0", "path": "img.png", "role": "image"}
+                ],
+                "question": "Where is A relative to B?",
+                "ground_truth": {"answers": ["north"]},
+            },
+            "payload_file": "agent_result.json",
+            "payload": {
+                "agent_name": "spatial_agent",
+                "answer": "north",
+                "status": "completed",
+            },
+        },
+        {
+            "sample_id": "change-caption",
+            "sample": {
+                "sample_id": "change-caption",
+                "dataset": "d",
+                "split": "test",
+                "task": "change_caption",
+                "images": [
+                    {"image_id": "i0", "path": "t1.png", "role": "t1"},
+                    {"image_id": "i1", "path": "t2.png", "role": "t2"},
+                ],
+                "question": "",
+                "ground_truth": {"answers": ["road added"]},
+            },
+            "payload_file": "agent_result.json",
+            "payload": {
+                "agent_name": "change_agent",
+                "answer": "road added",
+                "status": "completed",
+            },
+        },
+    ]
+    _make_offline_run(tmp_path, samples)
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_evaluate_run(_offline_args()) == 0
+    output = json.loads(capsys.readouterr().out)
+    evaluated = {item["sample_id"]: item for item in output["evaluated"]}
+    assert evaluated["change-qa"]["filename"] == "vqa_evaluation.json"
+    assert evaluated["spatial"]["filename"] == "vqa_evaluation.json"
+    assert evaluated["change-caption"]["filename"] == "caption_evaluation.json"
+
+
 def test_evaluate_run_only_missing_skips_existing(tmp_path, monkeypatch, capsys) -> None:
     from application.commands.evaluate_run import run_evaluate_run
 

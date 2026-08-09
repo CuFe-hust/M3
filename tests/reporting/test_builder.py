@@ -16,12 +16,13 @@ from agents.counting.schema import CountingResult
 from agents.schema import AgentResult
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.records import (
+    CaptionDeterministicMetrics,
     CountDeterministicMetrics,
     EvaluationRecord,
     VQADeterministicMetrics,
 )
+from reporting.adapters import load_evaluation, load_payload
 from reporting.builder import build_report
-from reporting.adapters import load_payload
 from reporting.exporters import write_csv, write_json
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
@@ -53,6 +54,39 @@ def test_load_payload_does_not_treat_unknown_task_as_vqa(tmp_path: Path) -> None
         encoding="utf-8",
     )
     assert load_payload(tmp_path, "unknown") is None
+
+
+def test_reporting_loads_e2_family_artifacts(tmp_path: Path) -> None:
+    vqa = EvaluationRecord(
+        sample_id="e2-vqa",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
+    )
+    (tmp_path / "vqa_evaluation.json").write_text(
+        vqa.model_dump_json(), encoding="utf-8"
+    )
+    payload = AgentResult(agent_name="change_agent", answer="road added")
+    (tmp_path / "agent_result.json").write_text(
+        payload.model_dump_json(), encoding="utf-8"
+    )
+    for task in ("change_qa", "spatial_relation"):
+        assert load_evaluation(tmp_path, task) == vqa
+        assert load_payload(tmp_path, task) == payload
+
+    caption = EvaluationRecord(
+        sample_id="e2-caption",
+        task="caption",
+        deterministic_metrics=CaptionDeterministicMetrics(
+            candidate="road added", references=["road added"]
+        ),
+        judge_status="not_requested",
+    )
+    (tmp_path / "caption_evaluation.json").write_text(
+        caption.model_dump_json(), encoding="utf-8"
+    )
+    assert load_evaluation(tmp_path, "change_caption") == caption
+    assert load_payload(tmp_path, "change_caption") == payload
 
 
 def _storage_key(sample_id: str) -> str:

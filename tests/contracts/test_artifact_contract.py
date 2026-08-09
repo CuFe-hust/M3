@@ -35,19 +35,21 @@ from workflows.artifact_writer import (
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_evaluation_family_contract_maps_only_e1_supported_tasks() -> None:
+def test_evaluation_family_contract_maps_all_runtime_tasks() -> None:
     assert dict(RUNTIME_TASK_TO_EVALUATION_TASK) == {
         "counting": "counting",
         "fine_grained_counting": "counting",
         "general_vqa": "general_vqa",
         "multiple_choice_vqa": "general_vqa",
         "scene_classification": "general_vqa",
+        "spatial_relation": "general_vqa",
+        "change_qa": "general_vqa",
         "grounding": "grounding",
         "caption": "caption",
+        "change_caption": "caption",
     }
-    for task in ("change_qa", "spatial_relation", "change_caption", "unknown"):
-        assert evaluation_task_for_runtime_task(task) is None
-        assert evaluation_filename_for_runtime_task(task) is None
+    assert evaluation_task_for_runtime_task("unknown") is None
+    assert evaluation_filename_for_runtime_task("unknown") is None
 
 
 def test_evaluation_family_filenames_are_one_to_one_and_immutable() -> None:
