@@ -86,6 +86,7 @@ async def _run(args: argparse.Namespace) -> int:
         source_index=0,
     )
     store = RunStore(settings.runs.root, project_root)
+    request: RunRequest | None = None
     if args.resume:
         # Resume requires an explicit run id and a matching count-image
         # invocation; never guess a run by sample id.
@@ -95,7 +96,7 @@ async def _run(args: argparse.Namespace) -> int:
             raise ValueError("--resume requires --run-id")
         run_id = args.run_id
         run_dir = settings.runs.root / run_id
-        _validate_resume_run(store, run_dir, run_id, sample_id, image_sha256)
+        request = _validate_resume_run(store, run_dir, run_id, sample_id, image_sha256)
     else:
         catalog = PromptCatalog(project_root / "prompts")
         manifest = store.create_run(
@@ -126,19 +127,36 @@ async def _run(args: argparse.Namespace) -> int:
     if args.resume and not args.force:
         persisted = _read_status(sample_dir)
         if persisted is not None and persisted.state == "succeeded":
-            # Resume succeeded current result without any new Qwen call.
-            # resume 已成功的当前结果，不发起任何新 Qwen 调用。
-            final_count = _read_final_count(sample_dir)
-            _emit(
-                {
-                    "status": "resumed",
-                    "run_id": run_id,
-                    "sample_id": sample_id,
-                    "final_count": final_count,
-                    "run_dir": run_dir.as_posix(),
-                }
-            )
-            return EXIT_OK
+            # Zero-Qwen resume requires a valid persisted CountingResult that
+            # matches this sample; anything else counts as incomplete and
+            # re-executes. 零 Qwen resume 需要与样本匹配的合法持久化
+            # CountingResult；否则视为不完整并重跑。
+            result = _read_valid_counting_result(sample_dir, sample_id)
+            if result is not None:
+                _emit(
+                    {
+                        "status": "resumed",
+                        "run_id": run_id,
+                        "sample_id": sample_id,
+                        "final_count": result.final_count,
+                        "run_dir": run_dir.as_posix(),
+                    }
+                )
+                return EXIT_OK
+
+    # On resume the persisted invocation's evaluate intent is authoritative;
+    # CLI --evaluate is ignored (post-hoc evaluation changes belong to
+    # evaluate-run). 在 resume 上持久化调用的 evaluate 意图权威；CLI
+    # --evaluate 被忽略（事后评估变更属于 evaluate-run）。
+    effective_evaluate = request.evaluate if request is not None else args.evaluate
+    if args.resume and not effective_evaluate:
+        # Remove any stale evaluation artifact from a previous inconsistent
+        # state before re-execution — narrowly scoped to the validated sample
+        # directory. 在重跑前移除先前不一致状态遗留的评估产物——严格限定在
+        # 已校验的样本目录内。
+        evaluation_path = sample_dir / "counting_evaluation.json"
+        if evaluation_path.is_file():
+            evaluation_path.unlink()
 
     metadata: dict[str, Any] = {}
     if args.target_spec:
@@ -187,7 +205,7 @@ async def _run(args: argparse.Namespace) -> int:
         sample_dir,
         judge_policy="none",
         budget=budget,
-        evaluate=args.evaluate,
+        evaluate=effective_evaluate,
     )
     execution = outcome.execution
     if execution is None or not isinstance(execution.payload, CountingResult):
@@ -254,11 +272,12 @@ def _validate_resume_run(
     run_id: str,
     sample_id: str,
     image_sha256: str,
-) -> None:
+) -> RunRequest:
     """The resumed run must exist, carry a valid matching manifest, and match
-    the expected single-image counting invocation identity.
+    the expected single-image counting invocation identity; the persisted
+    invocation is returned so resume uses its authoritative intent.
     resume 的 run 必须存在、携带合法匹配的 manifest，并匹配预期的单图计数
-    调用身份。"""
+    调用身份；返回持久化调用，使 resume 使用其权威意图。"""
 
     manifest_path = run_dir / "manifest.json"
     if not run_dir.is_dir() or not manifest_path.is_file():
@@ -276,6 +295,7 @@ def _validate_resume_run(
         raise ValueError("resume run is not a count-image invocation")
     if request.sample_id != sample_id or request.image_identity != image_sha256:
         raise ValueError("resume run invocation mismatch")
+    return request
 
 
 def _build_budget(runtime: Runtime, args: argparse.Namespace) -> CallBudget:
@@ -310,10 +330,15 @@ def _read_status(sample_dir: Path) -> SampleRunStatus | None:
         return None
 
 
-def _read_final_count(sample_dir: Path) -> int | None:
-    """Read the persisted final count for a resumed summary; corrupt or
-    missing results yield None. 为 resumed 摘要读取持久化最终数量；损坏或
-    缺失返回 None。"""
+def _read_valid_counting_result(
+    sample_dir: Path,
+    sample_id: str,
+) -> CountingResult | None:
+    """Read a valid persisted CountingResult that matches this sample;
+    missing, corrupt, or mismatched results yield None so resume re-executes
+    instead of emitting resumed/null. 读取与样本匹配的合法持久化
+    CountingResult；缺失、损坏或不匹配返回 None，使 resume 重跑而非输出
+    resumed/null。"""
 
     path = sample_dir / _COUNTING_RESULT_FILENAME
     if not path.is_file():
@@ -324,7 +349,9 @@ def _read_final_count(sample_dir: Path) -> int | None:
         )
     except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
         return None
-    return result.final_count
+    if result.sample_id != sample_id:
+        return None
+    return result
 
 
 def _emit(payload: dict[str, Any]) -> None:

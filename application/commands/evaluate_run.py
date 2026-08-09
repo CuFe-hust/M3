@@ -71,7 +71,15 @@ def run_evaluate_run(args: argparse.Namespace) -> int:
             only_missing=args.only_missing,
             force_judge=args.force_judge,
         )
-        report = build_report(run_dir)  # refreshed unified report / 刷新的统一报告
+        # After all deterministic/Judge mutations, persist the refreshed
+        # unified report bundle; a failure fails the command stably instead
+        # of leaving knowingly stale report artifacts.
+        # 在所有确定性/Judge 变更后持久化刷新的统一报告 bundle；失败使命令
+        # 稳定失败，绝不留下已知过期的报告产物。
+        from reporting.exporters import persist_report_bundle
+
+        report = build_report(run_dir)
+        persist_report_bundle(run_dir, report)
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED
     except Exception as error:
@@ -312,9 +320,10 @@ def _count_target_for(
     payload: CountingResult,
 ) -> CountTargetSpec:
     """Prefer the exact persisted CountTargetSpec hint; otherwise reconstruct
-    a stable neutral spec from the persisted canonical label — never invent
-    visual facts. 优先使用精确持久化 CountTargetSpec hint；否则从持久化
-    canonical 标签重建稳定中性 spec——绝不虚构视觉事实。"""
+    a neutral spec stating only the known canonical label — never invent
+    semantic rules such as "exclude none" that were not persisted.
+    优先使用精确持久化 CountTargetSpec hint；否则重建只陈述已知 canonical
+    标签的中性 spec——绝不虚构未持久化的语义规则（如 "exclude none"）。"""
 
     hint = (sample.metadata or {}).get("count_target_hint")
     if isinstance(hint, dict):
@@ -324,8 +333,8 @@ def _count_target_for(
             pass
     return CountTargetSpec(
         canonical_label=payload.target,
-        inclusion_rule=f"count all {payload.target}",
-        exclusion_rule="exclude none",
+        inclusion_rule="Persisted inclusion rule unavailable.",
+        exclusion_rule="Persisted exclusion rule unavailable.",
     )
 
 

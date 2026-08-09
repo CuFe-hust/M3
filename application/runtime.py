@@ -11,6 +11,7 @@ happens there.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import secrets
@@ -33,7 +34,7 @@ from data.schema import CHANGE_TASKS, GroundTruth, ImageRef, TaskName, UnifiedSa
 from reporting.schema import Report
 from routing.schema import SampleCapabilities, TaskResolutionRequest
 from workflows.artifact_writer import atomic_write_json
-from workflows.run_store import RunManifest
+from workflows.run_store import RunManifest, RunStore
 from workflows.schema import DatasetRunOptions, DatasetRunSummary, RunRequest
 
 # Only the first level of a manual image directory is scanned. / 手动图片目录只扫描第一层。
@@ -325,6 +326,99 @@ def _utc_now() -> str:
     )
 
 
+def reconstruct_dataset_resume_options(
+    run_dir: Path,
+    *,
+    run_id: str,
+    run_store: RunStore,
+) -> DatasetRunOptions:
+    """Reconstruct DatasetRunOptions from the persisted invocation artifact.
+    This is the single authoritative dataset-resume reconstruction used by
+    both resume-run and run-dataset --resume; the invocation is never guessed
+    from settings, directory names, or summaries. Missing/corrupt artifacts
+    fail stably. 从持久化调用产物重建 DatasetRunOptions。这是 resume-run 与
+    run-dataset --resume 共用的唯一权威数据集 resume 重建；绝不由配置、
+    目录名或汇总猜测调用。缺失/损坏产物稳定失败。"""
+
+    request = run_store.read_run_request(run_dir)
+    if request.task_mode == "auto":
+        tasks: tuple[str, ...] | None = ()
+        auto_task = True
+    elif request.task_mode == "adapter_default":
+        tasks = None
+        auto_task = False
+    else:
+        tasks = tuple(request.tasks)
+        auto_task = False
+    root = Path(request.dataset_root).expanduser().resolve()
+    return build_dataset_run_options(
+        dataset=request.dataset,
+        root=root,
+        split=request.split,
+        tasks=tasks,
+        auto_task=auto_task,
+        run_id=run_id,
+        resume=True,
+        limit=request.limit,
+        start_index=request.start_index,
+        shard_index=request.shard_index,
+        shard_count=request.shard_count,
+        sample_concurrency=request.sample_concurrency,
+        sample_ids=(
+            set(request.sample_ids) if request.sample_ids is not None else None
+        ),
+        evaluate=request.evaluate,
+        judge_policy=request.judge_policy,
+        judge_sample_rate=request.judge_sample_rate,
+        render_errors=request.render_errors,
+        fail_fast=request.fail_fast,
+    )
+
+
+def _validate_resume_match(
+    supplied: DatasetRunOptions,
+    persisted: DatasetRunOptions,
+) -> None:
+    """Strictly compare a CLI-supplied resume invocation against the persisted
+    one; any drift is a stable failure before model execution, so no public
+    resume path silently overrides the original invocation.
+    严格比较 CLI 提供的 resume 调用与持久化调用；任何偏离都在模型执行前
+    稳定失败，使任何公开 resume 路径绝不静默覆盖原始调用。"""
+
+    if supplied.dataset != persisted.dataset:
+        raise ValueError("resume dataset mismatch")
+    if supplied.split != persisted.split:
+        raise ValueError("resume split mismatch")
+    if supplied.root != persisted.root:
+        raise ValueError("resume dataset root mismatch")
+    if supplied.auto_task != persisted.auto_task:
+        raise ValueError("resume task mode mismatch")
+    if supplied.tasks != persisted.tasks:
+        raise ValueError("resume task mismatch")
+    if supplied.sample_ids != persisted.sample_ids:
+        raise ValueError("resume sample ids mismatch")
+    if supplied.limit != persisted.limit:
+        raise ValueError("resume limit mismatch")
+    if supplied.start_index != persisted.start_index:
+        raise ValueError("resume start index mismatch")
+    if supplied.shard_index != persisted.shard_index:
+        raise ValueError("resume shard index mismatch")
+    if supplied.shard_count != persisted.shard_count:
+        raise ValueError("resume shard count mismatch")
+    if supplied.sample_concurrency != persisted.sample_concurrency:
+        raise ValueError("resume sample concurrency mismatch")
+    if supplied.evaluate != persisted.evaluate:
+        raise ValueError("resume evaluate mismatch")
+    if supplied.judge_policy != persisted.judge_policy:
+        raise ValueError("resume judge policy mismatch")
+    if supplied.judge_sample_rate != persisted.judge_sample_rate:
+        raise ValueError("resume judge sample rate mismatch")
+    if supplied.render_errors != persisted.render_errors:
+        raise ValueError("resume render errors mismatch")
+    if supplied.fail_fast != persisted.fail_fast:
+        raise ValueError("resume fail fast mismatch")
+
+
 def _build_run_request(options: DatasetRunOptions) -> RunRequest:
     """Map the concrete dataset run options into the persisted invocation
     artifact. judge_policy/rate are stored as the original intent; the
@@ -418,11 +512,35 @@ class Runtime:
         run_id 与合法匹配的 manifest。随后每个 task（或 auto-task 命名空间）
         委托给 DatasetRunner。仅 evaluate 启用时应用 judge 策略。"""
 
+        # Canonicalize the dataset root once, before identity establishment
+        # or persistence, so execution and run_request.dataset_root always
+        # refer to the same host-resolved path. 在身份确立或持久化前一次性
+        # canonicalize 数据集根，使执行与 run_request.dataset_root 始终指向
+        # 同一主机解析路径。
+        options = dataclasses.replace(
+            options,
+            root=options.root.expanduser().resolve(),
+        )
         if options.resume:
             if options.run_id is None:
                 raise ValueError("resume requires an explicit run_id")
             run_id = options.run_id
             run_dir = self.settings.runs.root / run_id
+            if not run_dir.is_dir() or not (run_dir / "manifest.json").is_file():
+                raise ValueError("resume run does not exist")
+            # The persisted invocation is authoritative for every resume
+            # path: reconstruct from run_request.json, reject any CLI
+            # invocation that drifts from the original run, then execute
+            # with the reconstructed options. 持久化调用对每条 resume 路径
+            # 权威：从 run_request.json 重建，拒绝任何偏离原运行的 CLI 调用，
+            # 然后用重建选项执行。
+            persisted = reconstruct_dataset_resume_options(
+                run_dir,
+                run_id=run_id,
+                run_store=self.components.run_store,
+            )
+            _validate_resume_match(options, persisted)
+            options = persisted
             self._validate_existing_run(run_dir, options, run_id)
         else:
             manifest = self.components.run_store.create_run(

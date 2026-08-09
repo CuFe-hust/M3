@@ -56,7 +56,14 @@ def run_judge_vqa_run(args: argparse.Namespace) -> int:
             artifact_writer,
             force=args.force,
         )
-        report = build_report(run_dir)  # refreshed unified report / 刷新的统一报告
+        # Persist the refreshed unified report bundle so the disk artifacts
+        # reflect the new judge state; failure fails the command stably.
+        # 持久化刷新的统一报告 bundle，使磁盘产物反映新 judge 状态；失败使
+        # 命令稳定失败。
+        from reporting.exporters import persist_report_bundle
+
+        report = build_report(run_dir)
+        persist_report_bundle(run_dir, report)
     except KeyboardInterrupt:
         return EXIT_INTERRUPTED
     except Exception as error:

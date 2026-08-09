@@ -17,7 +17,11 @@ import os
 import sys
 from pathlib import Path
 
-from application.runtime import Runtime, build_dataset_run_options
+from application.runtime import (
+    Runtime,
+    build_dataset_run_options,
+    reconstruct_dataset_resume_options,
+)
 from application.settings import load_settings
 from workflows.run_store import RunManifest, RunStore
 
@@ -38,40 +42,10 @@ def run_resume_run(args: argparse.Namespace) -> int:
         run_dir = settings.runs.root / args.run_id
         manifest = _read_manifest(run_dir, args.run_id)
         store = RunStore(settings.runs.root, project_root)
-        request = store.read_run_request(run_dir)
-        root = Path(request.dataset_root)
-        if request.task_mode == "auto":
-            tasks: tuple[str, ...] | None = ()
-            auto_task = True
-        elif request.task_mode == "adapter_default":
-            tasks = None
-            auto_task = False
-        else:
-            tasks = tuple(request.tasks)
-            auto_task = False
-        options = build_dataset_run_options(
-            dataset=request.dataset,
-            root=root,
-            split=request.split,
-            tasks=tasks,
-            auto_task=auto_task,
+        options = reconstruct_dataset_resume_options(
+            run_dir,
             run_id=args.run_id,
-            resume=True,
-            limit=request.limit,
-            start_index=request.start_index,
-            shard_index=request.shard_index,
-            shard_count=request.shard_count,
-            sample_concurrency=request.sample_concurrency,
-            sample_ids=(
-                set(request.sample_ids)
-                if request.sample_ids is not None
-                else None
-            ),
-            evaluate=request.evaluate,
-            judge_policy=request.judge_policy,
-            judge_sample_rate=request.judge_sample_rate,
-            render_errors=request.render_errors,
-            fail_fast=request.fail_fast,
+            run_store=store,
         )
         api_key = os.environ.get(settings.models.deepseek.api_key_env) or None
         runtime = Runtime.create(
