@@ -17,7 +17,11 @@ import os
 import sys
 from pathlib import Path
 
-from application.runtime import Runtime, build_dataset_run_options
+from application.runtime import (
+    Runtime,
+    build_dataset_run_options,
+    preflight_dataset_resume,
+)
 from application.settings import load_settings
 
 EXIT_OK = 0
@@ -53,12 +57,7 @@ def run_run_dataset(args: argparse.Namespace) -> int:
             Path(args.config) if args.config else None,
             environ=os.environ,
         )
-        api_key = os.environ.get(settings.models.deepseek.api_key_env) or None
-        runtime = Runtime.create(
-            settings=settings,
-            project_root=Path(__file__).resolve().parents[2],
-            api_key=api_key,
-        )
+        project_root = Path(__file__).resolve().parents[2]
         options = build_dataset_run_options(
             dataset=args.dataset,
             root=Path(args.root),
@@ -78,6 +77,22 @@ def run_run_dataset(args: argparse.Namespace) -> int:
             judge_sample_rate=args.judge_sample_rate,
             render_errors=args.render_errors,
             fail_fast=args.fail_fast,
+        )
+        if options.resume:
+            # Validate the resume invocation against the persisted run
+            # before any model construction: an invalid resume must fail
+            # without loading Qwen weights. 在任何模型构造前按持久化 run
+            # 校验 resume 调用：非法 resume 必须在加载 Qwen 权重前失败。
+            options = preflight_dataset_resume(
+                options=options,
+                runs_root=settings.runs.root,
+                project_root=project_root,
+            )
+        api_key = os.environ.get(settings.models.deepseek.api_key_env) or None
+        runtime = Runtime.create(
+            settings=settings,
+            project_root=project_root,
+            api_key=api_key,
         )
         summaries = asyncio.run(runtime.run_dataset(options))
     except KeyboardInterrupt:

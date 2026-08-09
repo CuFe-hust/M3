@@ -7,9 +7,17 @@ agent_trace；--evaluate 时才产出 counting_evaluation；--render 附加 over
 
 运行身份遵循冻结契约：fresh 无 --run-id 恒创建唯一 RunStore run id（绝不
 用 sample_id 默认）；fresh 显式 --run-id 已存在稳定失败；--resume 必须显式
---run-id 且校验既有 run 的 manifest 与 count-image 调用身份（run_request）；
---force 只在 resume 的既有 run 内重跑样本，绝不弱化 fresh 身份规则。budget
-与 seam_verify 覆盖仅请求局部。
+--run-id 且校验既有 run 的 manifest 与 count-image 调用身份（run_request）。
+
+调用保真（11G.5.2）：fresh 持久化全部行为影响参数（结构化 target spec
+快照 + 稳定哈希——绝非主机路径、seam 校验模式、Qwen/DeepSeek 预算、render
+意图、evaluate 意图）；resume/force 一律以持久化调用为权威，绝不从当前
+CLI 默认值重算，绝不重读外部 target-spec 文件。以下为 fresh 专用调用选项：
+--target-spec / --no-seam-verify / --max-qwen-calls / --max-deepseek-calls /
+--evaluate / --render（事后评估归 evaluate-run，事后渲染可用 render-count）。
+旧当前代 run（缺保真快照）：非 force 零 Qwen 复用仍允许（只需合法匹配
+结果）；force 重跑以稳定
+COUNT_IMAGE_INVOCATION_METADATA_INCOMPLETE 失败，绝不猜测缺失设置。
 """
 
 from __future__ import annotations
@@ -41,6 +49,8 @@ EXIT_INTERRUPTED = 130
 
 _STATUS_FILENAME = "status.json"
 _COUNTING_RESULT_FILENAME = "counting_result.json"
+_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
+_OVERLAY_FILENAME = "overlay.png"
 
 
 def run_count_image(args: argparse.Namespace) -> int:
@@ -86,7 +96,7 @@ async def _run(args: argparse.Namespace) -> int:
         source_index=0,
     )
     store = RunStore(settings.runs.root, project_root)
-    request: RunRequest | None = None
+    request: RunRequest
     if args.resume:
         # Resume requires an explicit run id and a matching count-image
         # invocation; never guess a run by sample id.
@@ -99,6 +109,7 @@ async def _run(args: argparse.Namespace) -> int:
         request = _validate_resume_run(store, run_dir, run_id, sample_id, image_sha256)
     else:
         catalog = PromptCatalog(project_root / "prompts")
+        target_spec, target_hash = _load_target_spec(args.target_spec)
         manifest = store.create_run(
             config_payload=settings.to_config_payload(),
             model_ids={
@@ -112,25 +123,44 @@ async def _run(args: argparse.Namespace) -> int:
         )
         run_id = manifest.run_id
         run_dir = settings.runs.root / run_id
-        store.write_run_request(
-            run_dir,
-            _count_image_request(
-                sample_id=sample_id,
-                image_sha256=image_sha256,
-                question=args.question,
-                image_dir=image_path.parent,
-                evaluate=args.evaluate,
-            ),
+        # Unsupplied budgets are normalized to the explicit configured
+        # defaults so the persisted snapshot is always a complete
+        # re-executable invocation (distinguishable from legacy runs that
+        # predate the fidelity fields). 未提供的预算归一化为显式配置默认值，
+        # 使持久化快照始终是完整可重跑调用（可与早于保真字段的旧运行区分）。
+        max_qwen = (
+            args.max_qwen_calls
+            if args.max_qwen_calls is not None
+            else settings.router.default_qwen_calls
         )
+        max_deepseek = (
+            args.max_deepseek_calls
+            if args.max_deepseek_calls is not None
+            else settings.router.default_deepseek_calls
+        )
+        request = _count_image_request(
+            sample_id=sample_id,
+            image_sha256=image_sha256,
+            question=args.question,
+            image_dir=image_path.parent,
+            evaluate=args.evaluate,
+            target_spec=target_spec,
+            target_hash=target_hash,
+            seam_verify=not args.no_seam_verify,
+            max_qwen_calls=max_qwen,
+            max_deepseek_calls=max_deepseek,
+            render=args.render,
+        )
+        store.write_run_request(run_dir, request)
     sample_dir = run_dir / "tasks" / "counting" / "samples" / storage_key(sample_id)
 
     if args.resume and not args.force:
-        persisted = _read_status(sample_dir)
-        if persisted is not None and persisted.state == "succeeded":
-            # Zero-Qwen resume requires a valid persisted CountingResult that
-            # matches this sample; anything else counts as incomplete and
-            # re-executes. 零 Qwen resume 需要与样本匹配的合法持久化
-            # CountingResult；否则视为不完整并重跑。
+        # Zero-Qwen reuse requires both a valid succeeded status AND a valid
+        # matching CountingResult; missing/corrupt/mismatched results
+        # re-execute. 零 Qwen 复用需要合法 succeeded 状态与合法匹配的
+        # CountingResult 同时成立；缺失/损坏/不匹配结果重跑。
+        persisted_status = _read_status(sample_dir)
+        if persisted_status is not None and persisted_status.state == "succeeded":
             result = _read_valid_counting_result(sample_dir, sample_id)
             if result is not None:
                 _emit(
@@ -144,28 +174,42 @@ async def _run(args: argparse.Namespace) -> int:
                 )
                 return EXIT_OK
 
-    # On resume the persisted invocation's evaluate intent is authoritative;
-    # CLI --evaluate is ignored (post-hoc evaluation changes belong to
-    # evaluate-run). 在 resume 上持久化调用的 evaluate 意图权威；CLI
-    # --evaluate 被忽略（事后评估变更属于 evaluate-run）。
-    effective_evaluate = request.evaluate if request is not None else args.evaluate
-    if args.resume and not effective_evaluate:
-        # Remove any stale evaluation artifact from a previous inconsistent
-        # state before re-execution — narrowly scoped to the validated sample
-        # directory. 在重跑前移除先前不一致状态遗留的评估产物——严格限定在
-        # 已校验的样本目录内。
-        evaluation_path = sample_dir / "counting_evaluation.json"
-        if evaluation_path.is_file():
-            evaluation_path.unlink()
+    # Any re-execution (force or invalid-result rerun) must reconstruct the
+    # full behavior-affecting invocation from the persisted snapshot; old
+    # current-generation runs without it fail stably instead of guessing.
+    # 任何重跑（force 或结果无效重跑）都必须从持久化快照重建完整行为影响
+    # 调用；缺少快照的旧当前代运行稳定失败而非猜测。
+    if args.resume and not _has_full_invocation(request):
+        raise ValueError("COUNT_IMAGE_INVOCATION_METADATA_INCOMPLETE")
+
+    # The persisted invocation is authoritative for every resumed execution;
+    # fresh-only CLI options are ignored on resume (documented). 持久化调用
+    # 对每次 resume 执行权威；fresh 专用 CLI 选项在 resume 时被忽略（已
+    # 文档化）。
+    effective_evaluate = request.evaluate
+    effective_render = bool(request.count_render)
+    effective_seam_verify = request.count_seam_verify
+    effective_max_qwen = request.count_max_qwen_calls
+    effective_max_deepseek = request.count_max_deepseek_calls
+    effective_target_spec = request.count_target_spec
+    if args.resume:
+        # Narrowly scoped cleanup inside the validated sample directory for
+        # artifacts the persisted intent does not produce. 对持久化意图不
+        # 产出的产物，在已校验样本目录内窄范围清理。
+        if not effective_evaluate:
+            evaluation_path = sample_dir / _COUNTING_EVALUATION_FILENAME
+            if evaluation_path.is_file():
+                evaluation_path.unlink()
+        if not effective_render:
+            overlay_path = sample_dir / _OVERLAY_FILENAME
+            if overlay_path.is_file():
+                overlay_path.unlink()
 
     metadata: dict[str, Any] = {}
-    if args.target_spec:
-        spec = CountTargetSpec.model_validate(
-            json.loads(Path(args.target_spec).read_text(encoding="utf-8"))
-        )
-        metadata["count_target_hint"] = spec.model_dump(mode="json")
+    if effective_target_spec is not None:
+        metadata["count_target_hint"] = effective_target_spec
     effective_settings = settings
-    if args.no_seam_verify:
+    if effective_seam_verify is False:
         # Request-local override only; global settings stay untouched.
         # 仅请求局部覆盖；全局配置保持不变。
         effective_settings = settings.model_copy(
@@ -180,7 +224,7 @@ async def _run(args: argparse.Namespace) -> int:
         project_root=project_root,
         api_key=None,
     )
-    budget = _build_budget(runtime, args)
+    budget = _build_budget(runtime, effective_max_qwen, effective_max_deepseek)
     sample = UnifiedSample(
         sample_id=sample_id,
         dataset="single-image",
@@ -211,12 +255,12 @@ async def _run(args: argparse.Namespace) -> int:
     if execution is None or not isinstance(execution.payload, CountingResult):
         raise TypeError("count-image requires the native CountingAgent result")
     result: CountingResult = execution.payload
-    if args.render:
+    if effective_render:
         with Image.open(image_path) as source:
             render_counting_overlay(
                 source,
                 result=result,
-                output_path=sample_dir / "overlay.png",
+                output_path=sample_dir / _OVERLAY_FILENAME,
             )
     status = (
         "completed"
@@ -238,6 +282,25 @@ async def _run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _load_target_spec(
+    path_value: str | None,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Validate the user target spec and return its canonical JSON snapshot
+    plus a stable content hash; None when no spec was supplied. A host path
+    is never the persisted authority — only the validated structured content.
+    校验用户目标 spec，返回其 canonical JSON 快照与稳定内容哈希；未提供时
+    返回 None。主机路径绝非持久化权威——只有校验后的结构化内容才是。"""
+
+    if not path_value:
+        return None, None
+    spec = CountTargetSpec.model_validate(
+        json.loads(Path(path_value).read_text(encoding="utf-8"))
+    )
+    snapshot = spec.model_dump(mode="json")
+    canonical = json.dumps(snapshot, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return snapshot, hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _count_image_request(
     *,
     sample_id: str,
@@ -245,10 +308,17 @@ def _count_image_request(
     question: str,
     image_dir: Path,
     evaluate: bool,
+    target_spec: dict[str, Any] | None,
+    target_hash: str | None,
+    seam_verify: bool,
+    max_qwen_calls: int | None,
+    max_deepseek_calls: int | None,
+    render: bool,
 ) -> RunRequest:
-    """The persisted single-image invocation identity. The image itself is
-    referenced by its stable content hash, never by a host absolute path.
-    持久化单图调用身份。图像以稳定内容哈希引用，绝不使用主机绝对路径。"""
+    """The persisted single-image invocation. The image is referenced by its
+    stable content hash and the target by its structured snapshot — never by
+    host absolute paths. 持久化单图调用。图像以稳定内容哈希引用，目标以
+    结构化快照引用——绝不使用主机绝对路径。"""
 
     return RunRequest(
         dataset="single-image",
@@ -263,6 +333,26 @@ def _count_image_request(
         image_identity=image_sha256,
         question=question,
         sample_id=sample_id,
+        count_target_spec=target_spec,
+        count_target_spec_hash=target_hash,
+        count_seam_verify=seam_verify,
+        count_max_qwen_calls=max_qwen_calls,
+        count_max_deepseek_calls=max_deepseek_calls,
+        count_render=render,
+    )
+
+
+def _has_full_invocation(request: RunRequest) -> bool:
+    """A re-executable count-image invocation needs every behavior-affecting
+    snapshot field; count_target_spec may legitimately be None (no spec).
+    可重跑的 count-image 调用需要全部行为影响快照字段；count_target_spec
+    允许合法为 None（无 spec）。"""
+
+    return (
+        request.count_seam_verify is not None
+        and request.count_render is not None
+        and request.count_max_qwen_calls is not None
+        and request.count_max_deepseek_calls is not None
     )
 
 
@@ -298,16 +388,20 @@ def _validate_resume_run(
     return request
 
 
-def _build_budget(runtime: Runtime, args: argparse.Namespace) -> CallBudget:
+def _build_budget(
+    runtime: Runtime,
+    max_qwen_calls: int | None,
+    max_deepseek_calls: int | None,
+) -> CallBudget:
     """Request-local budget override; default limits apply when unset.
     请求局部预算覆盖；未设置时使用默认限制。"""
 
     default = runtime.components.call_budget_factory.create_for_sample("counting")
     return CallBudget(
-        max_qwen_calls=args.max_qwen_calls or default.max_qwen_calls,
+        max_qwen_calls=max_qwen_calls or default.max_qwen_calls,
         max_deepseek_calls=(
-            args.max_deepseek_calls
-            if args.max_deepseek_calls is not None
+            max_deepseek_calls
+            if max_deepseek_calls is not None
             else default.max_deepseek_calls
         ),
     )

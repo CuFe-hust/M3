@@ -197,13 +197,30 @@ class RunRequest(BaseModel):
     image_identity: str | None = None
     question: str | None = None
     sample_id: str | None = None
+    # Count-image behavior-affecting invocation fidelity (count-image only).
+    # The structured target spec snapshot is the authoritative target
+    # identity — never a host path; a stable hash of the canonical JSON is
+    # stored alongside. 仅 count-image 的行为影响调用保真字段。结构化目标
+    # spec 快照是权威目标身份——绝非主机路径；同时存储 canonical JSON 的
+    # 稳定哈希。
+    count_target_spec: dict[str, Any] | None = None
+    count_target_spec_hash: str | None = None
+    count_seam_verify: bool | None = None
+    count_max_qwen_calls: int | None = None
+    count_max_deepseek_calls: int | None = None
+    count_render: bool | None = None
 
     @model_validator(mode="after")
     def validate_invocation(self) -> "RunRequest":
         """Enforce the task-mode/tasks consistency and shard bounds; invalid
         persisted invocations must fail stably instead of being guessed.
-        强制 task-mode/tasks 一致性与分片边界；非法持久化调用必须稳定失败
-        而非被猜测。"""
+        Count-image fidelity fields are coherent and never leak onto dataset
+        runs; old current-generation count-image requests without the new
+        fidelity snapshot stay readable (their resume policy is handled by
+        the count-image command). 强制 task-mode/tasks 一致性与分片边界；
+        非法持久化调用必须稳定失败而非被猜测。count-image 保真字段自洽且
+        绝不泄漏到数据集运行；缺少新保真快照的旧当前代 count-image 请求
+        仍可读（其 resume 策略由 count-image 命令处理）。"""
         if self.shard_index >= self.shard_count:
             raise ValueError("shard_index must be within [0, shard_count)")
         if self.task_mode == "auto":
@@ -215,6 +232,30 @@ class RunRequest(BaseModel):
         else:  # adapter_default
             if self.auto_task or self.tasks:
                 raise ValueError("adapter_default task mode requires no tasks or auto_task")
+        if self.command == "count-image":
+            if not self.sample_id or not self.image_identity or not self.question:
+                raise ValueError("count-image invocation requires sample identity")
+        else:
+            count_fields = (
+                self.count_target_spec,
+                self.count_target_spec_hash,
+                self.count_seam_verify,
+                self.count_max_qwen_calls,
+                self.count_max_deepseek_calls,
+                self.count_render,
+            )
+            if any(field is not None for field in count_fields):
+                raise ValueError("dataset runs must not carry count-image fidelity fields")
+        if self.count_seam_verify is not None and not isinstance(
+            self.count_seam_verify, bool
+        ):
+            raise ValueError("count_seam_verify must be a boolean")
+        if self.count_render is not None and not isinstance(self.count_render, bool):
+            raise ValueError("count_render must be a boolean")
+        if self.count_max_qwen_calls is not None and self.count_max_qwen_calls < 1:
+            raise ValueError("count_max_qwen_calls must be positive")
+        if self.count_max_deepseek_calls is not None and self.count_max_deepseek_calls < 0:
+            raise ValueError("count_max_deepseek_calls must not be negative")
         return self
 
 

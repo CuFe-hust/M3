@@ -319,18 +319,28 @@ def _count_target_for(
     sample: UnifiedSample,
     payload: CountingResult,
 ) -> CountTargetSpec:
-    """Prefer the exact persisted CountTargetSpec hint; otherwise reconstruct
-    a neutral spec stating only the known canonical label — never invent
-    semantic rules such as "exclude none" that were not persisted.
-    优先使用精确持久化 CountTargetSpec hint；否则重建只陈述已知 canonical
-    标签的中性 spec——绝不虚构未持久化的语义规则（如 "exclude none"）。"""
+    """Resolve the count judge target with the same hint priority as the
+    current CountingAgent: sample.normalization.count_target_hint →
+    legacy metadata["count_target_hint"] → neutral fallback. Exact persisted
+    hints win; the neutral fallback states only the known canonical label and
+    never invents semantic rules such as "exclude none" that were not
+    persisted. 按当前 CountingAgent 相同的 hint 优先级解析 count judge
+    目标：sample.normalization.count_target_hint → legacy
+    metadata["count_target_hint"] → 中性回退。精确持久化 hint 优先；中性
+    回退只陈述已知 canonical 标签，绝不虚构未持久化的语义规则（如
+    "exclude none"）。"""
 
-    hint = (sample.metadata or {}).get("count_target_hint")
+    hint = None
+    normalization = sample.normalization
+    if normalization is not None and normalization.count_target_hint is not None:
+        hint = normalization.count_target_hint
+    elif (sample.metadata or {}).get("count_target_hint") is not None:
+        hint = sample.metadata["count_target_hint"]
     if isinstance(hint, dict):
         try:
             return CountTargetSpec.model_validate(hint)
         except ValueError:
-            pass
+            pass  # invalid persisted hint degrades to the neutral fallback
     return CountTargetSpec(
         canonical_label=payload.target,
         inclusion_rule="Persisted inclusion rule unavailable.",

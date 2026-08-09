@@ -326,6 +326,36 @@ def _utc_now() -> str:
     )
 
 
+def preflight_dataset_resume(
+    *,
+    options: DatasetRunOptions,
+    runs_root: Path,
+    project_root: Path,
+) -> DatasetRunOptions:
+    """Validate a dataset resume invocation against the persisted run before
+    any model construction; returns the authoritative persisted options.
+    The public CLI calls this before Runtime.create(); the runtime keeps the
+    same validation as defense-in-depth. 在任何模型构造前按持久化 run 校验
+    数据集 resume 调用；返回权威持久化选项。公开 CLI 在 Runtime.create()
+    前调用本函数；runtime 保留同一校验作为纵深防御。"""
+
+    if options.run_id is None:
+        raise ValueError("resume requires an explicit run_id")
+    run_dir = runs_root / options.run_id
+    if not run_dir.is_dir() or not (run_dir / "manifest.json").is_file():
+        raise ValueError("resume run does not exist")
+    supplied = dataclasses.replace(
+        options, root=options.root.expanduser().resolve()
+    )
+    persisted = reconstruct_dataset_resume_options(
+        run_dir,
+        run_id=options.run_id,
+        run_store=RunStore(runs_root, project_root),
+    )
+    _validate_resume_match(supplied, persisted)
+    return persisted
+
+
 def reconstruct_dataset_resume_options(
     run_dir: Path,
     *,

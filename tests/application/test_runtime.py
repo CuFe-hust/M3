@@ -4392,3 +4392,544 @@ def test_counting_target_reconstruction_neutral_and_exact(
     assert spec.exclusion_rule == "Persisted exclusion rule unavailable."
     assert "exclude none" not in spec.exclusion_rule
     assert "count all" not in spec.inclusion_rule
+
+# ── 11G.5.2 final invocation / judge fidelity / 调用与 Judge 保真收口 ───────
+
+
+def test_count_image_fresh_persists_full_invocation_fidelity(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Fix A: fresh count-image persists the structured target spec snapshot
+    (not the host path) with a stable hash, plus seam/budget/render/evaluate
+    intent. Fix A：fresh count-image 持久化结构化 target spec 快照（而非
+    主机路径）与稳定哈希，以及 seam/预算/render/evaluate 意图。"""
+    from application.commands import count_image as count_image_module
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    spec = tmp_path / "cars.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "canonical_label": "vehicles",
+                "aliases": ["sedan"],
+                "inclusion_rule": "count visible vehicles",
+                "exclusion_rule": "exclude occluded vehicles",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="fidelity-run",
+            target_spec=spec,
+            evaluate=True,
+            render=True,
+            max_qwen_calls=7,
+            max_deepseek_calls=3,
+            no_seam_verify=True,
+        )
+    )
+    assert code == 0
+    request = json.loads(
+        (tmp_path / "runs" / "fidelity-run" / "run_request.json").read_text(encoding="utf-8")
+    )
+    assert request["count_target_spec"]["canonical_label"] == "vehicles"
+    assert request["count_target_spec"]["inclusion_rule"] == "count visible vehicles"
+    # host path is never the authority / 主机路径绝非权威
+    assert str(spec) not in json.dumps(request)
+    assert len(request["count_target_spec_hash"]) == 64
+    assert request["count_seam_verify"] is False
+    assert request["count_max_qwen_calls"] == 7
+    assert request["count_max_deepseek_calls"] == 3
+    assert request["count_render"] is True
+    assert request["evaluate"] is True
+
+
+def test_count_image_force_uses_persisted_target_and_budgets(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Fix A/C: force resume uses the persisted target spec/budgets/render
+    intent even when the source file changed or vanished; CLI values ignored.
+    Fix A/C：即使源文件变化或消失，force resume 仍用持久化 target
+    spec/预算/render 意图；CLI 值被忽略。"""
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    spec = tmp_path / "cars.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "canonical_label": "vehicles",
+                "inclusion_rule": "count visible vehicles",
+                "exclusion_rule": "exclude occluded vehicles",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="target-run",
+            target_spec=spec,
+            render=True,
+        )
+    ) == 0
+    capsys.readouterr()
+    # change and delete the source file / 修改并删除源文件
+    spec.write_text(
+        json.dumps(
+            {
+                "canonical_label": "buses",
+                "inclusion_rule": "count buses",
+                "exclusion_rule": "exclude cars",
+            }
+        ),
+        encoding="utf-8",
+    )
+    spec.unlink()
+    sample_dir = _count_image_sample_dir_for(tmp_path, "target-run")
+    sample = json.loads((sample_dir / "sample.json").read_text(encoding="utf-8"))
+    assert sample["metadata"]["count_target_hint"]["canonical_label"] == "vehicles"
+    # force resume with a different CLI target spec path is ignored
+    # 带不同 CLI target spec 路径的 force resume 被忽略
+    other_spec = tmp_path / "other.json"
+    other_spec.write_text(
+        json.dumps(
+            {
+                "canonical_label": "buses",
+                "inclusion_rule": "count buses",
+                "exclusion_rule": "exclude all",
+            }
+        ),
+        encoding="utf-8",
+    )
+    calls_before = len(client.calls)
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="target-run",
+            resume=True,
+            force=True,
+            target_spec=other_spec,
+            no_seam_verify=True,
+            max_qwen_calls=2,
+            render=False,
+        )
+    )
+    assert code == 0
+    assert len(client.calls) > calls_before
+    sample = json.loads((sample_dir / "sample.json").read_text(encoding="utf-8"))
+    assert sample["metadata"]["count_target_hint"]["canonical_label"] == "vehicles"
+    assert (sample_dir / "overlay.png").is_file()  # persisted render intent kept
+
+
+def test_count_image_force_render_intent_consistency(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Fix B: forced rerun refreshes overlay when render intent is true and
+    removes a stale overlay when it is false; zero-Qwen resume never mutates
+    render artifacts. Fix B：render 意图为真时 force 重跑刷新 overlay，
+    为假时移除 stale overlay；零 Qwen resume 绝不改动渲染产物。"""
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    # render=true: stale overlay is rewritten / render=true：stale overlay 被重写
+    assert run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="render-run",
+            render=True,
+        )
+    ) == 0
+    capsys.readouterr()
+    sample_dir = _count_image_sample_dir_for(tmp_path, "render-run")
+    (sample_dir / "overlay.png").write_bytes(b"stale-overlay")
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="render-run",
+            resume=True,
+            force=True,
+        )
+    )
+    assert code == 0
+    assert (sample_dir / "overlay.png").read_bytes() != b"stale-overlay"  # rewritten
+    # render=false: stale overlay is removed / render=false：stale overlay 被移除
+    assert run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="no-render-run",
+        )
+    ) == 0
+    capsys.readouterr()
+    sample_dir2 = _count_image_sample_dir_for(tmp_path, "no-render-run")
+    (sample_dir2 / "overlay.png").write_bytes(b"stale-overlay")
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="no-render-run",
+            resume=True,
+            force=True,
+        )
+    )
+    assert code == 0
+    capsys.readouterr()
+    assert not (sample_dir2 / "overlay.png").exists()
+    # zero-Qwen resume never mutates render artifacts / 零 Qwen resume 不改渲染产物
+    assert (sample_dir / "overlay.png").is_file()
+    overlay_before = (sample_dir / "overlay.png").read_bytes()
+    calls_before = len(client.calls)
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="render-run",
+            resume=True,
+        )
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "resumed"
+    assert len(client.calls) == calls_before
+    assert (sample_dir / "overlay.png").read_bytes() == overlay_before
+
+
+def test_count_image_legacy_run_zero_qwen_resume_and_force_rejected(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Fix A (backward compat): an old current-generation count-image
+    run_request without the fidelity snapshot still allows zero-Qwen reuse
+    with a valid result, but force resume fails stably before model calls.
+    Fix A（向后兼容）：缺少保真快照的旧当前代 count-image run_request 仍
+    允许合法结果零 Qwen 复用，但 force resume 在模型调用前稳定失败。"""
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+    from workflows.run_store import RunStore
+    from workflows.schema import RunRequest
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    # create a run, then strip the fidelity fields to emulate an old request
+    # 创建 run，然后移除保真字段以模拟旧请求
+    assert run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", run_id="legacy-run"
+        )
+    ) == 0
+    capsys.readouterr()
+    request_path = tmp_path / "runs" / "legacy-run" / "run_request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    for key in (
+        "count_target_spec",
+        "count_target_spec_hash",
+        "count_seam_verify",
+        "count_max_qwen_calls",
+        "count_max_deepseek_calls",
+        "count_render",
+    ):
+        request.pop(key, None)
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    # zero-Qwen reuse still allowed with a valid result / 合法结果零 Qwen 复用仍允许
+    calls_before = len(client.calls)
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="legacy-run",
+            resume=True,
+        )
+    )
+    assert code == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "resumed"
+    assert len(client.calls) == calls_before
+    # force resume fails stably before any model call / force resume 在模型调用前稳定失败
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="legacy-run",
+            resume=True,
+            force=True,
+        )
+    )
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+    assert len(client.calls) == calls_before  # no model call
+
+
+def test_counting_judge_hint_priority_normalization_first(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Fix D/E/F: normalization hint wins over metadata hint; metadata hint
+    second; neutral fallback third. VRSBench-style normalization rules are
+    passed to judge_counting exactly. Fix D/E/F：normalization hint 优先于
+    metadata hint；metadata hint 其次；中性回退第三。VRSBench 风格
+    normalization 规则原样传给 judge_counting。"""
+    from application.commands import evaluate_run as evaluate_run_module
+    from application.commands.evaluate_run import run_evaluate_run
+    from data.schema import GroundTruth, ImageRef, TaskNormalization, UnifiedSample
+
+    # build a VRSBench-style counting sample with an audited normalization hint
+    # 构建带审计 normalization hint 的 VRSBench 风格计数样本
+    entry = _offline_counting_sample("vrs1", final_count=0)
+    entry["sample"]["normalization"] = TaskNormalization(
+        source_task="counting",
+        normalized_task="counting",
+        normalizer="vrsbench",
+        version="1",
+        reason_codes=["ontology_hint"],
+        count_target_hint={
+            "canonical_label": "small-vehicle",
+            "aliases": ["cars", "passenger cars", "motorcycles"],
+            "inclusion_rule": "cars / passenger cars / motorcycles / small vehicles",
+            "exclusion_rule": "trucks / buses / trailers / large vehicles / non-vehicles",
+        },
+    ).model_dump(mode="json")
+    entry["sample"]["metadata"] = {
+        "count_target_hint": {
+            "canonical_label": "metadata-wrong",
+            "inclusion_rule": "metadata rule",
+            "exclusion_rule": "metadata exclusion",
+        }
+    }
+    captured = {}
+
+    class _SpyJudge:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def judge_counting(self, *, sample_id, question, target, display_answer, counting, ground_truth, artifact_dir):
+            self.calls += 1
+            captured["target"] = target
+            from evaluation.records import EvaluationRecord
+            from evaluation.metrics.counting import merge_count_evaluation
+
+            return merge_count_evaluation(
+                sample_id=sample_id,
+                counting=counting,
+                ground_truth=ground_truth,
+            )
+
+    spy = _SpyJudge()
+
+    class _SpyJudgeService:
+        judge_client = object()
+
+        def judge_counting(self, **kwargs):
+            return spy.judge_counting(**kwargs)
+
+        def judge_vqa_resume(self, **kwargs):
+            raise AssertionError("vqa path must not run for counting sample")
+
+    monkeypatch.setattr(
+        evaluate_run_module,
+        "DeepSeekJudgeClient",
+        lambda *a, **k: None,
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    _make_offline_run(tmp_path, [entry])
+    monkeypatch.setattr(evaluate_run_module, "JudgeService", lambda **kw: _SpyJudgeService())
+    code = run_evaluate_run(_offline_args(deepseek=True))
+    assert code == 0
+    assert spy.calls == 1
+    target = captured["target"]
+    assert target.canonical_label == "small-vehicle"
+    assert target.aliases == ["cars", "passenger cars", "motorcycles"]
+    assert target.inclusion_rule == "cars / passenger cars / motorcycles / small vehicles"
+    assert target.exclusion_rule == "trucks / buses / trailers / large vehicles / non-vehicles"
+    # metadata hint second / metadata hint 其次
+    entry2 = _offline_counting_sample("meta1", final_count=0)
+    entry2["sample"]["metadata"] = {
+        "count_target_hint": {
+            "canonical_label": "metadata-cars",
+            "inclusion_rule": "metadata rule",
+            "exclusion_rule": "metadata exclusion",
+        }
+    }
+    captured.clear()
+    spy.calls = 0
+    _make_offline_run(tmp_path, [entry2], run_id="meta-run")
+    code = run_evaluate_run(_offline_args(run_id="meta-run", deepseek=True))
+    assert code == 0
+    assert captured["target"].canonical_label == "metadata-cars"
+    # neutral fallback third / 中性回退第三
+    entry3 = _offline_counting_sample("neutral1", final_count=0)
+    captured.clear()
+    spy.calls = 0
+    _make_offline_run(tmp_path, [entry3], run_id="neutral-run")
+    code = run_evaluate_run(_offline_args(run_id="neutral-run", deepseek=True))
+    assert code == 0
+    assert captured["target"].canonical_label == "vehicles"
+    assert captured["target"].inclusion_rule == "Persisted inclusion rule unavailable."
+    assert "exclude none" not in captured["target"].exclusion_rule
+
+
+def test_run_dataset_resume_preflight_before_runtime_create(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Fix G: an invalid run-dataset --resume fails before Runtime.create is
+    called (zero model construction); a matching invocation proceeds with
+    exactly one create. Fix G：非法 run-dataset --resume 在 Runtime.create
+    被调用前失败（零模型构造）；匹配调用恰好一次 create 并继续。"""
+    from application.commands import run_dataset as run_dataset_module
+
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    client = _FakeQwenClient()
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=client,
+        api_key=None,
+    )
+    registry = DatasetRegistry()
+    registry.register(
+        "auto-demo", lambda: ManifestDraftAdapter("auto-demo", {"general_vqa", "caption"})
+    )
+    runtime = Runtime(settings=settings, components=components, registry=registry)
+    asyncio.run(
+        runtime.run_dataset(
+            DatasetRunOptions(
+                dataset="auto-demo",
+                root=data_root,
+                split="test",
+                tasks=(),
+                auto_task=True,
+                run_id="preflight-run",
+                evaluate=True,
+                judge_policy="all",
+                judge_sample_rate=0.5,
+            )
+        )
+    )
+    creates = []
+
+    def boom_create(cls, **kwargs):
+        creates.append(kwargs)
+        raise AssertionError("must not be reached for invalid resume")
+
+    import argparse
+
+    monkeypatch.setattr(run_dataset_module.Runtime, "create", classmethod(boom_create))
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    # wrong root / root 错误
+    code = run_dataset_module.run_run_dataset(
+        argparse.Namespace(
+            config=None,
+            dataset="auto-demo",
+            root=str(tmp_path / "wrong-root"),
+            split="test",
+            task=None,
+            auto_task=True,
+            sample_ids=None,
+            run_id="preflight-run",
+            resume=True,
+            evaluate=True,
+            judge_policy="all",
+            judge_sample_rate=0.5,
+            render_errors=False,
+            fail_fast=False,
+            limit=None,
+            start_index=0,
+            shard_index=0,
+            shard_count=1,
+            sample_concurrency=1,
+        )
+    )
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+    assert not creates  # Runtime.create never called / create 从未被调用
+    # wrong judge policy / judge 策略错误
+    code = run_dataset_module.run_run_dataset(
+        argparse.Namespace(
+            config=None,
+            dataset="auto-demo",
+            root=str(data_root),
+            split="test",
+            task=None,
+            auto_task=True,
+            sample_ids=None,
+            run_id="preflight-run",
+            resume=True,
+            evaluate=True,
+            judge_policy="none",
+            judge_sample_rate=None,
+            render_errors=False,
+            fail_fast=False,
+            limit=None,
+            start_index=0,
+            shard_index=0,
+            shard_count=1,
+            sample_concurrency=1,
+        )
+    )
+    assert code == 1
+    assert not creates
+    # matching invocation proceeds with exactly one create / 匹配调用恰好一次 create
+    def fake_create(cls, **kwargs):
+        creates.append(kwargs)
+        return runtime
+
+    monkeypatch.setattr(run_dataset_module.Runtime, "create", classmethod(fake_create))
+    code = run_dataset_module.run_run_dataset(
+        argparse.Namespace(
+            config=None,
+            dataset="auto-demo",
+            root=str(data_root),
+            split="test",
+            task=None,
+            auto_task=True,
+            sample_ids=None,
+            run_id="preflight-run",
+            resume=True,
+            evaluate=True,
+            judge_policy="all",
+            judge_sample_rate=0.5,
+            render_errors=False,
+            fail_fast=False,
+            limit=None,
+            start_index=0,
+            shard_index=0,
+            shard_count=1,
+            sample_concurrency=1,
+        )
+    )
+    assert code == 0
+    assert len(creates) == 1  # exactly one create / 恰好一次 create
