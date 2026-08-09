@@ -5103,3 +5103,316 @@ def test_count_image_seam_config_drift_persisted_true_survives_false_config(
     )
     assert code == 0
     assert executed is True
+
+# ── dataset download/loader utilities (Task 11H2) / 数据集下载与加载工具 ────
+
+
+class _FakeHub:
+    """Fake huggingface_hub: records snapshot_download calls and materializes
+    the local snapshot. fake huggingface_hub：记录 snapshot_download 调用并
+    物化本地快照。"""
+
+    def __init__(self, files: dict[str, bytes] | None = None) -> None:
+        self.calls: list[tuple] = []
+        self.files = files if files is not None else {"data.txt": b"content"}
+
+    def snapshot_download(self, *, repo_id, local_dir, token=None):
+        self.calls.append((repo_id, local_dir, token))
+        local_dir.mkdir(parents=True, exist_ok=True)
+        for name, content in self.files.items():
+            (local_dir / name).write_bytes(content)
+        return str(local_dir)
+
+
+def test_downloader_official_targets_mapping() -> None:
+    from data.downloader import OFFICIAL_DOWNLOAD_TARGETS, dataset_download_target
+
+    assert dataset_download_target("vrsbench") == "xiang709/VRSBench"
+    assert dataset_download_target("mme_realworld") == "yifanzhang114/MME-RealWorld"
+    assert dataset_download_target("xlrs_caption") == "initiacms/XLRS-Bench_caption_en"
+    assert dataset_download_target("xlrs_grounding") == "initiacms/XLRS-Bench_visual_grounding_en"
+    assert dataset_download_target("xlrs_lite") == "initiacms/XLRS-Bench-lite"
+    assert dataset_download_target("levir_cc") == "lcybuaa/LEVIR-CC"
+    assert set(OFFICIAL_DOWNLOAD_TARGETS) == {
+        "vrsbench", "mme_realworld", "xlrs_caption", "xlrs_grounding",
+        "xlrs_lite", "levir_cc",
+    }
+    with pytest.raises(ValueError, match="unknown download dataset"):
+        dataset_download_target("nope")
+
+
+def test_downloader_lazy_hub_import_and_stable_missing_dependency(
+    tmp_path, monkeypatch
+) -> None:
+    """huggingface_hub is never imported at module import time; a missing
+    dependency fails stably on explicit download. huggingface_hub 绝不在
+    模块导入时被 import；缺失依赖在显式下载时稳定失败。"""
+    import ast
+
+    tree = ast.parse(
+        Path("data/downloader.py").read_text(encoding="utf-8")
+    )
+    for node in tree.body:  # module-level imports only / 仅模块级 import
+        if isinstance(node, ast.ImportFrom) and node.module == "huggingface_hub":
+            raise AssertionError("downloader must import huggingface_hub lazily")
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name != "huggingface_hub"
+    import builtins
+
+    import data.downloader as downloader_module
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "huggingface_hub":
+            raise ImportError("missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    with pytest.raises(ValueError, match="huggingface_hub is required"):
+        downloader_module._import_hub()
+    with pytest.raises(ValueError, match="huggingface_hub is required"):
+        downloader_module.download_dataset("vrsbench", root=tmp_path)
+
+
+def test_downloader_mocked_download_and_zip_extraction(tmp_path, monkeypatch) -> None:
+    """download_dataset calls snapshot_download exactly once with the official
+    repo id and extracts archives into the snapshot.
+    download_dataset 以官方 repo id 恰好调用一次 snapshot_download 并提取
+    快照内的归档。"""
+    import zipfile
+
+    import data.downloader as downloader_module
+
+    archive_bytes = None
+    with zipfile.ZipFile(tmp_path / "bundle.zip", "w") as zf:
+        zf.writestr("annotations/rows.json", '{"a": 1}')
+        zf.writestr("images/img.png", b"png")
+    archive_bytes = (tmp_path / "bundle.zip").read_bytes()
+    hub = _FakeHub(files={"bundle.zip": archive_bytes})
+    monkeypatch.setattr(downloader_module, "_import_hub", lambda: hub)
+    destination = downloader_module.download_dataset("vrsbench", root=tmp_path / "root")
+    assert destination == (tmp_path / "root" / "vrsbench").resolve()
+    assert hub.calls == [("xiang709/VRSBench", destination, None)]
+    assert (destination / "annotations" / "rows.json").is_file()
+    assert (destination / "images" / "img.png").is_file()
+
+
+def test_downloader_safe_extraction_rejects_zip_slip(tmp_path) -> None:
+    """Unsafe archive members (.., absolute, drive, UNC, reserved names) fail
+    the whole archive and are never written outside. 不安全归档成员（..、
+    绝对、drive、UNC、保留名）使整个归档失败，绝不写出到外部。"""
+    import zipfile
+
+    from data.downloader import extract_archives
+
+    cases = {
+        "dotdot": "../evil.txt",
+        "dotdot2": "a/../../evil.txt",
+        "absolute": "/tmp/evil.txt",
+        "drive": "C:/evil.txt",
+        "unc": r"\\server\share\evil.txt",
+        "reserved": "CON.txt",
+    }
+    for label, member in cases.items():
+        directory = tmp_path / label
+        directory.mkdir()
+        archive = directory / "bad.zip"
+        with zipfile.ZipFile(archive, "w") as zf:
+            zf.writestr(member, b"evil")
+        with pytest.raises(ValueError, match="unsafe archive member"):
+            extract_archives(directory)
+        # nothing was written outside the archive / 归档外没有任何写入
+        assert not (tmp_path / "evil.txt").exists()
+        assert not (directory / "evil.txt").exists()
+    # a safe archive extracts fully / 安全归档完整提取
+    safe = tmp_path / "safe"
+    safe.mkdir()
+    with zipfile.ZipFile(safe / "ok.zip", "w") as zf:
+        zf.writestr("good.txt", b"ok")
+    extracted = extract_archives(safe)
+    assert extracted == [safe / "ok.zip"]
+    assert (safe / "good.txt").is_file()
+
+
+def test_download_data_cli(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands import download_data as download_command_module
+    from application.commands.download_data import run_download_data
+
+    calls = []
+
+    def fake_download(dataset, *, root):
+        calls.append((dataset, root))
+        destination = root / dataset
+        destination.mkdir(parents=True, exist_ok=True)
+        return destination
+
+    monkeypatch.setattr(download_command_module, "download_dataset", fake_download)
+    code = run_download_data(
+        _command_namespace(root=str(tmp_path / "root"), datasets=["vrsbench", "levir_cc"])
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert set(out["datasets"]) == {"vrsbench", "levir_cc"}
+    assert calls == [("vrsbench", tmp_path / "root"), ("levir_cc", tmp_path / "root")]
+    # unknown dataset fails stably / 未知数据集稳定失败
+    monkeypatch.setattr(
+        download_command_module,
+        "download_dataset",
+        lambda dataset, *, root: (_ for _ in ()).throw(ValueError("unknown")),
+    )
+    code = run_download_data(
+        _command_namespace(root=str(tmp_path / "root"), datasets=["nope"])
+    )
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+
+class _LoaderFakeAdapter:
+    """Recording adapter for loader tests. loader 测试的记录型适配器。"""
+
+    name = "loader-demo"
+    supported_tasks = frozenset({"general_vqa", "caption"})
+
+    def __init__(self) -> None:
+        self.probe_calls: list[tuple] = []
+        self.iter_tasks: list[tuple] = []
+
+    def probe(self, root, task=None):
+        from data.adapters.base import AdapterProbe
+
+        self.probe_calls.append((root, task))
+        return AdapterProbe(
+            dataset="loader-demo",
+            version="1",
+            sample_file=root / "samples.jsonl",
+            observed_fields=("id",),
+            sample_count=2,
+            task=task,
+            available_tasks=("general_vqa", "caption"),
+        )
+
+    def iter_samples(self, root, split, task):
+        from data.schema import ImageRef, UnifiedSample
+
+        self.iter_tasks.append((root, split, task))
+        for index in range(2):
+            yield UnifiedSample(
+                sample_id=f"{task}-{index}",
+                dataset="loader-demo",
+                split=split,
+                task=task,
+                images=[ImageRef(image_id="i0", path="img.png", role="image")],
+                question="q",
+            )
+
+
+class _LoaderDraftAdapter(_LoaderFakeAdapter):
+    """Adapter with iter_drafts support. 支持 iter_drafts 的适配器。"""
+
+    supported_tasks = frozenset()
+
+    def iter_drafts(self, root, split):
+        from data.schema import ImageRef, SampleDraft
+
+        for index in range(2):
+            yield SampleDraft(
+                sample_id=f"draft-{index}",
+                dataset="loader-demo",
+                split=split,
+                images=[ImageRef(image_id="i0", path="img.png", role="image")],
+                question="q",
+            )
+
+
+def _loader_registry(tmp_path, monkeypatch, adapter) -> None:
+    from data.registry import DatasetRegistry
+
+    import data.loader as loader_module
+
+    registry = DatasetRegistry()
+    registry.register("loader-demo", lambda: adapter)
+    monkeypatch.setattr(loader_module, "build_default_registry", lambda: registry)
+
+
+def test_loader_samples_task_filter_limit_and_source_read_only(
+    tmp_path, monkeypatch
+) -> None:
+    from data.loader import load_dataset_samples
+
+    adapter = _LoaderFakeAdapter()
+    _loader_registry(tmp_path, monkeypatch, adapter)
+    samples = list(
+        load_dataset_samples("loader-demo", root=tmp_path / "root", split="test")
+    )
+    assert [s.task for s in samples] == ["caption", "caption", "general_vqa", "general_vqa"]
+    assert adapter.probe_calls == [
+        (tmp_path / "root", "caption"),
+        (tmp_path / "root", "general_vqa"),
+    ]
+    # task filter / task 过滤
+    filtered = list(
+        load_dataset_samples(
+            "loader-demo", root=tmp_path / "root", split="test", task="caption"
+        )
+    )
+    assert [s.task for s in filtered] == ["caption", "caption"]
+    # limit / 限制
+    limited = list(
+        load_dataset_samples(
+            "loader-demo", root=tmp_path / "root", split="test", limit=1
+        )
+    )
+    assert len(limited) == 1
+    # source read-only: the loader never mutates adapter or source files
+    # 源只读：loader 绝不修改适配器或源文件
+    assert not hasattr(adapter, "write")
+    from data.schema import UnifiedSample
+
+    assert isinstance(samples[0], UnifiedSample)
+
+
+def test_loader_unknown_dataset_and_draft_iterator(tmp_path, monkeypatch) -> None:
+    import data.loader as loader_module
+    from data.loader import load_dataset_drafts, load_dataset_samples
+
+    adapter = _LoaderFakeAdapter()
+    _loader_registry(tmp_path, monkeypatch, adapter)
+    with pytest.raises(Exception):
+        list(load_dataset_samples("nope", root=tmp_path, split="test"))
+    # non-draft adapter fails stably for drafts / 非 draft 适配器稳定失败
+    with pytest.raises(TypeError, match="does not yield drafts"):
+        list(load_dataset_drafts("loader-demo", root=tmp_path, split="test"))
+    # draft adapter yields SampleDraft, never UnifiedSample
+    # draft 适配器产出 SampleDraft，绝非 UnifiedSample
+    from data.schema import SampleDraft, UnifiedSample
+
+    draft_adapter = _LoaderDraftAdapter()
+    _loader_registry(tmp_path, monkeypatch, draft_adapter)
+    drafts = list(load_dataset_drafts("loader-demo", root=tmp_path, split="test"))
+    assert len(drafts) == 2
+    assert all(isinstance(draft, SampleDraft) for draft in drafts)
+    assert not any(isinstance(draft, UnifiedSample) for draft in drafts)
+
+
+def test_loader_and_downloader_never_import_each_other() -> None:
+    """The loader never downloads and the downloader is not imported by the
+    loader; neither module imports huggingface_hub at module level.
+    loader 绝不下载，也不 import downloader；两模块都不在模块级 import
+    huggingface_hub。"""
+    import ast
+
+    for path in ("data/loader.py", "data/downloader.py"):
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert node.module.split(".")[0] not in {
+                    "huggingface_hub", "application", "models", "agents",
+                }, f"{path} must not import {node.module}"
+    loader_text = Path("data/loader.py").read_text(encoding="utf-8")
+    assert "downloader" not in loader_text
+    assert "snapshot_download" not in loader_text
+    downloader_text = Path("data/downloader.py").read_text(encoding="utf-8")
+    assert "load_dataset_samples" not in downloader_text

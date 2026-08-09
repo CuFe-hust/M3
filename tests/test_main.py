@@ -812,3 +812,29 @@ def test_parser_standard_evaluate_defaults() -> None:
     assert args.tool_dir is None
     assert args.output is None
     assert args.python is None
+
+
+# ── download-data CLI (Task 11H2) / 数据集下载 CLI ─────────────────────────
+
+
+def test_download_data_help_exits_zero() -> None:
+    import pytest
+
+    with pytest.raises(SystemExit) as exc:
+        main_module.build_parser().parse_args(["download-data", "--help"])
+    assert exc.value.code == 0
+
+
+def test_main_dispatches_download_data(monkeypatch) -> None:
+    captured = []
+
+    def fake_run(args, **kwargs):
+        captured.append((args.command, args.root, args.datasets))
+        return 0
+
+    monkeypatch.setattr(main_module, "run_download_data", fake_run)
+    code = main_module.main(
+        ["download-data", "--root", "r", "--datasets", "vrsbench", "levir_cc"]
+    )
+    assert code == 0
+    assert captured == [("download-data", "r", ["vrsbench", "levir_cc"])]

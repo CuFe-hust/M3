@@ -5,6 +5,7 @@
 
 from application.commands.ask import run_ask
 from application.commands.count_image import run_count_image
+from application.commands.download_data import run_download_data
 from application.commands.evaluate_run import run_evaluate_run
 from application.commands.health import run_health
 from application.commands.inspect_data import run_inspect_data
@@ -22,6 +23,7 @@ from application.commands.summarize_evaluations import run_summarize_evaluations
 __all__ = [
     "run_ask",
     "run_count_image",
+    "run_download_data",
     "run_evaluate_run",
     "run_health",
     "run_inspect_data",

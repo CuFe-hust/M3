@@ -17,6 +17,7 @@ import sys
 
 from application.commands.ask import run_ask
 from application.commands.count_image import run_count_image
+from application.commands.download_data import run_download_data
 from application.commands.evaluate_run import run_evaluate_run
 from application.commands.health import run_health
 from application.commands.inspect_data import run_inspect_data
@@ -105,6 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
     count_image.add_argument("--no-seam-verify", action="store_true")
     count_image.add_argument("--max-qwen-calls", type=int, default=None)
     count_image.add_argument("--max-deepseek-calls", type=int, default=None)
+    download_data = subparsers.add_parser(
+        "download-data", help="download official datasets explicitly"
+    )
+    download_data.add_argument("--root", required=True)
+    download_data.add_argument(
+        "--datasets", nargs="+", required=True, help="dataset keys to download"
+    )
     evaluate_run = subparsers.add_parser(
         "evaluate-run", help="offline deterministic evaluation of one run"
     )
@@ -210,6 +218,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_inspect_data(args)
     if args.command == "count-image":
         return run_count_image(args)
+    if args.command == "download-data":
+        return run_download_data(args)
     if args.command == "evaluate-run":
         return run_evaluate_run(args)
     if args.command == "judge-vqa-run":
