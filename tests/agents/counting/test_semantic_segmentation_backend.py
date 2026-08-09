@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Callable
@@ -53,6 +54,8 @@ def _expert(
     min_area: int = 1,
     max_area_ratio: float = 0.9,
     min_confidence: float = 0.5,
+    target: str = "small-vehicle",
+    model_labels: tuple[str, ...] = ("Small_Vehicle",),
 ) -> ExpertSpec:
     return ExpertSpec.model_validate(
         {
@@ -68,8 +71,8 @@ def _expert(
             },
             "verification": {"class_map": "verified"},
             "supports": {
-                "small-vehicle": {
-                    "model_labels": ["Small_Vehicle"],
+                target: {
+                    "model_labels": list(model_labels),
                     "counting_mode": counting_mode,
                     **(
                         {
@@ -124,6 +127,20 @@ def _request(tmp_path: Path, *, width: int = 8, height: int = 8) -> CountingRequ
     )
 
 
+def _request_for(
+    tmp_path: Path,
+    target: str,
+    *,
+    width: int = 8,
+    height: int = 8,
+) -> CountingRequest:
+    request = _request(tmp_path, width=width, height=height)
+    return replace(
+        request,
+        target=_TARGET.model_copy(update={"canonical_label": target}),
+    )
+
+
 def _output(
     width: int,
     height: int,
@@ -174,6 +191,42 @@ def test_two_separate_blobs_produce_two_points(tmp_path: Path) -> None:
     assert {point.provenance.source for point in outcome.counting.global_points} == {
         "semantic_component_centroid"
     }
+
+
+def test_composite_labels_are_componentized_separately_when_touching(
+    tmp_path: Path,
+) -> None:
+    mask = np.zeros((8, 8), dtype=np.int64)
+    mask[2:5, 1:4] = 1
+    mask[2:5, 4:7] = 2
+    output = SimpleNamespace(
+        width=8,
+        height=8,
+        mask=mask,
+        confidence_map=np.full((8, 8), 0.9, dtype=np.float32),
+        id_to_label={0: "background", 1: "Small_Vehicle", 2: "Large_Vehicle"},
+        logical_model_id="segformer-test-local",
+        model_revision="test-revision",
+        weights_sha256=_DIGEST,
+    )
+    backend = SemanticSegmentationCountingBackend(
+        _FakeClient([output]),
+        _expert(
+            target="vehicle",
+            model_labels=("Small_Vehicle", "Large_Vehicle"),
+        ),
+        _settings(),
+    )
+
+    outcome = asyncio.run(
+        backend.count(_request_for(tmp_path, "vehicle"), object())
+    )
+
+    assert outcome.counting.final_count == 2
+    assert {
+        point.provenance.source_class for point in outcome.counting.global_points
+    } == {"Small_Vehicle", "Large_Vehicle"}
+    assert outcome.trace["model_labels"] == ["Small_Vehicle", "Large_Vehicle"]
 
 
 def test_touching_blobs_remain_one_semantic_instance_approximation(tmp_path: Path) -> None:

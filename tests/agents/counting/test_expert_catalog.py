@@ -45,6 +45,31 @@ def test_valid_catalog_loads_and_exposes_capability_specs() -> None:
     assert expert.supports["small-vehicle"].counting_mode == "connected_components"
 
 
+def test_catalog_declares_vehicle_and_aircraft_composite_semantic_support() -> None:
+    expert = ExpertCatalog.load(CATALOG_PATH).expert("segmenter_mitb2_001")
+
+    assert expert.supports["vehicle"].model_labels == (
+        "Small_Vehicle",
+        "Large_Vehicle",
+    )
+    assert expert.supports["aircraft"].model_labels == ("plane", "Helicopter")
+    assert expert.supports["vehicle"].counting_mode == "connected_components"
+    assert expert.supports["aircraft"].counting_mode == "connected_components"
+
+
+def test_duplicate_or_placeholder_composite_model_labels_fail_closed(
+    tmp_path: Path,
+) -> None:
+    for labels in (
+        ["Small_Vehicle", "small_vehicle"],
+        ["Small_Vehicle", "LABEL_7"],
+    ):
+        payload = _payload()
+        payload["experts"][1]["supports"]["vehicle"]["model_labels"] = labels
+        with pytest.raises(ExpertCatalogError, match="validation failed"):
+            _load_payload(tmp_path, payload)
+
+
 def test_yolo_capabilities_use_declared_detector_identity_and_labels() -> None:
     config = yaml.safe_load(
         (REPO_ROOT / "configs" / "yolo.example.yaml").read_text(encoding="utf-8")
@@ -259,3 +284,28 @@ def test_kind_filter_is_explicit_and_validated() -> None:
     assert tuple(expert.backend_name for expert in semantic) == ("segmenter_mitb2_001",)
     with pytest.raises(ValueError, match="unknown expert kind filter"):
         catalog.candidates(_target("plane"), kinds=frozenset({"unknown"}))
+
+
+def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
+    catalog = ExpertCatalog.load(CATALOG_PATH)
+
+    enabled = catalog.experts()
+    semantic = catalog.experts(kinds=frozenset({"semantic_segmentation"}))
+    all_semantic = catalog.experts(
+        kinds=frozenset({"semantic_segmentation"}), enabled_only=False
+    )
+
+    assert isinstance(enabled, tuple)
+    assert tuple(expert.backend_name for expert in enabled) == (
+        "detector_obb_csl_001",
+        "segmenter_mitb2_001",
+    )
+    assert tuple(expert.backend_name for expert in semantic) == (
+        "segmenter_mitb2_001",
+    )
+    assert tuple(expert.backend_name for expert in all_semantic) == (
+        "segmenter_mitb2_001",
+        "segmenter_oem_001",
+    )
+    with pytest.raises(ValueError, match="unknown expert kind filter"):
+        catalog.experts(kinds=frozenset({"unknown"}))

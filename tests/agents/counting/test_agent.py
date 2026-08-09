@@ -392,7 +392,7 @@ def test_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
     client = _FakeClient()
     yolo = _FakeYoloBackend(error=DetectorWeightsMissingError("det-a", "det.pt"))
     registry = _registry(_qwen_backend(client), yolo)
-    agent = _agent(client, registry, fallback_to_qwen_on_unavailable=False)
+    agent = _agent(client, registry, fallback_on_backend_unavailable=False)
     with pytest.raises(CountingBackendUnavailableError, match="PRIMARY_BACKEND_UNAVAILABLE"):
         asyncio.run(agent.run(_sample(root), _context(root)))
 
@@ -439,7 +439,7 @@ def test_zero_review_confirms_zero_without_override(tmp_path: Path) -> None:
     client = _FakeClient()
     yolo = _FakeYoloBackend(final_count=0)
     registry = _registry(_qwen_backend(client), yolo)
-    agent = _agent(client, registry, verify_empty_with_qwen=True)
+    agent = _agent(client, registry, verify_empty_detection=True)
     execution = asyncio.run(agent.run(_sample(root), _context(root)))
     assert execution.trace["yolo"]["zero_overridden"] is False
     # The qwen review also returns zero → the detector outcome stays final.
@@ -457,7 +457,7 @@ def test_zero_review_disabled_skips_verification(tmp_path: Path) -> None:
     client = _FakeClient()
     yolo = _FakeYoloBackend(final_count=0)
     registry = _registry(_qwen_backend(client), yolo)
-    agent = _agent(client, registry, verify_empty_with_qwen=False)
+    agent = _agent(client, registry, verify_empty_detection=False)
     execution = asyncio.run(agent.run(_sample(root), _context(root)))
     assert "zero_review_triggered" not in execution.trace["yolo"]
     assert execution.trace["executed_backend"] == "det-a"
@@ -832,7 +832,7 @@ def test_real_yolo_all_tiles_failed_without_fallback(tmp_path: Path) -> None:
     client = _FakeClient()
     yolo = _real_yolo_backend(tmp_path, exploding=True)
     registry = _registry(_qwen_backend(client), yolo)
-    agent = _agent(client, registry, fallback_to_qwen_on_error=False)
+    agent = _agent(client, registry, fallback_on_backend_error=False)
     with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
         asyncio.run(agent.run(_sample(root), _context(root)))
 

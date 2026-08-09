@@ -85,7 +85,11 @@ class QuantityProposalBackend:
         localizer_prompt: str,
         proposal_prompt_version: str,
         localizer_prompt_version: str,
-        supported_targets: tuple[str, ...] = ("small-vehicle", "large-vehicle"),
+        supported_targets: tuple[str, ...] = (
+            "small-vehicle",
+            "large-vehicle",
+            "vehicle",
+        ),
     ) -> None:
         self._client = client
         self._counting = counting
@@ -186,10 +190,10 @@ class QuantityProposalBackend:
                     ),
                 )
             )
-        complete = len(points) == proposal_count and (
-            localizer_answer is None
-            or localizer_answer == len(points)
-            or dropped > 0
+        complete = (
+            localizer_answer is not None and localizer_answer == len(points)
+            if localization_used
+            else len(points) == proposal_count
         )
         if not complete:
             issues.append(

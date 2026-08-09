@@ -1682,7 +1682,11 @@ def test_count_image_produces_current_artifacts_and_overlay(
     assert (tmp_path / "imgs").as_posix() not in (
         sample_dir / "status.json"
     ).read_text(encoding="utf-8")
-    assert client.calls == ["CountTargetSpec", "TileCountResponse"]
+    assert client.calls == [
+        "CountTargetSpec",
+        "_CountProposalResult",
+        "TileCountResponse",
+    ]
 
 
 def test_count_image_resume_succeeded_zero_qwen_calls(
@@ -1879,7 +1883,10 @@ def test_count_image_target_spec_skips_target_model_call(
         )
     )
     assert code == 0
-    assert client.calls == ["TileCountResponse"]  # no target model call
+    assert client.calls == [
+        "_CountProposalResult",
+        "TileCountResponse",
+    ]  # no target parser call; vehicle specialist chain remains active
 
 
 # ── render-count / 渲染计数 ─────────────────────────────────────────────────

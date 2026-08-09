@@ -4,12 +4,8 @@ agents:
   counting:
     default_backend: auto
 backend:
-  trust_empty_detection: false
   yolo:
     enabled: true
-    fallback_to_qwen_on_unavailable: true
-    fallback_to_qwen_on_error: true
-    verify_empty_with_qwen: true
     detectors:
       - name: detector_obb_csl_001
         enabled: true
@@ -32,3 +28,10 @@ backend:
         allow_cpu_fallback: false
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
+
+counting:
+  fallback_on_backend_unavailable: true
+  fallback_on_backend_error: true
+  verify_empty_detection: true
+  verify_empty_semantic: false
+  trust_empty_detection: false

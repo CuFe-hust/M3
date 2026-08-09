@@ -958,6 +958,10 @@ SegFormer 只在 verified class map 和 target-specific `connected_components` p
 成立时成为候选。它输出 semantic region 而不是 instance mask，相接对象可能合并成一个
 component 并造成 undercount。OEM 当前没有 verified class map，因此默认不注册。
 
+Catalog 已明确声明 composite capability：`vehicle` 的链是 Detection → SegFormer →
+QuantityProposal → QwenPoint，`aircraft` 是 Detection → SegFormer → QwenPoint。Semantic
+backend 对每个 model label 分别做 connected components，不会先合并不同类别 mask。
+
 小目标 minimum scan depth、empty-tile review、optional upscale 和 ambiguous seam visual
 review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset 名。新增同类 expert
 主要修改 catalog、资产和 composition settings，不要求修改 `CountingAgent`。
@@ -986,10 +990,14 @@ YOLO 默认不是必须依赖。
 - 不自动下载权重；
 - detector profile/权重 hash/task/class map 需要一致；
 - CUDA/CPU fallback 行为由 detector settings 声明；
-- detector unavailable/runtime error 可以按当前 counting policy 回退；
-- zero detection 可以进入独立 Qwen review；
+- detector unavailable/runtime error 由 `counting.fallback_on_backend_*` 通用策略控制；
+- zero detection 可由 `counting.verify_empty_detection` 触发 ordered chain 的下一位专家复核；
 - `quantity_proposal` 不被当作 YOLO detector；
 - YOLO 输出最终仍转换进统一 CountingResult/evidence 契约。
+
+SegFormer 的 catalog entry 冻结 logical model id、SHA 与 verified labels；部署配置可通过
+`models.segformer_experts.<backend>.model_path` 指向外部挂载目录。普通 wheel 只包含
+catalog、class/config/preprocessor metadata 和 prompts，不包含大模型权重。
 
 当前 `pyproject.toml` 声明了 `yolo` / `yolo-onnx` extras。二者按目标 runtime
 择一安装；不要同时无条件安装 CPU 与 GPU ONNX Runtime。CUDA provider、驱动

@@ -72,9 +72,15 @@ class _FakeClient:
     """Handles tile-count responses for the Qwen backend.
     处理 Qwen 后端的 tile 计数响应。"""
 
-    def __init__(self, tile_points: list[tuple[int, int]] | None = None) -> None:
+    def __init__(
+        self,
+        tile_points: list[tuple[int, int]] | None = None,
+        *,
+        target_label: str = "car",
+    ) -> None:
         self.calls: list[Any] = []
         self._tile_points = tile_points or []
+        self._target_label = target_label
 
     @property
     def cache_identity(self) -> ModelCacheIdentity:
@@ -91,7 +97,7 @@ class _FakeClient:
 
             return response_model.model_validate(
                 {
-                    "target": "car",
+                    "target": self._target_label,
                     "tile_id": request_meta.tile_id,
                     "reported_count": len(self._tile_points),
                     "points": [
@@ -318,11 +324,11 @@ def _context(root: Path) -> AgentContext:
     )
 
 
-def _request(root: Path) -> CountingRequest:
+def _request(root: Path, target: CountTargetSpec = _TARGET) -> CountingRequest:
     return CountingRequest(
         sample=_sample(),
         image=Image.new("RGB", (100, 100), (1, 2, 3)),
-        target=_TARGET,
+        target=target,
         artifact_dir=root / "artifacts",
     )
 
@@ -342,21 +348,21 @@ def _qwen_backend(client: _FakeClient) -> QwenPointCountingBackend:
 
 def _executor(
     *backends,
-    fallback_to_qwen_on_unavailable: bool = True,
-    fallback_to_qwen_on_error: bool = True,
-    verify_empty_with_qwen: bool = True,
+    fallback_on_backend_unavailable: bool = True,
+    fallback_on_backend_error: bool = True,
+    verify_empty_detection: bool = True,
     trust_empty_detection: bool = False,
-    verify_empty_semantic_with_vlm: bool = False,
+    verify_empty_semantic: bool = False,
 ) -> CountingPlanExecutor:
     selector = BackendSelector(_registry(*backends))
     return CountingPlanExecutor(
         selector,
         policy=CountingExecutionPolicy(
-            fallback_to_qwen_on_unavailable=fallback_to_qwen_on_unavailable,
-            fallback_to_qwen_on_error=fallback_to_qwen_on_error,
-            verify_empty_with_qwen=verify_empty_with_qwen,
+            fallback_on_backend_unavailable=fallback_on_backend_unavailable,
+            fallback_on_backend_error=fallback_on_backend_error,
+            verify_empty_detection=verify_empty_detection,
             trust_empty_detection=trust_empty_detection,
-            verify_empty_semantic_with_vlm=verify_empty_semantic_with_vlm,
+            verify_empty_semantic=verify_empty_semantic,
         ),
     )
 
@@ -365,8 +371,9 @@ def _run(
     executor: CountingPlanExecutor,
     plan: BackendPlan,
     root: Path,
+    target: CountTargetSpec = _TARGET,
 ) -> CountingExecutionResult:
-    return asyncio.run(executor.execute(plan=plan, request=_request(root), context=_context(root), agent_name="counting_agent"))
+    return asyncio.run(executor.execute(plan=plan, request=_request(root, target), context=_context(root), agent_name="counting_agent"))
 
 
 # ── 主流程 / primary execution ─────────────────────────────────────────────
@@ -451,14 +458,14 @@ def test_detector_runtime_error_falls_back_to_qwen(tmp_path: Path) -> None:
 
 def test_unavailable_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
     yolo = _FakeYoloBackend(error=DetectorWeightsMissingError("det-a", "det.pt"))
-    executor = _executor(_qwen_backend(_FakeClient()), yolo, fallback_to_qwen_on_unavailable=False)
+    executor = _executor(_qwen_backend(_FakeClient()), yolo, fallback_on_backend_unavailable=False)
     with pytest.raises(CountingBackendUnavailableError, match="PRIMARY_BACKEND_UNAVAILABLE"):
         _run(executor, BackendPlan("det-a", ("qwen_point",)), tmp_path)
 
 
 def test_runtime_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
     yolo = _FakeYoloBackend(error=RuntimeError("inference boom"))
-    executor = _executor(_qwen_backend(_FakeClient()), yolo, fallback_to_qwen_on_error=False)
+    executor = _executor(_qwen_backend(_FakeClient()), yolo, fallback_on_backend_error=False)
     with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
         _run(executor, BackendPlan("det-a", ("qwen_point",)), tmp_path)
 
@@ -573,6 +580,50 @@ def test_all_specialists_fail_before_qwen(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("semantic_available", "quantity_available", "expected_final"),
+    [
+        (True, True, "segmenter_mitb2_001"),
+        (False, True, "quantity_proposal"),
+        (False, False, "qwen_point"),
+    ],
+)
+def test_vehicle_runtime_failure_chain_uses_every_declared_specialist(
+    tmp_path: Path,
+    semantic_available: bool,
+    quantity_available: bool,
+    expected_final: str,
+) -> None:
+    vehicle = _TARGET.model_copy(update={"canonical_label": "vehicle"})
+    detector = _FakeYoloBackend(available=False)
+    detector.name = "detector_obb_csl_001"
+    semantic = _FakeSemanticBackend(
+        final_count=2,
+        available=semantic_available,
+    )
+    semantic.name = "segmenter_mitb2_001"
+    quantity = _FakeQuantityProposalBackend(
+        final_count=3,
+        available=quantity_available,
+    )
+    qwen = _qwen_backend(_FakeClient(target_label="vehicle"))
+    executor = _executor(qwen, detector, semantic, quantity)
+    plan = BackendPlan(
+        "detector_obb_csl_001",
+        ("segmenter_mitb2_001", "quantity_proposal", "qwen_point"),
+    )
+
+    result = _run(executor, plan, tmp_path, vehicle)
+
+    assert result.final_backend == expected_final
+    assert result.attempted_backends == (
+        plan.primary_backend_name,
+        *plan.fallback_backend_names[:
+            plan.fallback_backend_names.index(expected_final) + 1
+        ],
+    )
+
+
 def test_qwen_failure_after_all_specialists_is_terminal(tmp_path: Path) -> None:
     executor = _executor(
         _FakeRaisingQwenBackend(RuntimeError("qwen")),
@@ -651,7 +702,7 @@ def test_semantic_zero_review_requires_explicit_policy(tmp_path: Path) -> None:
             _qwen_backend(_FakeClient()),
             quantity,
             semantic,
-            verify_empty_semantic_with_vlm=True,
+            verify_empty_semantic=True,
         ),
         plan,
         tmp_path,
@@ -711,7 +762,7 @@ def test_zero_review_failure_keeps_detector_with_warning(tmp_path: Path) -> None
 def test_zero_review_disabled_skips_verification(tmp_path: Path) -> None:
     client = _FakeClient()
     yolo = _FakeYoloBackend(final_count=0)
-    executor = _executor(_qwen_backend(client), yolo, verify_empty_with_qwen=False)
+    executor = _executor(_qwen_backend(client), yolo, verify_empty_detection=False)
     result = _run(executor, BackendPlan("det-a", ("qwen_point",)), tmp_path)
     assert result.yolo_trace is not None
     assert "zero_review_triggered" not in result.yolo_trace

@@ -158,6 +158,7 @@
       },
       "verification": {"class_map": "verified"},
       "supports": {
+        "aircraft": {"model_labels": ["plane", "Helicopter"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 12, "max_component_area_ratio": 0.15, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "background": {"model_labels": ["background"], "counting_mode": "unsupported"},
         "baseball-diamond": {"model_labels": ["baseball_diamond"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "basketball-court": {"model_labels": ["basketball_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
@@ -173,7 +174,8 @@
         "soccer-ball-field": {"model_labels": ["Soccer_ball_field"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 96, "max_component_area_ratio": 0.20, "min_mean_confidence": 0.55, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "storage-tank": {"model_labels": ["storage_tank"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 20, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.48, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "swimming-pool": {"model_labels": ["Swimming_pool"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 32, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
-        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}}
+        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
+        "vehicle": {"model_labels": ["Small_Vehicle", "Large_Vehicle"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "max_component_area_ratio": 0.15, "min_mean_confidence": 0.45, "morphology": {"open_kernel": 0, "close_kernel": 0}}}
       }
     },
     {

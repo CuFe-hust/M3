@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from agents.change.settings import AgentChangeSettings
 from agents.counting.settings import (
@@ -62,7 +62,6 @@ class BackendSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    trust_empty_detection: bool = False
     yolo: YoloCountingSettings = Field(default_factory=YoloCountingSettings)
 
 
@@ -88,6 +87,42 @@ class AppSettings(BaseModel):
     paths: PathSettings = Field(default_factory=PathSettings)
     backend: BackendSettings = Field(default_factory=BackendSettings)
     agents: AgentsSettings = Field(default_factory=AgentsSettings)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_counting_execution_policy(cls, data: Any) -> Any:
+        """Move legacy YOLO-scoped execution policy at the settings boundary."""
+
+        if not isinstance(data, Mapping):
+            return data
+        payload = dict(data)
+        counting = dict(payload.get("counting", {}))
+        backend = dict(payload.get("backend", {}))
+        yolo = dict(backend.get("yolo", {}))
+        aliases = {
+            "fallback_to_qwen_on_unavailable": "fallback_on_backend_unavailable",
+            "fallback_to_qwen_on_error": "fallback_on_backend_error",
+            "verify_empty_with_qwen": "verify_empty_detection",
+        }
+        for legacy, current in aliases.items():
+            if legacy not in yolo:
+                continue
+            if current in counting:
+                raise ValueError(
+                    f"cannot configure both legacy key {legacy!r} and {current!r}"
+                )
+            counting[current] = yolo.pop(legacy)
+        if "trust_empty_detection" in backend:
+            if "trust_empty_detection" in counting:
+                raise ValueError(
+                    "cannot configure both legacy backend trust_empty_detection "
+                    "and counting trust_empty_detection"
+                )
+            counting["trust_empty_detection"] = backend.pop("trust_empty_detection")
+        backend["yolo"] = yolo
+        payload["backend"] = backend
+        payload["counting"] = counting
+        return payload
 
     def to_config_payload(self) -> dict[str, Any]:
         """JSON-safe reproduction snapshot for run manifests: no secret
@@ -152,7 +187,8 @@ def load_settings(
     settings = AppSettings()
     if path is not None and path.is_file():
         merged = settings.model_dump()
-        _deep_merge(merged, _load_yaml(path))
+        raw = AppSettings.migrate_legacy_counting_execution_policy(_load_yaml(path))
+        _deep_merge(merged, raw)
         settings = AppSettings.model_validate(merged)
     environ = environ if environ is not None else os.environ
     overrides: dict[str, Any] = {}

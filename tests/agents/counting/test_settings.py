@@ -30,6 +30,11 @@ def test_counting_settings_defaults() -> None:
     assert settings.concurrency == 1
     assert settings.max_recursive_depth == 2
     assert settings.prompt_version == "count-point-v4"
+    assert settings.fallback_on_backend_unavailable is True
+    assert settings.fallback_on_backend_error is True
+    assert settings.verify_empty_detection is True
+    assert settings.verify_empty_semantic is False
+    assert settings.trust_empty_detection is False
 
 
 def test_counting_settings_sequential_requires_single_concurrency() -> None:

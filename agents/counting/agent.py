@@ -56,11 +56,11 @@ class CountingAgent:
         backend_registry: BackendRegistry,
         target_prompt_version: str = "target-parse-v1",
         default_backend: str = "auto",
-        fallback_to_qwen_on_unavailable: bool = True,
-        fallback_to_qwen_on_error: bool = True,
-        verify_empty_with_qwen: bool = True,
+        fallback_on_backend_unavailable: bool = True,
+        fallback_on_backend_error: bool = True,
+        verify_empty_detection: bool = True,
         trust_empty_detection: bool = False,
-        verify_empty_semantic_with_vlm: bool = False,
+        verify_empty_semantic: bool = False,
         expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
@@ -73,11 +73,11 @@ class CountingAgent:
         self._executor = CountingPlanExecutor(
             self._selector,
             policy=CountingExecutionPolicy(
-                fallback_to_qwen_on_unavailable=fallback_to_qwen_on_unavailable,
-                fallback_to_qwen_on_error=fallback_to_qwen_on_error,
-                verify_empty_with_qwen=verify_empty_with_qwen,
+                fallback_on_backend_unavailable=fallback_on_backend_unavailable,
+                fallback_on_backend_error=fallback_on_backend_error,
+                verify_empty_detection=verify_empty_detection,
                 trust_empty_detection=trust_empty_detection,
-                verify_empty_semantic_with_vlm=verify_empty_semantic_with_vlm,
+                verify_empty_semantic=verify_empty_semantic,
             ),
         )
 

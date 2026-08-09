@@ -311,6 +311,35 @@ class ExpertCatalog:
             )
         )
 
+    def experts(
+        self,
+        *,
+        kinds: frozenset[str] | None = None,
+        enabled_only: bool = True,
+    ) -> tuple[ExpertSpec, ...]:
+        """Enumerate immutable expert declarations in stable routing order."""
+
+        if kinds is not None:
+            unknown_kinds = kinds - frozenset(_EXPERT_KIND_ORDER)
+            if unknown_kinds:
+                raise ValueError("unknown expert kind filter")
+        experts = (
+            expert
+            for expert in self._experts
+            if (not enabled_only or expert.enabled)
+            and (kinds is None or expert.kind in kinds)
+        )
+        return tuple(
+            sorted(
+                experts,
+                key=lambda expert: (
+                    _EXPERT_KIND_ORDER[expert.kind],
+                    -expert.priority,
+                    expert.backend_name,
+                ),
+            )
+        )
+
     def expert(self, backend_name: str) -> ExpertSpec:
         """Return the exact backend declaration."""
 

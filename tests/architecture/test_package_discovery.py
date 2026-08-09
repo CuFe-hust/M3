@@ -73,3 +73,21 @@ def test_wheel_smoke_runs_outside_source_tree() -> None:
     workflow = _workflow()
     assert "cd /tmp" in workflow
     assert "wheel-import-contract: PASS" in workflow
+
+
+def test_required_counting_metadata_is_packaged_without_large_weights() -> None:
+    config = _pyproject()["tool"]["setuptools"]
+    package_data = config["package-data"]
+
+    assert "prompts*" in config["packages"]["find"]["include"]
+    assert "counting/expert_catalog.json" in package_data["agents"]
+    assert set(package_data["models"]) >= {
+        "segformer_mitb2_isaid/classes.json",
+        "segformer_mitb2_isaid/config.json",
+        "segformer_mitb2_isaid/preprocessor_config.json",
+    }
+    assert "*.md" in package_data["prompts"]
+    serialized = json.dumps(package_data)
+    assert ".safetensors" not in serialized
+    assert ".onnx" not in serialized
+    assert ".pt" not in serialized

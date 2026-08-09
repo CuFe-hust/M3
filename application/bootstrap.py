@@ -114,7 +114,7 @@ def assemble_runtime(
             repair_prompt=catalog["json_repair"],
             cache=service_cache,
         )
-    asset_root = Path(__file__).resolve().parents[1]
+    asset_root = _expert_asset_root(project_root)
     expert_catalog = _load_expert_catalog(asset_root)
     segformer_clients = _build_segformer_clients(
         settings,
@@ -243,10 +243,11 @@ def _build_agent_registry(
         backend_registry=backend_registry,
         target_prompt_version=catalog.version("target"),
         default_backend=settings.agents.counting.default_backend,
-        fallback_to_qwen_on_unavailable=settings.backend.yolo.fallback_to_qwen_on_unavailable,
-        fallback_to_qwen_on_error=settings.backend.yolo.fallback_to_qwen_on_error,
-        verify_empty_with_qwen=settings.backend.yolo.verify_empty_with_qwen,
-        trust_empty_detection=settings.backend.trust_empty_detection,
+        fallback_on_backend_unavailable=settings.counting.fallback_on_backend_unavailable,
+        fallback_on_backend_error=settings.counting.fallback_on_backend_error,
+        verify_empty_detection=settings.counting.verify_empty_detection,
+        verify_empty_semantic=settings.counting.verify_empty_semantic,
+        trust_empty_detection=settings.counting.trust_empty_detection,
         expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(
@@ -349,7 +350,7 @@ def _build_backend_registry(
             expert_catalog,
             project_root=root,
         )
-        for expert in _semantic_experts(expert_catalog):
+        for expert in _enabled_semantic_specs(expert_catalog):
             registry.register(
                 SemanticSegmentationCountingBackend(
                     clients[expert.logical_model_id],
@@ -366,20 +367,23 @@ def _load_expert_catalog(project_root: Path) -> ExpertCatalog:
     )
 
 
-def _semantic_experts(catalog: ExpertCatalog) -> tuple[ExpertSpec, ...]:
-    # C1 intentionally exposed lookup/candidates only.  Composition needs the
-    # complete immutable declarations to instantiate enabled model providers.
-    experts = getattr(catalog, "_experts", ())
-    return tuple(
-        sorted(
-            (
-                expert
-                for expert in experts
-                if expert.enabled and expert.kind == "semantic_segmentation"
-            ),
-            key=lambda expert: expert.backend_name,
-        )
+def _enabled_semantic_specs(catalog: ExpertCatalog) -> tuple[ExpertSpec, ...]:
+    return catalog.experts(
+        kinds=frozenset({"semantic_segmentation"}),
+        enabled_only=True,
     )
+
+
+def _expert_asset_root(project_root: Path) -> Path:
+    """Prefer the declared project root; installed wheels use package resources."""
+
+    marker = Path("agents") / "counting" / "expert_catalog.json"
+    if (project_root / marker).is_file():
+        return project_root
+    package_root = Path(__file__).resolve().parents[1]
+    if (package_root / marker).is_file():
+        return package_root
+    raise RuntimeCompositionError("counting expert metadata is unavailable")
 
 
 def _build_segformer_clients(
@@ -392,7 +396,7 @@ def _build_segformer_clients(
 
     clients: dict[str, Any] = {}
     identities: dict[str, tuple[SegFormerSettings, tuple[tuple[int, str], ...]]] = {}
-    for expert in _semantic_experts(catalog):
+    for expert in _enabled_semantic_specs(catalog):
         runtime = _segformer_runtime_settings(settings, expert, project_root)
         labels = _verified_class_map(expert, project_root)
         identity = (runtime, tuple(labels.items()))
@@ -424,11 +428,17 @@ def _segformer_runtime_settings(
         )
     except ValueError as error:
         raise RuntimeCompositionError(str(error)) from None
-    model_dir = _safe_asset(project_root, expert.asset.model_dir)
+    catalog_model_dir = _safe_asset(project_root, expert.asset.model_dir)
     class_map = _safe_asset(project_root, expert.asset.class_map)
     weights = _safe_asset(project_root, expert.asset.weights)
-    if class_map.parent != model_dir or weights.parent != model_dir:
+    if class_map.parent != catalog_model_dir or weights.parent != catalog_model_dir:
         raise RuntimeCompositionError("SegFormer assets must share the declared model directory")
+    configured_model_dir = profile.model_path
+    model_dir = (
+        catalog_model_dir
+        if configured_model_dir == Path(expert.asset.model_dir)
+        else _resolve_runtime_model_dir(project_root, configured_model_dir)
+    )
     payload = profile.model_dump()
     payload.update(
         {
@@ -437,11 +447,16 @@ def _segformer_runtime_settings(
             "weights_filename": weights.name,
             "weights_sha256": expert.asset.sha256,
             "classes_filename": class_map.name,
-            "processor_path": None,
             "allow_download": False,
         }
     )
     return SegFormerSettings.model_validate(payload)
+
+
+def _resolve_runtime_model_dir(project_root: Path, configured: Path) -> Path:
+    """Resolve a deploy-time model directory without treating it as identity."""
+
+    return configured if configured.is_absolute() else (project_root / configured).resolve()
 
 
 def _safe_asset(project_root: Path, reference: str | None) -> Path:
@@ -496,6 +511,10 @@ def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> A
         raise RuntimeCompositionError("YOLO detector catalog declaration is not enabled")
     if expert.logical_model_id != detector.model_id:
         raise RuntimeCompositionError("YOLO logical model id differs from expert catalog")
+    if expert.asset.sha256 != detector.sha256:
+        raise RuntimeCompositionError("YOLO weight digest differs from expert catalog")
+    if expert.priority != detector.priority:
+        raise RuntimeCompositionError("YOLO priority differs from expert catalog")
     backend = YoloOBBCountingBackend(detector, counting=CountingSettings())
     for canonical, support in expert.supports.items():
         if support.counting_mode == "unsupported":
@@ -511,7 +530,7 @@ def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> A
             raise RuntimeCompositionError(
                 "YOLO catalog model labels differ from detector declarations"
             )
-    return detector.model_copy(update={"priority": expert.priority})
+    return detector
 
 
 def _target_strategy(

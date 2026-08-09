@@ -1265,6 +1265,20 @@ ordered fallback chain；executor 逐个尝试并记录 backend、kind、reason 
 invalid kind/contract 和最终 Qwen failure 是 terminal。合法 `final_count == 0` 不是失败，
 只有显式 zero-review policy 才能复核；复核失败保留原零并记录 warning。
 
+通用执行策略归属 `CountingSettings`：
+
+```text
+fallback_on_backend_unavailable
+fallback_on_backend_error
+verify_empty_detection
+verify_empty_semantic
+trust_empty_detection
+```
+
+旧 YOLO-scoped key 只在 settings load boundary 一次性迁移；同时声明新旧 key 会拒绝。
+Detection zero review 使用 ordered chain 中下一位实际支持的专家，trace 记录真实 reviewer，
+不再假设 reviewer 必然是 Qwen。
+
 ## 25.4 Target parser
 
 目标优先级：
@@ -1320,11 +1334,24 @@ unresolved warning。YOLO OBB 自身的 overlap 去重不会再被 point seam �
 `ExpertCatalog` 是 routing capability truth，记录 canonical target、aliases、neutral hints、
 dataset-neutral backend name、显式 kind、priority、logical model id、project-relative assets、
 verified class map、model labels 与 counting mode。YOLO settings 只负责 inference/runtime
-参数，bootstrap 在注册前校验其 labels 与 catalog 一致。
+参数，bootstrap 在注册前校验 backend name、logical model id、SHA256、priority 与 labels
+全部和 catalog 一致。catalog 通过 immutable `experts(...)` 公共 API 向 composition root
+枚举声明，bootstrap 不访问其私有存储。
+
+`vehicle` 的固定链为 Detection → SegFormer → QuantityProposal → QwenPoint；`aircraft`
+为 Detection → SegFormer → QwenPoint。semantic composite capability 完全由 catalog 的多
+`model_labels` 声明，backend 逐 label 独立提取 connected components，禁止先 union mask。
+QuantityProposal 一旦进入 grounded localization，就用可解析的 localizer answer 与 accepted
+points 判断完成性；原 proposal 不一致保留 warning，但不再把自洽定位结果误标为 partial。
 
 SegFormer/YOLO 权重默认只来自本地 Git LFS 或外部资产，不自动下载；loader 校验 SHA256。
+SegFormer runtime profile 可以覆盖 physical `model_path`、device 与 dtype，但不能覆盖 catalog
+logical identity、expected SHA 或 verified class-map semantics。
 公共 trace 不保存 mask、tensor、prompt、base64、secret 或绝对路径，并至少记录 canonical
 target、候选/尝试/final backend、fallback history、counting mode 与 accepted count。
+
+wheel 通过 package-data 携带 expert catalog、verified SegFormer 小型 metadata 与 prompts，
+不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
 
 ---
 

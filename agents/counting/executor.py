@@ -45,11 +45,11 @@ class CountingExecutionPolicy:
     """Explicit fallback and zero-review switches.
     显式 fallback 与 zero-review 开关。"""
 
-    fallback_to_qwen_on_unavailable: bool
-    fallback_to_qwen_on_error: bool
-    verify_empty_with_qwen: bool
+    fallback_on_backend_unavailable: bool
+    fallback_on_backend_error: bool
+    verify_empty_detection: bool
     trust_empty_detection: bool
-    verify_empty_semantic_with_vlm: bool = False
+    verify_empty_semantic: bool = False
 
 
 @dataclass(frozen=True)
@@ -380,9 +380,9 @@ class CountingPlanExecutor:
         )
         unavailable = reason_code == "BACKEND_UNAVAILABLE"
         policy_allows = (
-            self._policy.fallback_to_qwen_on_unavailable
+            self._policy.fallback_on_backend_unavailable
             if unavailable
-            else self._policy.fallback_to_qwen_on_error
+            else self._policy.fallback_on_backend_error
         )
         can_continue = (
             kind != "qwen_point"
@@ -444,12 +444,12 @@ class CountingPlanExecutor:
         if (
             final_kind == "yolo_obb"
             and not self._policy.trust_empty_detection
-            and self._policy.verify_empty_with_qwen
+            and self._policy.verify_empty_detection
         ):
             return succeeded_index + 1 if succeeded_index + 1 < len(candidates) else None
         if final_kind != "semantic_segmentation":
             return None
-        if not self._policy.verify_empty_semantic_with_vlm:
+        if not self._policy.verify_empty_semantic:
             return None
         for index in range(succeeded_index + 1, len(candidates)):
             backend = self._selector.backend_by_name(candidates[index])

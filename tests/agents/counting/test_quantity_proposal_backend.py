@@ -66,6 +66,7 @@ class _FakeClient:
         self.calls: list[tuple[str, Any]] = []
         self.proposal_boxes: list[list[float]] = [[100, 100, 200, 200]]
         self.proposal_answer = "1"
+        self.localizer_answer: str | None = None
         self.localizer_points: list[list[int]] | None = None
         self.fail_proposal: BaseException | None = None
         self.raw_response_text: str | None = None
@@ -94,7 +95,7 @@ class _FakeClient:
             )
         payload: dict[str, Any] = {
             "agent_name": "counting_agent",
-            "answer": self.proposal_answer,
+            "answer": self.localizer_answer or self.proposal_answer,
             "boxes": [],
             "status": "completed",
         }
@@ -171,6 +172,20 @@ def test_supports_checks_supported_targets() -> None:
     )
 
 
+def test_quantity_proposal_supports_vehicle_by_default() -> None:
+    backend = _backend(_FakeClient())
+    vehicle = CountTargetSpec(
+        canonical_label="vehicle",
+        inclusion_rule="visible vehicles",
+        exclusion_rule="non-vehicles",
+    )
+
+    assert backend.supports(
+        vehicle,
+        hints={"quantity_estimation": True, "canonical_label": "vehicle"},
+    ) is True
+
+
 def test_supports_uses_explicit_catalog_canonical_label() -> None:
     backend = _backend(_FakeClient())
     assert backend.supports(
@@ -234,6 +249,78 @@ def test_count_evidence_mismatch_triggers_localizer(tmp_path: Path) -> None:
     assert "COUNT_PROPOSAL_EVIDENCE_MISMATCH" in codes
     assert outcome.agent_result.answer == "3"
     assert outcome.trace["localization_used"] is True
+
+
+def test_zero_proposal_positive_localizer_is_complete_with_warning(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient()
+    client.proposal_answer = "0"
+    client.proposal_boxes = []
+    client.localizer_answer = "3"
+    client.localizer_points = [[150, 150], [400, 400], [600, 600]]
+
+    outcome = asyncio.run(
+        _backend(client).count(_request(tmp_path), _context(_FakeBudget()))
+    )
+
+    assert outcome.counting.final_count == 3
+    assert outcome.counting.status == "completed_with_warnings"
+    assert outcome.agent_result.status == "completed"
+    assert {warning.code for warning in outcome.counting.warnings} == {
+        "COUNT_PROPOSAL_EVIDENCE_MISMATCH"
+    }
+
+
+def test_self_consistent_localizer_overrides_bad_proposal(tmp_path: Path) -> None:
+    client = _FakeClient()
+    client.proposal_answer = "5"
+    client.proposal_boxes = []
+    client.localizer_answer = "3"
+    client.localizer_points = [[150, 150], [400, 400], [600, 600]]
+
+    outcome = asyncio.run(
+        _backend(client).count(_request(tmp_path), _context(_FakeBudget()))
+    )
+
+    assert outcome.counting.final_count == 3
+    assert outcome.counting.status == "completed_with_warnings"
+    assert "COUNT_LOCALIZATION_EVIDENCE_MISMATCH" not in {
+        warning.code for warning in outcome.counting.warnings
+    }
+
+
+def test_inconsistent_localizer_answer_is_partial(tmp_path: Path) -> None:
+    client = _FakeClient()
+    client.proposal_answer = "5"
+    client.proposal_boxes = []
+    client.localizer_answer = "4"
+    client.localizer_points = [[150, 150], [400, 400], [600, 600]]
+
+    outcome = asyncio.run(
+        _backend(client).count(_request(tmp_path), _context(_FakeBudget()))
+    )
+
+    assert outcome.counting.final_count == 3
+    assert outcome.counting.status == "partial"
+    assert "COUNT_LOCALIZATION_EVIDENCE_MISMATCH" in {
+        warning.code for warning in outcome.counting.warnings
+    }
+
+
+def test_unparseable_localizer_answer_with_points_is_partial(tmp_path: Path) -> None:
+    client = _FakeClient()
+    client.proposal_answer = "5"
+    client.proposal_boxes = []
+    client.localizer_answer = "unknown"
+    client.localizer_points = [[150, 150], [400, 400], [600, 600]]
+
+    outcome = asyncio.run(
+        _backend(client).count(_request(tmp_path), _context(_FakeBudget()))
+    )
+
+    assert outcome.counting.final_count == 3
+    assert outcome.counting.status == "partial"
 
 
 def test_count_incomplete_mismatch_is_partial(tmp_path: Path) -> None:

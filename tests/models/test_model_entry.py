@@ -264,7 +264,7 @@ def test_pyproject_packages_include_data_models_agents() -> None:
     include = config["tool"]["setuptools"]["packages"]["find"]["include"]
     assert include == [
         "data*", "models*", "agents*", "routing*", "workflows*", "evaluation*",
-        "reporting*", "application*",
+        "reporting*", "application*", "prompts*",
     ]
 
 

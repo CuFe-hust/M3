@@ -126,3 +126,33 @@ Qwen call accounting, and wall-clock latency. Record the run manifest, config sn
 hashes, logical model ids/revisions/hashes, per-backend metrics, fallback history, zero-review
 overrides, unresolved seams, and touching-component examples. Such a benchmark may evaluate
 the fixed policy but must not automatically reorder it.
+
+## C8.1 hardening addendum
+
+C8.1 restores the catalog-declared `vehicle` chain:
+
+```text
+detector_obb_csl_001
+  -> segmenter_mitb2_001
+  -> quantity_proposal
+  -> qwen_point
+```
+
+It also declares `aircraft` as a two-label semantic capability. Different semantic labels are
+componentized independently, including when their regions touch. QuantityProposal now supports
+`vehicle`; after grounded localization, a parseable localizer answer is compared with accepted
+points, while a disagreeing proposal remains a warning instead of forcing a partial result.
+
+Generic fallback and zero-review switches now live in `CountingSettings`. `ExpertCatalog`
+provides stable immutable public enumeration, and composition no longer reads private catalog
+storage. YOLO composition validates logical model id, SHA256, priority, and resolved labels.
+SegFormer runtime profiles may override physical deployment paths but not catalog identity or
+verified class-map semantics.
+
+The local package-data gate built `spacers_agent-0.1.0-py3-none-any.whl` with offline
+`pip wheel --no-deps --no-build-isolation`. The wheel contained the expert catalog, verified
+SegFormer `classes.json`/`config.json`/`preprocessor_config.json`, and prompt Markdown files;
+it contained no `.safetensors`, `.onnx`, or `.pt` checkpoint. Installation into a temporary
+`--system-site-packages` venv and model-free runtime assembly passed. The preferred
+`python -m build` command was not available because the local `build` package is absent; no
+network install was attempted.

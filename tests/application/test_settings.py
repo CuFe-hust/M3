@@ -44,6 +44,51 @@ def test_default_settings() -> None:
     assert settings.models.segformer_experts == {}
     assert settings.backend.yolo.enabled is False
     assert settings.agents.counting.default_backend == "auto"
+    assert settings.counting.fallback_on_backend_unavailable is True
+    assert settings.counting.verify_empty_detection is True
+    assert settings.counting.verify_empty_semantic is False
+
+
+def test_legacy_yolo_execution_policy_migrates_only_at_settings_boundary(
+    tmp_path: Path,
+) -> None:
+    path = _yaml_path(
+        tmp_path,
+        """
+backend:
+  trust_empty_detection: true
+  yolo:
+    fallback_to_qwen_on_unavailable: false
+    fallback_to_qwen_on_error: false
+    verify_empty_with_qwen: false
+""",
+    )
+
+    settings = load_settings(path, environ={})
+
+    assert settings.counting.fallback_on_backend_unavailable is False
+    assert settings.counting.fallback_on_backend_error is False
+    assert settings.counting.verify_empty_detection is False
+    assert settings.counting.trust_empty_detection is True
+    assert "fallback_to_qwen" not in json.dumps(settings.safe_snapshot())
+
+
+def test_legacy_and_generic_execution_policy_conflict_is_rejected(
+    tmp_path: Path,
+) -> None:
+    path = _yaml_path(
+        tmp_path,
+        """
+counting:
+  fallback_on_backend_error: true
+backend:
+  yolo:
+    fallback_to_qwen_on_error: false
+""",
+    )
+
+    with pytest.raises(ValueError, match="both legacy key"):
+        load_settings(path, environ={})
 
 
 def test_load_settings_from_yaml(tmp_path: Path) -> None:

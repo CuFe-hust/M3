@@ -44,6 +44,11 @@ class CountingSettings(BaseModel):
     small_object_min_scan_depth: int = Field(default=0, ge=0)
     verify_empty_tiles: bool = False
     small_object_upscale_max_side: int | None = Field(default=None, gt=0)
+    fallback_on_backend_unavailable: bool = True
+    fallback_on_backend_error: bool = True
+    verify_empty_detection: bool = True
+    verify_empty_semantic: bool = False
+    trust_empty_detection: bool = False
 
     @model_validator(mode="before")
     @classmethod
@@ -217,9 +222,6 @@ class YoloCountingSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    fallback_to_qwen_on_unavailable: bool = True
-    fallback_to_qwen_on_error: bool = True
-    verify_empty_with_qwen: bool = True
     detectors: list[YoloDetectorSettings] = Field(default_factory=list)
 
     @model_validator(mode="after")

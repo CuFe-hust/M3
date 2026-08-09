@@ -42,7 +42,17 @@ include = [
   "evaluation*",
   "reporting*",
   "application*",
+  "prompts*",
 ]
+
+[tool.setuptools.package-data]
+agents = ["counting/expert_catalog.json"]
+models = [
+  "segformer_mitb2_isaid/classes.json",
+  "segformer_mitb2_isaid/config.json",
+  "segformer_mitb2_isaid/preprocessor_config.json",
+]
+prompts = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -47,6 +47,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 CATALOG_PATH = REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
 
 
+def test_bootstrap_does_not_access_catalog_private_storage() -> None:
+    source = (REPO_ROOT / "application" / "bootstrap.py").read_text(encoding="utf-8")
+
+    assert "_experts" not in source
+    assert "getattr(catalog" not in source
+
+
 def _settings(tmp_path: Path) -> AppSettings:
     from application.settings import RunSettings
 
@@ -144,6 +151,68 @@ def test_segformer_assembly_uses_verified_map_and_never_predicts(
     assert calls[0][1]["id_to_label"][3] == "Small_Vehicle"
 
 
+def test_segformer_runtime_profile_can_override_physical_model_path(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[dict[str, Any]] = []
+    settings = _settings(tmp_path)
+    external = tmp_path / "mounted" / "segformer"
+    profile = settings.models.segformer_isaid.model_copy(
+        update={"model_path": external, "device": "cpu"}
+    )
+    settings = settings.model_copy(
+        update={
+            "models": settings.models.model_copy(
+                update={"segformer_experts": {"segmenter_mitb2_001": profile}}
+            )
+        }
+    )
+
+    def fake_create_model(name: str, **kwargs: Any) -> object:
+        calls.append(kwargs)
+        return object()
+
+    monkeypatch.setattr("application.bootstrap.create_model", fake_create_model)
+    _build_segformer_clients(
+        settings,
+        ExpertCatalog.load(CATALOG_PATH),
+        project_root=REPO_ROOT,
+    )
+
+    runtime = calls[0]["settings"]
+    assert runtime.model_path == external
+    assert runtime.device == "cpu"
+    assert runtime.logical_model_id == "SegFormer-MiT-B2:iSAID:local"
+    assert runtime.weights_sha256 == (
+        "f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a"
+    )
+
+
+def test_segformer_runtime_override_must_keep_catalog_identity(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+    profile = settings.models.segformer_isaid.model_copy(
+        update={
+            "model_path": tmp_path / "mounted",
+            "logical_model_id": "different-logical-model",
+        }
+    )
+    settings = settings.model_copy(
+        update={
+            "models": settings.models.model_copy(
+                update={"segformer_experts": {"segmenter_mitb2_001": profile}}
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeCompositionError, match="logical model id"):
+        _build_segformer_clients(
+            settings,
+            ExpertCatalog.load(CATALOG_PATH),
+            project_root=REPO_ROOT,
+        )
+
+
 def test_multiple_segformer_backends_register_stably_and_reuse_client(
     tmp_path: Path,
     monkeypatch,
@@ -237,6 +306,44 @@ def test_yolo_catalog_class_mismatch_fails_fast(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("model_id", "different-model", "logical model id"),
+        ("sha256", "0" * 64, "weight digest"),
+        ("priority", 99, "priority"),
+    ],
+)
+def test_yolo_catalog_identity_mismatch_fails_fast(
+    tmp_path: Path,
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "yolo.example.yaml", environ={})
+    detector = settings.backend.yolo.detectors[0].model_copy(update={field: value})
+    settings = settings.model_copy(
+        update={
+            "backend": settings.backend.model_copy(
+                update={
+                    "yolo": settings.backend.yolo.model_copy(
+                        update={"detectors": [detector]}
+                    )
+                }
+            )
+        }
+    )
+
+    with pytest.raises(RuntimeCompositionError, match=message):
+        _build_backend_registry(
+            settings,
+            PromptCatalog(REPO_ROOT / "prompts"),
+            _FakeQwenClient(),
+            expert_catalog=ExpertCatalog.load(CATALOG_PATH),
+            project_root=REPO_ROOT,
+        )
+
+
 def test_route_coverage_after_assembly(tmp_path: Path) -> None:
     """Every routable task must resolve to a registered agent after assembly.
     组装后每个可路由任务都必须解析到已注册 Agent。"""
@@ -282,6 +389,33 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     assert plan.fallback_backend_names == (
         "segmenter_mitb2_001",
         "quantity_proposal",
+        "qwen_point",
+    )
+
+    vehicle = target.model_copy(update={"canonical_label": "vehicle"})
+    vehicle_hints = {
+        "quantity_estimation": True,
+        **catalog.target_hints(vehicle),
+    }
+    vehicle_plan = selector.plan(vehicle, task="counting", hints=vehicle_hints)
+    assert vehicle_plan is not None
+    assert vehicle_plan.primary_backend_name == "detector_obb_csl_001"
+    assert vehicle_plan.fallback_backend_names == (
+        "segmenter_mitb2_001",
+        "quantity_proposal",
+        "qwen_point",
+    )
+
+    aircraft = target.model_copy(update={"canonical_label": "aircraft"})
+    aircraft_hints = {
+        "quantity_estimation": True,
+        **catalog.target_hints(aircraft),
+    }
+    aircraft_plan = selector.plan(aircraft, task="counting", hints=aircraft_hints)
+    assert aircraft_plan is not None
+    assert aircraft_plan.primary_backend_name == "detector_obb_csl_001"
+    assert aircraft_plan.fallback_backend_names == (
+        "segmenter_mitb2_001",
         "qwen_point",
     )
 
