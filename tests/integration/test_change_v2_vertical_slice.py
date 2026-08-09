@@ -111,6 +111,7 @@ def _dense_outputs(*, mismatch: bool) -> tuple[DenseSemanticOutput, DenseSemanti
             original_size=size,
             class_names=("stable", "candidate_change"),
             diagnostics={},
+            weights_sha256="c" * 64,
         )
 
     return (
@@ -261,6 +262,10 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     assert execution.trace["semantic_model"] == "segformer-logical-test"
     assert execution.trace["semantic_client_version"] == "test-v1"
     assert execution.trace["semantic_model_revision"] is None
+    assert execution.trace["semantic_weights_sha256"] == "c" * 64
+    assert execution.trace["pif_valid"] is True
+    assert execution.trace["pif_used_for_feature_alignment"] is True
+    assert execution.trace["pif_used_for_threshold"] is True
     assert execution.trace["proposal_source"] == "fused_change_v2"
     assert execution.trace["segformer_model"] == "segformer-logical-test"
     assert execution.trace["feature_residual_version"] == "pif_robust_local_cosine_v1"
@@ -335,6 +340,49 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     }
     artifact_root = tmp_path / "artifacts" / "change_preprocess"
     assert all((artifact_root / relative).is_file() for relative in expected_v2_artifacts)
+    assert (artifact_root / "pif_mask.png").is_file()
+
+
+def test_v2_trace_records_calibrated_identity_and_algorithm_settings(
+    tmp_path: Path,
+) -> None:
+    settings = AgentChangeSettings(
+        semantic=ChangeSemanticSettings(enabled=True),
+        proposals=ChangeProposalSettings(
+            min_component_area_ratio=0.001,
+            max_component_area_ratio=0.50,
+            mask_close_kernel=1,
+        ),
+    )
+
+    execution, _, _ = _run(
+        tmp_path,
+        settings=settings,
+        dense_client=_DenseClient(),
+    )
+
+    trace = execution.trace
+    assert trace["semantic_model"] == "segformer-logical-test"
+    assert trace["semantic_client_version"] == "test-v1"
+    assert trace["semantic_model_revision"] is None
+    assert trace["semantic_weights_sha256"] == "c" * 64
+    assert trace["feature_stage"] == 1
+    assert trace["tile_size"] == 768
+    assert trace["tile_overlap"] == 64
+    assert trace["local_match_radius"] == 1
+    assert trace["semantic_confidence_floor"] == 0.45
+    assert trace["js_epsilon"] == 1e-6
+    assert trace["min_pif_feature_cells"] == 32
+    assert trace["feature_scale_epsilon"] == 1e-3
+    assert trace["pif_threshold_k"] == 4.5
+    assert trace["pif_fallback_quantile"] == 0.90
+    assert trace["fusion_effective_weights"]
+    assert trace["pif_valid"] is True
+    assert trace["pif_used_for_feature_alignment"] is True
+    assert trace["pif_used_for_threshold"] is True
+    serialized = json.dumps(trace)
+    assert str(tmp_path) not in serialized
+    assert "data:image/" not in serialized
 
 
 def test_invalid_pair_calls_neither_dense_nor_qwen(tmp_path: Path) -> None:

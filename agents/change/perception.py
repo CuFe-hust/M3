@@ -105,6 +105,16 @@ class ChangePerceptionPipeline:
                 semantic_status="disabled",
                 semantic_reason_code=reason,
                 identity=None,
+                pif_valid=prepared.pif_valid,
+            )
+
+        if not prepared.pif_valid:
+            return self._handle_failure(
+                ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF"),
+                low_level_map=low_level_map,
+                legacy_proposals=legacy_proposals,
+                identity=None,
+                pif_valid=False,
             )
 
         if self._semantic_client is None:
@@ -113,6 +123,7 @@ class ChangePerceptionPipeline:
                 low_level_map=low_level_map,
                 legacy_proposals=legacy_proposals,
                 identity=None,
+                pif_valid=True,
             )
 
         identity: ModelCacheIdentity | None = None
@@ -144,6 +155,10 @@ class ChangePerceptionPipeline:
                 second_output,
                 expected_size=(prepared.raw_t1.shape[1], prepared.raw_t1.shape[0]),
                 np=np,
+            )
+            weights_sha256 = _validate_pair_weight_identity(
+                first_output,
+                second_output,
             )
             feature_result = compute_feature_residual(
                 first_output.features,
@@ -185,6 +200,7 @@ class ChangePerceptionPipeline:
                 low_level_map=low_level_map,
                 legacy_proposals=legacy_proposals,
                 identity=identity,
+                pif_valid=prepared.pif_valid,
             )
 
         diagnostics = self._base_diagnostics(
@@ -192,6 +208,12 @@ class ChangePerceptionPipeline:
             semantic_reason_code=None,
             proposal_source="fused_change_v2",
             identity=identity,
+            weights_sha256=weights_sha256,
+            pif_valid=prepared.pif_valid,
+            pif_used_for_feature_alignment=True,
+            pif_used_for_threshold=(
+                fusion_result.diagnostics.get("threshold_mode") == "pif_robust"
+            ),
         )
         diagnostics.update(
             {
@@ -226,6 +248,7 @@ class ChangePerceptionPipeline:
         low_level_map: Any,
         legacy_proposals: list[ChangeProposal],
         identity: ModelCacheIdentity | None,
+        pif_valid: bool,
     ) -> ChangePerceptionResult:
         if self._settings.semantic.failure_policy == "fail":
             raise error
@@ -235,6 +258,7 @@ class ChangePerceptionPipeline:
             semantic_status="fallback",
             semantic_reason_code=error.reason_code,
             identity=identity,
+            pif_valid=pif_valid,
         )
 
     def _legacy_result(
@@ -245,6 +269,7 @@ class ChangePerceptionPipeline:
         semantic_status: str,
         semantic_reason_code: str | None,
         identity: ModelCacheIdentity | None,
+        pif_valid: bool,
     ) -> ChangePerceptionResult:
         np = _require_numpy()
         return ChangePerceptionResult(
@@ -256,6 +281,10 @@ class ChangePerceptionPipeline:
                     semantic_reason_code=semantic_reason_code,
                     proposal_source="difference_map_v1",
                     identity=identity,
+                    weights_sha256=None,
+                    pif_valid=pif_valid,
+                    pif_used_for_feature_alignment=False,
+                    pif_used_for_threshold=False,
                 ),
                 "score_maps": {
                     "low_level": _score_statistics(low_level_map, np=np),
@@ -270,6 +299,10 @@ class ChangePerceptionPipeline:
         semantic_reason_code: str | None,
         proposal_source: str,
         identity: ModelCacheIdentity | None,
+        weights_sha256: str | None,
+        pif_valid: bool,
+        pif_used_for_feature_alignment: bool,
+        pif_used_for_threshold: bool,
     ) -> dict[str, object]:
         semantic = self._settings.semantic
         perception_mode = (
@@ -294,12 +327,22 @@ class ChangePerceptionPipeline:
                 identity.client_version if identity is not None else None
             ),
             "semantic_model_revision": identity.revision if identity is not None else None,
+            "semantic_weights_sha256": weights_sha256,
             # Backward-compatible logical-id alias. Never a physical checkpoint path.
             "segformer_model": identity.model if identity is not None else None,
             "feature_stage": semantic.feature_stage,
             "tile_size": semantic.tile_size,
             "tile_overlap": semantic.tile_overlap,
             "local_match_radius": semantic.local_match_radius,
+            "semantic_confidence_floor": semantic.semantic_confidence_floor,
+            "js_epsilon": semantic.js_epsilon,
+            "min_pif_feature_cells": semantic.min_pif_feature_cells,
+            "feature_scale_epsilon": semantic.feature_scale_epsilon,
+            "pif_threshold_k": self._settings.proposals.pif_threshold_k,
+            "pif_fallback_quantile": self._settings.proposals.pif_fallback_quantile,
+            "pif_valid": pif_valid,
+            "pif_used_for_feature_alignment": pif_used_for_feature_alignment,
+            "pif_used_for_threshold": pif_used_for_threshold,
             "threshold_floor": self._settings.proposals.threshold_floor,
             "feature_residual_version": FEATURE_RESIDUAL_VERSION,
             "semantic_difference_version": SEMANTIC_DIFFERENCE_VERSION,
@@ -391,6 +434,25 @@ def _compatible_stride(first: Any, second: Any, *, np: Any) -> bool:
         and np.all(second_values > 0.0)
         and np.allclose(first_values, second_values, rtol=1e-6, atol=1e-9)
     )
+
+
+def _validate_pair_weight_identity(
+    first: DenseSemanticOutput,
+    second: DenseSemanticOutput,
+) -> str:
+    """Require the same verified checkpoint digest for both frame outputs.
+    要求两帧输出携带相同的已验证 checkpoint digest。"""
+
+    first_digest = first.weights_sha256
+    second_digest = second.weights_sha256
+    if (
+        not isinstance(first_digest, str)
+        or len(first_digest) != 64
+        or any(character not in "0123456789abcdef" for character in first_digest)
+        or first_digest != second_digest
+    ):
+        raise ChangePerceptionError("SEGFORMER_MODEL_IDENTITY_MISMATCH")
+    return first_digest
 
 
 def _stride_matches_grid(

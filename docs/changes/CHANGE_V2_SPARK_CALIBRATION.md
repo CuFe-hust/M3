@@ -7,6 +7,11 @@ Execution host: NVIDIA GB10 (Spark)
 Runtime: Python 3.12.13, PyTorch 2.12.1+cu130, Transformers 5.14.1
 Code baseline recorded by the live report: `e71b1b4109b1c71e7894d888e69e8f6409c458b5`
 
+Transformers 5.14.1 is the calibration-qualified runtime. Other Transformers
+versions are not calibration-qualified; this is not a claim that they are
+unsupported. Hidden-state token geometry continues to fail closed when a
+two-dimensional grid cannot be proven.
+
 The full machine-local report is stored under
 `outputs/change_v2_validation/`. It is intentionally excluded from Git because
 it contains derived image artifacts. No secret, absolute checkpoint path,

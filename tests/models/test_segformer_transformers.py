@@ -71,6 +71,19 @@ def test_core_and_change_extra_do_not_require_segformer_runtime_dependencies() -
     assert heavy <= semantic
 
 
+def test_change_semantic_extra_pins_calibration_qualified_transformers() -> None:
+    project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    semantic = project["optional-dependencies"]["change-semantic"]
+
+    assert "transformers>=5.14.1,<5.15" in semantic
+    requirements = (_REPO_ROOT / "requirements-models.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "transformers>=5.14.1,<5.15" in requirements.splitlines()
+
+
 class _FakeModel:
     def __init__(self, channels: int = 2) -> None:
         self.config = SimpleNamespace(num_labels=channels)
@@ -652,6 +665,7 @@ def test_tiled_dense_inference_averages_without_holes_and_normalizes(
     assert result.semantic_stride == (7 / 4, 5 / 2)
     assert result.feature_stride == (7 / 2, 5.0)
     assert result.diagnostics["tile_count"] == 4
+    assert result.weights_sha256 == settings.weights_sha256
 
 
 def test_classes_file_is_authoritative_and_oem_placeholders_are_not_exposed(
@@ -687,6 +701,7 @@ def test_classes_file_is_authoritative_and_oem_placeholders_are_not_exposed(
     ).infer(Image.new("RGB", (2, 2)), tile_size=2, tile_overlap=0, feature_stage=0)
     assert oem.class_names == ()
     assert oem.probabilities.shape[0] == 2
+    assert oem.weights_sha256 == oem_settings.weights_sha256
 
 
 def test_dense_cache_identity_never_contains_physical_checkpoint_path(

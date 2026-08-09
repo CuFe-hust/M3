@@ -37,6 +37,7 @@ def _prepared() -> ChangePreparedPair:
         comparison_t1=first,
         comparison_t2=second,
         pif_mask=pif,
+        pif_valid=True,
         validation=PairValidationReport(
             valid=True,
             temporal_roles_valid=True,
@@ -88,6 +89,7 @@ def _outputs() -> tuple[DenseSemanticOutput, DenseSemanticOutput]:
         "original_size": (64, 64),
         "class_names": ("unchanged", "changed"),
         "diagnostics": {},
+        "weights_sha256": "a" * 64,
     }
     return (
         DenseSemanticOutput(
@@ -167,6 +169,10 @@ def test_enabled_pipeline_calls_two_frames_and_returns_v2_proposals() -> None:
     assert result.diagnostics["perception_mode"] == "fused_v2"
     assert result.diagnostics["semantic_model"] == "segformer-logical-test"
     assert result.diagnostics["semantic_client_version"] == "test-v1"
+    assert result.diagnostics["semantic_weights_sha256"] == "a" * 64
+    assert result.diagnostics["pif_valid"] is True
+    assert result.diagnostics["pif_used_for_feature_alignment"] is True
+    assert result.diagnostics["pif_used_for_threshold"] is True
     assert set(result.diagnostics["score_maps"]) == {
         "low_level",
         "feature",
@@ -182,6 +188,59 @@ def test_client_missing_falls_back_to_legacy_with_stable_reason() -> None:
     assert result.diagnostics["semantic_status"] == "fallback"
     assert result.diagnostics["semantic_reason_code"] == "SEGFORMER_CLIENT_MISSING"
     assert result.diagnostics["proposal_source"] == "difference_map_v1"
+    assert result.diagnostics["pif_used_for_feature_alignment"] is False
+    assert result.diagnostics["pif_used_for_threshold"] is False
+
+
+def test_invalid_pif_falls_back_before_dense_inference() -> None:
+    client = _DenseClient()
+    prepared = replace(_prepared(), pif_valid=False)
+
+    result = ChangePerceptionPipeline(client, _settings()).run(prepared)
+
+    assert client.calls == []
+    assert result.diagnostics["semantic_status"] == "fallback"
+    assert (
+        result.diagnostics["semantic_reason_code"]
+        == "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+    )
+    assert result.diagnostics["proposal_source"] == "difference_map_v1"
+    assert result.diagnostics["pif_valid"] is False
+
+
+def test_invalid_pif_fail_policy_raises_before_dense_inference() -> None:
+    client = _DenseClient()
+    prepared = replace(_prepared(), pif_valid=False)
+
+    with pytest.raises(
+        ChangePerceptionError,
+        match="FEATURE_RESIDUAL_INSUFFICIENT_PIF",
+    ):
+        ChangePerceptionPipeline(client, _settings(policy="fail")).run(prepared)
+    assert client.calls == []
+
+
+def test_rejected_transform_with_valid_pif_still_runs_v2() -> None:
+    prepared = replace(
+        _prepared(),
+        comparison_t1=_prepared().raw_t1.copy(),
+        comparison_t2=_prepared().raw_t2.copy(),
+        decision=HarmonizationDecision(
+            version="pif_lab_midpoint_v1",
+            status="rejected",
+            reason_codes=["REJECTED_UNSTABLE_TRANSFORM", "RAW_FALLBACK_USED"],
+            metrics=None,
+            used_for_proposal=False,
+        ),
+        pif_valid=True,
+    )
+    client = _DenseClient()
+
+    result = ChangePerceptionPipeline(client, _settings()).run(prepared)
+
+    assert len(client.calls) == 2
+    assert result.diagnostics["semantic_status"] == "success"
+    assert result.diagnostics["proposal_source"] == "fused_change_v2"
 
 
 def test_client_missing_fail_policy_raises() -> None:
@@ -246,6 +305,22 @@ def test_model_identity_drift_is_rejected() -> None:
     result = ChangePerceptionPipeline(_DriftingIdentityClient(), _settings()).run(
         _prepared()
     )
+
+    assert result.diagnostics["semantic_status"] == "fallback"
+    assert (
+        result.diagnostics["semantic_reason_code"]
+        == "SEGFORMER_MODEL_IDENTITY_MISMATCH"
+    )
+
+
+def test_pair_weight_digest_mismatch_is_rejected() -> None:
+    first, second = _outputs()
+    mismatched = replace(second, weights_sha256="b" * 64)
+
+    result = ChangePerceptionPipeline(
+        _DenseClient((first, mismatched)),
+        _settings(),
+    ).run(_prepared())
 
     assert result.diagnostics["semantic_status"] == "fallback"
     assert (

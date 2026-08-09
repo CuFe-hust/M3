@@ -54,6 +54,15 @@ MAX_ATTEMPTS = 3
 # 相同坐标系才计算 IoU；其他坐标系一律 fail-closed。
 _GROUNDING_PREDICTION_FRAME = "normalized_0_999_top_left"
 
+# A routing fallback may deliberately execute a different task contract than
+# the resolved route task. Keep this remap explicit and narrow; agent
+# supported_tasks remains fail-closed. / routing fallback 可能有意执行不同于
+# 已解析 route task 的任务契约。映射保持显式且窄化；Agent supported_tasks
+# 继续 fail-closed。
+_ROUTING_FALLBACK_TASK_REMAP = {
+    ("change_qa", "general_vqa_agent"): "general_vqa",
+}
+
 
 def build_deterministic_evaluation(
     *,
@@ -116,15 +125,29 @@ def build_deterministic_evaluation(
 
 
 @dataclass(frozen=True)
+class _AgentAttempt:
+    """One concrete agent execution with its materialized task and sample.
+    一次具体 Agent 执行及其已物化 task/sample。"""
+
+    agent_name: str
+    task: str
+    sample: UnifiedSample
+
+
+@dataclass(frozen=True)
 class _Attempt:
     """One executable attempt: a task, its deduplicated agent list, the sample
     rebuilt for that task, and the routing decision. 一次可执行尝试：任务、
     去重后的 Agent 列表、为该任务重建的样本与路由决策。"""
 
     task: str
-    agent_names: tuple[str, ...]
+    agent_attempts: tuple[_AgentAttempt, ...]
     sample: UnifiedSample
     decision: RoutingDecision
+
+    @property
+    def agent_names(self) -> tuple[str, ...]:
+        return tuple(item.agent_name for item in self.agent_attempts)
 
 
 def sample_state_from_payload(payload: object) -> str:
@@ -267,11 +290,17 @@ class SampleRunner:
 
         execution: AgentExecution | None = None
         executed_attempt: _Attempt | None = None
+        executed_agent_attempt: _AgentAttempt | None = None
         failure_code: str | None = None
         primary_reason: str | None = None
         fallback_used = False
         for candidate_index, attempt in enumerate(attempts):
-            candidate_execution, attempt_failure, attempt_fallback = (
+            (
+                candidate_execution,
+                attempt_failure,
+                attempt_fallback,
+                candidate_agent_attempt,
+            ) = (
                 await self._run_attempt(attempt, context)
             )
             if candidate_execution is None:
@@ -279,6 +308,7 @@ class SampleRunner:
                 continue
             execution = candidate_execution
             executed_attempt = attempt
+            executed_agent_attempt = candidate_agent_attempt
             fallback_used = (
                 fallback_used or candidate_index > 0 or attempt_fallback
             )
@@ -289,7 +319,11 @@ class SampleRunner:
             execution = None
             continue
 
-        if execution is None or executed_attempt is None:
+        if (
+            execution is None
+            or executed_attempt is None
+            or executed_agent_attempt is None
+        ):
             return self._finish_failed(
                 sample=sample,
                 sample_dir=sample_dir,
@@ -311,7 +345,7 @@ class SampleRunner:
         evaluation = None
         if evaluate:
             evaluation = await self._persist_evaluation(
-                executed_attempt.sample,
+                executed_agent_attempt.sample,
                 execution,
                 sample_dir,
                 budget=budget,
@@ -320,6 +354,7 @@ class SampleRunner:
         trace = _trace_payload(
             execution,
             executed_attempt,
+            executed_task=executed_agent_attempt.task,
             resolution=resolution,
             resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
@@ -336,7 +371,7 @@ class SampleRunner:
         # result_path 是样本相对的结果产物（声明的结果 basename）；机器绝对
         # 路径绝不进入状态。
         final = _status(
-            executed_attempt.sample,
+            executed_agent_attempt.sample,
             sample_state_from_payload(execution.payload),
             result_path=Path(execution.result_filename),
         )
@@ -384,19 +419,47 @@ class SampleRunner:
             if candidate_sample is None:
                 skipped.append({"task": task, "reason": "INCOMPATIBLE_SAMPLE"})
                 continue
-            agents = tuple(
+            agent_names = tuple(
                 agent_name
                 for agent_name in (decision.primary_agent, *decision.fallback_agents)
                 if agent_name not in seen_agents
             )
-            if not agents:
+            if not agent_names:
                 skipped.append({"task": task, "reason": "AGENTS_DEDUPLICATED"})
                 continue
-            seen_agents.update(agents)
+            agent_attempts: list[_AgentAttempt] = []
+            for agent_name in agent_names:
+                execution_task = _ROUTING_FALLBACK_TASK_REMAP.get(
+                    (task, agent_name),
+                    task,
+                )
+                execution_sample = (
+                    candidate_sample
+                    if execution_task == task
+                    else _rebuild_sample_for_task(candidate_sample, execution_task)
+                )
+                if execution_sample is None:
+                    skipped.append(
+                        {
+                            "task": execution_task,
+                            "reason": "INCOMPATIBLE_FALLBACK_SAMPLE",
+                        }
+                    )
+                    continue
+                agent_attempts.append(
+                    _AgentAttempt(
+                        agent_name=agent_name,
+                        task=execution_task,
+                        sample=execution_sample,
+                    )
+                )
+            if not agent_attempts:
+                continue
+            seen_agents.update(item.agent_name for item in agent_attempts)
             attempts.append(
                 _Attempt(
                     task=task,
-                    agent_names=agents,
+                    agent_attempts=tuple(agent_attempts),
                     sample=candidate_sample,
                     decision=decision,
                 )
@@ -409,7 +472,7 @@ class SampleRunner:
         self,
         attempt: _Attempt,
         context: AgentContext,
-    ) -> tuple[AgentExecution | None, str | None, bool]:
+    ) -> tuple[AgentExecution | None, str | None, bool, _AgentAttempt | None]:
         """Execute one attempt's deduplicated agent list. A primary exception
         or a partial result under fallback_on_partial triggers the declared
         routing-fallback agents; all failures collapse into a stable code.
@@ -419,10 +482,12 @@ class SampleRunner:
 
         last_failure: str | None = None
         fallback_used = False
-        for index, agent_name in enumerate(attempt.agent_names):
+        for index, agent_attempt in enumerate(attempt.agent_attempts):
             try:
-                execution = await self.agent_registry.get(agent_name).run(
-                    attempt.sample, context
+                execution = await self.agent_registry.get(
+                    agent_attempt.agent_name
+                ).run(
+                    agent_attempt.sample, context
                 )
             except Exception as error:
                 last_failure = _stable_error_code(error)
@@ -438,8 +503,8 @@ class SampleRunner:
                 continue
             if index > 0:
                 fallback_used = True
-            return execution, last_failure, fallback_used
-        return None, last_failure or "ATTEMPT_FAILED", fallback_used
+            return execution, last_failure, fallback_used, agent_attempt
+        return None, last_failure or "ATTEMPT_FAILED", fallback_used, None
 
     async def _persist_evaluation(
         self,
@@ -508,6 +573,7 @@ class SampleRunner:
         trace = _trace_payload(
             None,
             None,
+            executed_task=None,
             resolution=resolution,
             resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
@@ -636,6 +702,7 @@ def _trace_payload(
     execution: AgentExecution | None,
     attempt: _Attempt | None,
     *,
+    executed_task: str | None,
     resolution: TaskResolution | None,
     resolved_task: str,
     inference_seconds: float,
@@ -665,7 +732,7 @@ def _trace_payload(
             "resolved_task": resolved_task,
             "qwen_backend": "transformers",
             "inference_seconds": inference_seconds,
-            "execution_task": attempt.task if attempt is not None else None,
+            "execution_task": executed_task,
             "execution_agent": execution.agent_name if execution is not None else None,
             "resolution_source": resolution.source if resolution is not None else "dataset_task",
             "low_confidence": (
@@ -686,6 +753,8 @@ def _trace_payload(
     )
     if primary_reason is not None:
         trace["primary_reason"] = primary_reason
+    if attempt is not None and executed_task is not None and executed_task != attempt.task:
+        trace["fallback_from_task"] = attempt.task
     if failure_code is not None:
         trace["failure_code"] = failure_code
     return trace

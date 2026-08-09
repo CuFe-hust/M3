@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import is_dataclass
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -20,7 +20,11 @@ from agents.change.preprocess import (
     preprocess_pair,
     publish_change_proposals,
 )
-from agents.change.schema import ChangePreprocessResult, ChangeProposal
+from agents.change.schema import (
+    ChangePreprocessResult,
+    ChangeProposal,
+    HarmonizationDecision,
+)
 from agents.change.settings import (
     AgentChangeSettings,
     ChangeHarmonizationSettings,
@@ -166,6 +170,38 @@ def test_harmonization_exception_surfaces_in_decision(tmp_path: Path, monkeypatc
     assert result.transform_summary["error_type"] == "RuntimeError"
 
 
+def test_pif_ratio_gate_marks_dense_but_insufficient_mask_invalid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    mask = np.zeros((64, 64), dtype=np.uint8)
+    mask[:4, :] = 255  # 256 pixels: enough by count, insufficient by ratio.
+
+    from agents.change import harmonizer as harmonizer_module
+
+    monkeypatch.setattr(
+        harmonizer_module,
+        "estimate_pif_mask",
+        lambda first, second, settings: mask.copy(),
+    )
+    settings = _settings(
+        harmonization=ChangeHarmonizationSettings(
+            enabled=True,
+            min_pif_pixels=128,
+            min_pif_ratio=0.25,
+        )
+    )
+
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+
+    assert np.count_nonzero(prepared.pif_mask) == 256
+    assert prepared.pif_valid is False
+    assert prepared.decision.status == "skipped"
+    assert "SKIPPED_INSUFFICIENT_PIF" in prepared.decision.reason_codes
+
+
 def test_write_failure_is_exposed(tmp_path: Path, monkeypatch) -> None:
     """Artifact write failures must propagate, never be swallowed.
     产物写盘失败必须向上传播，绝不吞掉。"""
@@ -259,6 +295,7 @@ def test_prepared_pair_keeps_runtime_arrays_outside_serializable_result(
     assert np.array_equal(prepared.comparison_t1, prepared.raw_t1)
     assert np.array_equal(prepared.comparison_t2, prepared.raw_t2)
     assert np.count_nonzero(prepared.pif_mask) == 0
+    assert prepared.pif_valid is False
     assert (tmp_path / "run" / "change_preprocess" / "validation_report.json").is_file()
     assert (tmp_path / "run" / "change_preprocess" / "harmonization_report.json").is_file()
 
@@ -377,6 +414,89 @@ def test_v1_publisher_parity_and_v2_component_artifacts(tmp_path: Path) -> None:
     assert "fused_change_map" in v2.artifact_files
     assert "difference_map" not in v2.artifact_files
     assert (tmp_path / "v2" / v2.artifact_files["v2_mask"]).is_file()
+
+
+def test_rejected_transform_publishes_pif_when_v2_actually_uses_it(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings(
+        harmonization=ChangeHarmonizationSettings(
+            enabled=True,
+            save_artifacts=True,
+        )
+    )
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    prepared = replace(
+        prepared,
+        comparison_t1=prepared.raw_t1.copy(),
+        comparison_t2=prepared.raw_t2.copy(),
+        pif_mask=np.ones((64, 64), dtype=np.uint8) * 255,
+        pif_valid=True,
+        decision=HarmonizationDecision(
+            version=settings.harmonization.version,
+            status="rejected",
+            reason_codes=["REJECTED_UNSTABLE_TRANSFORM", "RAW_FALLBACK_USED"],
+            metrics=None,
+            used_for_proposal=False,
+        ),
+    )
+
+    result = publish_change_proposals(
+        prepared,
+        score_map=np.zeros((64, 64), dtype=np.float32),
+        proposals=[],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+        diagnostics={
+            "pif_valid": True,
+            "pif_used_for_feature_alignment": True,
+            "pif_used_for_threshold": True,
+        },
+    )
+
+    assert result.artifact_files["pif_mask"] == "change_preprocess/pif_mask.png"
+    assert (tmp_path / "run" / result.artifact_files["pif_mask"]).is_file()
+    assert "harmonized_t1" not in result.artifact_files
+
+
+def test_invalid_unused_pif_is_not_published_as_v2_evidence(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings(
+        harmonization=ChangeHarmonizationSettings(
+            enabled=True,
+            save_artifacts=True,
+        )
+    )
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    prepared = replace(
+        prepared,
+        pif_valid=False,
+        decision=HarmonizationDecision(
+            version=settings.harmonization.version,
+            status="skipped",
+            reason_codes=["SKIPPED_INSUFFICIENT_PIF", "RAW_FALLBACK_USED"],
+            metrics=None,
+            used_for_proposal=False,
+        ),
+    )
+
+    result = publish_change_proposals(
+        prepared,
+        score_map=np.zeros((64, 64), dtype=np.float32),
+        proposals=[],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+        diagnostics={
+            "pif_valid": False,
+            "pif_used_for_feature_alignment": False,
+            "pif_used_for_threshold": False,
+        },
+    )
+
+    assert "pif_mask" not in result.artifact_files
 
 
 def test_preparation_module_has_no_concrete_model_call() -> None:

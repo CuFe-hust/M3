@@ -55,6 +55,7 @@ class ChangePreparedPair:
     comparison_t1: Any
     comparison_t2: Any
     pif_mask: Any
+    pif_valid: bool
     validation: PairValidationReport
     decision: HarmonizationDecision
     transform_summary: dict[str, object]
@@ -84,6 +85,7 @@ def prepare_pair(
             comparison_t1=None,
             comparison_t2=None,
             pif_mask=np.zeros((0, 0), dtype=np.uint8),
+            pif_valid=False,
             validation=validated.report,
             decision=HarmonizationDecision(
                 version=settings.harmonization.version,
@@ -111,10 +113,12 @@ def prepare_pair(
                 candidate.t2.copy() if decision.status == "applied" else raw2.copy()
             )
             pif_mask = candidate.pif_mask.copy()
+            pif_valid = candidate.pif_valid
             transform_summary = dict(candidate.transform_summary)
         except Exception as error:
             comparison1, comparison2 = raw1.copy(), raw2.copy()
             pif_mask = np.zeros(raw1.shape[:2], dtype=np.uint8)
+            pif_valid = False
             decision = HarmonizationDecision(
                 version=settings.harmonization.version,
                 status="failed",
@@ -132,6 +136,7 @@ def prepare_pair(
     else:
         comparison1, comparison2 = raw1.copy(), raw2.copy()
         pif_mask = np.zeros(raw1.shape[:2], dtype=np.uint8)
+        pif_valid = False
         decision = HarmonizationDecision(
             version=settings.harmonization.version,
             status="skipped",
@@ -146,6 +151,7 @@ def prepare_pair(
         comparison_t1=comparison1,
         comparison_t2=comparison2,
         pif_mask=pif_mask,
+        pif_valid=pif_valid,
         validation=validated.report,
         decision=decision,
         transform_summary=transform_summary,
@@ -224,17 +230,28 @@ def publish_change_proposals(
         _write_image(output / filename, _map_artifact(component))
         files[name] = f"change_preprocess/{filename}"
 
+    diagnostics = diagnostics or {}
+    pif_used = bool(
+        diagnostics.get("pif_used_for_feature_alignment", False)
+        or diagnostics.get("pif_used_for_threshold", False)
+    )
+    if pif_used and not prepared.pif_valid:
+        raise ValueError("invalid PIF cannot be published as consumed V2 evidence")
     if prepared.decision.status == "applied" and settings.harmonization.save_artifacts:
         _write_image(output / "harmonized_t1.png", prepared.comparison_t1)
         _write_image(output / "harmonized_t2.png", prepared.comparison_t2)
-        _write_image(output / "pif_mask.png", prepared.pif_mask)
         files.update(
             {
                 "harmonized_t1": "change_preprocess/harmonized_t1.png",
                 "harmonized_t2": "change_preprocess/harmonized_t2.png",
-                "pif_mask": "change_preprocess/pif_mask.png",
             }
         )
+    if (
+        settings.harmonization.save_artifacts
+        and (prepared.decision.status == "applied" or pif_used)
+    ):
+        _write_image(output / "pif_mask.png", prepared.pif_mask)
+        files["pif_mask"] = "change_preprocess/pif_mask.png"
 
     crops = output / "crops"
     updated: list[ChangeProposal] = []
@@ -300,7 +317,7 @@ def publish_change_proposals(
         proposals=updated,
         artifact_files=files,
         transform_summary=prepared.transform_summary,
-        diagnostics=diagnostics or {},
+        diagnostics=diagnostics,
     )
     _write_json(output / "harmonization_report.json", result.model_dump(mode="json"))
     return result
@@ -320,6 +337,7 @@ def _preparation_result(prepared: ChangePreparedPair) -> ChangePreprocessResult:
         proposals=[],
         artifact_files=_audit_files(),
         transform_summary=prepared.transform_summary,
+        diagnostics={"pif_valid": prepared.pif_valid},
     )
 
 

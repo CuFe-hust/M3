@@ -397,6 +397,7 @@ def _perception_audit(
         "semantic_model": diagnostics.get("semantic_model"),
         "semantic_client_version": diagnostics.get("semantic_client_version"),
         "semantic_model_revision": diagnostics.get("semantic_model_revision"),
+        "semantic_weights_sha256": diagnostics.get("semantic_weights_sha256"),
         "feature_stage": diagnostics.get(
             "feature_stage", settings.semantic.feature_stage
         ),
@@ -406,6 +407,19 @@ def _perception_audit(
         ),
         "local_match_radius": diagnostics.get(
             "local_match_radius", settings.semantic.local_match_radius
+        ),
+        "semantic_confidence_floor": diagnostics.get(
+            "semantic_confidence_floor",
+            settings.semantic.semantic_confidence_floor,
+        ),
+        "js_epsilon": diagnostics.get("js_epsilon", settings.semantic.js_epsilon),
+        "min_pif_feature_cells": diagnostics.get(
+            "min_pif_feature_cells",
+            settings.semantic.min_pif_feature_cells,
+        ),
+        "feature_scale_epsilon": diagnostics.get(
+            "feature_scale_epsilon",
+            settings.semantic.feature_scale_epsilon,
         ),
         "feature_residual_version": diagnostics.get("feature_residual_version"),
         "semantic_difference_version": diagnostics.get(
@@ -417,6 +431,20 @@ def _perception_audit(
         "threshold_value": fusion_data.get("threshold"),
         "threshold_floor": diagnostics.get(
             "threshold_floor", settings.proposals.threshold_floor
+        ),
+        "pif_threshold_k": diagnostics.get(
+            "pif_threshold_k", settings.proposals.pif_threshold_k
+        ),
+        "pif_fallback_quantile": diagnostics.get(
+            "pif_fallback_quantile",
+            settings.proposals.pif_fallback_quantile,
+        ),
+        "pif_valid": bool(diagnostics.get("pif_valid", False)),
+        "pif_used_for_feature_alignment": bool(
+            diagnostics.get("pif_used_for_feature_alignment", False)
+        ),
+        "pif_used_for_threshold": bool(
+            diagnostics.get("pif_used_for_threshold", False)
         ),
         "pif_feature_cells": feature_data.get("pif_feature_cells"),
         "pif_threshold_fallback_used": fusion_data.get(

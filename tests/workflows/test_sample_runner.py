@@ -16,6 +16,7 @@ import pytest
 
 from agents.base import AgentExecution
 from agents.counting.schema import CountingResult, GlobalPointObservation
+from agents.errors import AgentTaskMismatchError
 from agents.registry import AgentRegistry
 from agents.schema import AgentResult
 from data.schema import GroundTruth, ImageRef, TaskNormalization, UnifiedSample
@@ -79,6 +80,20 @@ class _FakeAgent:
             payload=payload,
             result_filename=self._result_filename,
         )
+
+
+class _TaskCheckedAgent(_FakeAgent):
+    """Fake that enforces the same fail-closed task guard as real agents.
+    与真实 Agent 一样执行 fail-closed task guard 的 fake。"""
+
+    async def run(self, sample: UnifiedSample, context: object) -> AgentExecution:
+        if sample.task not in self.supported_tasks:
+            raise AgentTaskMismatchError(
+                self.name,
+                sample.task,
+                supported=self.supported_tasks,
+            )
+        return await super().run(sample, context)
 
 
 class _FakeJudgeClient:
@@ -334,6 +349,38 @@ def test_routing_fallback_on_primary_exception(tmp_path: Path) -> None:
     assert trace["execution_mode"] == "fallback"
 
 
+def test_change_qa_real_fallback_rematerializes_general_vqa(tmp_path: Path) -> None:
+    original = _change_sample()
+    original_payload = original.model_dump(mode="json")
+    change_agent = _TaskCheckedAgent(
+        "change_agent",
+        ("change_qa", "change_caption"),
+        error=RuntimeError("primary failed"),
+    )
+    generic_agent = _TaskCheckedAgent(
+        "general_vqa_agent",
+        ("general_vqa",),
+    )
+    runner = _runner([change_agent, generic_agent])
+
+    outcome = _run(runner, original, _sample_dir(tmp_path))
+
+    assert outcome.status.state == "succeeded"
+    assert outcome.fallback_used is True
+    assert len(generic_agent.calls) == 1
+    fallback_sample = generic_agent.calls[0][0]
+    assert fallback_sample.task == "general_vqa"
+    assert [item.role for item in fallback_sample.images] == ["image", "context"]
+    assert fallback_sample.normalization is None
+    assert original.model_dump(mode="json") == original_payload
+    trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
+    assert trace["resolved_task"] == "change_qa"
+    assert trace["execution_task"] == "general_vqa"
+    assert trace["execution_agent"] == "general_vqa_agent"
+    assert trace["fallback_used"] is True
+    assert trace["fallback_from_task"] == "change_qa"
+
+
 def test_routing_fallback_not_run_when_primary_succeeds(tmp_path: Path) -> None:
     change_agent = _FakeAgent("change_agent", ("change_qa", "change_caption"))
     vqa_agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
@@ -343,6 +390,8 @@ def test_routing_fallback_not_run_when_primary_succeeds(tmp_path: Path) -> None:
     assert outcome.fallback_used is False
     assert len(change_agent.calls) == 1
     assert len(vqa_agent.calls) == 0
+    trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
+    assert trace["execution_task"] == "change_qa"
 
 
 # ── partial policy / partial 策略 ───────────────────────────────────────────

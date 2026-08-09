@@ -1046,6 +1046,7 @@ class SegFormerTransformersClient(SegFormerRuntime):
             raise SegFormerMetadataError(
                 "authoritative class count differs from probability channels"
             )
+        assert self._actual_weights_sha256 is not None
         return DenseSemanticOutput(
             probabilities=probabilities,
             features=features,
@@ -1067,6 +1068,7 @@ class SegFormerTransformersClient(SegFormerRuntime):
                 "feature_stage": feature_stage,
                 "device": self._resolved_device,
             },
+            weights_sha256=self._actual_weights_sha256,
         )
 
 

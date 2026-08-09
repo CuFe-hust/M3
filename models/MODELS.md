@@ -25,3 +25,8 @@ Both SegFormer directories include the canonical NVIDIA MiT-B2
 normalization contract required for fully local `AutoImageProcessor` loading;
 the tiled runtime still passes `do_resize=False`, so the upstream 512 default
 never resizes inference tiles.
+
+Change V2 is calibration-qualified with Transformers 5.14.1. The SegFormer
+extras constrain Transformers to `>=5.14.1,<5.15`; other releases are not
+calibration-qualified. Hidden-state geometry remains fail-closed: an
+unresolvable token sequence is never reshaped by guessing a square grid.

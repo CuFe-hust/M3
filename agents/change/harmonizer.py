@@ -49,6 +49,7 @@ class HarmonizationCandidate:
     t1: np.ndarray
     t2: np.ndarray
     pif_mask: np.ndarray
+    pif_valid: bool
     decision: HarmonizationDecision
     transform_summary: dict[str, Any]
 
@@ -98,7 +99,12 @@ class PairHarmonizer:
                 used_for_proposal=False,
             )
             return HarmonizationCandidate(
-                raw1, raw2, mask, decision, {"sharpness_adjustment_used": False}
+                t1=raw1,
+                t2=raw2,
+                pif_mask=mask,
+                pif_valid=False,
+                decision=decision,
+                transform_summary={"sharpness_adjustment_used": False},
             )
 
         lab1 = cv2.cvtColor(raw1, cv2.COLOR_RGB2LAB).astype(np.float32)
@@ -183,11 +189,12 @@ class PairHarmonizer:
             used_for_proposal=used,
         )
         return HarmonizationCandidate(
-            h1 if used else raw1,
-            h2 if used else raw2,
-            mask,
-            decision,
-            summary,
+            t1=h1 if used else raw1,
+            t2=h2 if used else raw2,
+            pif_mask=mask,
+            pif_valid=True,
+            decision=decision,
+            transform_summary=summary,
         )
 
 

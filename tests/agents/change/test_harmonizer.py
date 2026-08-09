@@ -84,6 +84,7 @@ def test_insufficient_pif_skips_with_raw_fallback() -> None:
     assert "SKIPPED_INSUFFICIENT_PIF" in candidate.decision.reason_codes
     assert "RAW_FALLBACK_USED" in candidate.decision.reason_codes
     assert candidate.decision.used_for_proposal is False
+    assert candidate.pif_valid is False
     # Raw copies are returned for the fallback. / raw 副本用于回退。
     assert np.array_equal(candidate.t1, t1)
     assert np.array_equal(candidate.t2, t2)
@@ -97,6 +98,7 @@ def test_reject_when_pif_mad_worse() -> None:
         metrics = candidate.decision.metrics
         if metrics.mad_pif_after > metrics.mad_pif_before * 1.0:
             assert candidate.decision.status == "rejected"
+            assert candidate.pif_valid is True
             assert "REJECTED_PIF_MAD_WORSE" in candidate.decision.reason_codes
             assert "RAW_FALLBACK_USED" in candidate.decision.reason_codes
 
@@ -108,6 +110,7 @@ def test_unstable_transform_rejected() -> None:
     t2 = np.clip((t1.astype(np.float32) * 3.0 + 200.0), 0, 255).astype(np.uint8)
     candidate = PairHarmonizer(_settings(max_abs_gain=1.0)).run(t1, t2)
     if candidate.decision.status == "rejected":
+        assert candidate.pif_valid is True
         assert "REJECTED_UNSTABLE_TRANSFORM" in candidate.decision.reason_codes
 
 

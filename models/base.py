@@ -436,6 +436,7 @@ class DenseSemanticOutput:
     original_size: tuple[int, int]
     class_names: tuple[str, ...]
     diagnostics: Mapping[str, Any]
+    weights_sha256: str | None = None
 
 
 class DenseSemanticClient(Protocol):
