@@ -1,0 +1,97 @@
+{
+  "dataset": "LEVIR-CC",
+  "failed": 0,
+  "metrics": {
+    "change_retention": {
+      "bootstrap_95_ci": [
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "mad_full_after": {
+      "bootstrap_95_ci": [
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "mad_full_before": {
+      "bootstrap_95_ci": [
+        50.0,
+        50.0
+      ],
+      "mean": 50.0,
+      "median": 50.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "mad_pif_after": {
+      "bootstrap_95_ci": [
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "mad_pif_before": {
+      "bootstrap_95_ci": [
+        50.0,
+        50.0
+      ],
+      "mean": 50.0,
+      "median": 50.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "pct_diff_gt20_after": {
+      "bootstrap_95_ci": [
+        0.0,
+        0.0
+      ],
+      "mean": 0.0,
+      "median": 0.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "pct_diff_gt20_before": {
+      "bootstrap_95_ci": [
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 2,
+      "std": 0.0
+    },
+    "pif_ratio": {
+      "bootstrap_95_ci": [
+        1.0,
+        1.0
+      ],
+      "mean": 1.0,
+      "median": 1.0,
+      "n": 2,
+      "std": 0.0
+    }
+  },
+  "offset": 0,
+  "processed": 2,
+  "requested_pairs": 100,
+  "sample_ids": [
+    "p1",
+    "p2"
+  ],
+  "split": "test",
+  "status_counts": {
+    "applied": 2
+  }
+}

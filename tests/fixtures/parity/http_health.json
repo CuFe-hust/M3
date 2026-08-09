@@ -1,0 +1,13 @@
+{
+  "agents": [
+    "counting_agent",
+    "change_agent",
+    "grounding_agent",
+    "spatial_agent",
+    "general_vqa_agent",
+    "caption_agent"
+  ],
+  "model": "qwen3-vl-4b-instruct",
+  "model_load_seconds": 0.0,
+  "status": "ready"
+}

@@ -1,0 +1,8 @@
+{
+  "report": {
+    "primary_metric": "open_vqa_accuracy",
+    "primary_value": 0.75,
+    "score": 75.0
+  },
+  "status": "ok"
+}

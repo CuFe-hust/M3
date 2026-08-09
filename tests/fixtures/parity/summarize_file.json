@@ -1,0 +1,12 @@
+{
+  "aggregates": {
+    "general_vqa": {
+      "correct": 1,
+      "metric": "exact_match_accuracy",
+      "score": 0.5,
+      "total": 2
+    }
+  },
+  "record_count": 2,
+  "status": "ok"
+}

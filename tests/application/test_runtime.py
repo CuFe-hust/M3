@@ -5607,3 +5607,271 @@ def test_levir_evaluator_source_read_only_and_no_model_imports(
                 assert alias.name.split(".")[0] not in forbidden, alias.name
         elif isinstance(node, ast.ImportFrom) and node.module:
             assert node.module.split(".")[0] not in forbidden, node.module
+
+# ── 11J full functional parity fixtures / 全功能对等 fixtures ──────────────
+
+
+_PARITY_FIXTURES = Path("tests/fixtures/parity")
+
+_PARITY_DROP_KEYS = {
+    "request_id", "sample_id", "run_id", "elapsed_seconds", "artifact_dir",
+    "updated_at", "created_at", "result_path", "run_dir", "root",
+    "code_version", "algorithm_version", "id", "config_hash",
+    "inference_seconds", "git_commit", "prompt_hashes", "input",
+}
+
+
+def _parity_normalize(value):
+    """Strip timestamps, absolute paths, and unstable identities exactly like
+    the fixture generator; absolute-path string values collapse to their
+    basename so host/temp roots never leak. 与 fixture 生成器相同的去不稳定
+    字段逻辑；绝对路径字符串值折叠为 basename，主机/临时根绝不泄漏。"""
+    if isinstance(value, dict):
+        return {
+            key: _parity_normalize(item)
+            for key, item in value.items()
+            if key not in _PARITY_DROP_KEYS
+            and not (isinstance(key, str) and "path" in key.lower())
+        }
+    if isinstance(value, list):
+        return [_parity_normalize(item) for item in value]
+    if isinstance(value, str) and (
+        value.startswith("/") or len(value) >= 3 and value[1] == ":"
+    ):
+        return Path(value).name
+    return value
+
+
+def _parity_fixture(name: str) -> Any:
+    return json.loads((_PARITY_FIXTURES / name).read_text(encoding="utf-8"))
+
+
+def _parity_runtime(tmp_path, client, *, name="auto-demo") -> Runtime:
+    """Runtime wired to a fake client and the manifest draft adapter.
+    以 fake client 与 manifest draft 适配器接线的 Runtime。"""
+    settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=client,
+        api_key=None,
+    )
+    registry = DatasetRegistry()
+    registry.register(
+        name, lambda: ManifestDraftAdapter(name, {"general_vqa", "caption"})
+    )
+    return Runtime(settings=settings, components=components, registry=registry)
+
+
+def test_parity_ask_single_and_http(tmp_path) -> None:
+    imgs = tmp_path / "imgs"
+    imgs.mkdir()
+    Image.new("RGB", (8, 8), (1, 2, 3)).save(imgs / "img.png")
+    client = _FakeQwenClient()
+    runtime = _parity_runtime(tmp_path, client)
+    answer = asyncio.run(
+        runtime.ask(image_dir=imgs, question="Is there a road?")
+    )
+    assert _parity_normalize(answer.model_dump(mode="json")) == _parity_fixture("ask_single.json")
+    health = _parity_normalize(runtime.health_payload())
+    expected_health = _parity_fixture("http_health.json")
+    assert health["agents"] == expected_health["agents"]
+    assert health["status"] == "ready"
+    http_answer = asyncio.run(
+        runtime.ask(image_dir=imgs, question="q", source="http_service")
+    )
+    assert _parity_normalize(http_answer.model_dump(mode="json")) == _parity_fixture("http_ask.json")
+
+
+def test_parity_dataset_fresh_and_resume(tmp_path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    client = _FakeQwenClient()
+    runtime = _parity_runtime(tmp_path, client)
+    fresh = asyncio.run(
+        runtime.run_dataset(
+            DatasetRunOptions(
+                dataset="auto-demo", root=data_root, split="test", tasks=(),
+                auto_task=True, run_id="parity-run",
+            )
+        )
+    )
+    fresh_norm = _parity_normalize(
+        {key: value.model_dump(mode="json") for key, value in fresh.items()}
+    )
+    assert fresh_norm == _parity_fixture("dataset_fresh.json")
+    resumed = asyncio.run(
+        runtime.run_dataset(
+            DatasetRunOptions(
+                dataset="auto-demo", root=data_root, split="test", tasks=(),
+                auto_task=True, run_id="parity-run", resume=True,
+            )
+        )
+    )
+    resumed_norm = _parity_normalize(
+        {key: value.model_dump(mode="json") for key, value in resumed.items()}
+    )
+    assert resumed_norm == _parity_fixture("dataset_resume.json")
+
+
+def test_parity_count_image_summary(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            run_id="parity-count",
+        )
+    ) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert _parity_normalize(out) == _parity_fixture("count_image_summary.json")
+
+
+def test_parity_run_init_manifest(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.run_init import run_run_init
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_run_init(
+        _command_namespace(run_id="parity-init", dataset="d", split="s", sample_filter=None)
+    ) == 0
+    capsys.readouterr()
+    manifest = json.loads(
+        (tmp_path / "runs" / "parity-init" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert _parity_normalize(manifest) == _parity_fixture("run_init_manifest.json")
+
+
+def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
+    """evaluate-run --deepseek over the parity dataset run refreshes the
+    report bundle; its normalized report equals the locked fixture.
+    evaluate-run --deepseek 对 parity 数据集运行刷新报告 bundle；规范化后
+    的报告等于锁定的 fixture。"""
+    from application.commands import evaluate_run as evaluate_run_module
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    judge = _OfflineFakeJudgeClient()
+    monkeypatch.setattr(
+        evaluate_run_module, "DeepSeekJudgeClient", lambda *a, **k: judge
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    client = _FakeQwenClient()
+    runtime = _parity_runtime(tmp_path, client)
+    asyncio.run(
+        runtime.run_dataset(
+            DatasetRunOptions(
+                dataset="auto-demo", root=data_root, split="test", tasks=(),
+                auto_task=True, run_id="parity-run",
+            )
+        )
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_evaluate_run(_offline_args(run_id="parity-run", deepseek=True)) == 0
+    capsys.readouterr()
+    report = json.loads(
+        (tmp_path / "runs" / "parity-run" / "report" / "report.json").read_text(encoding="utf-8")
+    )
+    assert _parity_normalize(report) == _parity_fixture("evaluate_run.json")
+
+
+def test_parity_summarize_file_mode(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.summarize_evaluations import run_summarize_evaluations
+    from evaluation.metrics.vqa import VQADeterministicMetrics
+    from evaluation.records import EvaluationRecord
+
+    records = tmp_path / "records.jsonl"
+    records.write_text(
+        "\n".join(
+            json.dumps(
+                EvaluationRecord(
+                    sample_id=f"s{i}",
+                    task="general_vqa",
+                    deterministic_metrics=VQADeterministicMetrics(exact_match=bool(i)),
+                    judge_status="not_requested",
+                ).model_dump(mode="json")
+            )
+            for i in range(2)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_summarize_evaluations(
+        _command_namespace(run_id=None, input=str(records), output=None)
+    ) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert _parity_normalize(out) == _parity_fixture("summarize_file.json")
+
+
+def test_parity_standard_evaluate_mocked(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.standard_evaluate import run_standard_evaluate
+
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    client = _FakeQwenClient()
+    runtime = _parity_runtime(tmp_path, client)
+    asyncio.run(
+        runtime.run_dataset(
+            DatasetRunOptions(
+                dataset="auto-demo", root=data_root, split="test", tasks=(),
+                auto_task=True, run_id="parity-run",
+            )
+        )
+    )
+    tool_dir = _fake_standard_tool(tmp_path, body=_FAKE_EVALUATOR_OK)
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    assert run_standard_evaluate(
+        _command_namespace(
+            result=str(tmp_path / "runs" / "parity-run" / "predictions.jsonl"),
+            tool_dir=str(tool_dir),
+            output=None,
+            python=sys.executable,
+        )
+    ) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert _parity_normalize(out) == _parity_fixture("standard_evaluate.json")
+
+
+def test_parity_download_data_mocked(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands import download_data as download_command_module
+    from application.commands.download_data import run_download_data
+
+    monkeypatch.setattr(
+        download_command_module,
+        "download_dataset",
+        lambda dataset, *, root: root / dataset,
+    )
+    assert run_download_data(
+        _command_namespace(root=str(tmp_path / "dl"), datasets=["vrsbench", "levir_cc"])
+    ) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert _parity_normalize(out) == _parity_fixture("download_data.json")
+
+
+def test_parity_levir_evaluator_synthetic(tmp_path, monkeypatch, capsys) -> None:
+    import scripts.evaluate_levir_harmonization as levir_module
+
+    root = tmp_path / "root"
+    _make_levir_pair(root, "test", "p1.png")
+    _make_levir_pair(root, "test", "p2.png")
+    monkeypatch.setattr(
+        "sys.argv",
+        ["evaluate_levir_harmonization.py", "--root", str(root), "--split", "test",
+         "--output-dir", str(tmp_path / "out"), "--write-calibration"],
+    )
+    code = levir_module.main()
+    assert code == 0
+    summary = json.loads(capsys.readouterr().out)
+    assert _parity_normalize(summary) == _parity_fixture("levir_summary.json")

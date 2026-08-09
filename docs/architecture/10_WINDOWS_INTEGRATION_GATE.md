@@ -57,3 +57,69 @@ Date: 2026-08-08
 ## Final
 
 WINDOWS_INTEGRATION_READY
+
+
+# Final Parity Section — 11J Full Functional Parity Gate (Offline)
+
+HEAD: `72d810a`（11I2 提交，Final Parity 门前的最后功能提交）
+Date: 2026-08-09（final parity 验证在最终 parity HEAD 上重复执行）
+
+## Environment
+
+- 与上节相同（Windows 11 + Git Bash + Python 3.13）；路径含空格/CJK 场景
+  以显式 tmp 根覆盖（parity fixtures 与既有测试均含空格/CJK 用例）。
+
+## Command surface（16 个公开命令全部可用，`--help` exit 0）
+
+`serve`（隐式默认）/ `ask` / `run-dataset` / `run-init` / `health` /
+`list-datasets` / `smoke-qwen` / `count-image` / `resume-run` /
+`evaluate-run` / `judge-vqa-run` / `standard-evaluate` / `inspect-data` /
+`render-count` / `summarize-evaluations` / `download-data`
+
+## Offline parity verification（fake/mocked，零网络零真模型）
+
+| 路径 | 方式 | 结果 |
+|---|---|---|
+| ask 单图/变化（auto 规则） | fake Qwen（Runtime.ask） | PASS |
+| HTTP /health + /ask（1 MiB 限制/错误契约） | fake Qwen + 临时端口 | PASS |
+| count-image（fresh 唯一/显式重复拒绝/resume 零 Qwen/force） | fake counting 管线 | PASS |
+| run-dataset fresh/resume（run_request 权威、root canonicalize） | fake Qwen + manifest 数据集 | PASS |
+| run-init | RunStore 真实 | PASS |
+| inspect-data（quick/full） | 真实只读 | PASS |
+| render-count / summarize（run+file 模式） | 真实产物 | PASS |
+| evaluate-run（含 counting DeepSeek judge） | fake judge | PASS |
+| judge-vqa-run（skip/force） | fake judge | PASS |
+| standard-evaluate（external_standard 命名空间 + 报告 bundle） | fake 工具脚本 | PASS |
+| download-data（6 个官方目标、zip-slip 拒绝） | mocked hub | PASS |
+| LEVIR harmonization evaluator（合成图/标签） | 真实 PairHarmonizer | PASS |
+| 报告导出（samples.jsonl/deepseek_audit/元数据/MME 官方） | 真实产物 | PASS |
+
+## Parity fixtures（tests/fixtures/parity/）
+
+12 个稳定 golden JSON 已锁定（ask_single/http_health/http_ask/dataset_fresh/
+dataset_resume/count_image_summary/run_init_manifest/evaluate_run/
+summarize_file/standard_evaluate/download_data/levir_summary），时间戳、
+绝对路径、request/run id 全部剥离；9 个比对测试在最终 parity HEAD 上全绿。
+
+## Results（最终 parity HEAD）
+
+| Check | Result |
+|---|---|
+| compileall（9 包 + tests + main.py） | PASS |
+| architecture | PASS（40） |
+| contracts | PASS（136） |
+| parity（含 11J fixtures 比对） | PASS |
+| workflows | PASS（212） |
+| evaluation | PASS（79） |
+| reporting | PASS（24） |
+| application | PASS（139+） |
+| integration | PASS（41） |
+| main CLI | PASS（37） |
+| full pytest | PASS（1585 passed） |
+| wheel 构建（离线 pip wheel --no-deps） | PASS（133 个 .py 全含，17 个命令模块 + downloader/loader/vrsbench/standard） |
+| git diff --check | PASS |
+
+## Final
+
+FULL_FUNCTIONAL_PARITY=PASS
+FINAL_LIVE_GATE=PENDING

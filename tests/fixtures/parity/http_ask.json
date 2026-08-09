@@ -1,0 +1,10 @@
+{
+  "agent": "general_vqa_agent",
+  "answer": "yes",
+  "count": null,
+  "evidence": [],
+  "status": "completed",
+  "target": null,
+  "task": "general_vqa",
+  "warnings": []
+}
