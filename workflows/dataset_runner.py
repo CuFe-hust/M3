@@ -138,6 +138,7 @@ class DatasetRunner:
         run_dir: Path,
         artifact_writer: ArtifactWriter,
         judge_policy: str = "none",
+        judge_sample_rate: float | None = None,
         task_resolver: TaskResolver | None = None,
         call_budget_factory: CallBudgetFactory | None = None,
     ) -> None:
@@ -146,6 +147,7 @@ class DatasetRunner:
         self.run_dir = run_dir
         self.artifact_writer = artifact_writer
         self.judge_policy = judge_policy
+        self.judge_sample_rate = judge_sample_rate
         self.task_resolver = task_resolver
         self.call_budget_factory = call_budget_factory
 
@@ -194,6 +196,8 @@ class DatasetRunner:
         probe = self.adapter.probe(root, task)
         task_dir = self.run_dir / "tasks" / task
         self.artifact_writer.write_dataset_probe(task_dir, probe, dataset_root=root)
+        if resume:
+            self._restore_persisted_judge_rate(task_dir)
         selected = select_samples(
             self.adapter.iter_samples(root, split, task),
             start_index=start_index,
@@ -241,6 +245,8 @@ class DatasetRunner:
         probe = self.adapter.probe(root, None)
         task_dir = self.run_dir / "tasks" / "auto"
         self.artifact_writer.write_dataset_probe(task_dir, probe, dataset_root=root)
+        if resume:
+            self._restore_persisted_judge_rate(task_dir)
         drafts = select_samples(
             self.adapter.iter_drafts(root, split),
             start_index=start_index,
@@ -364,6 +370,7 @@ class DatasetRunner:
             partial=sum(1 for status in statuses if status.state == "partial"),
             failed=sum(1 for status in statuses if status.state == "failed"),
             skipped=sum(1 for status in statuses if status.state == "skipped"),
+            judge_sample_rate=self.judge_sample_rate,
         )
         self.artifact_writer.write_summary(task_dir, summary)
         return summary
@@ -392,7 +399,7 @@ class DatasetRunner:
                 return await self._resume_supplement(sample, sample_dir, persisted.task)
         try:
             outcome = await self.sample_runner.run_one(
-                sample, sample_dir, judge_policy=self.judge_policy
+                sample, sample_dir, judge_policy=self._judge_policy_for(sample.sample_id)
             )
         except Exception as error:
             # SampleRunner is not expected to raise for sample-level failures;
@@ -441,7 +448,9 @@ class DatasetRunner:
                 )
             try:
                 outcome = await self.sample_runner.run_one(
-                    sample, sample_dir, judge_policy=self.judge_policy
+                    sample,
+                    sample_dir,
+                    judge_policy=self._judge_policy_for(sample.sample_id),
                 )
             except Exception as error:
                 return self._write_draft_failure(
@@ -485,7 +494,7 @@ class DatasetRunner:
                 sample_dir,
                 resolution=resolution,
                 budget=budget,
-                judge_policy=self.judge_policy,
+                judge_policy=self._judge_policy_for(sample.sample_id),
             )
         except Exception as error:
             return self._write_draft_failure(
@@ -530,6 +539,47 @@ class DatasetRunner:
             return UnifiedSample.model_validate(raw)
         except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
             return None
+
+    def _judge_policy_for(self, sample_id: str) -> str:
+        """Deterministic judge participation sampled from the SHA256 of the
+        run/sample identity — never random. rate <= 0 disables judge, rate
+        >= 1 keeps the configured policy, intermediate rates select a fixed
+        subset that is identical across fresh runs and resume.
+        由 run/sample 身份的 SHA256 确定性抽样的 judge 参与——绝不随机。
+        rate<=0 禁用 judge，rate>=1 保留配置策略，中间值选择固定子集，
+        fresh 与 resume 完全一致。"""
+
+        rate = self.judge_sample_rate
+        if rate is None or self.judge_policy == "none":
+            return self.judge_policy
+        if rate <= 0.0:
+            return "none"
+        if rate >= 1.0:
+            return self.judge_policy
+        digest = hashlib.sha256(
+            f"{self.run_dir.name}:{sample_id}".encode("utf-8")
+        ).hexdigest()
+        if int(digest[:16], 16) % 10000 < rate * 10000:
+            return self.judge_policy
+        return "none"
+
+    def _restore_persisted_judge_rate(self, task_dir: Path) -> None:
+        """Resume with the same judge sampling policy as the original run:
+        the CLI rate wins when explicitly given, otherwise the persisted
+        summary rate is restored so resume is identical.
+        resume 使用与原运行相同的 judge 抽样策略：显式 CLI rate 优先，
+        否则恢复 summary 持久化 rate，使 resume 一致。"""
+
+        if self.judge_sample_rate is not None:
+            return
+        summary_path = task_dir / "dataset_summary.json"
+        try:
+            raw = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return
+        value = raw.get("judge_sample_rate") if isinstance(raw, dict) else None
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            self.judge_sample_rate = float(value)
 
     def _read_status(self, sample_dir: Path) -> SampleRunStatus | None:
         """Read the persisted sample status; corrupt or missing files count as
@@ -610,7 +660,7 @@ class DatasetRunner:
             self.artifact_writer.write_evaluation(sample_dir, evaluation, filename=filename)
         if task == "general_vqa":
             judge_service = self.sample_runner.judge_service
-            if judge_service is not None and self.judge_policy != "none":
+            if judge_service is not None and self._judge_policy_for(sample.sample_id) != "none":
                 evaluation = await asyncio.to_thread(
                     judge_service.judge_vqa_resume,
                     sample=sample,

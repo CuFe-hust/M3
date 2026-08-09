@@ -515,3 +515,210 @@ def test_report_unsafe_run_task_ignored(tmp_path: Path) -> None:
     report = build_report(run_dir)
     assert report.total == 4
     assert all(item.execution_agent is None for item in report.samples)
+
+# ── benchmark/audit exporters (Task 11G) / 基准与审计导出 ───────────────────
+
+
+def _export_report(tmp_path: Path, *, judged: bool = False) -> Report:
+    """One minimal report with two samples; one optionally judged.
+    含两个样本的最小报告；其中一个可选已 judge。"""
+    from evaluation.judges.base import VQAAnswerJudgeResult
+    from reporting.schema import Report, ReportSample
+
+    samples = [
+        ReportSample(
+            sample_id="a1",
+            run_task="general_vqa",
+            task="general_vqa",
+            state="succeeded",
+            question="Is there a road?",
+            prediction="yes",
+            updated_at="2026-08-09T00:00:00Z",
+        ),
+        ReportSample(
+            sample_id="a2",
+            run_task="general_vqa",
+            task="general_vqa",
+            state="succeeded",
+            question="How many cars?",
+            prediction="3",
+            updated_at="2026-08-09T00:00:01Z",
+            evaluation=(
+                EvaluationRecord(
+                    sample_id="a2",
+                    task="general_vqa",
+                    deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+                    judge_status="succeeded",
+                    judge_parsed=VQAAnswerJudgeResult(
+                        score=1, concise_rationale="matches"
+                    ),
+                )
+                if judged
+                else None
+            ),
+        ),
+    ]
+    return Report(
+        run_id="export-run",
+        dataset="demo",
+        total=2,
+        succeeded=2,
+        partial=0,
+        failed=0,
+        skipped=0,
+        samples=samples,
+    )
+
+
+def test_exporters_samples_jsonl_deterministic_utf8(tmp_path: Path) -> None:
+    from reporting.exporters import write_samples_jsonl
+
+    report = _export_report(tmp_path)
+    path = write_samples_jsonl(report, tmp_path / "samples.jsonl")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    rows = [json.loads(line) for line in lines]
+    assert rows[0]["sample_id"] == "a1"
+    assert rows[1]["sample_id"] == "a2"
+    assert rows[1]["evaluation"] is None  # no evaluation attached
+    # deterministic: same report yields the identical bytes / 确定性：相同报告
+    # 产生相同字节。
+    again = tmp_path / "again.jsonl"
+    write_samples_jsonl(report, again)
+    assert path.read_bytes() == again.read_bytes()
+
+
+def test_exporters_deepseek_audit_stable_metadata_no_secret(tmp_path: Path) -> None:
+    from reporting.exporters import write_deepseek_audit
+
+    report = _export_report(tmp_path, judged=True)
+    path = write_deepseek_audit(report, tmp_path / "deepseek_audit.jsonl")
+    lines = path.read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1  # only the judged sample / 仅已 judge 样本
+    row = json.loads(lines[0])
+    assert row["sample_id"] == "a2"
+    assert row["request_id"] == "a2:deepseek-vqa"
+    assert len(row["request_hash"]) == 64
+    assert row["judge_status"] == "succeeded"
+    assert row["judge_parsed"]["score"] == 1
+    text = path.read_text(encoding="utf-8")
+    assert "api_key" not in text.lower()
+    assert "authorization" not in text.lower()
+    assert "sk-" not in text
+    assert "raw_response" not in text
+
+
+def test_exporters_metadata_no_host_absolute_paths(tmp_path: Path) -> None:
+    from reporting.exporters import REPORT_SCHEMA_VERSION, write_metadata_json
+
+    report = _export_report(tmp_path)
+    run_dir = tmp_path / "runs" / "export-run"
+    run_dir.mkdir(parents=True)
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "run_id": "export-run",
+                "created_at": "2026-08-09T00:00:00Z",
+                "git_commit": None,
+                "git_dirty": None,
+                "config_hash": "hash",
+                "prompt_hashes": {},
+                "model_ids": {"qwen": "fake-qwen", "deepseek": "fake-deepseek"},
+                "dataset": "demo",
+                "split": "test",
+                "sample_filter": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    path = write_metadata_json(report, tmp_path / "metadata.json", run_dir=run_dir)
+    metadata = json.loads(path.read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == REPORT_SCHEMA_VERSION
+    assert metadata["run_id"] == "export-run"
+    assert metadata["dataset"] == "demo"
+    assert metadata["split"] == "test"
+    assert metadata["model_ids"]["qwen"] == "fake-qwen"
+    assert metadata["created_at"] == "2026-08-09T00:00:00Z"
+    assert metadata["counts"]["succeeded"] == 2
+    assert metadata["sample_count"] == 2
+    text = path.read_text(encoding="utf-8")
+    assert tmp_path.as_posix() not in text  # no host absolute path
+
+
+def test_exporters_external_standard_namespace(tmp_path: Path) -> None:
+    from reporting.exporters import write_external_standard_report
+
+    standard = {"primary_metric": "open_vqa_accuracy", "score": 75.0}
+    path = write_external_standard_report(standard, tmp_path / "standard.json")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["external_standard"]["score"] == 75.0
+    # never merged into deterministic metric names / 绝不并入确定性指标名
+    assert "primary_metric" not in payload
+    assert "score" not in payload
+
+
+def test_exporters_mme_official_export_read_only(tmp_path: Path) -> None:
+    from reporting.exporters import write_mme_official_export
+
+    source = tmp_path / "MME_RealWorld.json"
+    original = [
+        {
+            "Question_id": "q1",
+            "Text": "Which is true?",
+            "Answer choices": ["A", "B"],
+            "Ground truth": "A",
+        },
+        {
+            "Question_id": "q2",
+            "Text": "Which is false?",
+            "Answer choices": ["A", "B"],
+            "Ground truth": "B",
+        },
+    ]
+    source.write_text(json.dumps(original, ensure_ascii=False), encoding="utf-8")
+    source_before = source.read_bytes()
+    output = tmp_path / "mme_real_rs.official.json"
+    write_mme_official_export(
+        source, {"q1": "A", "q2": "B"}, output
+    )
+    rows = json.loads(output.read_text(encoding="utf-8"))
+    assert rows[0]["Output"] == "A"
+    assert rows[1]["Output"] == "B"
+    # unrelated fields preserved exactly / 未关联字段原样保留
+    assert rows[0]["Text"] == "Which is true?"
+    assert rows[0]["Ground truth"] == "A"
+    assert rows[1]["Answer choices"] == ["A", "B"]
+    # source untouched byte-for-byte / 源文件逐字节不变
+    assert source.read_bytes() == source_before
+    # missing prediction leaves an empty Output / 缺失预测保留空 Output
+    output2 = tmp_path / "partial.official.json"
+    write_mme_official_export(source, {"q1": "A"}, output2)
+    rows2 = json.loads(output2.read_text(encoding="utf-8"))
+    assert rows2[0]["Output"] == "A"
+    assert rows2[1]["Output"] == ""
+
+
+def test_exporters_mme_missing_source_fails_stably(tmp_path: Path) -> None:
+    import pytest
+
+    from reporting.exporters import write_mme_official_export
+
+    with pytest.raises(FileNotFoundError):
+        write_mme_official_export(
+            tmp_path / "missing.json", {}, tmp_path / "out.json"
+        )
+
+
+def test_exporters_mme_container_shape_and_no_model_calls(tmp_path: Path) -> None:
+    from reporting.exporters import write_mme_official_export
+
+    source = tmp_path / "annotations.json"
+    source.write_text(
+        json.dumps({"annotations": [{"question_id": "x1", "field": 1}]}),
+        encoding="utf-8",
+    )
+    output = tmp_path / "out.json"
+    write_mme_official_export(source, {"x1": "yes"}, output)
+    rows = json.loads(output.read_text(encoding="utf-8"))
+    assert rows[0]["Output"] == "yes"
+    assert rows[0]["field"] == 1

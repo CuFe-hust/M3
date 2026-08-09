@@ -83,7 +83,7 @@ def test_run_dataset_vertical_slice(tmp_path: Path, monkeypatch, capsys) -> None
     _make_dataset(data_root)
     settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
     client = _FakeQwenClient()
-    base = main_module.Runtime.create(
+    base = Runtime.create(
         settings=settings,
         project_root=tmp_path,
         prompts_root=Path(__file__).resolve().parents[2] / "prompts",
@@ -96,8 +96,10 @@ def test_run_dataset_vertical_slice(tmp_path: Path, monkeypatch, capsys) -> None
     runtime = Runtime(
         settings=base.settings, components=base.components, registry=registry
     )
+    import application.commands.run_dataset as run_dataset_module
+
     monkeypatch.setattr(
-        main_module.Runtime, "create", classmethod(lambda cls, **kwargs: runtime)
+        run_dataset_module.Runtime, "create", classmethod(lambda cls, **kwargs: runtime)
     )
 
     code = main_module.main(
@@ -136,8 +138,10 @@ def test_run_dataset_vertical_slice(tmp_path: Path, monkeypatch, capsys) -> None
 
 
 def test_run_dataset_slice_rejects_auto_task_conflict(tmp_path: Path, monkeypatch, capsys) -> None:
+    import application.commands.run_dataset as run_dataset_module
+
     monkeypatch.setattr(
-        main_module.Runtime, "create", classmethod(lambda **kwargs: object())
+        run_dataset_module.Runtime, "create", classmethod(lambda **kwargs: object())
     )
     code = main_module.main(
         [

@@ -582,3 +582,93 @@ def test_sample_run_status_task_rejects_typos_and_accepts_unknown() -> None:
                 state="failed",
                 updated_at="2026-01-01T00:00:00Z",
             )
+
+
+# ── deterministic judge sample rate (Task 11C2) / 确定性 judge 抽样率 ────────
+
+
+def _rate_sample(sample_id: str) -> UnifiedSample:
+    """One minimal general_vqa sample. / 一条最小 general_vqa 样本。"""
+    return UnifiedSample(
+        sample_id=sample_id,
+        dataset="fake",
+        split="test",
+        task="general_vqa",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="q",
+        ground_truth=GroundTruth(answers=["a"]),
+    )
+
+
+def test_judge_sample_rate_bounds() -> None:
+    from workflows.schema import DatasetRunOptions
+
+    with pytest.raises(ValueError, match="judge_sample_rate"):
+        DatasetRunOptions(
+            dataset="d", root=Path("."), split="s", tasks=("caption",),
+            judge_sample_rate=1.5,
+        )
+    with pytest.raises(ValueError, match="judge_sample_rate"):
+        DatasetRunOptions(
+            dataset="d", root=Path("."), split="s", tasks=("caption",),
+            judge_sample_rate=-0.1,
+        )
+    DatasetRunOptions(
+        dataset="d", root=Path("."), split="s", tasks=("caption",),
+        judge_sample_rate=0.0,
+    )
+    DatasetRunOptions(
+        dataset="d", root=Path("."), split="s", tasks=("caption",),
+        judge_sample_rate=1.0,
+    )
+
+
+def test_judge_sample_rate_zero_and_one(tmp_path: Path) -> None:
+    samples = [_rate_sample(f"s{i}") for i in range(20)]
+    run_dir, _ = _create_run(tmp_path, run_id="rate-0")
+    stub = _StubSampleRunner()
+    runner = _runner(_FakeAdapter(samples), stub, run_dir, judge_policy="all")
+    runner.judge_sample_rate = 0.0
+    summary = _run(runner)
+    assert summary.judge_sample_rate == 0.0
+    assert stub.calls
+    assert all(call[2] == "none" for call in stub.calls)  # rate 0 disables judge
+
+    run_dir1, _ = _create_run(tmp_path, run_id="rate-1")
+    stub1 = _StubSampleRunner()
+    runner1 = _runner(_FakeAdapter(samples), stub1, run_dir1, judge_policy="all")
+    runner1.judge_sample_rate = 1.0
+    _run(runner1)
+    assert all(call[2] == "all" for call in stub1.calls)  # rate 1 keeps policy
+
+
+def test_judge_sample_rate_intermediate_deterministic_across_resume(
+    tmp_path: Path,
+) -> None:
+    samples = [_rate_sample(f"s{i}") for i in range(20)]
+    run_dir, _ = _create_run(tmp_path, run_id="rate-run")
+    stub = _StubSampleRunner()
+    runner = _runner(_FakeAdapter(samples), stub, run_dir, judge_policy="all")
+    runner.judge_sample_rate = 0.5
+    summary = _run(runner)
+    judged_fresh = {call[0].sample_id for call in stub.calls if call[2] == "all"}
+    assert 0 < len(judged_fresh) < 20
+    assert summary.judge_sample_rate == 0.5
+    persisted = _read_json(
+        run_dir / "tasks" / "general_vqa" / "dataset_summary.json"
+    )
+    assert persisted["judge_sample_rate"] == 0.5
+    # A separately configured runner selects the identical subset (deterministic).
+    # 独立配置的 runner 选择完全相同的子集（确定性）。
+    probe = _runner(_FakeAdapter(samples), _StubSampleRunner(), run_dir, judge_policy="all")
+    probe.judge_sample_rate = 0.5
+    assert [probe._judge_policy_for(f"s{i}") for i in range(20)] == [
+        runner._judge_policy_for(f"s{i}") for i in range(20)
+    ]
+    # Resume with no explicit rate restores the persisted policy.
+    # resume 未给显式 rate 时恢复持久化策略。
+    stub2 = _StubSampleRunner()
+    runner2 = _runner(_FakeAdapter(samples), stub2, run_dir, judge_policy="all")
+    summary2 = _run(runner2, resume=True)
+    assert runner2.judge_sample_rate == 0.5
+    assert summary2.judge_sample_rate == 0.5

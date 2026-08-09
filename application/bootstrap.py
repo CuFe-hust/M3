@@ -71,6 +71,9 @@ class RuntimeComponents:
     dataset_runner_factory: Callable[..., DatasetRunner] = field(
         default=None  # type: ignore[assignment]
     )
+    sample_runner_factory: Callable[[Path], SampleRunner] = field(
+        default=None  # type: ignore[assignment]
+    )
 
 
 def assemble_runtime(
@@ -136,6 +139,7 @@ def assemble_runtime(
         run_dir: Path,
         *,
         judge_policy: str,
+        judge_sample_rate: float | None = None,
         data_root: Path,
     ) -> DatasetRunner:
         return DatasetRunner(
@@ -144,6 +148,7 @@ def assemble_runtime(
             run_dir=run_dir,
             artifact_writer=artifact_writer,
             judge_policy=judge_policy,
+            judge_sample_rate=judge_sample_rate,
             task_resolver=task_resolver,
             call_budget_factory=call_budget_factory,
         )
@@ -162,6 +167,7 @@ def assemble_runtime(
         build_report=build_report,
         render_overlay=render_counting_overlay,
         dataset_runner_factory=dataset_runner_factory,
+        sample_runner_factory=make_sample_runner,
     )
     return components
 

@@ -17,8 +17,15 @@ import pytest
 
 from PIL import Image
 
+from agents.base import AgentExecution
+from agents.registry import AgentRegistry
+from agents.schema import AgentResult, VisualEvidence
 from application.bootstrap import assemble_runtime
-from application.runtime import Runtime
+from application.runtime import (
+    Runtime,
+    collect_images,
+    to_public_answer,
+)
 from application.settings import AppSettings, RunSettings
 from data.adapters.manifest import ManifestDraftAdapter
 from data.registry import DatasetRegistry
@@ -364,3 +371,2430 @@ def _run(runtime: Runtime, options: DatasetRunOptions, *, resume: bool = False):
             dataclasses.replace(options, resume=resume) if resume else options
         )
     )
+
+
+
+# ── manual ask path (Task 11A) / 手动 ask 路径 ─────────────────────────────
+
+
+def _make_images(directory: Path, names: list[str]) -> None:
+    """Create one small PNG per name. / 每个名字创建一张小 PNG。"""
+    directory.mkdir(parents=True, exist_ok=True)
+    for name in names:
+        Image.new("RGB", (4, 4), (1, 2, 3)).save(directory / name, format="PNG")
+
+
+class _RecordingAgent:
+    """Minimal Agent that records sample/context and returns a fixed
+    AgentResult. 记录 sample/context 并返回固定 AgentResult 的最小 Agent。"""
+
+    def __init__(self, name: str, task: str, answer: str = "ok") -> None:
+        self.name = name
+        self.supported_tasks = frozenset({task})
+        self.runs: list[tuple[Any, Any]] = []
+        self.answer = answer
+
+    async def run(self, sample, context):
+        self.runs.append((sample, context))
+        payload = AgentResult(
+            agent_name=self.name, answer=self.answer, status="completed"
+        )
+        return AgentExecution(
+            agent_name=self.name, payload=payload, result_filename="agent_result.json"
+        )
+
+
+def _ask_runtime(
+    tmp_path: Path,
+    client: _FakeQwenClient | None = None,
+    agents: dict[str, _RecordingAgent] | None = None,
+) -> Runtime:
+    """A Runtime with the real resolver/router but recording stub agents.
+    使用真实 resolver/router 与记录型 stub Agent 的 Runtime。"""
+    settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    client = client or _FakeQwenClient()
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=client,
+        api_key=None,
+    )
+    registry = AgentRegistry()
+    for agent in (agents or {}).values():
+        registry.register(agent)
+    components = dataclasses.replace(components, agent_registry=registry)
+    return Runtime(settings=settings, components=components)
+
+
+def _ask(runtime: Runtime, *, image_dir: Path, question: str = "", task: str = "auto"):
+    return asyncio.run(
+        runtime.ask(image_dir=image_dir, question=question, task=task)
+    )
+
+
+# ── image collection / 图片收集 ─────────────────────────────────────────────
+
+
+def test_collect_images_natural_sort_and_filters(tmp_path: Path) -> None:
+    _make_images(
+        tmp_path / "imgs",
+        ["img10.png", "img2.png", "img1.png", ".hidden.png", "note.txt"],
+    )
+    collected = collect_images(tmp_path / "imgs")
+    assert [item.path.name for item in collected] == ["img1.png", "img2.png", "img10.png"]
+    assert all(item.width == 4 and item.height == 4 for item in collected)
+
+
+def test_collect_images_missing_or_not_directory(tmp_path: Path) -> None:
+    with pytest.raises(ValueError):
+        collect_images(tmp_path / "missing")
+    (tmp_path / "plain.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError):
+        collect_images(tmp_path / "plain.txt")
+
+
+def test_collect_images_empty_directory_fails(tmp_path: Path) -> None:
+    (tmp_path / "imgs").mkdir()
+    with pytest.raises(ValueError, match="no supported images"):
+        collect_images(tmp_path / "imgs")
+
+
+def test_collect_images_corrupt_image_fails(tmp_path: Path) -> None:
+    directory = tmp_path / "imgs"
+    directory.mkdir()
+    (directory / "broken.png").write_bytes(b"not an image")
+    with pytest.raises(ValueError, match="cannot open image"):
+        collect_images(directory)
+
+
+def test_collect_images_too_many_fails(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", [f"img{i}.png" for i in range(9)])
+    with pytest.raises(ValueError, match="too many images"):
+        collect_images(tmp_path / "imgs")
+
+
+# ── ask orchestration / ask 编排 ────────────────────────────────────────────
+
+
+def test_ask_auto_one_image_empty_question_caption(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    agent = _RecordingAgent("caption_agent", "caption", answer="a street scene")
+    runtime = _ask_runtime(tmp_path, agents={"caption_agent": agent})
+    answer = _ask(runtime, image_dir=tmp_path / "imgs")
+    assert answer.task == "caption"
+    assert answer.agent == "caption_agent"
+    assert answer.answer == "a street scene"
+    assert answer.request_id.startswith("manual-")
+    assert len(agent.runs) == 1
+    sample, context = agent.runs[0]
+    assert sample.task == "caption"
+    assert sample.question == ""
+    assert sample.metadata["image_dir"] == "manual://input"
+    assert [image.role for image in sample.images] == ["image"]
+    assert sample.images[0].path.as_posix() == "img.png"
+    assert context.data_root == (tmp_path / "imgs").resolve()
+    # The deterministic rule path never calls the resolver model.
+    # 确定性规则路径绝不调用 resolver 模型。
+    assert runtime.components.qwen_client.calls == 0
+
+
+def test_ask_auto_two_images_empty_question_change_caption(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["t1.png", "t2.png"])
+    agent = _RecordingAgent("change_agent", "change_caption")
+    runtime = _ask_runtime(tmp_path, agents={"change_agent": agent})
+    answer = _ask(runtime, image_dir=tmp_path / "imgs")
+    assert answer.task == "change_caption"
+    assert answer.agent == "change_agent"
+    sample, _ = agent.runs[0]
+    assert [image.role for image in sample.images] == ["t1", "t2"]
+    assert [image.image_id for image in sample.images] == ["t1", "t2"]
+
+
+def test_ask_auto_question_resolves_via_resolver_once(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient()
+    agent = _RecordingAgent("general_vqa_agent", "general_vqa")
+    runtime = _ask_runtime(
+        tmp_path, client=client, agents={"general_vqa_agent": agent}
+    )
+    answer = _ask(
+        runtime, image_dir=tmp_path / "imgs", question="Is there a road?"
+    )
+    assert client.calls == 1  # exactly one resolver model call
+    assert answer.task == "general_vqa"
+    assert answer.agent == "general_vqa_agent"
+
+
+def test_ask_explicit_task_skips_resolver(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient()
+    agent = _RecordingAgent("general_vqa_agent", "general_vqa")
+    runtime = _ask_runtime(
+        tmp_path, client=client, agents={"general_vqa_agent": agent}
+    )
+    answer = _ask(
+        runtime,
+        image_dir=tmp_path / "imgs",
+        question="Any buildings?",
+        task="general_vqa",
+    )
+    assert client.calls == 0  # explicit task never calls the resolver
+    assert answer.task == "general_vqa"
+    assert answer.agent == "general_vqa_agent"
+
+
+def test_ask_explicit_unknown_task_fails(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    runtime = _ask_runtime(tmp_path)
+    with pytest.raises(ValueError, match="unknown task"):
+        _ask(runtime, image_dir=tmp_path / "imgs", task="bogus")
+
+
+def test_ask_change_task_count_validation(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    runtime = _ask_runtime(tmp_path)
+    with pytest.raises(ValueError, match="exactly two images"):
+        _ask(runtime, image_dir=tmp_path / "imgs", task="change_caption")
+    _make_images(tmp_path / "imgs2", ["a.png", "b.png", "c.png"])
+    with pytest.raises(ValueError, match="exactly two images"):
+        _ask(
+            runtime,
+            image_dir=tmp_path / "imgs2",
+            question="what changed?",
+            task="change_qa",
+        )
+
+
+def test_ask_runs_single_primary_agent_no_fallback(tmp_path: Path) -> None:
+    """change_qa declares a fallback agent; the manual path must never use it.
+    change_qa 声明了 fallback Agent；手动路径绝不使用它。"""
+    _make_images(tmp_path / "imgs", ["a.png", "b.png"])
+    change = _RecordingAgent("change_agent", "change_qa")
+    general = _RecordingAgent("general_vqa_agent", "general_vqa")
+    runtime = _ask_runtime(
+        tmp_path,
+        agents={"change_agent": change, "general_vqa_agent": general},
+    )
+    answer = _ask(
+        runtime,
+        image_dir=tmp_path / "imgs",
+        question="what changed?",
+        task="change_qa",
+    )
+    assert answer.agent == "change_agent"
+    assert len(change.runs) == 1
+    assert not general.runs  # fallback never executed / 兜底绝不执行
+
+
+def test_ask_artifacts_relative_and_judge_free(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    agent = _RecordingAgent("caption_agent", "caption")
+    runtime = _ask_runtime(tmp_path, agents={"caption_agent": agent})
+    answer = _ask(runtime, image_dir=tmp_path / "imgs")
+    request_dir = tmp_path / "runs" / "service" / "requests" / answer.request_id
+    request = json.loads((request_dir / "request.json").read_text(encoding="utf-8"))
+    assert request["image_dir"] == "manual://input"
+    assert request["images"][0]["path"] == "img.png"
+    assert request["images"][0]["role"] == "image"
+    result = json.loads((request_dir / "result.json").read_text(encoding="utf-8"))
+    absolute = (tmp_path / "imgs").resolve().as_posix()
+    assert absolute not in json.dumps(request)
+    assert absolute not in json.dumps(result)
+    assert answer.artifact_dir == f"service/requests/{answer.request_id}"
+    assert not Path(answer.artifact_dir).is_absolute()
+    # No Judge/evaluation/report artifacts on the manual path.
+    # 手动路径无 Judge/评测/报告产物。
+    names = {entry.name for entry in request_dir.iterdir()}
+    assert names == {"request.json", "result.json"}
+
+
+def test_ask_reuses_single_qwen_client(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient()
+    agent = _RecordingAgent("caption_agent", "caption")
+    runtime = _ask_runtime(tmp_path, client=client, agents={"caption_agent": agent})
+    first = _ask(runtime, image_dir=tmp_path / "imgs")
+    second = _ask(runtime, image_dir=tmp_path / "imgs")
+    assert runtime.components.qwen_client is client  # created once, reused
+    assert first.request_id != second.request_id
+
+
+# ── public answer mapping / 公开结果映射 ────────────────────────────────────
+
+
+def test_to_public_answer_agent_result_mapping() -> None:
+    execution = AgentExecution(
+        agent_name="grounding_agent",
+        payload=AgentResult(
+            agent_name="grounding_agent",
+            answer="road",
+            status="completed",
+            evidence_items=[
+                VisualEvidence(
+                    label="road",
+                    box=[1, 2, 3, 4],
+                    confidence=0.9,
+                    image_id="image-0",
+                )
+            ],
+        ),
+        result_filename="agent_result.json",
+    )
+    answer = to_public_answer(
+        request_id="manual-x",
+        resolved_task="grounding",
+        execution=execution,
+        artifact_dir="service/requests/manual-x",
+        elapsed_seconds=1.0,
+    )
+    assert answer.task == "grounding"
+    assert answer.agent == "grounding_agent"
+    assert answer.answer == "road"
+    assert answer.count is None
+    assert answer.target is None
+    assert answer.evidence[0]["box"] == [1, 2, 3, 4]
+    assert answer.artifact_dir == "service/requests/manual-x"
+
+
+def test_to_public_answer_counting_result_mapping() -> None:
+    from agents.counting.schema import (
+        CountingResult,
+        GlobalPointObservation,
+        IssueRecord,
+    )
+
+    def point(point_id: str, *, accepted: bool, reason: str | None = None):
+        return GlobalPointObservation(
+            global_id=point_id,
+            target="vehicles",
+            source_tile_id="t0",
+            local_id="l0",
+            local_x_norm=10,
+            local_y_norm=10,
+            local_radius_norm=5,
+            global_x_px=10,
+            global_y_px=10,
+            global_x_norm=100,
+            global_y_norm=200,
+            radius_px=5.0,
+            confidence=0.9,
+            ownership_valid=True,
+            near_core_boundary=False,
+            accepted=accepted,
+            rejection_reason=reason,
+            short_evidence="e",
+        )
+
+    payload = CountingResult(
+        sample_id="manual-x",
+        target="vehicles",
+        question="how many?",
+        source_width=100,
+        source_height=100,
+        tile_count=1,
+        global_points=[
+            point("p1", accepted=True),
+            point("p2", accepted=False, reason="low_confidence"),
+        ],
+        warnings=[IssueRecord(code="w1", message="note")],
+        final_count=1,
+        status="completed_with_warnings",
+    )
+    execution = AgentExecution(
+        agent_name="counting_agent",
+        payload=payload,
+        result_filename="counting_result.json",
+    )
+    answer = to_public_answer(
+        request_id="manual-x",
+        resolved_task="counting",
+        execution=execution,
+        artifact_dir="service/requests/manual-x",
+        elapsed_seconds=0.5,
+    )
+    assert answer.count == 1
+    assert answer.target == "vehicles"
+    assert answer.answer == "1"
+    assert answer.evidence == [
+        {
+            "point": [100, 200],
+            "confidence": 0.9,
+            "image_id": "image-0",
+            "source_tile_id": "t0",
+        }
+    ]
+    assert len(answer.warnings) == 1
+    assert answer.warnings[0]["code"] == "w1"
+
+
+# ── manual HTTP serve (Task 11B) / 手动 HTTP 服务 ──────────────────────────
+
+
+class _ServeHarness:
+    """A bound handler server on an ephemeral local port; each
+    ``request`` call processes exactly one connection via handle_request.
+    绑定 handler 的临时端口服务器；每次 ``request`` 经 handle_request
+    处理恰好一个连接。"""
+
+    def __init__(self, runtime: Runtime) -> None:
+        import http.server
+
+        from application.commands.serve import RuntimeRequestHandler
+
+        handler = type(
+            "BoundRuntimeRequestHandler",
+            (RuntimeRequestHandler,),
+            {"application": runtime},
+        )
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        self.server.timeout = 5
+        self.port = self.server.server_address[1]
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        body: bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> tuple[int, dict[str, Any] | None]:
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            conn.request(method, path, body=body, headers=headers or {})
+            self.server.handle_request()
+            response = conn.getresponse()
+            raw = response.read()
+            payload = json.loads(raw.decode("utf-8")) if raw else None
+            return response.status, payload
+        finally:
+            conn.close()
+
+    def close(self) -> None:
+        self.server.server_close()
+
+
+def test_serve_health_returns_readiness(tmp_path: Path) -> None:
+    client = _FakeQwenClient()
+    runtime = _ask_runtime(tmp_path, client=client)
+    harness = _ServeHarness(runtime)
+    try:
+        status, payload = harness.request("GET", "/health")
+    finally:
+        harness.close()
+    assert status == 200
+    assert payload["status"] == "ready"
+    assert "model" in payload
+    assert "model_load_seconds" in payload
+    assert "agents" in payload
+    assert client.calls == 0  # health never calls a model / health 绝不调模型
+
+
+def test_serve_unknown_paths_return_404(tmp_path: Path) -> None:
+    runtime = _ask_runtime(tmp_path)
+    harness = _ServeHarness(runtime)
+    try:
+        status, payload = harness.request("GET", "/nope")
+        assert status == 404
+        assert payload["error"] == "not found"
+        status, payload = harness.request("POST", "/nope", body=b"{}")
+        assert status == 404
+        assert payload["error"] == "not found"
+    finally:
+        harness.close()
+
+
+def test_serve_ask_success(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    agent = _RecordingAgent("general_vqa_agent", "general_vqa", answer="yes")
+    runtime = _ask_runtime(tmp_path, agents={"general_vqa_agent": agent})
+    harness = _ServeHarness(runtime)
+    try:
+        status, payload = harness.request(
+            "POST",
+            "/ask",
+            body=json.dumps(
+                {"image_dir": str(tmp_path / "imgs"), "question": "q", "task": "general_vqa"}
+            ).encode("utf-8"),
+        )
+    finally:
+        harness.close()
+    assert status == 200
+    assert payload["task"] == "general_vqa"
+    assert payload["agent"] == "general_vqa_agent"
+    assert payload["status"] == "completed"
+    assert payload["answer"] == "yes"
+    assert payload["request_id"].startswith("http-")
+
+
+def test_serve_ask_bad_bodies_return_400(tmp_path: Path) -> None:
+    runtime = _ask_runtime(tmp_path)
+    harness = _ServeHarness(runtime)
+    try:
+        status, payload = harness.request("POST", "/ask", body=b"{not json")
+        assert status == 400
+        assert payload["error"] == "invalid JSON body"
+        status, payload = harness.request("POST", "/ask", body=b"[]")
+        assert status == 400
+        assert payload["error"] == "request body must be a JSON object"
+        status, payload = harness.request("POST", "/ask", body=b"{}")
+        assert status == 400
+        assert payload["error"] == "image_dir is required"
+        status, payload = harness.request(
+            "POST", "/ask", body=b'{"image_dir": ""}'
+        )
+        assert status == 400
+        assert payload["error"] == "image_dir is required"
+    finally:
+        harness.close()
+
+
+def test_serve_ask_invalid_request_returns_stable_400(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    runtime = _ask_runtime(tmp_path)
+    harness = _ServeHarness(runtime)
+    try:
+        status, payload = harness.request(
+            "POST",
+            "/ask",
+            body=json.dumps(
+                {"image_dir": str(tmp_path / "imgs"), "task": "bogus"}
+            ).encode("utf-8"),
+        )
+    finally:
+        harness.close()
+    assert status == 400
+    assert payload["error"] == "invalid request"  # stable, no raw text
+
+
+def test_serve_ask_oversized_body_returns_413(tmp_path: Path) -> None:
+    runtime = _ask_runtime(tmp_path)
+    harness = _ServeHarness(runtime)
+    try:
+        status, payload = harness.request(
+            "POST", "/ask", body=b"x" * ((1 << 20) + 1)
+        )
+    finally:
+        harness.close()
+    assert status == 413
+    assert payload["error"] == "request body too large"
+
+
+def test_serve_asks_reuse_single_runtime(tmp_path: Path) -> None:
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient()
+    agent = _RecordingAgent("general_vqa_agent", "general_vqa")
+    runtime = _ask_runtime(tmp_path, client=client, agents={"general_vqa_agent": agent})
+    assert runtime.components.judge_client is None  # no DeepSeek on manual service
+    harness = _ServeHarness(runtime)
+    try:
+        body = json.dumps(
+            {"image_dir": str(tmp_path / "imgs"), "question": "q"}
+        ).encode("utf-8")
+        first_status, first = harness.request("POST", "/ask", body=body)
+        second_status, second = harness.request("POST", "/ask", body=body)
+    finally:
+        harness.close()
+    assert first_status == 200 and second_status == 200
+    assert runtime.components.qwen_client is client  # one client, both requests
+    assert client.calls == 2  # one resolver model call per ask
+    assert first["request_id"] != second["request_id"]
+
+
+def test_serve_invalid_port_rejected(capsys) -> None:
+    import argparse
+
+    from application.commands.serve import run_serve
+
+    code = run_serve(
+        argparse.Namespace(config=None, host="127.0.0.1", port=0)
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["status"] == "failed"
+    assert error["error"] == "ValueError"
+
+
+def test_serve_server_close_is_clean(tmp_path: Path) -> None:
+    import socket
+
+    runtime = _ask_runtime(tmp_path)
+    harness = _ServeHarness(runtime)
+    status, _ = harness.request("GET", "/health")
+    assert status == 200
+    port = harness.port
+    harness.close()
+    # The port is released: a new server can bind it again.
+    # 端口已释放：新服务器可再次绑定同一端口。
+    import http.server
+
+    probe = http.server.HTTPServer(("127.0.0.1", 0), type(
+        "ProbeHandler",
+        (http.server.BaseHTTPRequestHandler,),
+        {"application": runtime},
+    ))
+    try:
+        assert probe.server_address[1] != 0
+    finally:
+        probe.server_close()
+    assert port != 0  # tests always use an ephemeral local port only
+
+# ── operational commands (Task 11C) / 运维命令 ─────────────────────────────
+
+
+def _command_namespace(**overrides: Any):
+    import argparse
+
+    values = dict(config=None)
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+class _DiagnosticFakeClient:
+    """Fake Qwen client for health/smoke probes: validates against the
+    request schema and records exactly one call per invocation.
+    health/smoke 探测的 fake Qwen 客户端：按请求 schema 校验并记录调用。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return ModelCacheIdentity(
+            model="fake", generation={"temperature": 0.0}, client_version="1"
+        )
+
+    async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
+        self.calls += 1
+        if response_model.__name__ == "_SmokeResponse":
+            return response_model.model_validate({"message": "smoke ok"})
+        return response_model.model_validate({"status": "ok"})
+
+
+class _FakeJudgeClient:
+    """Duck-typed DeepSeek judge for health --live deepseek tests.
+    health --live deepseek 测试的鸭子类型 judge。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def judge_json(self, payload, *, response_model, request_meta, system_prompt=None):
+        self.calls += 1
+        return response_model.model_validate({"status": "ok"})
+
+
+def test_run_init_creates_unique_run_and_duplicate_fails(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.run_init import run_run_init
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_run_init(
+        _command_namespace(run_id=None, dataset="d", split="s", sample_filter=None)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    run_id = out["run_id"]
+    run_dir = tmp_path / "runs" / run_id
+    assert run_dir.is_dir()
+    assert (run_dir / "manifest.json").is_file()
+    assert (run_dir / "config.snapshot.json").is_file()
+    assert (run_dir / "prompts.snapshot").is_dir()
+    assert (run_dir / "events.jsonl").is_file()
+    # explicit duplicate run id fails stably / 显式重复 run id 稳定失败
+    code = run_run_init(
+        _command_namespace(run_id=run_id, dataset=None, split=None, sample_filter=None)
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "FileExistsError"
+
+
+def test_run_init_explicit_run_id_and_manifest_fields(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.run_init import run_run_init
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_run_init(
+        _command_namespace(
+            run_id="fixed-run", dataset="d", split="test", sample_filter="a,b"
+        )
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["run_id"] == "fixed-run"
+    manifest = json.loads(
+        (tmp_path / "runs" / "fixed-run" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["run_id"] == "fixed-run"
+    assert manifest["dataset"] == "d"
+    assert manifest["split"] == "test"
+    assert manifest["sample_filter"] == "a,b"
+    snapshot = json.loads(
+        (tmp_path / "runs" / "fixed-run" / "config.snapshot.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert snapshot["runs"]["root"] == (tmp_path / "runs").as_posix()
+
+
+def test_health_qwen_metadata_ready(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.health import run_health
+
+    monkeypatch.setenv("QWEN_MODEL", "smoke-model")
+    code = run_health(_command_namespace(component="qwen", live=False))
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ready"
+    assert out["component"] == "qwen"
+    assert out["model"] == "smoke-model"
+    assert "cache_model_id" in out
+    assert "allow_download" in out
+    assert "api_key" not in json.dumps(out).lower()
+
+
+def test_health_deepseek_prints_env_name_not_value(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.health import run_health
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-super-secret-value")
+    code = run_health(_command_namespace(component="deepseek", live=False))
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ready"
+    assert out["component"] == "deepseek"
+    assert out["api_key_env"] == "DEEPSEEK_API_KEY"
+    assert "sk-super-secret-value" not in json.dumps(out)
+    assert "sk-" not in json.dumps(out)
+
+
+def test_health_qwen_live_probes_once(tmp_path, capsys) -> None:
+    from application.commands.health import run_health
+
+    client = _DiagnosticFakeClient()
+    code = run_health(
+        _command_namespace(component="qwen", live=True), qwen_client=client
+    )
+    assert code == 0
+    assert client.calls == 1  # exactly one probe / 恰好一次探测
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["probe_status"] == "ok"
+
+
+def test_health_deepseek_live_probes_once(tmp_path, capsys) -> None:
+    from application.commands.health import run_health
+
+    judge = _FakeJudgeClient()
+    code = run_health(
+        _command_namespace(component="deepseek", live=True), judge_client=judge
+    )
+    assert code == 0
+    assert judge.calls == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["probe_status"] == "ok"
+
+
+def test_list_datasets_lists_builtins(tmp_path, capsys) -> None:
+    from application.commands.list_datasets import run_list_datasets
+
+    code = run_list_datasets(_command_namespace())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert set(out["datasets"]) >= {
+        "VRSBench",
+        "LEVIR-CC",
+        "MME-RealWorld",
+        "XLRS-Bench",
+        "XLRS-Bench-lite",
+    }
+
+
+def test_smoke_qwen_one_fake_request(tmp_path, capsys) -> None:
+    from application.commands.smoke_qwen import run_smoke_qwen
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _DiagnosticFakeClient()
+    code = run_smoke_qwen(
+        _command_namespace(image=str(tmp_path / "imgs" / "img.png"), question="q?"),
+        qwen_client=client,
+    )
+    assert code == 0
+    assert client.calls == 1  # exactly one request / 恰好一次请求
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["message"] == "smoke ok"
+
+
+def test_smoke_qwen_missing_image_fails_stably(tmp_path, capsys) -> None:
+    from application.commands.smoke_qwen import run_smoke_qwen
+
+    code = run_smoke_qwen(
+        _command_namespace(image=str(tmp_path / "missing.png"), question="q?"),
+        qwen_client=_DiagnosticFakeClient(),
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["status"] == "failed"
+    assert error["error"] == "FileNotFoundError"
+
+
+def _make_resumable_run(
+    tmp_path: Path,
+    *,
+    run_id: str = "fixed-run",
+    dataset: str = "d",
+    split: str = "test",
+    sample_filter: str | None = "a,b",
+    tasks: tuple[str, ...] = ("general_vqa",),
+) -> Path:
+    """Create a run directory that resume-run can read (manifest + snapshot +
+    task namespaces). 创建 resume-run 可读的 run 目录（manifest + 快照 +
+    task 命名空间）。"""
+    run_dir = tmp_path / "runs" / run_id
+    for task in tasks:
+        (run_dir / "tasks" / task).mkdir(parents=True)
+    manifest = {
+        "run_id": run_id,
+        "created_at": "2026-08-08T00:00:00Z",
+        "git_commit": None,
+        "git_dirty": None,
+        "config_hash": "hash",
+        "prompt_hashes": {},
+        "model_ids": {"qwen": "fake"},
+        "dataset": dataset,
+        "split": split,
+        "sample_filter": sample_filter,
+    }
+    (run_dir / "manifest.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    (run_dir / "config.snapshot.json").write_text(
+        json.dumps({"paths": {"dataset_root": str(tmp_path / "data")}}),
+        encoding="utf-8",
+    )
+    return run_dir
+
+
+def test_resume_run_invalid_manifest_fails(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.resume_run import run_resume_run
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_resume_run(_command_namespace(run_id="missing-run"))
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "ValueError"
+    # manifest without dataset/split is insufficient / 缺 dataset/split 不足
+    _make_resumable_run(tmp_path, run_id="no-dataset", dataset=None, split=None)
+    code = run_resume_run(_command_namespace(run_id="no-dataset"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+    # run directory name must match manifest identity / 目录名必须匹配 manifest
+    _make_resumable_run(tmp_path, run_id="dir-name", dataset="d", split="test")
+    (tmp_path / "runs" / "dir-name" / "manifest.json").write_text(
+        (tmp_path / "runs" / "dir-name" / "manifest.json")
+        .read_text(encoding="utf-8")
+        .replace('"run_id": "dir-name"', '"run_id": "other-id"'),
+        encoding="utf-8",
+    )
+    code = run_resume_run(_command_namespace(run_id="dir-name"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+
+def test_resume_run_delegates_reconstructed_options(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import resume_run as resume_run_module
+    from application.commands.resume_run import run_resume_run
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    _make_resumable_run(
+        tmp_path,
+        run_id="fixed-run",
+        dataset="d",
+        split="test",
+        sample_filter="a,b",
+        tasks=("general_vqa", "caption"),
+    )
+    captured: dict[str, Any] = {}
+
+    class _FakeRuntime:
+        async def run_dataset(self, options):
+            captured["options"] = options
+            return {}
+
+    class _FakeRuntimeClass:
+        @classmethod
+        def create(cls, **kwargs):
+            captured["created"] = kwargs
+            return _FakeRuntime()
+
+    monkeypatch.setattr(resume_run_module, "Runtime", _FakeRuntimeClass)
+    code = run_resume_run(_command_namespace(run_id="fixed-run"))
+    assert code == 0
+    options = captured["options"]
+    assert options.dataset == "d"
+    assert options.split == "test"
+    assert options.run_id == "fixed-run"
+    assert options.resume is True
+    assert options.auto_task is False
+    assert options.tasks == ("caption", "general_vqa")
+    assert options.sample_ids == {"a", "b"}
+    assert options.root == (tmp_path / "data").resolve()
+    assert captured["created"]["api_key"] is None
+
+
+def test_resume_run_auto_namespace_reconstructed(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import resume_run as resume_run_module
+    from application.commands.resume_run import run_resume_run
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    _make_resumable_run(tmp_path, run_id="auto-run", tasks=("auto",))
+    captured: dict[str, Any] = {}
+
+    class _FakeRuntime:
+        async def run_dataset(self, options):
+            captured["options"] = options
+            return {}
+
+    class _FakeRuntimeClass:
+        @classmethod
+        def create(cls, **kwargs):
+            return _FakeRuntime()
+
+    monkeypatch.setattr(resume_run_module, "Runtime", _FakeRuntimeClass)
+    code = run_resume_run(_command_namespace(run_id="auto-run"))
+    assert code == 0
+    options = captured["options"]
+    assert options.auto_task is True
+    assert options.tasks == ()
+
+
+def test_inspect_data_quick_and_full(tmp_path, capsys) -> None:
+    from application.commands.inspect_data import run_inspect_data
+
+    data_root = tmp_path / "data"
+    (data_root / "images").mkdir(parents=True)
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(data_root / "images" / "a.png", format="PNG")
+    code = run_inspect_data(
+        _command_namespace(root=str(data_root), output=None, scan_mode="quick")
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["report"]["scan_mode"] == "quick"
+    assert out["report"]["image_count"] == 1
+    assert out["report"]["damaged_images"] == []
+    code = run_inspect_data(
+        _command_namespace(
+            root=str(data_root),
+            output=str(tmp_path / "audit.json"),
+            scan_mode="full",
+        )
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["report"]["scan_mode"] == "full"
+    written = json.loads((tmp_path / "audit.json").read_text(encoding="utf-8"))
+    assert written["status"] == "ok"
+    assert written["report"]["scan_mode"] == "full"
+    # missing root fails stably / 缺失根目录稳定失败
+    code = run_inspect_data(
+        _command_namespace(root=str(tmp_path / "missing"), output=None, scan_mode="quick")
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "FileNotFoundError"
+
+# ── run-dataset operational surface (Task 11C2) / run-dataset 运维面 ────────
+
+
+class _TaskAwareAdapter:
+    """Adapter exposing supported_tasks; records iter_samples calls.
+    暴露 supported_tasks 的适配器；记录 iter_samples 调用。"""
+
+    name = "task-demo"
+    supported_tasks = frozenset({"caption", "general_vqa"})
+
+    def __init__(self) -> None:
+        self.iter_tasks: list[str] = []
+
+    def probe(self, root, task=None):
+        from data.adapters.base import AdapterProbe
+
+        return AdapterProbe(
+            dataset="task-demo",
+            version="1",
+            sample_file=root / "samples.jsonl",
+            observed_fields=("id",),
+            sample_count=0,
+            task=task,
+            available_tasks=("caption", "general_vqa"),
+        )
+
+    def iter_samples(self, root, split, task):
+        self.iter_tasks.append(task)
+        return iter([])
+
+
+def test_runtime_neither_task_mode_uses_adapter_supported_tasks(tmp_path: Path) -> None:
+    """tasks=None runs every adapter.supported_tasks and never touches the
+    TaskResolver. tasks=None 运行全部 adapter.supported_tasks，绝不触碰
+    TaskResolver。"""
+    settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    client = _FakeQwenClient()
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=client,
+        api_key=None,
+    )
+    adapter = _TaskAwareAdapter()
+    registry = DatasetRegistry()
+    registry.register("task-demo", lambda: adapter)
+    runtime = Runtime(settings=settings, components=components, registry=registry)
+    results = asyncio.run(
+        runtime.run_dataset(
+            DatasetRunOptions(
+                dataset="task-demo", root=tmp_path / "data", split="test", tasks=None
+            )
+        )
+    )
+    assert set(results) == {"caption", "general_vqa"}
+    assert sorted(adapter.iter_tasks) == ["caption", "general_vqa"]
+    assert client.calls == 0  # adapter-default mode never calls the resolver
+
+
+def _render_failed_point(point_id: str) -> dict:
+    from agents.counting.schema import GlobalPointObservation
+
+    return GlobalPointObservation(
+        global_id=point_id,
+        target="vehicles",
+        source_tile_id="t0",
+        local_id="l0",
+        local_x_norm=10,
+        local_y_norm=10,
+        local_radius_norm=5,
+        global_x_px=5,
+        global_y_px=5,
+        global_x_norm=100,
+        global_y_norm=100,
+        radius_px=5.0,
+        confidence=0.9,
+        ownership_valid=True,
+        near_core_boundary=False,
+        accepted=True,
+        short_evidence="e",
+    ).model_dump(mode="json")
+
+
+def test_runtime_render_errors_after_execution(tmp_path: Path) -> None:
+    """render_errors renders counting overlays for failed samples and turns
+    unsupported samples into stable notes; never calls a model.
+    render_errors 为 failed 样本渲染计数标注图，不支持的样本转为稳定 note；
+    绝不调用模型。"""
+    from agents.counting.schema import CountingResult
+    from workflows.dataset_runner import storage_key
+
+    settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    client = _FakeQwenClient()
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=client,
+        api_key=None,
+    )
+    runtime = Runtime(settings=settings, components=components)
+    run_dir = tmp_path / "runs" / "render-run"
+    data_root = tmp_path / "data"
+    data_root.mkdir(parents=True)
+    Image.new("RGB", (10, 10), (1, 2, 3)).save(data_root / "img.png", format="PNG")
+    # failed counting sample with a persisted CountingResult / failed 计数样本
+    count_dir = run_dir / "tasks" / "counting" / "samples" / storage_key("c1")
+    count_dir.mkdir(parents=True)
+    (count_dir / "sample.json").write_text(
+        json.dumps(
+            {
+                "sample_id": "c1",
+                "dataset": "d",
+                "split": "t",
+                "task": "counting",
+                "images": [{"image_id": "i0", "path": "img.png", "role": "image"}],
+                "question": "q",
+                "ground_truth": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = CountingResult(
+        sample_id="c1",
+        target="vehicles",
+        question="q",
+        source_width=10,
+        source_height=10,
+        tile_count=1,
+        global_points=[
+            {
+                **{
+                    key: value
+                    for key, value in _render_failed_point("p1").items()
+                    if key != "accepted"
+                },
+                "accepted": True,
+            }
+        ],
+        warnings=[],
+        final_count=1,
+        status="completed_with_warnings",
+    )
+    (count_dir / "counting_result.json").write_text(
+        json.dumps(result.model_dump(mode="json")), encoding="utf-8"
+    )
+    # failed caption sample without a counting result / 无计数结果的 failed 样本
+    cap_dir = run_dir / "tasks" / "caption" / "samples" / storage_key("x1")
+    cap_dir.mkdir(parents=True)
+    (run_dir / "predictions.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "sample_id": "c1",
+                        "run_task": "counting",
+                        "task": "counting",
+                        "status": "failed",
+                        "result_path": "counting_result.json",
+                        "updated_at": "now",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "sample_id": "x1",
+                        "run_task": "caption",
+                        "task": "caption",
+                        "status": "failed",
+                        "result_path": "agent_result.json",
+                        "updated_at": "now",
+                    }
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    notes = runtime.render_error_overlays(run_dir, data_root=data_root)
+    assert (count_dir / "error_overlay.png").is_file()  # rendered
+    by_sample = {note["sample_id"]: note for note in notes}
+    assert by_sample["x1"]["note"] == "render_errors_skipped:unsupported_task"
+    assert "c1" not in by_sample  # rendered successfully, no note
+    assert client.calls == 0  # rendering is model-free / 渲染无模型调用
+    persisted = json.loads(
+        (run_dir / "render_errors_notes.json").read_text(encoding="utf-8")
+    )
+    assert len(persisted) == 1
+    assert persisted[0]["note"] == "render_errors_skipped:unsupported_task"
+
+# ── counting maintenance tools (Task 11D) / 计数维护工具 ────────────────────
+
+
+class _FakeCountClient:
+    """Fake Qwen client for the counting pipeline: target spec, tile points.
+    计数管线的 fake Qwen 客户端：目标规格与切片点。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return ModelCacheIdentity(
+            model="fake", generation={"temperature": 0.0}, client_version="1"
+        )
+
+    async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
+        name = response_model.__name__
+        self.calls.append(name)
+        if name == "CountTargetSpec":
+            return response_model.model_validate(
+                {
+                    "canonical_label": "vehicles",
+                    "aliases": ["car"],
+                    "inclusion_rule": "count all vehicles",
+                    "exclusion_rule": "exclude none",
+                }
+            )
+        if name == "TileCountResponse":
+            return response_model.model_validate(
+                {
+                    "target": "vehicles",
+                    "tile_id": request_meta.tile_id,
+                    "points": [
+                        {
+                            "local_id": "p1",
+                            "x": 100,
+                            "y": 100,
+                            "confidence": 0.9,
+                            "radius": 5,
+                            "short_evidence": "e",
+                        }
+                    ],
+                    "reported_count": 1,
+                    "needs_split": False,
+                }
+            )
+        raise AssertionError(f"unexpected model {name}")
+
+
+def _count_image_runtime(tmp_path: Path, client: _FakeCountClient) -> Runtime:
+    """A real Runtime whose Qwen is the fake counting client.
+    以 fake 计数客户端为 Qwen 的真实 Runtime。"""
+    settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=client,
+        api_key=None,
+    )
+    return Runtime(settings=settings, components=components)
+
+
+def _count_image_args(
+    tmp_path: Path,
+    *,
+    image: Path,
+    question: str = "how many vehicles?",
+    run_id: str = "count-run",
+    render: bool = False,
+    resume: bool = False,
+    force: bool = False,
+    no_seam_verify: bool = False,
+    max_qwen_calls: int | None = None,
+    max_deepseek_calls: int | None = None,
+    target_spec: Path | None = None,
+):
+    import argparse
+
+    return argparse.Namespace(
+        config=None,
+        image=str(image),
+        question=question,
+        target_spec=str(target_spec) if target_spec else None,
+        run_id=run_id,
+        evaluate=False,
+        render=render,
+        resume=resume,
+        force=force,
+        no_seam_verify=no_seam_verify,
+        max_qwen_calls=max_qwen_calls,
+        max_deepseek_calls=max_deepseek_calls,
+    )
+
+
+def _count_image_sample_dir(tmp_path: Path) -> Path:
+    """The single current sample directory of the count-run counting task.
+    count-run 的 counting 任务下唯一的当前样本目录。"""
+    samples_root = tmp_path / "runs" / "count-run" / "tasks" / "counting" / "samples"
+    return next(samples_root.iterdir())
+
+
+def test_count_image_produces_current_artifacts_and_overlay(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(tmp_path, image=tmp_path / "imgs" / "img.png", render=True)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "completed"
+    assert out["final_count"] == 1
+    assert out["run_id"] == "count-run"
+    assert out["result_path"].startswith("tasks/counting/samples/")
+    assert not Path(out["result_path"]).is_absolute()
+    sample_dir = _count_image_sample_dir(tmp_path)
+    names = {entry.name for entry in sample_dir.iterdir()}
+    assert {"sample.json", "status.json", "routing_decision.json",
+            "counting_result.json", "agent_trace.json", "overlay.png"} <= names
+    status = json.loads((sample_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["state"] == "succeeded"
+    assert status["result_path"] == "counting_result.json"  # plain basename
+    # no host absolute path in any artifact / 产物无主机绝对路径
+    assert (tmp_path / "imgs").as_posix() not in (
+        sample_dir / "status.json"
+    ).read_text(encoding="utf-8")
+    assert client.calls == ["CountTargetSpec", "TileCountResponse"]
+
+
+def test_count_image_resume_succeeded_zero_qwen_calls(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    args = _count_image_args(tmp_path, image=tmp_path / "imgs" / "img.png")
+    assert run_count_image(args) == 0
+    capsys.readouterr()  # drop the first summary
+    calls_after_first = list(client.calls)
+    assert calls_after_first
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", resume=True
+        )
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "resumed"
+    assert out["final_count"] == 1
+    assert client.calls == calls_after_first  # zero new Qwen calls
+
+
+def test_count_image_force_reexecutes(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    args = _count_image_args(tmp_path, image=tmp_path / "imgs" / "img.png")
+    assert run_count_image(args) == 0
+    calls_after_first = len(client.calls)
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            resume=True,
+            force=True,
+        )
+    )
+    assert code == 0
+    assert len(client.calls) > calls_after_first  # re-executed
+
+
+def test_count_image_legacy_absolute_status_triggers_rerun(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    args = _count_image_args(tmp_path, image=tmp_path / "imgs" / "img.png")
+    assert run_count_image(args) == 0
+    # overwrite the status with a legacy absolute result_path / 用旧版绝对路径覆盖
+    sample_dir = _count_image_sample_dir(tmp_path)
+    status_path = sample_dir / "status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["result_path"] = r"C:\legacy\absolute\counting_result.json"
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+    calls_before = len(client.calls)
+    capsys.readouterr()  # drop earlier summaries
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", resume=True
+        )
+    )
+    assert code == 0
+    assert len(client.calls) > calls_before  # invalid status re-runs the sample
+    assert json.loads(capsys.readouterr().out)["status"] == "completed"
+
+
+def test_count_image_budget_validation(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", max_qwen_calls=0
+        )
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "ValueError"
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", max_deepseek_calls=-1
+        )
+    )
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+
+def test_count_image_seam_override_is_request_local(tmp_path, monkeypatch) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    captured = {}
+
+    def capturing_create(cls, **kwargs):
+        captured["settings"] = kwargs["settings"]
+        return _count_image_runtime(tmp_path, _FakeCountClient())
+
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(capturing_create)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", no_seam_verify=True
+        )
+    )
+    assert code == 0
+    assert captured["settings"].counting.seam_verify is False
+    captured.clear()
+    code = run_count_image(
+        _count_image_args(tmp_path, image=tmp_path / "imgs" / "img.png")
+    )
+    assert code == 0
+    assert captured["settings"].counting.seam_verify is True  # default untouched
+
+
+def test_count_image_target_spec_skips_target_model_call(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    spec = tmp_path / "spec.json"
+    spec.write_text(
+        json.dumps(
+            {
+                "canonical_label": "vehicles",
+                "inclusion_rule": "count all vehicles",
+                "exclusion_rule": "exclude none",
+            }
+        ),
+        encoding="utf-8",
+    )
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", target_spec=spec
+        )
+    )
+    assert code == 0
+    assert client.calls == ["TileCountResponse"]  # no target model call
+
+
+# ── render-count / 渲染计数 ─────────────────────────────────────────────────
+
+
+def _counting_result_payload(tmp_path: Path, *, width: int = 10, height: int = 10) -> Path:
+    from agents.counting.schema import CountingResult, GlobalPointObservation
+
+    payload = CountingResult(
+        sample_id="s",
+        target="vehicles",
+        question="q",
+        source_width=width,
+        source_height=height,
+        tile_count=1,
+        global_points=[
+            GlobalPointObservation(
+                global_id="p1",
+                target="vehicles",
+                source_tile_id="whole",
+                local_id="l0",
+                local_x_norm=100,
+                local_y_norm=100,
+                local_radius_norm=5,
+                global_x_px=5,
+                global_y_px=5,
+                global_x_norm=500,
+                global_y_norm=500,
+                radius_px=5.0,
+                confidence=0.9,
+                ownership_valid=True,
+                near_core_boundary=False,
+                accepted=True,
+                short_evidence="e",
+            )
+        ],
+        warnings=[],
+        final_count=1,
+        status="completed_with_warnings",
+    )
+    path = tmp_path / "counting_result.json"
+    path.write_text(json.dumps(payload.model_dump(mode="json")), encoding="utf-8")
+    return path
+
+
+def test_render_count_success_tile_overlay_not_available(tmp_path, capsys) -> None:
+    from application.commands.render_count import run_render_count
+
+    img_dir = tmp_path / "imgs"
+    img_dir.mkdir()
+    Image.new("RGB", (10, 10), (1, 2, 3)).save(img_dir / "img.png", format="PNG")
+    result_path = _counting_result_payload(tmp_path)
+    output = tmp_path / "out" / "overlay.png"
+    code = run_render_count(
+        _command_namespace(
+            image=str(tmp_path / "imgs" / "img.png"),
+            result=str(result_path),
+            output=str(output),
+        )
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["tile_overlay"] == "not_available"
+    assert output.is_file()
+
+
+def test_render_count_size_mismatch_fails_stably(tmp_path, capsys) -> None:
+    from application.commands.render_count import run_render_count
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    result_path = _counting_result_payload(tmp_path, width=20, height=20)
+    code = run_render_count(
+        _command_namespace(
+            image=str(tmp_path / "imgs" / "img.png"),
+            result=str(result_path),
+            output=str(tmp_path / "overlay.png"),
+        )
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["status"] == "failed"
+    assert error["error"] == "ValueError"
+
+
+def test_render_count_malformed_result_fails(tmp_path, capsys) -> None:
+    from application.commands.render_count import run_render_count
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json", encoding="utf-8")
+    code = run_render_count(
+        _command_namespace(
+            image=str(tmp_path / "imgs" / "img.png"),
+            result=str(bad),
+            output=str(tmp_path / "overlay.png"),
+        )
+    )
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "JSONDecodeError"
+
+
+# ── summarize-evaluations / 评估汇总 ────────────────────────────────────────
+
+
+def _make_evaluation_run(tmp_path: Path) -> Path:
+    """Create a run with two general_vqa records and one counting record.
+    创建一个含两条 general_vqa 与一条 counting 记录的 run。"""
+    from evaluation.records import EvaluationRecord
+    from evaluation.metrics.vqa import VQADeterministicMetrics
+    from evaluation.metrics.counting import CountDeterministicMetrics
+
+    run_dir = tmp_path / "runs" / "eval-run"
+    vqa_dir = run_dir / "tasks" / "general_vqa" / "samples" / "aaaa"
+    vqa_dir.mkdir(parents=True)
+    vqa2_dir = run_dir / "tasks" / "general_vqa" / "samples" / "cccc"
+    vqa2_dir.mkdir(parents=True)
+    count_dir = run_dir / "tasks" / "counting" / "samples" / "bbbb"
+    count_dir.mkdir(parents=True)
+    records = [
+        EvaluationRecord(
+            sample_id="a1",
+            task="general_vqa",
+            deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+            judge_status="not_requested",
+        ),
+        EvaluationRecord(
+            sample_id="a2",
+            task="general_vqa",
+            deterministic_metrics=VQADeterministicMetrics(exact_match=False),
+            judge_status="not_requested",
+        ),
+        EvaluationRecord(
+            sample_id="c1",
+            task="counting",
+            deterministic_metrics=CountDeterministicMetrics(
+                predicted_count=3,
+                gold_count=3,
+                exact_match=1,
+                absolute_error=0,
+                relative_error=0.0,
+                smooth_error_score=1.0,
+            ),
+            judge_status="not_requested",
+        ),
+    ]
+    (vqa_dir / "vqa_evaluation.json").write_text(
+        json.dumps(records[0].model_dump(mode="json")), encoding="utf-8"
+    )
+    (vqa2_dir / "vqa_evaluation.json").write_text(
+        json.dumps(records[1].model_dump(mode="json")), encoding="utf-8"
+    )
+    (count_dir / "counting_evaluation.json").write_text(
+        json.dumps(records[2].model_dump(mode="json")), encoding="utf-8"
+    )
+    return run_dir
+
+
+def test_summarize_evaluations_aggregates_deterministically(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.summarize_evaluations import run_summarize_evaluations
+
+    _make_evaluation_run(tmp_path)
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_summarize_evaluations(_command_namespace(run_id="eval-run"))
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["record_count"] == 3
+    assert set(out["aggregates"]) == {"counting", "general_vqa"}
+    assert out["aggregates"]["general_vqa"]["score"] == 0.5
+    assert out["aggregates"]["counting"]["exact_match_accuracy"] == 1.0
+
+
+def test_summarize_evaluations_malformed_fails_stably(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.summarize_evaluations import run_summarize_evaluations
+
+    run_dir = _make_evaluation_run(tmp_path)
+    bad = (
+        run_dir / "tasks" / "general_vqa" / "samples" / "aaaa" / "vqa_evaluation.json"
+    )
+    bad.write_text("{broken", encoding="utf-8")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_summarize_evaluations(_command_namespace(run_id="eval-run"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+
+def test_summarize_evaluations_empty_or_missing_fails(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.summarize_evaluations import run_summarize_evaluations
+
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_summarize_evaluations(_command_namespace(run_id="missing-run"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+    (tmp_path / "runs" / "empty-run" / "tasks").mkdir(parents=True)
+    code = run_summarize_evaluations(_command_namespace(run_id="empty-run"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+# ── offline evaluation operations (Task 11E) / 离线评估运维 ─────────────────
+
+
+class _BoomCreateModel:
+    """Spy: any Qwen construction through models.entry fails the test.
+    spy：任何经 models.entry 的 Qwen 构造都使测试失败。"""
+
+    def __call__(self, *args, **kwargs):
+        raise AssertionError("Qwen must never be constructed in offline tools")
+
+    @staticmethod
+    def arm(monkeypatch) -> None:
+        import models.entry as entry_module
+
+        monkeypatch.setattr(entry_module, "create_model", _BoomCreateModel())
+
+
+class _OfflineFakeJudgeClient:
+    """Duck-typed DeepSeek judge client for offline judge tests.
+    离线 judge 测试的鸭子类型 DeepSeek judge 客户端。"""
+
+    def __init__(self, *, fail: bool = False) -> None:
+        self.fail = fail
+        self.calls: list[str] = []
+
+    def judge_json(self, payload, *, response_model, request_meta, system_prompt=None):
+        self.calls.append(request_meta.request_id)
+        if self.fail:
+            raise RuntimeError("judge transport boom")
+        return response_model.model_validate(
+            {"score": 1, "concise_rationale": "ok"}
+        )
+
+
+def _make_offline_run(
+    tmp_path: Path,
+    samples: list[dict],
+    *,
+    run_id: str = "offline-run",
+) -> Path:
+    """Create a run with a valid manifest and one sample per entry; each
+    entry carries sample.json/status.json (execution task) and an optional
+    payload file plus optional pre-existing evaluation.
+    创建带合法 manifest 的 run，每个条目一个样本；条目携带 sample.json/
+    status.json（执行任务）与可选载荷文件及可选既有评估。"""
+    run_dir = tmp_path / "runs" / run_id
+    (run_dir / "tasks").mkdir(parents=True)
+    manifest = {
+        "run_id": run_id,
+        "created_at": "2026-08-09T00:00:00Z",
+        "git_commit": None,
+        "git_dirty": None,
+        "config_hash": "hash",
+        "prompt_hashes": {},
+        "model_ids": {"qwen": "fake"},
+        "dataset": "d",
+        "split": "test",
+        "sample_filter": None,
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (run_dir / "config.snapshot.json").write_text(
+        json.dumps({"paths": {"dataset_root": "data"}}), encoding="utf-8"
+    )
+    from workflows.dataset_runner import storage_key as storage_key_fn
+
+    for entry in samples:
+        task = entry.get("task") or entry["sample"]["task"]
+        sample_dir = (
+            run_dir
+            / "tasks"
+            / task
+            / "samples"
+            / storage_key_fn(entry["sample_id"])
+        )
+        sample_dir.mkdir(parents=True)
+        (sample_dir / "sample.json").write_text(
+            json.dumps(entry["sample"]), encoding="utf-8"
+        )
+        status = {
+            "sample_id": entry["sample_id"],
+            "task": entry.get("execution_task", task),
+            "state": "succeeded",
+            "error_code": None,
+            "error_message": None,
+            "result_path": entry.get("result_path", "agent_result.json"),
+            "updated_at": "2026-08-09T00:00:00Z",
+        }
+        (sample_dir / "status.json").write_text(json.dumps(status), encoding="utf-8")
+        if entry.get("payload_file"):
+            (sample_dir / entry["payload_file"]).write_text(
+                json.dumps(entry["payload"]), encoding="utf-8"
+            )
+        if entry.get("evaluation"):
+            (sample_dir / entry["evaluation_file"]).write_text(
+                json.dumps(entry["evaluation"]), encoding="utf-8"
+            )
+    return run_dir
+
+
+def _offline_args(**overrides):
+    """Complete argparse Namespace for the offline evaluation commands.
+    evaluate-run/judge-vqa-run 命令的完整 argparse Namespace。"""
+    import argparse
+
+    values = dict(
+        config=None,
+        run_id="offline-run",
+        deepseek=False,
+        only_missing=False,
+        force_judge=False,
+        force=False,
+    )
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def _offline_vqa_sample(sample_id: str, *, answer: str = "yes") -> dict:
+    return {
+        "sample_id": sample_id,
+        "sample": {
+            "sample_id": sample_id,
+            "dataset": "d",
+            "split": "test",
+            "task": "general_vqa",
+            "images": [{"image_id": "i0", "path": "img.png", "role": "image"}],
+            "question": "Is there a road?",
+            "ground_truth": {"answers": ["yes"]},
+        },
+    }
+
+
+def _offline_counting_sample(sample_id: str, *, final_count: int = 0) -> dict:
+    from agents.counting.schema import CountingResult
+
+    payload = CountingResult(
+        sample_id=sample_id,
+        target="vehicles",
+        question="how many?",
+        source_width=10,
+        source_height=10,
+        tile_count=1,
+        global_points=[],
+        warnings=[],
+        final_count=final_count,
+        status="completed",
+    )
+    return {
+        "sample_id": sample_id,
+        "sample": {
+            "sample_id": sample_id,
+            "dataset": "d",
+            "split": "test",
+            "task": "counting",
+            "images": [{"image_id": "i0", "path": "img.png", "role": "image"}],
+            "question": "how many?",
+            "ground_truth": {"count": final_count},
+        },
+        "payload_file": "counting_result.json",
+        "payload": payload.model_dump(mode="json"),
+        "result_path": "counting_result.json",
+    }
+
+
+def _offline_caption_sample(sample_id: str) -> dict:
+    return {
+        "sample_id": sample_id,
+        "sample": {
+            "sample_id": sample_id,
+            "dataset": "d",
+            "split": "test",
+            "task": "caption",
+            "images": [{"image_id": "i0", "path": "img.png", "role": "image"}],
+            "question": "",
+            "ground_truth": None,
+        },
+        "payload_file": "agent_result.json",
+        "payload": {
+            "agent_name": "caption_agent",
+            "answer": "a street",
+            "status": "completed",
+        },
+    }
+
+
+def _offline_grounding_sample(sample_id: str) -> dict:
+    return {
+        "sample_id": sample_id,
+        "sample": {
+            "sample_id": sample_id,
+            "dataset": "d",
+            "split": "test",
+            "task": "grounding",
+            "images": [{"image_id": "i0", "path": "img.png", "role": "image"}],
+            "question": "Where is the road?",
+            "ground_truth": None,
+        },
+        "payload_file": "agent_result.json",
+        "payload": {
+            "agent_name": "grounding_agent",
+            "answer": "road",
+            "status": "completed",
+        },
+    }
+
+
+def test_evaluate_run_fills_missing_deterministic_zero_qwen(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    _make_offline_run(
+        tmp_path,
+        [
+            _offline_counting_sample("c1"),
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+            _offline_caption_sample("cap1"),
+            _offline_grounding_sample("g1"),
+        ],
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_evaluate_run(_offline_args())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    by_sample = {item["sample_id"]: item for item in out["evaluated"]}
+    assert set(by_sample) == {"c1", "v1"}
+    assert by_sample["c1"]["filename"] == "counting_evaluation.json"
+    assert by_sample["v1"]["filename"] == "vqa_evaluation.json"
+    # incompatible grounding and reference-less caption: not_applicable,
+    # never a fake metric file. / 不兼容 grounding 与无参考 caption：
+    # not_applicable，绝不伪造指标文件。
+    na = {item["sample_id"]: item for item in out["not_applicable"]}
+    assert set(na) == {"cap1", "g1"}
+    assert na["g1"]["reason"] == "incompatible_geometry_or_no_reference"
+    run_dir = tmp_path / "runs" / "offline-run"
+    counting_dir = next(
+        (run_dir / "tasks" / "counting" / "samples").iterdir()
+    )
+    vqa_dir = next(
+        (run_dir / "tasks" / "general_vqa" / "samples").iterdir()
+    )
+    assert (counting_dir / "counting_evaluation.json").is_file()
+    assert (vqa_dir / "vqa_evaluation.json").is_file()
+    grounding_dir = next(
+        (run_dir / "tasks" / "grounding" / "samples").iterdir()
+    )
+    assert not (grounding_dir / "grounding_evaluation.json").exists()
+    # the refreshed unified report is built / 刷新的统一报告已构建
+    assert "report" in out
+    assert set(out["report"]) >= {"total", "succeeded", "failed"}
+
+
+def test_evaluate_run_only_missing_skips_existing(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    from evaluation.records import EvaluationRecord
+    from evaluation.metrics.vqa import VQADeterministicMetrics
+
+    existing = EvaluationRecord(
+        sample_id="v1",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
+    )
+    _make_offline_run(
+        tmp_path,
+        [
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"},
+                                             "evaluation": existing.model_dump(mode="json"),
+                                             "evaluation_file": "vqa_evaluation.json"}},
+            _offline_counting_sample("c1"),
+        ],
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_evaluate_run(
+        _offline_args(only_missing=True)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    evaluated = {item["sample_id"] for item in out["evaluated"]}
+    assert evaluated == {"c1"}  # v1 already has its evaluation / v1 已有评估
+    # full mode re-evaluates everything / 全量模式重评估全部
+    code = run_evaluate_run(_offline_args())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert {item["sample_id"] for item in out["evaluated"]} == {"c1", "v1"}
+
+
+def test_evaluate_run_fallback_execution_task_respected(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """After a candidate fallback the status.task (execution task) decides the
+    metric family, never the canonical resolved sample.task.
+    候选兜底后由 status.task（执行任务）决定指标族，绝不按 canonical
+    resolved sample.task。"""
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    entry = _offline_vqa_sample("fb1")
+    entry["sample"]["task"] = "caption"  # canonical resolved task / 解析任务
+    entry["execution_task"] = "general_vqa"  # executed task / 执行任务
+    entry["payload_file"] = "agent_result.json"
+    entry["payload"] = {
+        "agent_name": "general_vqa_agent",
+        "answer": "yes",
+        "status": "completed",
+    }
+    _make_offline_run(tmp_path, [entry])
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_evaluate_run(_offline_args())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    evaluated = {item["sample_id"]: item for item in out["evaluated"]}
+    assert evaluated["fb1"]["filename"] == "vqa_evaluation.json"
+    # the sample lives under its storage task namespace (caption) while the
+    # evaluation family follows the execution task (general_vqa).
+    # 样本位于存储任务命名空间（caption），指标族跟随执行任务（general_vqa）。
+    caption_dir = next(
+        (tmp_path / "runs" / "offline-run" / "tasks" / "caption" / "samples").iterdir()
+    )
+    assert (caption_dir / "vqa_evaluation.json").is_file()
+
+
+def test_evaluate_run_deepseek_skip_and_force_judge(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import evaluate_run as evaluate_run_module
+    from application.commands.evaluate_run import run_evaluate_run
+    from evaluation.records import EvaluationRecord
+    from evaluation.metrics.vqa import VQADeterministicMetrics
+
+    _BoomCreateModel.arm(monkeypatch)
+    judge = _OfflineFakeJudgeClient()
+    monkeypatch.setattr(
+        evaluate_run_module,
+        "DeepSeekJudgeClient",
+        lambda *a, **k: judge,
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    existing = EvaluationRecord(
+        sample_id="v1",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="succeeded",
+    )
+    _make_offline_run(
+        tmp_path,
+        [
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"},
+                                             "evaluation": existing.model_dump(mode="json"),
+                                             "evaluation_file": "vqa_evaluation.json"}},
+            _offline_counting_sample("c1"),
+        ],
+    )
+    code = run_evaluate_run(
+        _offline_args(deepseek=True)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    judge_results = {item["sample_id"]: item for item in out["judge"]}
+    assert judge_results["v1"]["status"] == "skipped_succeeded"
+    assert not judge.calls  # succeeded judge skipped without --force-judge
+    # force judge re-judges and writes the record / --force-judge 强制重判并写记录
+    code = run_evaluate_run(
+        _offline_args(deepseek=True, force_judge=True)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    judge_results = {item["sample_id"]: item for item in out["judge"]}
+    assert judge_results["v1"]["judge_status"] == "succeeded"
+    assert len(judge.calls) == 1
+    vqa_dir = next(
+        (tmp_path / "runs" / "offline-run" / "tasks" / "general_vqa" / "samples").iterdir()
+    )
+    evaluation = json.loads(
+        (vqa_dir / "vqa_evaluation.json").read_text(encoding="utf-8")
+    )
+    assert evaluation["judge_status"] == "succeeded"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+
+
+def test_evaluate_run_judge_failure_preserves_deterministic(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import evaluate_run as evaluate_run_module
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    failing = _OfflineFakeJudgeClient(fail=True)
+    monkeypatch.setattr(
+        evaluate_run_module,
+        "DeepSeekJudgeClient",
+        lambda *a, **k: failing,
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    _make_offline_run(
+        tmp_path,
+        [
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+        ],
+    )
+    code = run_evaluate_run(
+        _offline_args(deepseek=True)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    judge_results = {item["sample_id"]: item for item in out["judge"]}
+    assert judge_results["v1"]["judge_status"] == "failed"
+    assert judge_results["v1"]["judge_error"] == "RuntimeError"
+    vqa_dir = next(
+        (tmp_path / "runs" / "offline-run" / "tasks" / "general_vqa" / "samples").iterdir()
+    )
+    evaluation = json.loads(
+        (vqa_dir / "vqa_evaluation.json").read_text(encoding="utf-8")
+    )
+    assert evaluation["judge_status"] == "failed"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True  # preserved
+
+
+def test_evaluate_run_missing_deepseek_key_fails(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    _make_offline_run(tmp_path, [_offline_counting_sample("c1")])
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    code = run_evaluate_run(_offline_args(deepseek=True))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+
+def test_judge_vqa_run_skip_and_force(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands import judge_vqa_run as judge_run_module
+    from application.commands.judge_vqa_run import run_judge_vqa_run
+    from evaluation.records import EvaluationRecord
+    from evaluation.metrics.vqa import VQADeterministicMetrics
+
+    _BoomCreateModel.arm(monkeypatch)
+    judge = _OfflineFakeJudgeClient()
+    monkeypatch.setattr(
+        judge_run_module, "DeepSeekJudgeClient", lambda *a, **k: judge
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    existing = EvaluationRecord(
+        sample_id="v1",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="succeeded",
+    )
+    _make_offline_run(
+        tmp_path,
+        [
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"},
+                                             "evaluation": existing.model_dump(mode="json"),
+                                             "evaluation_file": "vqa_evaluation.json"}},
+            _offline_counting_sample("c1"),
+        ],
+    )
+    code = run_judge_vqa_run(_offline_args())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    judged = {item["sample_id"]: item for item in out["judged"]}
+    assert judged["v1"]["status"] == "skipped_succeeded"
+    assert "c1" not in judged  # only execution task general_vqa
+    assert not judge.calls
+    code = run_judge_vqa_run(
+        _offline_args(force=True)
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    judged = {item["sample_id"]: item for item in out["judged"]}
+    assert judged["v1"]["judge_status"] == "succeeded"
+    assert len(judge.calls) == 1
+
+
+def test_judge_vqa_run_failure_records_stable_error(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import judge_vqa_run as judge_run_module
+    from application.commands.judge_vqa_run import run_judge_vqa_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    failing = _OfflineFakeJudgeClient(fail=True)
+    monkeypatch.setattr(
+        judge_run_module, "DeepSeekJudgeClient", lambda *a, **k: failing
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    _make_offline_run(
+        tmp_path,
+        [
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+        ],
+    )
+    code = run_judge_vqa_run(_offline_args())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    judged = {item["sample_id"]: item for item in out["judged"]}
+    assert judged["v1"]["judge_status"] == "failed"
+    assert judged["v1"]["judge_error"] == "RuntimeError"
+    vqa_dir = next(
+        (tmp_path / "runs" / "offline-run" / "tasks" / "general_vqa" / "samples").iterdir()
+    )
+    evaluation = json.loads(
+        (vqa_dir / "vqa_evaluation.json").read_text(encoding="utf-8")
+    )
+    assert evaluation["judge_status"] == "failed"
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+
+
+def test_offline_commands_missing_run_fails(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.evaluate_run import run_evaluate_run
+    from application.commands.judge_vqa_run import run_judge_vqa_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_evaluate_run(_offline_args(run_id="nope"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+    code = run_judge_vqa_run(_offline_args(run_id="nope"))
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "ValueError"
+
+import sys
+
+# ── standard & dataset evaluation seams (Task 11F) / 标准与数据集评估 seam ──
+
+
+def _fake_standard_tool(
+    tmp_path: Path,
+    *,
+    body: str,
+    exit_code: int = 0,
+    name: str = "eval_standard",
+) -> Path:
+    """Create a fake standard evaluator tool directory.
+    创建 fake 标准评估器工具目录。"""
+    tool_dir = tmp_path / name
+    tool_dir.mkdir(parents=True)
+    (tool_dir / "evaluate.py").write_text(body, encoding="utf-8")
+    return tool_dir
+
+
+_FAKE_EVALUATOR_OK = """import argparse, json
+p = argparse.ArgumentParser()
+p.add_argument('input')
+p.add_argument('--output', required=True)
+a = p.parse_args()
+json.dump({'primary_metric': 'open_vqa_accuracy', 'primary_value': 0.75, 'score': 75.0}, open(a.output, 'w'))
+"""
+
+
+def test_standard_adapter_success_and_default_report_path(tmp_path) -> None:
+    from evaluation.standard.adapter import (
+        default_standard_report_path,
+        run_standard_evaluation,
+    )
+
+    result = tmp_path / "predictions.jsonl"
+    result.write_text('{"sample": {}, "prediction": {}}\n', encoding="utf-8")
+    tool_dir = _fake_standard_tool(tmp_path, body=_FAKE_EVALUATOR_OK)
+    report = run_standard_evaluation(
+        result, tool_dir=tool_dir, python_executable=sys.executable
+    )
+    assert report["score"] == 75.0
+    assert report["primary_metric"] == "open_vqa_accuracy"
+    assert default_standard_report_path(result) == result.with_suffix(".standard.json")
+    assert default_standard_report_path(result).is_file()
+
+
+def test_standard_adapter_nonzero_exit_fails(tmp_path) -> None:
+    from evaluation.standard.adapter import run_standard_evaluation
+
+    result = tmp_path / "predictions.jsonl"
+    result.write_text("{}\n", encoding="utf-8")
+    tool_dir = _fake_standard_tool(
+        tmp_path, body="import sys; sys.exit(3)"
+    )
+    with pytest.raises(RuntimeError, match="nonzero exit"):
+        run_standard_evaluation(result, tool_dir=tool_dir, python_executable=sys.executable)
+
+
+def test_standard_adapter_missing_entry_or_result_fails(tmp_path) -> None:
+    from evaluation.standard.adapter import run_standard_evaluation
+
+    result = tmp_path / "predictions.jsonl"
+    with pytest.raises(FileNotFoundError):
+        run_standard_evaluation(
+            result, tool_dir=tmp_path / "missing-tool", python_executable=sys.executable
+        )
+    result.write_text("{}\n", encoding="utf-8")
+    tool_dir = _fake_standard_tool(
+        tmp_path, body="import json; json.dump({'ok': True}, open('nowhere.json', 'w'))"
+    )
+    with pytest.raises(FileNotFoundError, match="entry point"):
+        run_standard_evaluation(result, tool_dir=tmp_path / "no-tool", python_executable=sys.executable)
+    with pytest.raises(RuntimeError, match="did not create"):
+        run_standard_evaluation(result, tool_dir=tool_dir, python_executable=sys.executable)
+
+
+def test_standard_adapter_no_output_and_invalid_reports_fail(tmp_path) -> None:
+    from evaluation.standard.adapter import run_standard_evaluation
+
+    result = tmp_path / "predictions.jsonl"
+    result.write_text("{}\n", encoding="utf-8")
+    tool_dir = _fake_standard_tool(
+        tmp_path, body="import argparse, json\np = argparse.ArgumentParser()\np.add_argument('input')\np.add_argument('--output', required=True)\na = p.parse_args()\nopen(a.output, 'w').write('{not json')\n"
+    )
+    with pytest.raises(ValueError, match="invalid JSON"):
+        run_standard_evaluation(result, tool_dir=tool_dir, python_executable=sys.executable)
+    tool_dir2 = _fake_standard_tool(
+        tmp_path,
+        body="import argparse, json\np = argparse.ArgumentParser()\np.add_argument('input')\np.add_argument('--output', required=True)\na = p.parse_args()\njson.dump([1, 2], open(a.output, 'w'))\n",
+        name="eval_list",
+    )
+    with pytest.raises(ValueError, match="JSON object"):
+        run_standard_evaluation(result, tool_dir=tool_dir2, python_executable=sys.executable)
+
+
+def test_standard_adapter_spaces_and_cjk_paths(tmp_path) -> None:
+    from evaluation.standard.adapter import run_standard_evaluation
+
+    spaced = tmp_path / "带 空格 dir"
+    result = spaced / "预测 results.jsonl"
+    result.parent.mkdir(parents=True)
+    result.write_text("{}\n", encoding="utf-8")
+    tool_dir = _fake_standard_tool(spaced, body=_FAKE_EVALUATOR_OK, name="标准 工具")
+    report = run_standard_evaluation(
+        result, tool_dir=tool_dir, python_executable=sys.executable
+    )
+    assert report["score"] == 75.0
+    assert result.with_suffix(".standard.json").is_file()
+
+
+def test_standard_evaluate_cli_prints_report_and_run_id(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands.standard_evaluate import run_standard_evaluate
+
+    # result inside the runs root -> run id association / 结果在 runs root 内 → 关联 run
+    run_dir = tmp_path / "runs" / "std-run"
+    run_dir.mkdir(parents=True)
+    result = run_dir / "predictions.jsonl"
+    result.write_text("{}\n", encoding="utf-8")
+    tool_dir = _fake_standard_tool(tmp_path, body=_FAKE_EVALUATOR_OK)
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_standard_evaluate(
+        _command_namespace(
+            result=str(result),
+            tool_dir=str(tool_dir),
+            output=None,
+            python=sys.executable,
+        )
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "ok"
+    assert out["report"]["score"] == 75.0
+    assert out["run_id"] == "std-run"
+    # result outside the runs root -> no run association / 结果在 runs root 外 → 无关联
+    outside = tmp_path / "elsewhere.jsonl"
+    outside.write_text("{}\n", encoding="utf-8")
+    code = run_standard_evaluate(
+        _command_namespace(
+            result=str(outside),
+            tool_dir=str(tool_dir),
+            output=None,
+            python=sys.executable,
+        )
+    )
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["run_id"] is None
+
+
+def test_standard_evaluate_cli_failure_stable(tmp_path, monkeypatch, capsys) -> None:
+    from application.commands.standard_evaluate import run_standard_evaluate
+
+    result = tmp_path / "missing.jsonl"
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_standard_evaluate(
+        _command_namespace(
+            result=str(result), tool_dir=str(tmp_path), output=None, python=sys.executable
+        )
+    )
+    assert code == 1
+    assert json.loads(capsys.readouterr().err)["error"] == "FileNotFoundError"
+
+
+# ── VRSBench evaluation seam / VRSBench 评估 seam ───────────────────────────
+
+
+def test_vrsbench_normalize_answer_closed_vocabulary() -> None:
+    from evaluation.datasets.vrsbench import VRSBENCH_CLOSED_VOCABULARY, normalize_answer
+
+    vocab = VRSBENCH_CLOSED_VOCABULARY["existence"]
+    assert normalize_answer("Yes", vocab) == "yes"
+    assert normalize_answer("  NO ", vocab) == "no"
+    assert normalize_answer("maybe", vocab) == "maybe"  # verbatim, never guessed
+    grid = VRSBENCH_CLOSED_VOCABULARY["grid_position"]
+    assert normalize_answer("Top-Left", grid) == "top-left"
+    assert normalize_answer("center", grid) == "center"
+
+
+def test_vrsbench_official_input_deterministic_export() -> None:
+    from evaluation.datasets.vrsbench import (
+        export_official_input,
+        to_official_evaluator_input,
+    )
+
+    row = to_official_evaluator_input(
+        question="Is there a car?",
+        references=["yes", "Yes"],
+        candidate_answer="yes",
+        question_id="q1",
+    )
+    assert row["version"] == "vrsbench-official-eval-v1"
+    assert row["question_id"] == "q1"
+    assert row["references"] == ["yes", "Yes"]
+    assert row["candidate_answer"] == "yes"
+    second = to_official_evaluator_input(
+        question="Is there a car?",
+        references=["yes", "Yes"],
+        candidate_answer="yes",
+        question_id="q1",
+    )
+    assert second == row  # deterministic
+    exported = export_official_input([row, second])
+    assert exported == [row, second]
+    assert exported[0] is not row  # copied, never aliased
+
+
+def test_vrsbench_seam_no_model_or_routing_imports() -> None:
+    """The evaluation seam must not import models, agents, or routing, and
+    must not duplicate task classification. 评估 seam 绝不 import models/
+    agents/routing，绝不重复任务分类。"""
+    import ast
+
+    for path in (
+        "evaluation/datasets/vrsbench.py",
+        "evaluation/standard/adapter.py",
+    ):
+        tree = ast.parse(Path(path).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    top = alias.name.split(".")[0]
+                    assert top not in {"models", "agents", "routing"}, (
+                        f"{path} must not import {top}"
+                    )
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                top = node.module.split(".")[0]
+                assert top not in {"models", "agents", "routing"}, (
+                    f"{path} must not import {top}"
+                )
+    # no task classification logic lives here / 这里没有任务分类逻辑
+    text = Path("evaluation/datasets/vrsbench.py").read_text(encoding="utf-8")
+    assert "normalize_task" not in text
+    assert "classify_question_subtype" not in text

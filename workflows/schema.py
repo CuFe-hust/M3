@@ -87,6 +87,7 @@ class DatasetRunSummary(BaseModel):
     partial: int = Field(ge=0)
     failed: int = Field(ge=0)
     skipped: int = Field(ge=0)
+    judge_sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def validate_closed_accounting(self) -> "DatasetRunSummary":
@@ -105,16 +106,21 @@ class DatasetRunSummary(BaseModel):
 class DatasetRunOptions:
     """Typed dataset run options for resume and fresh runs. None values do
     not participate in numeric comparisons. auto_task is the explicit switch
-    for the auto-task draft path: auto_task=True requires empty tasks and
-    auto_task=False requires at least one task.
+    for the auto-task draft path: auto_task=True requires tasks to be empty.
+    tasks=None is the adapter-default mode: run every adapter.supported_tasks
+    with no TaskResolver call. judge_sample_rate (0..1) deterministically
+    samples judge participation from the run/sample identity and is persisted
+    in the summary so resume is identical.
     用于 resume 和新运行的定型数据集运行选项。None 值不参与数值比较。
     auto_task 是 auto-task draft 路径的显式开关：auto_task=True 要求 tasks
-    为空，auto_task=False 要求 tasks 非空。"""
+    为空。tasks=None 是 adapter 默认模式：运行全部 adapter.supported_tasks，
+    不调用 TaskResolver。judge_sample_rate（0..1）按 run/sample 身份确定性
+    抽样 judge 参与，并持久化在 summary 中使 resume 一致。"""
 
     dataset: str
     root: Path
     split: str
-    tasks: tuple[str, ...]
+    tasks: tuple[str, ...] | None = None
     run_id: str | None = None
     resume: bool = False
     limit: int | None = None
@@ -125,14 +131,25 @@ class DatasetRunOptions:
     sample_ids: set[str] | None = None
     evaluate: bool = False
     judge_policy: str = "none"
+    judge_sample_rate: float | None = None
+    render_errors: bool = False
     fail_fast: bool = False
     auto_task: bool = False
 
     def __post_init__(self) -> None:
+        if self.auto_task and self.tasks is None:
+            raise ValueError("auto_task=True requires tasks=()")
         if self.auto_task and self.tasks:
             raise ValueError("auto_task=True requires tasks to be empty")
-        if not self.auto_task and not self.tasks:
-            raise ValueError("auto_task=False requires at least one task")
+        if not self.auto_task and self.tasks == ():
+            raise ValueError(
+                "auto_task=False requires at least one task or tasks=None "
+                "for adapter defaults"
+            )
+        if self.judge_sample_rate is not None and not (
+            0.0 <= self.judge_sample_rate <= 1.0
+        ):
+            raise ValueError("judge_sample_rate must be within [0.0, 1.0]")
 
 
 @dataclass(frozen=True)
