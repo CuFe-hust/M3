@@ -9,6 +9,12 @@ from agents.change.harmonizer import (
     estimate_pif_mask,
 )
 from agents.change.pair_validator import PairValidator, ValidatedPair
+from agents.change.perception import (
+    PERCEPTION_VERSION,
+    ChangePerceptionError,
+    ChangePerceptionPipeline,
+    ChangePerceptionResult,
+)
 from agents.change.preprocess import (
     ChangePreparedPair,
     prepare_pair,
@@ -34,6 +40,9 @@ from agents.change.settings import (
 __all__ = [
     "AgentChangeSettings",
     "ChangeHarmonizationSettings",
+    "ChangePerceptionError",
+    "ChangePerceptionPipeline",
+    "ChangePerceptionResult",
     "ChangePreparedPair",
     "ChangePreprocessResult",
     "ChangeProposal",
@@ -44,6 +53,7 @@ __all__ = [
     "HarmonizationDecision",
     "HarmonizationMetrics",
     "PairHarmonizer",
+    "PERCEPTION_VERSION",
     "PairValidationReport",
     "PairValidator",
     "ValidatedPair",

@@ -10,6 +10,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from agents.change.settings import ChangeSemanticSettings
 from application.bootstrap import _build_backend_registry, assemble_runtime
 from application.prompts import PromptCatalog
 from application.settings import AppSettings
@@ -124,6 +125,63 @@ def test_qwen_created_exactly_once(tmp_path: Path, monkeypatch) -> None:
     # Injecting a client must never trigger creation. / 注入客户端绝不触发创建。
     _assemble(tmp_path, qwen_client=_FakeQwenClient())
     assert calls == ["qwen_transformers"]
+
+
+def test_segformer_is_created_only_when_change_semantic_is_enabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    calls: list[tuple[str, Any]] = []
+    dense_client = object()
+
+    def fake_create_model(name, **kwargs):
+        calls.append((name, kwargs.get("settings")))
+        if name == "qwen_transformers":
+            return _FakeQwenClient()
+        if name == "segformer_transformers":
+            return dense_client
+        raise AssertionError(name)
+
+    settings = _settings(tmp_path)
+    settings = settings.model_copy(
+        update={
+            "agents": settings.agents.model_copy(
+                update={
+                    "change": settings.agents.change.model_copy(
+                        update={"semantic": ChangeSemanticSettings(enabled=True)}
+                    )
+                }
+            )
+        }
+    )
+    monkeypatch.setattr("application.bootstrap.create_model", fake_create_model)
+
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+    )
+
+    assert [name for name, _ in calls] == [
+        "qwen_transformers",
+        "segformer_transformers",
+    ]
+    assert calls[1][1] is settings.models.segformer_isaid
+    change_agent = components.agent_registry.get("change_agent")
+    assert getattr(change_agent, "_semantic_client") is dense_client
+
+
+def test_disabled_change_semantic_ignores_injected_dense_client(tmp_path: Path) -> None:
+    injected = object()
+
+    components = _assemble(
+        tmp_path,
+        qwen_client=_FakeQwenClient(),
+        semantic_client=injected,
+    )
+
+    change_agent = components.agent_registry.get("change_agent")
+    assert getattr(change_agent, "_semantic_client") is None
 
 
 def test_import_application_has_no_side_effects(tmp_path: Path, monkeypatch) -> None:

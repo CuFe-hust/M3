@@ -193,6 +193,8 @@ def publish_change_proposals(
     artifact_dir: Path,
     settings: AgentChangeSettings,
     component_maps: dict[str, Any] | None = None,
+    component_masks: dict[str, Any] | None = None,
+    diagnostics: dict[str, object] | None = None,
 ) -> ChangePreprocessResult:
     """Publish legacy or V2 maps, overlays, crops, and serializable reports."""
 
@@ -202,7 +204,7 @@ def publish_change_proposals(
     output = artifact_dir / "change_preprocess"
     output.mkdir(parents=True, exist_ok=True)
     files = _audit_files()
-    is_v2 = component_maps is not None or any(
+    is_v2 = component_maps is not None or component_masks is not None or any(
         proposal.source == "fused_change_v2" for proposal in proposals
     )
     map_key = "fused_change_map" if is_v2 else "difference_map"
@@ -239,10 +241,36 @@ def publish_change_proposals(
     for proposal in proposals:
         x1, y1, x2, y2 = proposal.pixel_box
         evidence: list[str] = []
+        raw_t2_crop = prepared.raw_t2[y1:y2, x1:x2]
         for label, image in (("raw_t1", prepared.raw_t1), ("raw_t2", prepared.raw_t2)):
             filename = f"{proposal.proposal_id}_{label}.png"
             _write_image(crops / filename, image[y1:y2, x1:x2])
             evidence.append(f"change_preprocess/crops/{filename}")
+        published_mask_filename = proposal.mask_filename
+        if component_masks is not None and proposal.mask_filename is not None:
+            mask_basename = Path(proposal.mask_filename).name
+            component_mask = component_masks.get(proposal.mask_filename)
+            if component_mask is None:
+                component_mask = component_masks.get(mask_basename)
+            if component_mask is None:
+                raise ValueError(
+                    f"missing component mask for proposal {proposal.proposal_id}"
+                )
+            component_mask = _component_mask_artifact(
+                component_mask,
+                expected_shape=raw_t2_crop.shape[:2],
+            )
+            _write_image(crops / mask_basename, component_mask)
+            overlay_filename = f"{proposal.proposal_id}_change_mask_overlay.png"
+            _write_image(
+                crops / overlay_filename,
+                _render_change_mask_overlay(raw_t2_crop, component_mask),
+            )
+            published_mask_filename = f"change_preprocess/crops/{mask_basename}"
+            overlay_relative = f"change_preprocess/crops/{overlay_filename}"
+            evidence.append(overlay_relative)
+            files[f"{proposal.proposal_id}_mask"] = published_mask_filename
+            files[f"{proposal.proposal_id}_mask_overlay"] = overlay_relative
         if prepared.decision.status == "applied":
             for label, image in (
                 ("harmonized_t1", prepared.comparison_t1),
@@ -251,7 +279,14 @@ def publish_change_proposals(
                 filename = f"{proposal.proposal_id}_{label}.png"
                 _write_image(crops / filename, image[y1:y2, x1:x2])
                 evidence.append(f"change_preprocess/crops/{filename}")
-        updated.append(proposal.model_copy(update={"evidence_filenames": evidence}))
+        updated.append(
+            proposal.model_copy(
+                update={
+                    "evidence_filenames": evidence,
+                    "mask_filename": published_mask_filename,
+                }
+            )
+        )
 
     _write_json(
         output / "proposals.json",
@@ -265,6 +300,7 @@ def publish_change_proposals(
         proposals=updated,
         artifact_files=files,
         transform_summary=prepared.transform_summary,
+        diagnostics=diagnostics or {},
     )
     _write_json(output / "harmonization_report.json", result.model_dump(mode="json"))
     return result
@@ -306,6 +342,33 @@ def _map_artifact(value: Any) -> Any:
     if not np.isfinite(array).all():
         raise ValueError("change map artifact contains non-finite values")
     return np.round(np.clip(array, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+
+def _component_mask_artifact(value: Any, *, expected_shape: tuple[int, int]) -> Any:
+    """Validate one crop-local component mask and normalize it to 0/255."""
+
+    np = _require_numpy()
+    mask = np.asarray(value)
+    if mask.ndim != 2 or mask.shape != expected_shape:
+        raise ValueError("change component mask shape does not match proposal crop")
+    if not bool(np.all(np.isfinite(mask))):
+        raise ValueError("change component mask contains non-finite values")
+    return (mask != 0).astype(np.uint8) * 255
+
+
+def _render_change_mask_overlay(image: Any, mask: Any) -> Any:
+    """Overlay a crop-local component mask without altering raw evidence."""
+
+    np = _require_numpy()
+    overlay = np.asarray(image).copy()
+    selected = np.asarray(mask) != 0
+    if overlay.ndim != 3 or overlay.shape[:2] != selected.shape:
+        raise ValueError("change mask overlay inputs are incompatible")
+    color = np.asarray([255, 40, 40], dtype=np.float32)
+    overlay[selected] = np.round(
+        overlay[selected].astype(np.float32) * 0.55 + color * 0.45
+    ).astype(np.uint8)
+    return overlay
 
 
 def _write_image(path: Path, image: np.ndarray) -> None:

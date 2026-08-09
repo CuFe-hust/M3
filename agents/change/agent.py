@@ -14,7 +14,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 from agents.base import AgentContext, AgentExecution
-from agents.change.preprocess import preprocess_pair
+from agents.change.perception import (
+    ChangePerceptionError,
+    ChangePerceptionPipeline,
+)
+from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.reviewer import review_result
 from agents.change.schema import ChangePreprocessResult
 from agents.change.settings import AgentChangeSettings
@@ -23,6 +27,7 @@ from agents.schema import AgentName, AgentResult
 from agents.visual_base import PromptBinding
 from data.schema import UnifiedSample
 from models.base import (
+    DenseSemanticClient,
     ModelCacheIdentity,
     RequestMeta,
     VisionLanguageClient,
@@ -30,11 +35,9 @@ from models.base import (
 )
 from models.images import UnsupportedImageFormatError, detect_image_mime, image_to_data_url
 
-# Neutral dual-path prompt text (mirror of the baseline change_dual_path_v1
-# asset). The repository prompt file is intentionally not read by agents; the
-# version string stays aligned with the baseline asset name.
-# 中性双路径提示文本（基线 change_dual_path_v1 资产的镜像）。Agent 有意不
-# 读取仓库 Prompt 文件；版本字符串与基线资产名保持一致。
+# Neutral dual-path prompt text extended with V2 auxiliary-evidence authority.
+# The repository prompt file is intentionally not read by agents.
+# 中性双路径提示词加入 V2 辅助证据权威边界；Agent 不读取仓库提示词文件。
 _DEFAULT_PROMPT_TEXT = (
     "You analyze bi-temporal remote-sensing imagery with auditable dual-path "
     "evidence. The raw T1/T2 images and raw candidate crops are the "
@@ -42,7 +45,10 @@ _DEFAULT_PROMPT_TEXT = (
     "targets. Harmonized images are comparison aids used to suppress sensor, "
     "exposure, color, and resolution-domain differences; they are not a "
     "replacement for raw high-resolution facts. The proposal overlay and "
-    "proposal boxes are attention hints, not proof of real change. "
+    "proposal boxes are attention hints, not proof of real change. SegFormer "
+    "labels and features are attention hints only, and proposal masks are not "
+    "proof. Semantic conclusions must be supported by authoritative raw "
+    "T1/T2 evidence. "
     "Describe only changes visibly supported by the supplied full images or "
     "candidate crops. Do not classify brightness, color, shadow, seasonal, or "
     "sharpness differences as land-cover or object changes by themselves. "
@@ -55,7 +61,7 @@ _DEFAULT_PROMPT_TEXT = (
     "harmonized evidence was used in geometry."
 )
 
-_DEFAULT_PROMPT_VERSION = "change_dual_path_v1"
+_DEFAULT_PROMPT_VERSION = "change_dual_path_v2"
 
 InputMode = Literal["raw_only", "harmonized_only", "dual_path"]
 
@@ -86,10 +92,12 @@ class ChangeAgent:
         self,
         client: VisionLanguageClient,
         *,
+        semantic_client: DenseSemanticClient | None = None,
         prompt: PromptBinding | None = None,
         settings: AgentChangeSettings | None = None,
     ) -> None:
         self._client = client
+        self._semantic_client = semantic_client
         self._prompt = prompt or PromptBinding(
             text=_DEFAULT_PROMPT_TEXT, version=_DEFAULT_PROMPT_VERSION
         )
@@ -125,16 +133,10 @@ class ChangeAgent:
             )
 
         settings = self._settings
-        preprocess = preprocess_pair(sample, settings, context.artifact_dir, data_root=context.data_root)
+        preprocess = self._prepare_perception_and_publish(sample, context)
         # Invalid temporal pairs must fail before evidence build, budget
         # reservation, or any model call. 无效时相图对必须在构建证据、消费
         # budget 或调用模型之前稳定失败。
-        if not preprocess.validation.valid:
-            raise AgentExecutionError(
-                self.name,
-                sample.sample_id,
-                cause="INVALID_CHANGE_PAIR",
-            )
         mode = resolve_input_mode(settings)
         content, image_hashes, image_manifest = self._build_evidence(
             sample, context, preprocess, mode
@@ -151,11 +153,33 @@ class ChangeAgent:
                 "reason_codes": preprocess.decision.reason_codes,
                 "used_for_proposal": preprocess.decision.used_for_proposal,
             },
+            "perception": {
+                "perception_version": preprocess.diagnostics.get(
+                    "perception_version"
+                ),
+                "semantic_status": preprocess.diagnostics.get("semantic_status"),
+                "semantic_reason_code": preprocess.diagnostics.get(
+                    "semantic_reason_code"
+                ),
+                "segformer_model": preprocess.diagnostics.get("segformer_model"),
+                "feature_residual_version": preprocess.diagnostics.get(
+                    "feature_residual_version"
+                ),
+                "semantic_difference_version": preprocess.diagnostics.get(
+                    "semantic_difference_version"
+                ),
+                "fusion_version": preprocess.diagnostics.get("fusion_version"),
+            },
             "proposals": [
                 {
                     "proposal_id": item.proposal_id,
                     "box": item.box,
                     "score": round(item.score, 6),
+                    "source": item.source,
+                    "component_scores": {
+                        name: round(score, 6)
+                        for name, score in item.component_scores.items()
+                    },
                 }
                 for item in preprocess.proposals
             ],
@@ -228,7 +252,22 @@ class ChangeAgent:
                 preprocess.transform_summary.get("sharpness_adjustment_used", False)
             ),
             "proposal_count": len(preprocess.proposals),
-            "proposal_source": "difference_map_v1",
+            "proposal_source": preprocess.diagnostics.get(
+                "proposal_source", "difference_map_v1"
+            ),
+            "perception_version": preprocess.diagnostics.get("perception_version"),
+            "semantic_status": preprocess.diagnostics.get("semantic_status"),
+            "semantic_reason_code": preprocess.diagnostics.get(
+                "semantic_reason_code"
+            ),
+            "segformer_model": preprocess.diagnostics.get("segformer_model"),
+            "feature_residual_version": preprocess.diagnostics.get(
+                "feature_residual_version"
+            ),
+            "semantic_difference_version": preprocess.diagnostics.get(
+                "semantic_difference_version"
+            ),
+            "fusion_version": preprocess.diagnostics.get("fusion_version"),
             "review_used": settings.review.enabled,
             "review_warnings": review_warnings,
             "preprocess_artifacts": preprocess.artifact_files,
@@ -238,6 +277,49 @@ class ChangeAgent:
             payload=reviewed,
             result_filename="agent_result.json",
             trace=trace,
+        )
+
+    def _prepare_perception_and_publish(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+    ) -> ChangePreprocessResult:
+        """Prepare once, run abstract perception, then publish final evidence."""
+
+        settings = self._settings
+        assert context.data_root is not None
+        prepared = prepare_pair(
+            sample,
+            settings,
+            context.artifact_dir,
+            data_root=context.data_root,
+        )
+        if not prepared.validation.valid:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause="INVALID_CHANGE_PAIR",
+            )
+        try:
+            perception = ChangePerceptionPipeline(
+                self._semantic_client,
+                settings,
+            ).run(prepared)
+        except ChangePerceptionError as error:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause=error.reason_code,
+            ) from error
+        return publish_change_proposals(
+            prepared,
+            score_map=perception.score_map,
+            proposals=perception.proposals,
+            artifact_dir=context.artifact_dir,
+            settings=settings,
+            component_maps=perception.component_maps,
+            component_masks=perception.component_masks,
+            diagnostics=perception.diagnostics,
         )
 
     def _build_evidence(

@@ -249,7 +249,7 @@ def test_invalid_cache_identity_fails_before_preprocess(tmp_path: Path, monkeypa
         calls.append("preprocess")
         raise AssertionError("preprocess must not run")
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _boom)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _boom)
     with pytest.raises(AgentExecutionError, match="cache_identity"):
         asyncio.run(_agent(_NoIdentityClient()).run(_sample(tmp_path), _context(tmp_path)))
 
@@ -322,10 +322,10 @@ def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
     proposal = _proposal()
     preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[proposal])
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     assert _manifest_roles(client) == [
@@ -342,10 +342,10 @@ def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
 def test_manifest_ordering_is_stable_and_indexed(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[_proposal()])
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     manifest = _last_user_payload(client)["image_manifest"]
@@ -360,10 +360,10 @@ def test_manifest_ordering_is_stable_and_indexed(tmp_path: Path, monkeypatch) ->
 def test_payload_contract(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[_proposal()])
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
@@ -389,10 +389,10 @@ def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch
         tmp_path / "artifacts", proposals=[_proposal("change_000", 0.8), _proposal("change_001", 0.7)]
     )
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient(answer="No visible change.")
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     assert execution.payload.status == "partial"
@@ -403,10 +403,10 @@ def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch
 def test_clean_semantic_answer_stays_completed(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[_proposal()])
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     execution = asyncio.run(_agent(_RecordingClient()).run(_sample(tmp_path), _context(tmp_path)))
     assert execution.payload.status == "completed"
     assert execution.trace["review_warnings"] == []
@@ -415,10 +415,10 @@ def test_clean_semantic_answer_stays_completed(tmp_path: Path, monkeypatch) -> N
 def test_wrong_agent_name_fails_not_masked(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(tmp_path / "artifacts")
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
 
     class _WrongNameClient(_RecordingClient):
         async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
@@ -433,10 +433,10 @@ def test_wrong_agent_name_fails_not_masked(tmp_path: Path, monkeypatch) -> None:
 def test_missing_raw_image_fails_with_stable_error(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(tmp_path / "artifacts")
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     root = tmp_path / "data"
     sample = _sample(root)
     (root / "t2.png").unlink()
@@ -447,10 +447,10 @@ def test_missing_raw_image_fails_with_stable_error(tmp_path: Path, monkeypatch) 
 def test_model_call_error_propagates_unmasked(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(tmp_path / "artifacts")
 
-    def _stub(sample, settings, artifact_dir, *, data_root):
+    def _stub(self, sample, context):
         return preprocess
 
-    monkeypatch.setattr("agents.change.agent.preprocess_pair", _stub)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
 
     class _BoomClient(_RecordingClient):
         async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
@@ -487,7 +487,7 @@ def test_trace_contains_pif_mad_sharpness_review_artifacts(tmp_path: Path) -> No
         "preprocess_artifacts",
     }
     assert trace["image_roles"] == ["t1", "t2"]
-    assert trace["prompt_version"] == "change_dual_path_v1"
+    assert trace["prompt_version"] == "change_dual_path_v2"
     assert trace["preprocess_artifacts"]["validation_report"].startswith("change_preprocess/")
 
 

@@ -64,6 +64,7 @@
     "agents/change/feature_residual.py",
     "agents/change/harmonizer.py",
     "agents/change/pair_validator.py",
+    "agents/change/perception.py",
     "agents/change/preprocess.py",
     "agents/change/proposal_fusion.py",
     "agents/change/reviewer.py",
@@ -195,11 +196,7 @@
     "workflows/schema.py",
     "workflows/task_resolver.py"
   ],
-  "pending_files": [
-    "agents/change/perception.py",
-    "tests/agents/change/test_perception.py",
-    "tests/integration/test_change_v2_vertical_slice.py"
-  ],
+  "pending_files": [],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
   "_pending_files_note": "Task 11I 架构变更：批准 LEVIR 协调评估器脚本路径；Task 11J 全功能对等门（离线）：本地全绿；11J.1 parity fixture 环境稳定性修复完成（run_init_manifest 冻结的 git_dirty 从 parity 对比中排除，字段契约保留）；GitHub Foundation Tests 对精确最新 HEAD 通过后恢复 FULL_FUNCTIONAL_PARITY=PASS、FINAL_LIVE_GATE=PENDING（命令矩阵/parity fixtures/wheel 验证/Windows 最终离线门，见 docs/architecture/10_WINDOWS_INTEGRATION_GATE.md 最终 parity 段）；最终 live gate 被 ENVIRONMENT_BLOCKER 阻塞（Qwen checkpoint 缺失（HF cache 仅空 refs）、本地无真实数据集、无 Spark 目标机配置；执行步骤见 docs/architecture/99_FINAL_LIVE_GATE_RUNBOOK.md）；Task 11I2 LEVIR 协调评估器已实现（scripts/evaluate_levir_harmonization.py：当前 PairHarmonizer、图对失败隔离、全套指标、确定性 bootstrap CI、分组汇总、仅输出校准、源只读、零模型）；Task 11H 架构变更：批准显式数据集工具路径；Task 11H2 数据集下载与加载工具已实现（data/downloader.py：官方 HF 目标映射/惰性 huggingface_hub/安全 zip 提取；data/loader.py：便捷加载 UnifiedSample/draft 独立迭代器，无隐式网络；application/commands/download_data.py：唯一自动下载路径）；新计划 Task 01–09 已完成（含 06.5/06.6/06.6.1 hardening）+ 09.5 Pre-Windows 契约收口；Task 10 Windows 验收通过（WINDOWS_INTEGRATION_READY，见 docs/architecture/10_WINDOWS_INTEGRATION_GATE.md）；Task 11A 手动 ask 路径已恢复（PublicAnswer/Runtime.ask/CLI `main.py ask`）；Task 11B 本地 HTTP 服务已恢复（`main.py serve` 隐式默认 + /health + /ask，stdlib http.server）；Task 11C 核心运维命令已恢复（run-init/health/list-datasets/smoke-qwen/resume-run/inspect-data）；Task 11C2 run-dataset 运维面已恢复（adapter default 任务模式/--sample-ids/--num-shards 别名/--render-errors/确定性 --judge-sample-rate 并持久化使 resume 一致；run-dataset 命令迁移至 application/commands/run_dataset.py）；Task 11D 计数维护工具已恢复（count-image/render-count/summarize-evaluations，均基于当前 CountingAgent/SampleRunner/Reporting/EvaluationRecord）；Task 11E 离线评估运维已恢复（evaluate-run/judge-vqa-run，零 Qwen 构造/调用，共享确定性 dispatch 按执行任务定键，可选 DeepSeek 仅 Judge 且失败保留确定性记录）；Task 11F 标准与数据集评估 seam 已实施（evaluation/standard 外部评估器适配器 + standard-evaluate CLI + evaluation/datasets VRSBench 官方评估 seam）；Task 11G 基准/报告导出已恢复（reporting/exporters：samples.jsonl/deepseek_audit.jsonl/元数据 JSON/external_standard 命名空间/MME 官方提交导出，源数据只读）；Task 11G.5 功能恢复硬化完成（run_request.json 调用产物与 resume 重建、judge_policy 持久化、render-errors 执行任务与路径 containment、count-image 冻结身份与 --evaluate 开关、summarize 文件模式、evaluate-run counting DeepSeek、统一报告 bundle 持久化、deepseek audit 真实 RequestMeta；见 docs/architecture/11G_5_FUNCTIONAL_RESTORATION_HARDENING.md）；Task 11G.5.1 resume/报告一致性收口完成（run-dataset --resume 与 resume-run 共用 run_request 权威重建并严格拒绝偏离、数据集根一次性 canonicalize、count-image 零 Qwen resume 要求合法匹配结果且 evaluate 意图权威、evaluate-run/judge-vqa-run 持久化刷新报告 bundle、中性 CountTargetSpec 重建；见 docs/architecture/11G_5_1_RESUME_REPORT_CONSISTENCY.md）；Task 11G.5.2 调用/Judge 保真硬化完成（count-image 完整保真快照持久化——结构化 target spec+稳定哈希/seam/预算/render/evaluate，resume/force 一律持久化权威，旧运行 force 稳定拒绝；离线 counting Judge 目标优先级对齐 CountingAgent：normalization hint → metadata hint → 中性回退，VRSBench 审计规则原样传递；run-dataset --resume 预检移至 Runtime.create 之前，非法调用零模型加载；见 docs/architecture/11G_5_2_FINAL_INVOCATION_JUDGE_FIDELITY.md）；Task 11G.5.2.1 seam 有效值保真完成（fresh 持久化 `settings.counting.seam_verify AND NOT --no-seam-verify` 的实际生效值而非 CLI 原始意图；resume/force 无条件以持久化值双向重建 seam，config 漂移无法改变原始模式；见 docs/architecture/11G_5_2_1_SEAM_VERIFY_EFFECTIVE_VALUE.md）；Task 11 Spark 真机验收被 ENVIRONMENT_BLOCKER 阻塞（本地 Qwen3-VL checkpoint 缺失，权重就位后重跑）；Task 12 SegFormer 独立扩展线已定位（未实施）。"
 }

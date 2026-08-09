@@ -39,7 +39,7 @@ from application.settings import AppSettings
 from data.adapters.base import DatasetAdapter
 from data.registry import build_default_registry
 from evaluation.judges.deepseek import DeepSeekJudgeClient
-from models.base import VisionLanguageClient
+from models.base import DenseSemanticClient, VisionLanguageClient
 from models.cache import JsonResponseCache
 from models.entry import create_model
 from reporting.builder import build_report
@@ -85,6 +85,7 @@ def assemble_runtime(
     *,
     project_root: Path,
     qwen_client: VisionLanguageClient | None = None,
+    semantic_client: DenseSemanticClient | None = None,
     api_key: str | None = None,
     prompts_root: Path | None = None,
 ) -> RuntimeComponents:
@@ -104,7 +105,19 @@ def assemble_runtime(
             repair_prompt=catalog["json_repair"],
             cache=service_cache,
         )
-    agent_registry = _build_agent_registry(settings, catalog, qwen_client)
+    if settings.agents.change.semantic.enabled and semantic_client is None:
+        semantic_client = create_model(
+            "segformer_transformers",
+            settings=settings.models.segformer_isaid,
+        )
+    if not settings.agents.change.semantic.enabled:
+        semantic_client = None
+    agent_registry = _build_agent_registry(
+        settings,
+        catalog,
+        qwen_client,
+        semantic_client,
+    )
     router = TaskRouter()
     task_resolver = TaskResolver(
         qwen_client,
@@ -182,6 +195,7 @@ def _build_agent_registry(
     settings: AppSettings,
     catalog: PromptCatalog,
     qwen_client: VisionLanguageClient,
+    semantic_client: DenseSemanticClient | None = None,
 ) -> AgentRegistry:
     """Register every business agent in stable order; all routable tasks must
     be covered. 按稳定顺序注册全部业务 Agent；所有可路由任务必须有覆盖。"""
@@ -212,6 +226,7 @@ def _build_agent_registry(
     )
     change_agent = ChangeAgent(
         qwen_client,
+        semantic_client=semantic_client,
         prompt=None,
         settings=settings.agents.change,
     )
