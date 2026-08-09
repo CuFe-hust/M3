@@ -10,6 +10,8 @@ from models.base import (
     ModelCacheIdentity,
     ModelT,
     RequestMeta,
+    SemanticSegmentationClient,
+    SemanticSegmentationOutput,
     VisionLanguageClient,
     build_request_hash,
     sanitize_messages,
@@ -22,7 +24,8 @@ from models.images import (
     image_to_data_url,
     read_normalized_image,
 )
-from models.settings import DeepSeekSettings, ModelSettings, QwenSettings
+from models.segformer_transformers import SegFormerTransformersClient
+from models.settings import DeepSeekSettings, ModelSettings, QwenSettings, SegFormerSettings
 
 __all__ = [
     "CacheEntry",
@@ -36,6 +39,10 @@ __all__ = [
     "ModelT",
     "QwenSettings",
     "RequestMeta",
+    "SegFormerSettings",
+    "SegFormerTransformersClient",
+    "SemanticSegmentationClient",
+    "SemanticSegmentationOutput",
     "UnsupportedImageFormatError",
     "VisionLanguageClient",
     "build_request_hash",

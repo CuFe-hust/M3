@@ -418,6 +418,34 @@ class VisionLanguageClient(Protocol):
         """
 
 
+class SemanticSegmentationOutput(Protocol):
+    """In-memory semantic prediction; dense maps are deliberately not JSON models.
+    内存中的语义预测；稠密像素图刻意不定义为 JSON 模型。"""
+
+    width: int
+    height: int
+    mask: Any
+    confidence_map: Any
+    logical_model_id: str
+    model_revision: str | None
+    weights_sha256: str
+
+    @property
+    def revision(self) -> str | None: ...
+
+    @property
+    def sha256(self) -> str: ...
+
+
+class SemanticSegmentationClient(Protocol):
+    """Model-layer protocol for image-aligned semantic inference.
+    与输入图像像素对齐的模型层语义推理协议。"""
+
+    def predict(self, image: Any) -> SemanticSegmentationOutput:
+        """Return class IDs and confidence at the source image resolution.
+        返回源图像分辨率下的类别 ID 与置信度。"""
+
+
 def build_request_hash(
     *,
     model: str,

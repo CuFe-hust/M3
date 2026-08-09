@@ -91,14 +91,16 @@ class SegFormerSettings(BaseModel):
     model_path: Path = Path("models/segformer_mitb2_isaid")
     logical_model_id: str = "SegFormer-MiT-B2:iSAID:local"
     weights_filename: str = "model.safetensors"
-    weights_sha256: str = (
+    weights_sha256: str | None = (
         "f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a"
     )
     classes_filename: str | None = "classes.json"
     processor_path: Path | None = None
     device: str = "auto"
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
-    allow_download: bool = False
+    require_cuda: bool = False
+    allow_cpu_fallback: bool = False
+    allow_download: Literal[False] = False
     revision: str | None = None
 
     @model_validator(mode="after")
@@ -119,16 +121,31 @@ class SegFormerSettings(BaseModel):
                 self.classes_filename,
                 where="classes_filename",
             )
-        digest = self.weights_sha256.strip().casefold()
-        if len(digest) != 64 or any(
-            character not in "0123456789abcdef" for character in digest
-        ):
-            raise ValueError("weights_sha256 must be a 64-character hexadecimal digest")
-        self.weights_sha256 = digest
+        if self.weights_sha256 is not None:
+            digest = self.weights_sha256.strip().casefold()
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError(
+                    "weights_sha256 must be a 64-character hexadecimal digest"
+                )
+            self.weights_sha256 = digest
         if self.device not in {"auto", "cpu", "cuda"} and not (
             self.device.startswith("cuda:") and self.device[5:].isdigit()
         ):
             raise ValueError("device must be auto, cpu, cuda, or cuda:<index>")
+        if self.require_cuda and self.device == "cpu":
+            raise ValueError("require_cuda is incompatible with device='cpu'")
+        if self.require_cuda and self.allow_cpu_fallback:
+            raise ValueError("require_cuda is incompatible with CPU fallback")
+        if self.device == "cpu" and self.allow_cpu_fallback:
+            raise ValueError("device='cpu' does not use CPU fallback")
+        if self.revision is not None:
+            self.revision = self.revision.strip()
+            if not self.revision or any(
+                character in self.revision for character in ("\x00", "\n", "\r")
+            ):
+                raise ValueError("revision contains forbidden characters")
         return self
 
 

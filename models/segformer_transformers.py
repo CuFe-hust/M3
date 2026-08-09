@@ -8,6 +8,8 @@ transformers 或权重读取。
 from __future__ import annotations
 
 import json
+import math
+import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -36,9 +38,19 @@ class SegFormerDependencyError(SegFormerError, ImportError):
     可选 SegFormer 运行依赖未安装时抛出。"""
 
 
+class SegFormerLoadError(SegFormerError):
+    """Raised when a local Transformers runtime cannot be constructed.
+    本地 Transformers 运行时无法构造时抛出。"""
+
+
 class SegFormerInferenceError(SegFormerError):
     """Raised when logits cannot produce a valid class mask.
     logits 无法生成合法类别 mask 时抛出。"""
+
+
+class SegFormerDeviceError(SegFormerError):
+    """Raised when the configured execution provider cannot be honored.
+    配置的执行设备策略无法满足时抛出。"""
 
 
 @dataclass(frozen=True)
@@ -56,12 +68,16 @@ class SegmentationResult:
     SegFormer 推理返回的模型无关语义 mask。"""
 
     mask: Any
+    confidence_map: Any
     width: int
     height: int
     classes: tuple[ClassInfo, ...]
     logical_model_id: str
+    model_revision: str | None
+    weights_sha256: str
     device: str
     dtype: str
+    cpu_fallback_used: bool
 
     @property
     def class_ids(self) -> tuple[int, ...]:
@@ -79,6 +95,37 @@ class SegmentationResult:
                 return item.name
         raise KeyError(class_id)
 
+    @property
+    def class_id_map(self) -> Any:
+        """Dense class-ID map aligned to the source image.
+        与源图像对齐的稠密类别 ID 图。"""
+
+        return self.mask
+
+    @property
+    def revision(self) -> str | None:
+        """Public model revision alias."""
+
+        return self.model_revision
+
+    @property
+    def sha256(self) -> str:
+        """Verified digest of the loaded weight file."""
+
+        return self.weights_sha256
+
+    def trace_metadata(self) -> dict[str, object]:
+        """Return path-free public identity and provider metadata.
+        返回不含物理路径的公共身份与执行设备元数据。"""
+
+        return {
+            "logical_model_id": self.logical_model_id,
+            "revision": self.revision,
+            "sha256": self.sha256,
+            "device": self.device,
+            "cpu_fallback_used": self.cpu_fallback_used,
+        }
+
 
 @dataclass(frozen=True)
 class _CheckpointMetadata:
@@ -88,6 +135,10 @@ class _CheckpointMetadata:
 
 RuntimeLoader = Callable[[SegFormerSettings], tuple[Any, Any, str]]
 InferenceRunner = Callable[[Any, Any, Image.Image, str, int], Any]
+
+_PLACEHOLDER_LABEL = re.compile(r"^LABEL_\d+$", re.IGNORECASE)
+_SHARED_RUNTIMES: dict[tuple[object, ...], tuple[Any, Any, str, bool]] = {}
+_SHARED_RUNTIME_LOCK = threading.Lock()
 
 
 class SegFormerRuntime:
@@ -104,6 +155,7 @@ class SegFormerRuntime:
         self,
         settings: SegFormerSettings,
         *,
+        id_to_label: Mapping[int, str] | None = None,
         model: Any | None = None,
         processor: Any | None = None,
         loader: RuntimeLoader | None = None,
@@ -112,12 +164,17 @@ class SegFormerRuntime:
         if (model is None) != (processor is None):
             raise ValueError("model and processor must be supplied together")
         self.settings = settings
+        self._external_labels = (
+            _verified_external_labels(id_to_label) if id_to_label is not None else None
+        )
         self._model = model
         self._processor = processor
         self._loader = loader
         self._inference_runner = inference_runner
         self._metadata: _CheckpointMetadata | None = None
         self._resolved_device: str | None = None
+        self._cpu_fallback_used = False
+        self._actual_weights_sha256: str | None = None
         self._load_lock = threading.Lock()
 
     @property
@@ -145,9 +202,13 @@ class SegFormerRuntime:
         with self._load_lock:
             if self.loaded:
                 return self
-            metadata = _load_checkpoint_metadata(self.settings)
+            metadata = (
+                _CheckpointMetadata(labels=self._external_labels, config={})
+                if self._external_labels is not None
+                else _load_checkpoint_metadata(self.settings)
+            )
             weights_path = self.settings.model_path / self.settings.weights_filename
-            validate_local_model_asset(
+            actual_weights_sha256 = validate_local_model_asset(
                 weights_path,
                 expected_sha256=self.settings.weights_sha256,
             )
@@ -155,20 +216,60 @@ class SegFormerRuntime:
                 model = self._model
                 processor = self._processor
                 resolved_device = self.settings.device
+                cpu_fallback_used = False
             else:
                 loader = self._loader or _load_transformers_runtime
-                model, processor, resolved_device = loader(self.settings)
-            model_num_labels = getattr(getattr(model, "config", None), "num_labels", None)
-            if isinstance(model_num_labels, int) and model_num_labels != len(metadata.labels):
-                raise SegFormerMetadataError(
-                    "loaded SegFormer output channels differ from checkpoint metadata"
+                cache_key = _runtime_cache_key(
+                    self.settings,
+                    metadata.labels,
+                    actual_weights_sha256,
+                    loader,
                 )
+                with _SHARED_RUNTIME_LOCK:
+                    cached = _SHARED_RUNTIMES.get(cache_key)
+                    if cached is None:
+                        try:
+                            model, processor, resolved_device = loader(self.settings)
+                        except SegFormerError:
+                            raise
+                        except Exception as error:
+                            if self._external_labels is None:
+                                raise
+                            raise SegFormerLoadError(
+                                "SegFormer runtime could not be loaded: "
+                                f"{type(error).__name__}"
+                            ) from None
+                        cpu_fallback_used = (
+                            resolved_device == "cpu" and self.settings.device != "cpu"
+                        )
+                        _validate_device_contract(
+                            self.settings,
+                            resolved_device,
+                            cpu_fallback_used=cpu_fallback_used,
+                        )
+                        _validate_model_channel_count(model, len(metadata.labels))
+                        cached = (
+                            model,
+                            processor,
+                            resolved_device,
+                            cpu_fallback_used,
+                        )
+                        _SHARED_RUNTIMES[cache_key] = cached
+                model, processor, resolved_device, cpu_fallback_used = cached
+            _validate_device_contract(
+                self.settings,
+                resolved_device,
+                cpu_fallback_used=cpu_fallback_used,
+            )
+            _validate_model_channel_count(model, len(metadata.labels))
             # Assign state only after every validation succeeds.
             # 仅在全部校验成功后写入状态。
             self._model = model
             self._processor = processor
             self._metadata = metadata
             self._resolved_device = resolved_device
+            self._cpu_fallback_used = cpu_fallback_used
+            self._actual_weights_sha256 = actual_weights_sha256
         return self
 
     def predict(self, image: Image.Image | Path) -> SegmentationResult:
@@ -180,6 +281,7 @@ class SegFormerRuntime:
         assert self._processor is not None
         assert self._metadata is not None
         assert self._resolved_device is not None
+        assert self._actual_weights_sha256 is not None
         normalized = (
             read_normalized_image(image)
             if isinstance(image, Path)
@@ -187,23 +289,33 @@ class SegFormerRuntime:
         )
         runner = self._inference_runner or _run_transformers_inference
         try:
-            mask = runner(
+            prediction = runner(
                 self._model,
                 self._processor,
                 normalized,
                 self._resolved_device,
                 len(self._metadata.labels),
             )
+            if isinstance(prediction, tuple) and len(prediction) == 2:
+                mask, confidence_map = prediction
+            else:
+                mask = prediction
+                confidence_map = _unit_confidence_map(mask)
             height, width, class_ids = _inspect_mask(mask)
+            confidence_height, confidence_width = _inspect_confidence_map(confidence_map)
         except SegFormerError:
             raise
         except Exception as error:
             raise SegFormerInferenceError(
                 f"SegFormer inference failed: {type(error).__name__}"
-            ) from error
+            ) from None
         if (width, height) != normalized.size:
             raise SegFormerInferenceError(
                 "SegFormer mask dimensions differ from the source image"
+            )
+        if (confidence_width, confidence_height) != normalized.size:
+            raise SegFormerInferenceError(
+                "SegFormer confidence dimensions differ from the source image"
             )
         invalid = [
             class_id
@@ -216,6 +328,7 @@ class SegFormerRuntime:
             )
         return SegmentationResult(
             mask=mask,
+            confidence_map=confidence_map,
             width=width,
             height=height,
             classes=tuple(
@@ -223,9 +336,93 @@ class SegFormerRuntime:
                 for class_id in class_ids
             ),
             logical_model_id=self.settings.logical_model_id,
+            model_revision=self.settings.revision,
+            weights_sha256=self._actual_weights_sha256,
             device=self._resolved_device,
             dtype=self.settings.dtype,
+            cpu_fallback_used=self._cpu_fallback_used,
         )
+
+
+def _verified_external_labels(id_to_label: Mapping[int, str]) -> tuple[str, ...]:
+    """Validate a caller-supplied authoritative, contiguous class map.
+    校验调用方提供的权威、连续类别映射。"""
+
+    if not isinstance(id_to_label, Mapping) or not id_to_label:
+        raise SegFormerMetadataError("verified class map must be non-empty")
+    if any(
+        not isinstance(class_id, int) or isinstance(class_id, bool)
+        for class_id in id_to_label
+    ):
+        raise SegFormerMetadataError("verified class map IDs must be integers")
+    expected_ids = set(range(len(id_to_label)))
+    if set(id_to_label) != expected_ids:
+        raise SegFormerMetadataError("verified class map IDs must be contiguous from zero")
+    if any(not isinstance(label, str) for label in id_to_label.values()):
+        raise SegFormerMetadataError("verified class labels must be strings")
+    labels = tuple(
+        id_to_label[class_id].strip() for class_id in range(len(id_to_label))
+    )
+    if any(not label for label in labels) or len(set(labels)) != len(labels):
+        raise SegFormerMetadataError("verified class labels must be non-empty and unique")
+    if any(_PLACEHOLDER_LABEL.fullmatch(label) for label in labels):
+        raise SegFormerMetadataError("placeholder labels are not a verified class map")
+    return labels
+
+
+def _runtime_cache_key(
+    settings: SegFormerSettings,
+    labels: tuple[str, ...],
+    weights_sha256: str,
+    loader: RuntimeLoader,
+) -> tuple[object, ...]:
+    """Build a private path-free key for reusable loaded objects."""
+
+    return (
+        settings.logical_model_id,
+        settings.revision,
+        weights_sha256,
+        settings.device,
+        settings.dtype,
+        settings.require_cuda,
+        settings.allow_cpu_fallback,
+        labels,
+        loader,
+    )
+
+
+def _validate_model_channel_count(model: Any, label_count: int) -> None:
+    """Fail closed when model metadata disagrees with the verified map."""
+
+    model_num_labels = getattr(getattr(model, "config", None), "num_labels", None)
+    if isinstance(model_num_labels, int) and model_num_labels != label_count:
+        raise SegFormerMetadataError(
+            "loaded SegFormer output channels differ from verified class map"
+        )
+
+
+def _validate_device_contract(
+    settings: SegFormerSettings,
+    resolved_device: str,
+    *,
+    cpu_fallback_used: bool,
+) -> None:
+    """Reject provider results that weaken the declared device policy."""
+
+    if not isinstance(resolved_device, str) or not resolved_device:
+        raise SegFormerDeviceError("SegFormer loader returned an invalid device")
+    if settings.require_cuda and not resolved_device.startswith("cuda"):
+        raise SegFormerDeviceError("SegFormer requires CUDA but CUDA is unavailable")
+    if settings.device == "cpu" and resolved_device != "cpu":
+        raise SegFormerDeviceError("SegFormer loader violated the configured CPU device")
+    if settings.device.startswith("cuda") and not resolved_device.startswith("cuda"):
+        if not (settings.allow_cpu_fallback and cpu_fallback_used):
+            raise SegFormerDeviceError("configured SegFormer CUDA device is unavailable")
+    if settings.device == "auto" and resolved_device == "cpu":
+        if not (settings.allow_cpu_fallback and cpu_fallback_used):
+            raise SegFormerDeviceError("SegFormer CPU fallback is not enabled")
+    if cpu_fallback_used and not settings.allow_cpu_fallback:
+        raise SegFormerDeviceError("SegFormer CPU fallback is not enabled")
 
 
 def _load_checkpoint_metadata(settings: SegFormerSettings) -> _CheckpointMetadata:
@@ -304,16 +501,16 @@ def _load_transformers_runtime(settings: SegFormerSettings) -> tuple[Any, Any, s
     try:
         import torch
         from transformers import (
-            SegformerForSemanticSegmentation,
-            SegformerImageProcessor,
+            AutoImageProcessor,
+            AutoModelForSemanticSegmentation,
         )
     except ImportError as error:
         raise SegFormerDependencyError(
             "SegFormer runtime requires torch and transformers"
         ) from error
-    device = _resolve_device(torch, settings.device)
+    device = _resolve_device(torch, settings)
     model_kwargs: dict[str, Any] = {
-        "local_files_only": not settings.allow_download,
+        "local_files_only": True,
         "revision": settings.revision,
     }
     if settings.dtype != "auto":
@@ -322,39 +519,40 @@ def _load_transformers_runtime(settings: SegFormerSettings) -> tuple[Any, Any, s
             "bfloat16": torch.bfloat16,
             "float32": torch.float32,
         }[settings.dtype]
-    model = SegformerForSemanticSegmentation.from_pretrained(
-        str(settings.model_path),
-        **model_kwargs,
-    )
-    processor_source = settings.processor_path
-    if processor_source is not None or (
-        settings.model_path / "preprocessor_config.json"
-    ).is_file():
-        processor = SegformerImageProcessor.from_pretrained(
-            str(processor_source or settings.model_path),
-            local_files_only=not settings.allow_download,
+    try:
+        model = AutoModelForSemanticSegmentation.from_pretrained(
+            str(settings.model_path),
+            **model_kwargs,
+        )
+        processor = AutoImageProcessor.from_pretrained(
+            str(settings.processor_path or settings.model_path),
+            local_files_only=True,
             revision=settings.revision,
         )
-    else:
-        # These migrated fine-tuned directories contain config + weights only;
-        # use the library's deterministic SegFormer image processor defaults.
-        # 迁移的微调目录只有 config + 权重；使用库内确定性的 SegFormer
-        # 图像 processor 默认值。
-        processor = SegformerImageProcessor()
-    model.to(device)
-    model.eval()
+        model.to(device)
+        model.eval()
+    except SegFormerError:
+        raise
+    except Exception as error:
+        raise SegFormerLoadError(
+            f"SegFormer runtime could not be loaded: {type(error).__name__}"
+        ) from None
     return model, processor, device
 
 
-def _resolve_device(torch: Any, requested: str) -> str:
-    """Resolve auto to CUDA when available, otherwise CPU.
-    auto 在 CUDA 可用时解析为 CUDA，否则解析为 CPU。"""
+def _resolve_device(torch: Any, settings: SegFormerSettings) -> str:
+    """Resolve the explicit CUDA/CPU policy without silent fallback."""
 
-    if requested != "auto":
-        if requested.startswith("cuda") and not torch.cuda.is_available():
-            raise SegFormerError("configured SegFormer CUDA device is unavailable")
-        return requested
-    return "cuda" if torch.cuda.is_available() else "cpu"
+    requested = settings.device
+    if requested == "cpu":
+        return "cpu"
+    if torch.cuda.is_available():
+        return "cuda" if requested == "auto" else requested
+    if settings.require_cuda:
+        raise SegFormerDeviceError("SegFormer requires CUDA but CUDA is unavailable")
+    if settings.allow_cpu_fallback:
+        return "cpu"
+    raise SegFormerDeviceError("configured SegFormer CUDA device is unavailable")
 
 
 def _run_transformers_inference(
@@ -394,7 +592,12 @@ def _run_transformers_inference(
             mode="bilinear",
             align_corners=False,
         )
-        return upsampled.argmax(dim=1)[0].to("cpu").numpy()
+        probabilities = torch.softmax(upsampled, dim=1)
+        confidence, class_ids = probabilities.max(dim=1)
+        return (
+            class_ids[0].to("cpu").numpy(),
+            confidence[0].to("cpu").numpy(),
+        )
 
 
 def _inspect_mask(mask: Any) -> tuple[int, int, tuple[int, ...]]:
@@ -425,3 +628,83 @@ def _inspect_mask(mask: Any) -> tuple[int, int, tuple[int, ...]]:
             raise SegFormerInferenceError("SegFormer mask contains a non-integer class ID")
         class_ids.add(integer)
     return height, width, tuple(sorted(class_ids))
+
+
+def _unit_confidence_map(mask: Any) -> list[list[float]]:
+    """Create a deterministic compatibility confidence map for injected runners."""
+
+    height, width, _ = _inspect_mask(mask)
+    return [[1.0 for _ in range(width)] for _ in range(height)]
+
+
+def _inspect_confidence_map(confidence_map: Any) -> tuple[int, int]:
+    """Validate a finite two-dimensional probability map."""
+
+    shape = getattr(confidence_map, "shape", None)
+    if shape is not None:
+        if len(shape) != 2:
+            raise SegFormerInferenceError(
+                "SegFormer confidence map must be two-dimensional"
+            )
+        height, width = int(shape[0]), int(shape[1])
+        flattened = confidence_map.reshape(-1)
+        values = flattened.tolist() if hasattr(flattened, "tolist") else list(flattened)
+    else:
+        if not isinstance(confidence_map, (list, tuple)) or not confidence_map:
+            raise SegFormerInferenceError(
+                "SegFormer confidence map must be a non-empty 2-D array"
+            )
+        height = len(confidence_map)
+        width = (
+            len(confidence_map[0])
+            if isinstance(confidence_map[0], (list, tuple))
+            else 0
+        )
+        if width == 0 or any(
+            not isinstance(row, (list, tuple)) or len(row) != width
+            for row in confidence_map
+        ):
+            raise SegFormerInferenceError(
+                "SegFormer confidence map rows must have equal width"
+            )
+        values = [value for row in confidence_map for value in row]
+    for value in values:
+        probability = float(value)
+        if not math.isfinite(probability) or not 0.0 <= probability <= 1.0:
+            raise SegFormerInferenceError(
+                "SegFormer confidence map contains an invalid probability"
+            )
+    return height, width
+
+
+class SegFormerTransformersClient(SegFormerRuntime):
+    """Strict public client requiring an externally verified class map."""
+
+    def __init__(
+        self,
+        settings: SegFormerSettings,
+        id_to_label: Mapping[int, str],
+        *,
+        loader: RuntimeLoader | None = None,
+        inference_runner: InferenceRunner | None = None,
+    ) -> None:
+        super().__init__(
+            settings,
+            id_to_label=id_to_label,
+            loader=loader,
+            inference_runner=inference_runner,
+        )
+
+
+__all__ = [
+    "ClassInfo",
+    "SegFormerDependencyError",
+    "SegFormerDeviceError",
+    "SegFormerError",
+    "SegFormerInferenceError",
+    "SegFormerLoadError",
+    "SegFormerMetadataError",
+    "SegFormerRuntime",
+    "SegFormerTransformersClient",
+    "SegmentationResult",
+]
