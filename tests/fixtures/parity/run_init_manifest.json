@@ -1,6 +1,5 @@
 {
   "dataset": "d",
-  "git_dirty": true,
   "model_ids": {
     "deepseek": "deepseek-v4-flash",
     "qwen": "qwen3-vl-4b-instruct"

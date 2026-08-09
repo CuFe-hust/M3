@@ -5618,6 +5618,12 @@ _PARITY_DROP_KEYS = {
     "updated_at", "created_at", "result_path", "run_dir", "root",
     "code_version", "algorithm_version", "id", "config_hash",
     "inference_seconds", "git_commit", "prompt_hashes", "input",
+    # git_dirty records the local workspace state (dirty/clean checkout),
+    # which is execution/environment provenance, not stable functional
+    # parity behavior; it must never be frozen into a golden contract.
+    # git_dirty 记录本地工作区状态（dirty/clean checkout），属于执行/环境
+    # provenance，而非稳定功能 parity 行为；绝不能被冻结进 golden 契约。
+    "git_dirty",
 }
 
 
@@ -5748,7 +5754,36 @@ def test_parity_run_init_manifest(tmp_path, monkeypatch, capsys) -> None:
     manifest = json.loads(
         (tmp_path / "runs" / "parity-init" / "manifest.json").read_text(encoding="utf-8")
     )
+    # field contract: git_dirty must exist and be a bool (real Git state) —
+    # its concrete value is environment provenance, not a parity key.
+    # 字段契约：git_dirty 必须存在且为 bool（真实 Git 状态）——其具体值是
+    # 环境 provenance，而非 parity 键。
+    assert "git_dirty" in manifest
+    assert isinstance(manifest["git_dirty"], bool)
+    # stable functional parity / 稳定功能 parity
     assert _parity_normalize(manifest) == _parity_fixture("run_init_manifest.json")
+
+
+def test_parity_normalization_ignores_git_dirty_environment_state() -> None:
+    """Manifests differing only in git_dirty normalize identically, and the
+    original objects are never mutated in place.
+    仅 git_dirty 不同的 manifest 规范化后相等，且原对象绝不被原地修改。"""
+    clean = {
+        "dataset": "d",
+        "split": "s",
+        "git_dirty": False,
+        "sample_filter": None,
+    }
+    dirty = {
+        "dataset": "d",
+        "split": "s",
+        "git_dirty": True,
+        "sample_filter": None,
+    }
+    assert _parity_normalize(clean) == _parity_normalize(dirty)
+    # pure function: inputs untouched / 纯函数：输入未被修改
+    assert clean["git_dirty"] is False
+    assert dirty["git_dirty"] is True
 
 
 def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
