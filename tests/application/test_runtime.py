@@ -2922,6 +2922,51 @@ def test_standard_adapter_success_and_default_report_path(tmp_path) -> None:
     assert default_standard_report_path(result).is_file()
 
 
+def test_standard_adapter_shell_false_source_read_only_and_offline(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    import subprocess
+
+    import evaluation.standard.adapter as adapter
+
+    result = tmp_path / "predictions.jsonl"
+    result.write_text('{"sample": {}, "prediction": {}}\n', encoding="utf-8")
+    source_before = result.read_bytes()
+    tool_dir = _fake_standard_tool(tmp_path, body=_FAKE_EVALUATOR_OK)
+    real_run = subprocess.run
+    observed: dict[str, object] = {}
+
+    def _spy_run(command, **kwargs):
+        observed["command"] = command
+        observed.update(kwargs)
+        return real_run(command, **kwargs)
+
+    monkeypatch.setattr(adapter.subprocess, "run", _spy_run)
+    report = adapter.run_standard_evaluation(
+        result,
+        tool_dir=tool_dir,
+        python_executable=sys.executable,
+    )
+    assert report["score"] == 75.0
+    assert observed["shell"] is False
+    assert isinstance(observed["command"], list)
+    assert result.read_bytes() == source_before
+
+    source = (REPO_ROOT / "evaluation/standard/adapter.py").read_text(
+        encoding="utf-8"
+    )
+    for token in (
+        "urlopen",
+        "requests",
+        "httpx",
+        "huggingface_hub",
+        "http://",
+        "https://",
+    ):
+        assert token not in source, token
+
+
 def test_standard_adapter_nonzero_exit_fails(tmp_path) -> None:
     from evaluation.standard.adapter import run_standard_evaluation
 

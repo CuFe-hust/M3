@@ -14,6 +14,10 @@ from evaluation.metrics.aggregate import (
     aggregate_grounding,
     aggregate_vqa,
 )
+from evaluation.metrics.caption import (
+    CaptionMetricDependencyError,
+    aggregate_caption,
+)
 from evaluation.metrics.vqa import aggregate_vqa_semantic_judge
 from evaluation.records import VQADeterministicMetrics
 from reporting.adapters import (
@@ -30,10 +34,10 @@ from reporting.adapters import (
 )
 from reporting.schema import Report, ReportSample, TaskSummary
 
-# Metric families that aggregate purely offline; caption corpus metrics need
-# the optional pycocoevalcap and stay out of the report layer.
-# 可纯离线聚合的指标族；caption 语料级指标需要可选 pycocoevalcap，留在报告
-# 层之外。
+# Metric families that aggregate purely offline. Caption is handled beside
+# this mapping because its lazy optional dependency has a stable report
+# fallback. 可纯离线聚合的指标族。caption 单独处理，以便对惰性可选依赖提供稳定
+# 的报告降级。
 _AGGREGATORS = {
     "general_vqa": aggregate_vqa,
     "counting": aggregate_counting,
@@ -146,9 +150,10 @@ def _build_task_summary(run_task: str, samples: list[ReportSample]) -> TaskSumma
 
 def _aggregate_metrics(samples: list[ReportSample]) -> dict[str, Any]:
     """Aggregate deterministic metrics per canonical family; records without
-    deterministic metrics and caption corpus metrics are intentionally
-    excluded. 按 canonical 族聚合确定性指标；无确定性指标的记录与 caption
-    语料级指标有意排除。"""
+    deterministic metrics are intentionally excluded. Caption corpus metrics
+    degrade to an explicit dependency status when pycocoevalcap is absent.
+    按 canonical 族聚合确定性指标；无确定性指标的记录有意排除。缺少
+    pycocoevalcap 时，caption 语料级指标降级为显式依赖状态。"""
 
     records = [
         sample.evaluation
@@ -156,11 +161,11 @@ def _aggregate_metrics(samples: list[ReportSample]) -> dict[str, Any]:
         if sample.evaluation is not None and sample.evaluation.deterministic_metrics is not None
     ]
     aggregated: dict[str, Any] = {}
-    caption_count = 0
     for record in records:
         family = record.task
         if family == "caption":
-            caption_count += 1
+            bucket = aggregated.setdefault(family, [])
+            bucket.append(record)
             continue
         aggregator = _AGGREGATORS.get(family)
         if aggregator is None:
@@ -169,9 +174,22 @@ def _aggregate_metrics(samples: list[ReportSample]) -> dict[str, Any]:
         bucket.append(record)
     result: dict[str, Any] = {}
     for family, bucket in aggregated.items():
+        if family == "caption":
+            try:
+                caption_metrics = aggregate_caption(bucket)
+            except CaptionMetricDependencyError:
+                result[family] = {
+                    "metric_status": "dependency_missing",
+                    "record_count": len(bucket),
+                    "dependency": "pycocoevalcap",
+                }
+            else:
+                result[family] = {
+                    "metric_status": "ok",
+                    **caption_metrics,
+                }
+            continue
         result[family] = _AGGREGATORS[family](bucket)
-    if caption_count:
-        result["caption"] = {"record_count": caption_count}
     return result
 
 

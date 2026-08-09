@@ -216,3 +216,70 @@ def test_html_displays_complete_semantic_accuracy() -> None:
     assert "Judge-assisted semantic accuracy: 0.880000" in document
     assert "Judge-assisted semantic accuracy: incomplete" not in document
     assert "Confirmed lower bound:" not in document
+
+
+def _caption_report(metrics: dict) -> Report:
+    return Report(
+        run_id="caption-run",
+        total=1,
+        succeeded=1,
+        partial=0,
+        failed=0,
+        skipped=0,
+        tasks=[
+            TaskSummary(
+                run_task="caption",
+                total=1,
+                succeeded=1,
+                partial=0,
+                failed=0,
+                skipped=0,
+                fallback_count=0,
+                fallback_rate=0.0,
+                metrics={"caption": metrics},
+            )
+        ],
+    )
+
+
+def test_html_displays_caption_corpus_metrics() -> None:
+    document = build_html(
+        _caption_report(
+            {
+                "metric_status": "ok",
+                "total": 1,
+                "BLEU_1": 0.5,
+                "BLEU_2": 0.4,
+                "BLEU_3": 0.3,
+                "BLEU_4": 0.2,
+                "METEOR": 0.42,
+                "ROUGE_L": 0.43,
+                "CIDEr": 0.44,
+            }
+        )
+    )
+    for text in (
+        "Metrics: caption",
+        "metric_status",
+        "BLEU_1",
+        "BLEU_4",
+        "METEOR",
+        "ROUGE_L",
+        "CIDEr",
+    ):
+        assert text in document
+
+
+def test_html_displays_caption_dependency_status() -> None:
+    document = build_html(
+        _caption_report(
+            {
+                "metric_status": "dependency_missing",
+                "record_count": 1,
+                "dependency": "pycocoevalcap",
+            }
+        )
+    )
+    assert "dependency_missing" in document
+    assert "pycocoevalcap" in document
+    assert "record_count" in document

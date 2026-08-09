@@ -54,11 +54,10 @@ class TaskSummary(BaseModel):
     fallback_rate: float = Field(ge=0.0, le=1.0)
     agent_usage: dict[str, int] = Field(default_factory=dict)
     judge_status_counts: dict[str, int] = Field(default_factory=dict)
-    # Deterministic metric aggregates keyed by canonical metric family; caption
-    # intentionally carries record counts only (corpus metrics need the
-    # optional pycocoevalcap and stay out of the offline report layer).
-    # 按 canonical 指标族聚合的确定性指标；caption 只携带记录计数（语料级
-    # 指标需要可选 pycocoevalcap，留在离线报告层之外）。
+    # Deterministic metric aggregates keyed by canonical metric family;
+    # caption includes corpus metrics or an explicit optional-dependency
+    # status. 按 canonical 指标族聚合的确定性指标；caption 包含语料级指标或
+    # 显式的可选依赖状态。
     metrics: dict[str, Any] = Field(default_factory=dict)
     # Optional Judge quality aggregates stay separate from deterministic
     # metrics. 可选 Judge 质量聚合与确定性指标保持分离。

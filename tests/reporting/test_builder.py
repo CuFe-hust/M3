@@ -19,6 +19,7 @@ from evaluation.records import (
     CaptionDeterministicMetrics,
     CountDeterministicMetrics,
     EvaluationRecord,
+    GroundingDeterministicMetrics,
     VQADeterministicMetrics,
 )
 from reporting.adapters import load_evaluation, load_payload
@@ -177,6 +178,30 @@ def _counting_record(sample_id: str, exact: int) -> EvaluationRecord:
     )
 
 
+def _caption_record(sample_id: str, candidate: str = "a road") -> EvaluationRecord:
+    return EvaluationRecord(
+        sample_id=sample_id,
+        task="caption",
+        deterministic_metrics=CaptionDeterministicMetrics(
+            candidate=candidate,
+            references=[candidate],
+        ),
+        judge_status="not_requested",
+    )
+
+
+def _grounding_record(sample_id: str, iou: float) -> EvaluationRecord:
+    return EvaluationRecord(
+        sample_id=sample_id,
+        task="grounding",
+        deterministic_metrics=GroundingDeterministicMetrics(
+            iou=iou,
+            iou_at_0_5=iou >= 0.5,
+        ),
+        judge_status="not_requested",
+    )
+
+
 def _create_run(tmp_path: Path) -> Path:
     store = RunStore(tmp_path / "runs", tmp_path)
     store.create_run(
@@ -217,6 +242,8 @@ def _write_sample(
         filename = {
             "general_vqa": "vqa_evaluation.json",
             "counting": "counting_evaluation.json",
+            "grounding": "grounding_evaluation.json",
+            "caption": "caption_evaluation.json",
         }[evaluation.task]
         if corrupt_evaluation:
             (sample_dir / filename).write_text("{corrupt", encoding="utf-8")
@@ -413,6 +440,154 @@ def test_no_vqa_records_have_empty_judge_metrics_and_counting_judge_is_excluded(
     report = build_report(run_dir)
     assert report.tasks[0].metrics["counting"]["exact_match_accuracy"] == 1.0
     assert report.tasks[0].judge_metrics == {}
+
+
+def test_report_aggregates_caption_and_change_caption_as_one_family(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Both runtime tasks contribute to the canonical caption corpus.
+    两个 runtime task 都进入同一个 canonical caption 语料。"""
+    run_dir = _create_run(tmp_path)
+    captured_ids: list[str] = []
+
+    def _fake_aggregate(records):
+        captured_ids.extend(record.sample_id for record in records)
+        return {
+            "total": len(records),
+            "BLEU_1": 0.5,
+            "BLEU_2": 0.4,
+            "BLEU_3": 0.3,
+            "BLEU_4": 0.2,
+            "METEOR": 0.42,
+            "ROUGE_L": 0.43,
+            "CIDEr": 0.44,
+        }
+
+    monkeypatch.setattr("reporting.builder.aggregate_caption", _fake_aggregate)
+    for sample_id, runtime_task in (
+        ("caption-1", "caption"),
+        ("change-caption-1", "change_caption"),
+    ):
+        sample = _sample(sample_id, task="caption", question="")
+        if runtime_task == "change_caption":
+            sample = UnifiedSample(
+                sample_id=sample_id,
+                dataset="parity",
+                split="test",
+                task="change_caption",
+                images=[
+                    ImageRef(image_id="i0", path="t1.png", role="t1"),
+                    ImageRef(image_id="i1", path="t2.png", role="t2"),
+                ],
+                question="",
+                ground_truth=GroundTruth(answers=["a road"]),
+            )
+        _write_sample(
+            run_dir,
+            run_task="caption-corpus",
+            sample=sample,
+            status=_status(sample_id, runtime_task, "succeeded"),
+            evaluation=_caption_record(sample_id),
+        )
+
+    metrics = build_report(run_dir).tasks[0].metrics["caption"]
+    assert captured_ids == ["caption-1", "change-caption-1"]
+    assert metrics == {
+        "metric_status": "ok",
+        "total": 2,
+        "BLEU_1": 0.5,
+        "BLEU_2": 0.4,
+        "BLEU_3": 0.3,
+        "BLEU_4": 0.2,
+        "METEOR": 0.42,
+        "ROUGE_L": 0.43,
+        "CIDEr": 0.44,
+    }
+
+
+def test_report_caption_dependency_missing_is_nonfatal(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import builtins
+
+    run_dir = _create_run(tmp_path)
+    _write_sample(
+        run_dir,
+        run_task="caption",
+        sample=_sample("caption-1", task="caption", question=""),
+        status=_status("caption-1", "caption", "succeeded"),
+        evaluation=_caption_record("caption-1"),
+    )
+    real_import = builtins.__import__
+
+    def _blocked_import(name, *args, **kwargs):
+        if name == "pycocoevalcap" or name.startswith("pycocoevalcap."):
+            raise ImportError("raw environment detail")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _blocked_import)
+    report = build_report(run_dir)
+    assert report.tasks[0].metrics["caption"] == {
+        "metric_status": "dependency_missing",
+        "record_count": 1,
+        "dependency": "pycocoevalcap",
+    }
+    assert "raw environment detail" not in report.model_dump_json()
+
+
+def test_report_without_caption_never_imports_optional_dependency(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import builtins
+
+    run_dir = _create_run(tmp_path)
+    _write_sample(
+        run_dir,
+        run_task="general_vqa",
+        sample=_sample("vqa-only"),
+        status=_status("vqa-only", "general_vqa", "succeeded"),
+        evaluation=_vqa_record("vqa-only", exact=True),
+    )
+    real_import = builtins.__import__
+    attempts: list[str] = []
+
+    def _guarded_import(name, *args, **kwargs):
+        if name == "pycocoevalcap" or name.startswith("pycocoevalcap."):
+            attempts.append(name)
+            raise AssertionError("optional caption dependency imported")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _guarded_import)
+    report = build_report(run_dir)
+    assert report.tasks[0].metrics["general_vqa"]["score"] == 1.0
+    assert attempts == []
+
+
+def test_incompatible_grounding_is_excluded_from_metric_denominator(
+    tmp_path: Path,
+) -> None:
+    run_dir = _create_run(tmp_path)
+    _write_sample(
+        run_dir,
+        run_task="grounding",
+        sample=_sample("compatible", task="grounding"),
+        status=_status("compatible", "grounding", "succeeded"),
+        evaluation=_grounding_record("compatible", 1.0),
+    )
+    _write_sample(
+        run_dir,
+        run_task="grounding",
+        sample=_sample("incompatible", task="grounding"),
+        status=_status("incompatible", "grounding", "succeeded"),
+        evaluation=None,
+    )
+    task = build_report(run_dir).tasks[0]
+    assert task.total == 2
+    assert task.metrics["grounding"]["total"] == 1
+    assert task.metrics["grounding"]["accuracy"] == 1.0
 
 
 def test_build_report_last_row_wins(tmp_path: Path) -> None:

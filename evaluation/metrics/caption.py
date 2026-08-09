@@ -13,14 +13,19 @@ from typing import Any
 from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
 
 
+class CaptionMetricDependencyError(RuntimeError):
+    """The optional caption-metric runtime is not installed.
+    可选 caption 指标运行时未安装。"""
+
+
 def evaluate_caption(
     references: Mapping[str, Sequence[str]],
     candidates: Mapping[str, Sequence[str]],
 ) -> dict[str, Any]:
     """Compute BLEU/METEOR/ROUGE_L/CIDEr over a homogeneous caption record
-    set. Raises RuntimeError when the optional pycocoevalcap dependency is
-    missing. 对同质描述记录集计算 BLEU/METEOR/ROUGE_L/CIDEr。缺少可选依赖
-    pycocoevalcap 时抛 RuntimeError。"""
+    set. Raises CaptionMetricDependencyError when the optional
+    pycocoevalcap dependency is missing. 对同质描述记录集计算
+    BLEU/METEOR/ROUGE_L/CIDEr。缺少可选依赖 pycocoevalcap 时抛稳定异常。"""
 
     try:
         from pycocoevalcap.bleu.bleu import Bleu
@@ -28,7 +33,9 @@ def evaluate_caption(
         from pycocoevalcap.meteor.meteor import Meteor
         from pycocoevalcap.rouge.rouge import Rouge
     except ImportError as error:
-        raise RuntimeError("Install pycocoevalcap to compute caption metrics.") from error
+        raise CaptionMetricDependencyError(
+            "Install pycocoevalcap to compute caption metrics."
+        ) from error
 
     results: dict[str, Any] = {"total": len(references)}
     bleu, _ = Bleu(4).compute_score(references, candidates)

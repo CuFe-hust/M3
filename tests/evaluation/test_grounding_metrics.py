@@ -64,6 +64,8 @@ def test_aggregate_grounding() -> None:
     assert summary["accuracy"] == pytest.approx(1 / 3)
     assert summary["mean_iou"] == pytest.approx((1.0 + 25 / 175 + 0.0) / 3)
     assert "official" in summary["official_note"]
+    assert "oriented" not in summary["metric"]
+    assert "benchmark" not in summary
 
 
 def test_aggregate_grounding_empty() -> None:

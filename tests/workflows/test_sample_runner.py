@@ -1032,6 +1032,22 @@ def test_grounding_missing_gt_no_fake_metric(tmp_path: Path) -> None:
     assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
 
 
+def test_grounding_missing_prediction_no_fake_metric(tmp_path: Path) -> None:
+    runner = _runner([_grounding_agent([])])
+    sample = _sample(
+        task="grounding",
+        question="Where is the car?",
+        ground_truth=GroundTruth(
+            boxes=[[10.0, 20.0, 110.0, 120.0]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
+    )
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert outcome.evaluation is None
+    assert not (_sample_dir(tmp_path) / "grounding_evaluation.json").exists()
+
+
 def test_caption_writes_per_sample_caption_evaluation(tmp_path: Path) -> None:
     agent = _FakeAgent(
         "caption_agent",

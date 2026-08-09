@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from evaluation.metrics.caption import evaluate_caption
+from evaluation.metrics.caption import (
+    CaptionMetricDependencyError,
+    aggregate_caption,
+    evaluate_caption,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,9 +25,10 @@ _REFERENCES = {"a": ["a car on the road"], "b": ["two buildings"]}
 _CANDIDATES = {"a": ["a car on the road"], "b": ["two buildings"]}
 
 
-def test_missing_caption_dependency_raises_runtime_error(monkeypatch) -> None:
-    """Blocking the optional import yields a clear RuntimeError.
-    拦截可选导入时给出明确的 RuntimeError。"""
+def test_missing_caption_dependency_raises_stable_error(monkeypatch) -> None:
+    """Blocking the optional import yields a stable public error without
+    exposing the raw import message. 拦截可选导入时给出稳定公共错误，且不暴露
+    原始导入消息。"""
     real_import = __import__
 
     def _blocked(name, *args, **kwargs):
@@ -32,8 +37,10 @@ def test_missing_caption_dependency_raises_runtime_error(monkeypatch) -> None:
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr("builtins.__import__", _blocked)
-    with pytest.raises(RuntimeError, match="pycocoevalcap"):
+    with pytest.raises(CaptionMetricDependencyError) as captured:
         evaluate_caption(_REFERENCES, _CANDIDATES)
+    assert str(captured.value) == "Install pycocoevalcap to compute caption metrics."
+    assert "blocked optional dependency" not in str(captured.value)
 
 
 class _FakeScorer:
@@ -98,7 +105,6 @@ def test_aggregate_caption_uses_unified_records(monkeypatch) -> None:
     caption records and routes them through evaluate_caption.
     语料级汇总从统一 caption 记录收集候选/参考答案并交给 evaluate_caption。"""
     _inject_fake_caption_modules(monkeypatch)
-    from evaluation.metrics.caption import aggregate_caption
     from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
 
     records = [
@@ -127,7 +133,6 @@ def test_aggregate_caption_uses_unified_records(monkeypatch) -> None:
 
 def test_aggregate_caption_rejects_records_without_caption_metrics(monkeypatch) -> None:
     _inject_fake_caption_modules(monkeypatch)
-    from evaluation.metrics.caption import aggregate_caption
     from evaluation.records import EvaluationRecord
 
     # A caption record without metrics is rejected by aggregate fail-closed.
