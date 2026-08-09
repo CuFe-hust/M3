@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -34,15 +35,69 @@ class CountingSettings(BaseModel):
     seam_crop_margin_px: int = Field(default=128, ge=0)
     unresolved_conflict_policy: Literal["flag_for_review"] = "flag_for_review"
     prompt_version: str = "count-point-v4"
-    vrsbench_min_scan_depth: int = Field(default=0, ge=0)
-    vrsbench_zero_review: bool = False
-    vrsbench_tile_upscale_max_side: int | None = Field(default=None, gt=0)
+    small_object_min_scan_depth: int = Field(default=0, ge=0)
+    verify_empty_tiles: bool = False
+    small_object_upscale_max_side: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_small_object_keys(cls, data: Any) -> Any:
+        """Accept legacy configuration keys only at the settings boundary.
+
+        Business code sees the dataset-neutral names exclusively. Supplying
+        both names is rejected instead of silently choosing one.
+        """
+
+        if not isinstance(data, Mapping):
+            return data
+        migrated = dict(data)
+        aliases = {
+            "vrsbench_min_scan_depth": "small_object_min_scan_depth",
+            "vrsbench_zero_review": "verify_empty_tiles",
+            "vrsbench_tile_upscale_max_side": "small_object_upscale_max_side",
+        }
+        for legacy, current in aliases.items():
+            if legacy not in migrated:
+                continue
+            if current in migrated:
+                raise ValueError(
+                    f"cannot configure both legacy key {legacy!r} and {current!r}"
+                )
+            migrated[current] = migrated.pop(legacy)
+        return migrated
 
     def model_post_init(self, __context: Any) -> None:
         if self.sequential and self.concurrency != 1:
             raise ValueError("sequential counting requires concurrency=1")
-        if self.vrsbench_min_scan_depth > self.max_recursive_depth:
-            raise ValueError("vrsbench_min_scan_depth cannot exceed max_recursive_depth")
+        if self.small_object_min_scan_depth > self.max_recursive_depth:
+            raise ValueError(
+                "small_object_min_scan_depth cannot exceed max_recursive_depth"
+            )
+
+
+class CountingTargetStrategy(BaseModel):
+    """Immutable JSON-safe behavior derived only from catalog target hints."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    small_object: bool = False
+    dense_instances: bool = False
+    verify_empty: bool = False
+
+    @classmethod
+    def from_hint_names(cls, hints: object) -> "CountingTargetStrategy":
+        if not isinstance(hints, (list, tuple, frozenset, set)):
+            return cls()
+        names = frozenset(
+            value.strip().casefold()
+            for value in hints
+            if isinstance(value, str) and value.strip()
+        )
+        return cls(
+            small_object="small_object" in names,
+            dense_instances="dense_instances" in names,
+            verify_empty="verify_empty" in names,
+        )
 
 
 class AgentCountingSettings(BaseModel):

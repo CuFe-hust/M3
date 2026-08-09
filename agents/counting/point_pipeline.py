@@ -50,6 +50,18 @@ class TileCountCallback(Protocol):
     ) -> TileCountResponse: ...
 
 
+class EmptyTileReviewCallback(Protocol):
+    """Independent second-pass point scan for one initially empty tile."""
+
+    async def review_empty_tile(
+        self,
+        *,
+        tile: TileSpec,
+        image: Image.Image,
+        target: CountTargetSpec,
+    ) -> TileCountResponse: ...
+
+
 @dataclass(frozen=True)
 class _TileOutcome:
     points: list[GlobalPointObservation]
@@ -68,9 +80,11 @@ class PointCountingOrchestrator:
         callback: TileCountCallback,
         *,
         counting: CountingSettings,
+        empty_tile_reviewer: EmptyTileReviewCallback | None = None,
     ) -> None:
         self.callback = callback
         self.counting = counting
+        self.empty_tile_reviewer = empty_tile_reviewer
 
     async def count_image(
         self,
@@ -209,10 +223,7 @@ class PointCountingOrchestrator:
         ]
         processed_tiles = [tile for outcome in outcomes for tile in outcome.processed_tiles]
         warning_records = [
-            IssueRecord(
-                code="TILE_FAILURE" if warning.startswith("TILE_FAILURE:") else "TILE_WARNING",
-                message=warning,
-            )
+            IssueRecord(code=_warning_code(warning), message=warning)
             for outcome in outcomes
             for warning in outcome.warnings
         ]
@@ -280,10 +291,11 @@ class PointCountingOrchestrator:
         acceptance → optional recursive split. Callback failures are recorded,
         never silently dropped. 处理一块切片：模型回调 → 校验 → 换算 →
         接受策略 → 可选递归分割。回调失败会被记录，绝不静默丢弃。"""
+        tile_image = crop_for_tile(image, tile)
         try:
             response = await self.callback.count_tile(
                 tile=tile,
-                image=crop_for_tile(image, tile),
+                image=tile_image,
                 target=target,
             )
         except Exception as error:
@@ -304,6 +316,29 @@ class PointCountingOrchestrator:
                 [f"TILE_FAILURE:{tile.tile_id}:{type(error).__name__}"],
                 [tile],
             )
+        should_split = self._should_split(response, tile, minimum_scan_depth)
+        review_warnings: list[str] = []
+        if self._should_review_empty_tile(
+            response,
+            tile,
+            minimum_scan_depth=minimum_scan_depth,
+            should_split=should_split,
+        ):
+            try:
+                reviewed = await self.empty_tile_reviewer.review_empty_tile(
+                    tile=tile,
+                    image=tile_image,
+                    target=target,
+                )
+                self._validate_tile_response(reviewed, tile, target)
+                response = reviewed
+                should_split = self._should_split(
+                    response, tile, minimum_scan_depth
+                )
+            except Exception as error:
+                review_warnings.append(
+                    f"EMPTY_TILE_REVIEW_FAILURE:{tile.tile_id}:{type(error).__name__}"
+                )
         points = [
             apply_acceptance_policy(
                 convert_local_point_to_global(
@@ -317,7 +352,6 @@ class PointCountingOrchestrator:
             )
             for point in response.points
         ]
-        should_split = self._should_split(response, tile, minimum_scan_depth)
         if should_split and self._can_split(tile):
             children = split_tile_owner_core(
                 tile,
@@ -337,11 +371,29 @@ class PointCountingOrchestrator:
                 [point for outcome in child_outcomes for point in outcome.points],
                 [tile_id for outcome in child_outcomes for tile_id in outcome.succeeded_tile_ids],
                 [tile_id for outcome in child_outcomes for tile_id in outcome.failed_tile_ids],
-                [warning for outcome in child_outcomes for warning in outcome.warnings],
+                review_warnings
+                + [warning for outcome in child_outcomes for warning in outcome.warnings],
                 [child_tile for outcome in child_outcomes for child_tile in outcome.processed_tiles],
             )
-        warnings = ["RECURSIVE_SPLIT_LIMIT"] if should_split else []
+        warnings = review_warnings + (["RECURSIVE_SPLIT_LIMIT"] if should_split else [])
         return _TileOutcome(points, [tile.tile_id], [], warnings, [tile])
+
+    def _should_review_empty_tile(
+        self,
+        response: TileCountResponse,
+        tile: TileSpec,
+        *,
+        minimum_scan_depth: int,
+        should_split: bool,
+    ) -> bool:
+        """Review only a first-pass empty leaf at an eligible scan depth."""
+
+        return (
+            self.empty_tile_reviewer is not None
+            and not response.points
+            and tile.recursive_depth >= minimum_scan_depth
+            and (not should_split or not self._can_split(tile))
+        )
 
     @staticmethod
     def _validate_tile_response(
@@ -388,6 +440,14 @@ class PointCountingOrchestrator:
             and core.width >= self.counting.min_core_size * 2
             and core.height >= self.counting.min_core_size * 2
         )
+
+
+def _warning_code(warning: str) -> str:
+    if warning.startswith("TILE_FAILURE:"):
+        return "TILE_FAILURE"
+    if warning.startswith("EMPTY_TILE_REVIEW_FAILURE:"):
+        return "EMPTY_TILE_REVIEW_FAILURE"
+    return "TILE_WARNING"
 
 
 def apply_acceptance_policy(

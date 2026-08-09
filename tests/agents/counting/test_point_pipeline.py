@@ -84,6 +84,26 @@ class _RecordingCallback:
         )
 
 
+class _EmptyReviewCallback(_RecordingCallback):
+    def __init__(self, *, review_response=None, review_error=None) -> None:
+        super().__init__()
+        self.review_response = review_response
+        self.review_error = review_error
+        self.review_calls: list[str] = []
+
+    async def review_empty_tile(self, *, tile, image, target) -> TileCountResponse:
+        self.review_calls.append(tile.tile_id)
+        if self.review_error is not None:
+            raise self.review_error
+        if self.review_response is not None:
+            return self.review_response
+        return TileCountResponse(
+            target=target.canonical_label,
+            tile_id=tile.tile_id,
+            reported_count=0,
+        )
+
+
 def _image(width: int, height: int) -> Image.Image:
     return Image.new("RGB", (width, height), (1, 2, 3))
 
@@ -129,6 +149,43 @@ def test_no_tiling_path_uses_single_whole_tile() -> None:
     assert result.final_count == 0
     assert result.succeeded_tiles == ["whole"]
     assert result.initial_tile_count == 1
+
+
+def test_empty_tile_review_positive_result_remains_point_derived() -> None:
+    callback = _EmptyReviewCallback(
+        review_response=TileCountResponse(
+            target="car",
+            tile_id="whole",
+            points=[_point("review-1", 500, 500)],
+            reported_count=1,
+        )
+    )
+    orchestrator = PointCountingOrchestrator(
+        callback,
+        counting=CountingSettings(),
+        empty_tile_reviewer=callback,
+    )
+    result = asyncio.run(_count(orchestrator, _image(200, 200)))
+    assert callback.review_calls == ["whole"]
+    assert result.final_count == 1
+    assert result.final_count == sum(point.accepted for point in result.global_points)
+
+
+def test_empty_tile_review_failure_keeps_zero_with_visible_warning() -> None:
+    callback = _EmptyReviewCallback(review_error=RuntimeError("review boom"))
+    orchestrator = PointCountingOrchestrator(
+        callback,
+        counting=CountingSettings(),
+        empty_tile_reviewer=callback,
+    )
+    result = asyncio.run(_count(orchestrator, _image(200, 200)))
+    assert result.final_count == 0
+    assert result.status == "completed_with_warnings"
+    assert any(
+        warning.code == "EMPTY_TILE_REVIEW_FAILURE"
+        for warning in result.warnings
+    )
+    assert all("review boom" not in warning.message for warning in result.warnings)
 
 
 def test_multi_tile_path_is_row_major() -> None:

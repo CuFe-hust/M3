@@ -22,9 +22,13 @@ from agents.counting import (
     CountingSettings,
 )
 from agents.counting.backends import BackendRegistry
+from agents.counting.backends.quantity_proposal import QuantityProposalBackend
 from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.backends.yolo_obb import YoloOBBCountingBackend
 from agents.counting.backends.yolo_model_store import YoloModelStore
+from agents.counting.expert_catalog import ExpertCatalog
+from agents.counting.schema import CountTargetSpec
+from agents.counting.settings import CountingTargetStrategy
 from agents.general_vqa import GeneralVQAAgent
 from agents.grounding import GroundingAgent
 from agents.registry import AgentRegistry
@@ -182,7 +186,18 @@ def _build_agent_registry(
     """Register every business agent in stable order; all routable tasks must
     be covered. 按稳定顺序注册全部业务 Agent；所有可路由任务必须有覆盖。"""
 
-    backend_registry = _build_backend_registry(settings, catalog, qwen_client)
+    expert_catalog = ExpertCatalog.load(
+        Path(__file__).resolve().parents[1]
+        / "agents"
+        / "counting"
+        / "expert_catalog.json"
+    )
+    backend_registry = _build_backend_registry(
+        settings,
+        catalog,
+        qwen_client,
+        expert_catalog=expert_catalog,
+    )
     counting_agent = CountingAgent(
         qwen_client,
         target_prompt=catalog["target"],
@@ -193,6 +208,7 @@ def _build_agent_registry(
         fallback_to_qwen_on_error=settings.backend.yolo.fallback_to_qwen_on_error,
         verify_empty_with_qwen=settings.backend.yolo.verify_empty_with_qwen,
         trust_empty_detection=settings.backend.trust_empty_detection,
+        expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(
         qwen_client,
@@ -227,17 +243,37 @@ def _build_backend_registry(
     settings: AppSettings,
     catalog: PromptCatalog,
     qwen_client: VisionLanguageClient,
+    *,
+    expert_catalog: ExpertCatalog | None = None,
 ) -> BackendRegistry:
     """The Qwen point backend is always registered; YOLO backends only when
     enabled. Qwen 点式后端恒注册；YOLO 后端仅启用时注册。"""
 
     registry = BackendRegistry()
+    strategy_resolver = (
+        (lambda target: _target_strategy(expert_catalog, target))
+        if expert_catalog is not None
+        else None
+    )
     registry.register(
         QwenPointCountingBackend(
             qwen_client,
             counting=settings.counting,
             system_prompt=catalog["count_tile"],
             prompt_version=catalog.version("count_tile"),
+            empty_review_prompt=catalog["zero_review"],
+            empty_review_prompt_version=catalog.version("zero_review"),
+            strategy_resolver=strategy_resolver,
+        )
+    )
+    registry.register(
+        QuantityProposalBackend(
+            qwen_client,
+            counting=settings.counting,
+            proposal_prompt=catalog["count_localize"],
+            localizer_prompt=catalog["count_localize"],
+            proposal_prompt_version=catalog.version("count_localize"),
+            localizer_prompt_version=catalog.version("count_localize"),
         )
     )
     if settings.backend.yolo.enabled:
@@ -252,6 +288,14 @@ def _build_backend_registry(
                     )
                 )
     return registry
+
+
+def _target_strategy(
+    catalog: ExpertCatalog,
+    target: CountTargetSpec,
+) -> CountingTargetStrategy:
+    hints = catalog.target_hints(target).get("hints", ())
+    return CountingTargetStrategy.from_hint_names(hints)
 
 
 def _build_judge_client(

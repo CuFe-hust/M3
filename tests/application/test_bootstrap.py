@@ -10,7 +10,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from application.bootstrap import assemble_runtime
+from application.bootstrap import _build_backend_registry, assemble_runtime
+from application.prompts import PromptCatalog
 from application.settings import AppSettings
 from models.base import ModelCacheIdentity
 
@@ -65,6 +66,16 @@ def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
     assert components.task_resolver is not None
     assert components.judge_service is not None
     assert components.dataset_runner_factory is not None
+
+
+def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:
+    registry = _build_backend_registry(
+        _settings(tmp_path),
+        PromptCatalog(REPO_ROOT / "prompts"),
+        _FakeQwenClient(),
+    )
+    assert registry.all_names() == ["qwen_point", "quantity_proposal"]
+    assert registry.get("quantity_proposal").kind == "quantity_proposal"
 
 
 def test_route_coverage_after_assembly(tmp_path: Path) -> None:

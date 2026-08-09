@@ -85,7 +85,7 @@ class QuantityProposalBackend:
         localizer_prompt: str,
         proposal_prompt_version: str,
         localizer_prompt_version: str,
-        supported_targets: tuple[str, ...] = ("small-vehicle", "large-vehicle", "vehicle"),
+        supported_targets: tuple[str, ...] = ("small-vehicle", "large-vehicle"),
     ) -> None:
         self._client = client
         self._counting = counting
@@ -94,7 +94,7 @@ class QuantityProposalBackend:
         self._proposal_prompt_version = proposal_prompt_version
         self._localizer_prompt_version = localizer_prompt_version
         self._supported_targets = frozenset(
-            value.casefold() for value in supported_targets
+            _normalize_target(value) for value in supported_targets
         )
 
     def is_enabled(self) -> bool:
@@ -108,7 +108,15 @@ class QuantityProposalBackend:
         没有可靠 hint 时拒绝，而不是猜测。"""
         if not isinstance(hints, dict) or not hints.get("quantity_estimation"):
             return False
-        return target.canonical_label.casefold() in self._supported_targets
+        if hints.get("countable") is False:
+            return False
+        hinted_label = hints.get("canonical_label")
+        label = (
+            hinted_label
+            if isinstance(hinted_label, str) and hinted_label.strip()
+            else target.canonical_label
+        )
+        return _normalize_target(label) in self._supported_targets
 
     async def count(
         self,
@@ -431,5 +439,10 @@ def _encode_image(image: Any) -> bytes:
     with io.BytesIO() as buffer:
         image.convert("RGB").save(buffer, format="PNG")
         return buffer.getvalue()
+
+
+def _normalize_target(value: str) -> str:
+    separators_normalized = value.strip().casefold().replace("_", " ").replace("-", " ")
+    return "-".join(separators_normalized.split())
 
 

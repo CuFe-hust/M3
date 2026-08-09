@@ -17,8 +17,12 @@ from pydantic import BaseModel, ConfigDict
 
 from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.backends.base import CountingBackendOutcome, CountingRequest
-from agents.counting.schema import CountTargetSpec, TileCountResponse
-from agents.counting.settings import CountingSettings
+from agents.counting.schema import (
+    CountTargetSpec,
+    LocalPointObservation,
+    TileCountResponse,
+)
+from agents.counting.settings import CountingSettings, CountingTargetStrategy
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from models.base import ModelCacheIdentity
 
@@ -31,10 +35,10 @@ _TARGET = CountTargetSpec(
 )
 
 
-def _sample() -> UnifiedSample:
+def _sample(*, dataset: str = "parity") -> UnifiedSample:
     return UnifiedSample(
         sample_id="s1",
-        dataset="parity",
+        dataset=dataset,
         split="test",
         task="counting",
         images=[ImageRef(image_id="i1", path="img.png", role="image")],
@@ -89,9 +93,9 @@ class _FakeClient:
         )
 
 
-def _request(tmp_path: Path) -> CountingRequest:
+def _request(tmp_path: Path, *, dataset: str = "parity") -> CountingRequest:
     return CountingRequest(
-        sample=_sample(),
+        sample=_sample(dataset=dataset),
         image=Image.new("RGB", (200, 200), (1, 2, 3)),
         target=_TARGET,
         artifact_dir=tmp_path / "run",
@@ -175,12 +179,141 @@ def test_tile_request_contains_owner_core_and_target(tmp_path: Path) -> None:
 def test_count_trace_records_path_and_versions(tmp_path: Path) -> None:
     backend = _backend(_FakeClient(), prompt_version="count-tile-v4")
     outcome = asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
-    assert outcome.trace == {
-        "backend": "qwen_point",
-        "pipeline": "point_pipeline.count_image",
-        "prompt_version": "count-tile-v4",
-        "minimum_scan_depth": 0,
-    }
+    assert outcome.trace["backend"] == "qwen_point"
+    assert outcome.trace["pipeline"] == "point_pipeline.count_image"
+    assert outcome.trace["prompt_version"] == "count-tile-v4"
+    assert outcome.trace["minimum_scan_depth"] == 0
+    assert outcome.trace["empty_review_attempt_count"] == 0
+    assert outcome.trace["upscale_used"] is False
+    assert outcome.trace["original_size"] == [200, 200]
+    assert outcome.trace["transmitted_size"] == [200, 200]
+
+
+def _strategy(*, small_object: bool, verify_empty: bool = False):
+    return lambda target: CountingTargetStrategy(
+        small_object=small_object,
+        verify_empty=verify_empty,
+    )
+
+
+def test_small_object_strategy_enforces_minimum_scan_depth(tmp_path: Path) -> None:
+    client = _FakeClient()
+    backend = _backend(
+        client,
+        counting=CountingSettings(small_object_min_scan_depth=1),
+        strategy_resolver=_strategy(small_object=True),
+    )
+    request = CountingRequest(
+        sample=_sample(),
+        image=Image.new("RGB", (1000, 1000), (1, 2, 3)),
+        target=_TARGET,
+        artifact_dir=tmp_path / "run",
+    )
+    outcome = asyncio.run(backend.count(request, _context(_FakeBudget())))
+    assert outcome.trace["minimum_scan_depth"] == 1
+    assert len(client.calls) == 5
+    assert outcome.counting.leaf_tile_count == 4
+
+
+def test_non_small_object_does_not_force_scan_depth(tmp_path: Path) -> None:
+    client = _FakeClient()
+    backend = _backend(
+        client,
+        counting=CountingSettings(small_object_min_scan_depth=1),
+        strategy_resolver=_strategy(small_object=False),
+    )
+    outcome = asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
+    assert outcome.trace["minimum_scan_depth"] == 0
+    assert len(client.calls) == 1
+
+
+def test_verify_empty_second_pass_can_add_points(tmp_path: Path) -> None:
+    client = _FakeClient()
+    client.responses = [
+        TileCountResponse(target="car", tile_id="whole", reported_count=0),
+        TileCountResponse(
+            target="car",
+            tile_id="whole",
+            points=[
+                LocalPointObservation(
+                    local_id="review-1",
+                    x=500,
+                    y=500,
+                    confidence=0.9,
+                    short_evidence="independent rescan",
+                )
+            ],
+            reported_count=1,
+        ),
+    ]
+    backend = _backend(
+        client,
+        counting=CountingSettings(verify_empty_tiles=True),
+        strategy_resolver=_strategy(small_object=True, verify_empty=True),
+    )
+    outcome = asyncio.run(backend.count(_request(tmp_path), _context(_FakeBudget())))
+    assert outcome.counting.final_count == 1
+    assert outcome.trace["empty_review_attempt_count"] == 1
+    assert outcome.trace["empty_review_positive_count"] == 1
+    assert len(client.calls) == 2
+    review_text = json.loads(client.calls[1]["messages"][1]["content"][1]["text"])
+    assert review_text["scan_pass"] == "independent_empty_review"
+
+
+def test_upscale_is_limited_to_small_object_strategy(tmp_path: Path) -> None:
+    settings = CountingSettings(small_object_upscale_max_side=400)
+    small_client = _FakeClient()
+    small = _backend(
+        small_client,
+        counting=settings,
+        strategy_resolver=_strategy(small_object=True),
+    )
+    small_outcome = asyncio.run(
+        small.count(_request(tmp_path), _context(_FakeBudget()))
+    )
+    assert small_outcome.trace["upscale_used"] is True
+    assert small_outcome.trace["original_size"] == [200, 200]
+    assert small_outcome.trace["transmitted_size"] == [400, 400]
+
+    regular_client = _FakeClient()
+    regular = _backend(
+        regular_client,
+        counting=settings,
+        strategy_resolver=_strategy(small_object=False),
+    )
+    regular_outcome = asyncio.run(
+        regular.count(_request(tmp_path), _context(_FakeBudget()))
+    )
+    assert regular_outcome.trace["upscale_used"] is False
+    assert regular_outcome.trace["transmitted_size"] == [200, 200]
+
+
+def test_target_strategy_is_independent_of_sample_dataset(tmp_path: Path) -> None:
+    settings = CountingSettings(
+        small_object_min_scan_depth=0,
+        small_object_upscale_max_side=300,
+    )
+    traces = []
+    for dataset in ("source-a", "renamed-source-b"):
+        backend = _backend(
+            _FakeClient(),
+            counting=settings,
+            strategy_resolver=_strategy(small_object=True, verify_empty=True),
+        )
+        outcome = asyncio.run(
+            backend.count(
+                _request(tmp_path, dataset=dataset),
+                _context(_FakeBudget()),
+            )
+        )
+        traces.append(
+            (
+                outcome.trace["strategy"],
+                outcome.trace["minimum_scan_depth"],
+                outcome.trace["transmitted_size"],
+            )
+        )
+    assert traces[0] == traces[1]
 
 
 def test_budget_consumed_per_model_call(tmp_path: Path) -> None:

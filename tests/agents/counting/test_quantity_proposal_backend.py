@@ -149,10 +149,13 @@ def test_supports_refuses_without_reliable_hint() -> None:
 def test_supports_accepts_with_quantity_estimation_hint() -> None:
     backend = _backend(_FakeClient(), supported_targets=("car",))
     assert backend.supports(_CAR, hints={"quantity_estimation": True}) is True
-    # The default target set is vehicle-family neutral. / 默认目标集为车辆族中性。
+    # The default target set is explicit rather than inferred from a broad label.
     assert _backend(_FakeClient()).supports(
-        CountTargetSpec(canonical_label="vehicle", inclusion_rule="r", exclusion_rule="e"),
-        hints={"quantity_estimation": True},
+        CountTargetSpec(canonical_label="car", inclusion_rule="r", exclusion_rule="e"),
+        hints={
+            "quantity_estimation": True,
+            "canonical_label": "small-vehicle",
+        },
     ) is True
 
 
@@ -166,6 +169,27 @@ def test_supports_checks_supported_targets() -> None:
         )
         is True
     )
+
+
+def test_supports_uses_explicit_catalog_canonical_label() -> None:
+    backend = _backend(_FakeClient())
+    assert backend.supports(
+        _CAR,
+        hints={
+            "quantity_estimation": True,
+            "canonical_label": "small-vehicle",
+            "countable": True,
+            "hints": ["small_object"],
+        },
+    ) is True
+    assert backend.supports(
+        _CAR,
+        hints={
+            "quantity_estimation": True,
+            "canonical_label": "small-vehicle",
+            "countable": False,
+        },
+    ) is False
 
 
 def test_backend_identity() -> None:
