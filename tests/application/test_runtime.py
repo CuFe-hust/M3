@@ -1061,14 +1061,15 @@ def test_health_deepseek_prints_env_name_not_value(
 ) -> None:
     from application.commands.health import run_health
 
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-super-secret-value")
+    secret_marker = "SUPER_SECRET_TEST_VALUE_123"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", secret_marker)
     code = run_health(_command_namespace(component="deepseek", live=False))
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "ready"
     assert out["component"] == "deepseek"
     assert out["api_key_env"] == "DEEPSEEK_API_KEY"
-    assert "sk-super-secret-value" not in json.dumps(out)
+    assert secret_marker not in json.dumps(out)
     assert "sk-" not in json.dumps(out)
 
 
@@ -4512,7 +4513,8 @@ def test_evaluate_run_persists_refreshed_report_bundle(
     monkeypatch.setattr(
         evaluate_run_module, "DeepSeekJudgeClient", lambda *a, **k: judge
     )
-    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    secret_marker = "SUPER_SECRET_TEST_VALUE_123"
+    monkeypatch.setenv("DEEPSEEK_API_KEY", secret_marker)
     monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
     _make_offline_run(
         tmp_path,
@@ -4543,6 +4545,12 @@ def test_evaluate_run_persists_refreshed_report_bundle(
     assert '"sample_id": "c1"' in audit  # counting judge audited
     assert '"sample_id": "v1"' in audit
     assert judge.calls  # judge ran
+    assert secret_marker not in json.dumps(out)
+    for artifact in run_dir.rglob("*"):
+        if artifact.is_file():
+            assert (
+                secret_marker.encode("utf-8") not in artifact.read_bytes()
+            ), artifact
 
 
 def test_judge_vqa_run_persists_refreshed_report_bundle(
