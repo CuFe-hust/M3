@@ -8,14 +8,25 @@
 from __future__ import annotations
 
 import json
+from dataclasses import is_dataclass
 from pathlib import Path
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from agents.change.preprocess import preprocess_pair
-from agents.change.settings import AgentChangeSettings, ChangeHarmonizationSettings, ChangeProposalSettings
+from agents.change.preprocess import (
+    prepare_pair,
+    preprocess_pair,
+    publish_change_proposals,
+)
+from agents.change.schema import ChangePreprocessResult, ChangeProposal
+from agents.change.settings import (
+    AgentChangeSettings,
+    ChangeHarmonizationSettings,
+    ChangeProposalSettings,
+    ChangeSemanticSettings,
+)
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 
 
@@ -195,3 +206,182 @@ def test_preprocess_never_calls_qwen() -> None:
     )
     assert "qwen" not in source.casefold()
     assert "complete_json" not in source
+
+
+def test_legacy_preprocess_validates_and_harmonizes_exactly_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    from agents.change import preprocess as preprocess_module
+
+    validate_calls = 0
+    harmonize_calls = 0
+    original_validate = preprocess_module.PairValidator.validate
+    original_run = preprocess_module.PairHarmonizer.run
+
+    def counted_validate(self, *args, **kwargs):
+        nonlocal validate_calls
+        validate_calls += 1
+        return original_validate(self, *args, **kwargs)
+
+    def counted_run(self, *args, **kwargs):
+        nonlocal harmonize_calls
+        harmonize_calls += 1
+        return original_run(self, *args, **kwargs)
+
+    monkeypatch.setattr(preprocess_module.PairValidator, "validate", counted_validate)
+    monkeypatch.setattr(preprocess_module.PairHarmonizer, "run", counted_run)
+    preprocess_pair(
+        sample,
+        _settings(harmonization=ChangeHarmonizationSettings(enabled=True)),
+        tmp_path / "run",
+        data_root=root,
+    )
+    assert validate_calls == 1
+    assert harmonize_calls == 1
+
+
+def test_prepared_pair_keeps_runtime_arrays_outside_serializable_result(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings()
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    assert is_dataclass(prepared)
+    assert isinstance(prepared.raw_t1, np.ndarray)
+    assert isinstance(prepared.comparison_t1, np.ndarray)
+    assert isinstance(prepared.pif_mask, np.ndarray)
+    assert prepared.comparison_t1 is not prepared.raw_t1
+    assert prepared.comparison_t2 is not prepared.raw_t2
+    assert np.array_equal(prepared.comparison_t1, prepared.raw_t1)
+    assert np.array_equal(prepared.comparison_t2, prepared.raw_t2)
+    assert np.count_nonzero(prepared.pif_mask) == 0
+    assert (tmp_path / "run" / "change_preprocess" / "validation_report.json").is_file()
+    assert (tmp_path / "run" / "change_preprocess" / "harmonization_report.json").is_file()
+
+    result = preprocess_pair(sample, settings, tmp_path / "legacy", data_root=root)
+    payload = json.loads(result.model_dump_json())
+    assert "raw_t1" not in payload
+    assert "comparison_t1" not in payload
+    assert "pif_mask" not in payload
+    with pytest.raises(ValueError):
+        ChangePreprocessResult.model_validate(
+            {
+                **result.model_dump(mode="python"),
+                "diagnostics": {"forbidden_array": prepared.pif_mask},
+            }
+        )
+
+
+def test_semantic_settings_default_disabled_and_validate_geometry() -> None:
+    settings = AgentChangeSettings()
+    assert settings.semantic.enabled is False
+    assert settings.semantic.tile_size == 768
+    assert settings.semantic.tile_overlap == 128
+    with pytest.raises(ValueError, match="tile_overlap"):
+        ChangeSemanticSettings(tile_size=128, tile_overlap=128)
+
+
+def test_fusion_settings_validate_major_branch_weights_and_kernel() -> None:
+    with pytest.raises(ValueError, match="fusion weights"):
+        ChangeProposalSettings(
+            fusion_low_level_weight=0.0,
+            fusion_feature_weight=0.0,
+            fusion_semantic_weight=0.0,
+        )
+    with pytest.raises(ValueError, match="must be odd"):
+        ChangeProposalSettings(mask_close_kernel=4)
+
+
+def test_change_proposal_schema_is_backward_compatible_and_accepts_v2() -> None:
+    legacy = ChangeProposal.model_validate(
+        {
+            "proposal_id": "change_000",
+            "box": [0, 0, 1, 1],
+            "pixel_box": [0, 0, 4, 4],
+            "score": 0.5,
+            "area_ratio": 0.25,
+        }
+    )
+    assert legacy.source == "difference_map_v1"
+    assert legacy.component_scores == {}
+    assert legacy.mask_filename is None
+
+    v2 = legacy.model_copy(
+        update={
+            "source": "fused_change_v2",
+            "component_scores": {"feature": 0.7, "semantic": 0.4},
+            "mask_filename": "change_preprocess/v2_mask.png",
+        }
+    )
+    restored = ChangeProposal.model_validate_json(v2.model_dump_json())
+    assert restored.source == "fused_change_v2"
+    assert restored.component_scores["feature"] == 0.7
+
+
+def test_v1_publisher_parity_and_v2_component_artifacts(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings()
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    legacy = ChangeProposal(
+        proposal_id="change_000",
+        box=[0, 0, 32, 32],
+        pixel_box=[0, 0, 32, 32],
+        score=0.8,
+        area_ratio=0.25,
+    )
+    v1 = publish_change_proposals(
+        prepared,
+        score_map=np.zeros((64, 64), dtype=np.float32),
+        proposals=[legacy],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+    )
+    assert len(v1.proposals) == 1
+    assert v1.proposals[0].pixel_box == [0, 0, 32, 32]
+    assert v1.proposals[0].source == "difference_map_v1"
+    assert set(v1.artifact_files) == {
+        "validation_report",
+        "harmonization_report",
+        "difference_map",
+        "proposal_overlay",
+        "proposals",
+    }
+    assert v1.proposals[0].evidence_filenames == [
+        "change_preprocess/crops/change_000_raw_t1.png",
+        "change_preprocess/crops/change_000_raw_t2.png",
+    ]
+
+    v2_proposal = legacy.model_copy(
+        update={
+            "source": "fused_change_v2",
+            "component_scores": {"low_level": 0.2, "feature": 0.8},
+            "mask_filename": "change_preprocess/v2_mask.png",
+        }
+    )
+    prepared_v2 = prepare_pair(sample, settings, tmp_path / "v2", data_root=root)
+    v2 = publish_change_proposals(
+        prepared_v2,
+        score_map=np.ones((64, 64), dtype=np.float32),
+        proposals=[v2_proposal],
+        artifact_dir=tmp_path / "v2",
+        settings=settings,
+        component_maps={"v2_mask": np.ones((64, 64), dtype=np.uint8) * 255},
+    )
+    assert "fused_change_map" in v2.artifact_files
+    assert "difference_map" not in v2.artifact_files
+    assert (tmp_path / "v2" / v2.artifact_files["v2_mask"]).is_file()
+
+
+def test_preparation_module_has_no_concrete_model_call() -> None:
+    source = (
+        Path(__file__).resolve().parents[3] / "agents" / "change" / "preprocess.py"
+    ).read_text(encoding="utf-8")
+    lowered = source.casefold()
+    assert "segformer" not in lowered
+    assert "denseSemantic".casefold() not in lowered
+    assert "models." not in lowered

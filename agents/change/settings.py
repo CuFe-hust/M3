@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -50,10 +50,51 @@ class ChangeProposalSettings(BaseModel):
     min_component_area_ratio: float = Field(default=0.0005, gt=0.0, lt=1.0)
     max_component_area_ratio: float = Field(default=0.50, gt=0.0, le=1.0)
     max_proposals: int = Field(default=6, ge=1, le=12)
+    # These weights fuse the three major V2 branches. They are distinct from
+    # rgb/edge/structure, which only compose the low-level branch.
+    fusion_low_level_weight: float = Field(default=0.25, ge=0.0)
+    fusion_feature_weight: float = Field(default=0.50, ge=0.0)
+    fusion_semantic_weight: float = Field(default=0.25, ge=0.0)
+    threshold_mode: Literal["pif_robust"] = "pif_robust"
+    pif_threshold_k: float = Field(default=4.0, ge=0.0)
+    threshold_floor: float = Field(default=0.10, ge=0.0, le=1.0)
+    pif_fallback_quantile: float = Field(default=0.90, gt=0.0, lt=1.0)
+    mask_close_kernel: int = Field(default=5, ge=1)
+    proposal_padding_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
 
     def model_post_init(self, __context: Any) -> None:
         if self.rgb_weight + self.edge_weight + self.structure_weight <= 0:
             raise ValueError("change proposal weights must have a positive sum")
+        if (
+            self.fusion_low_level_weight
+            + self.fusion_feature_weight
+            + self.fusion_semantic_weight
+            <= 0
+        ):
+            raise ValueError("change proposal fusion weights must have a positive sum")
+        if self.mask_close_kernel % 2 == 0:
+            raise ValueError("mask_close_kernel must be odd")
+
+
+class ChangeSemanticSettings(BaseModel):
+    """Optional Change V2 dense-semantic strategy; disabled by default."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    feature_stage: int = -1
+    tile_size: int = Field(default=768, ge=128)
+    tile_overlap: int = Field(default=128, ge=0)
+    local_match_radius: int = Field(default=1, ge=0, le=3)
+    min_pif_feature_cells: int = Field(default=32, ge=1)
+    feature_scale_epsilon: float = Field(default=1e-3, gt=0.0)
+    semantic_confidence_floor: float = Field(default=0.45, ge=0.0, le=1.0)
+    js_epsilon: float = Field(default=1e-6, gt=0.0)
+    failure_policy: Literal["fallback_legacy", "fail"] = "fallback_legacy"
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.tile_overlap >= self.tile_size:
+            raise ValueError("tile_overlap must be smaller than tile_size")
 
 
 class ChangeReviewSettings(BaseModel):
@@ -72,4 +113,5 @@ class AgentChangeSettings(BaseModel):
 
     harmonization: ChangeHarmonizationSettings = Field(default_factory=ChangeHarmonizationSettings)
     proposals: ChangeProposalSettings = Field(default_factory=ChangeProposalSettings)
+    semantic: ChangeSemanticSettings = Field(default_factory=ChangeSemanticSettings)
     review: ChangeReviewSettings = Field(default_factory=ChangeReviewSettings)

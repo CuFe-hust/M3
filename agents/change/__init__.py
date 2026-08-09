@@ -9,7 +9,12 @@ from agents.change.harmonizer import (
     estimate_pif_mask,
 )
 from agents.change.pair_validator import PairValidator, ValidatedPair
-from agents.change.preprocess import preprocess_pair
+from agents.change.preprocess import (
+    ChangePreparedPair,
+    prepare_pair,
+    preprocess_pair,
+    publish_change_proposals,
+)
 from agents.change.reviewer import review_result
 from agents.change.schema import (
     ChangePreprocessResult,
@@ -22,15 +27,18 @@ from agents.change.settings import (
     AgentChangeSettings,
     ChangeHarmonizationSettings,
     ChangeProposalSettings,
+    ChangeSemanticSettings,
     ChangeReviewSettings,
 )
 
 __all__ = [
     "AgentChangeSettings",
     "ChangeHarmonizationSettings",
+    "ChangePreparedPair",
     "ChangePreprocessResult",
     "ChangeProposal",
     "ChangeProposalSettings",
+    "ChangeSemanticSettings",
     "ChangeReviewSettings",
     "HarmonizationCandidate",
     "HarmonizationDecision",
@@ -42,7 +50,9 @@ __all__ = [
     "compute_metrics",
     "estimate_pif_mask",
     "preprocess_pair",
+    "prepare_pair",
     "propose_changes",
+    "publish_change_proposals",
     "render_overlay",
     "review_result",
 ]

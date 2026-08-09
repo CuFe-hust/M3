@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 from agents.counting.schema import IssueRecord
 
@@ -76,8 +76,10 @@ class ChangeProposal(BaseModel):
     pixel_box: list[int]
     score: float = Field(ge=0.0, le=1.0)
     area_ratio: float = Field(ge=0.0, le=1.0)
-    source: Literal["difference_map_v1"] = "difference_map_v1"
+    source: Literal["difference_map_v1", "fused_change_v2"] = "difference_map_v1"
     evidence_filenames: list[str] = Field(default_factory=list)
+    component_scores: dict[str, float] = Field(default_factory=dict)
+    mask_filename: str | None = None
 
 
 class ChangePreprocessResult(BaseModel):
@@ -91,3 +93,4 @@ class ChangePreprocessResult(BaseModel):
     proposals: list[ChangeProposal]
     artifact_files: dict[str, str]
     transform_summary: dict[str, object] = Field(default_factory=dict)
+    diagnostics: dict[str, JsonValue] = Field(default_factory=dict)
