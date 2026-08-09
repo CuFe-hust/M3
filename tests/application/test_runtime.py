@@ -5416,3 +5416,194 @@ def test_loader_and_downloader_never_import_each_other() -> None:
     assert "snapshot_download" not in loader_text
     downloader_text = Path("data/downloader.py").read_text(encoding="utf-8")
     assert "load_dataset_samples" not in downloader_text
+
+import csv
+
+# ── LEVIR harmonization evaluator (Task 11I2) / LEVIR 协调评估器 ────────────
+
+
+def _make_levir_pair(
+    root: Path,
+    split: str,
+    name: str,
+    *,
+    t1_value: int = 100,
+    t2_value: int = 150,
+    with_label: bool = True,
+    label_value: int = 255,
+    corrupt: bool = False,
+) -> None:
+    """Create one synthetic LEVIR-style A/B pair (and optional label).
+    创建一对合成 LEVIR 风格 A/B 图（及可选标签）。"""
+    first_dir = root / "images" / split / "A"
+    second_dir = root / "images" / split / "B"
+    first_dir.mkdir(parents=True, exist_ok=True)
+    second_dir.mkdir(parents=True, exist_ok=True)
+    if corrupt:
+        (first_dir / name).write_bytes(b"not an image")
+        Image.new("RGB", (64, 64), (t2_value, t2_value, t2_value)).save(
+            second_dir / name, format="PNG"
+        )
+        return
+    Image.new("RGB", (64, 64), (t1_value, t1_value, t1_value)).save(
+        first_dir / name, format="PNG"
+    )
+    Image.new("RGB", (64, 64), (t2_value, t2_value, t2_value)).save(
+        second_dir / name, format="PNG"
+    )
+    if with_label:
+        label_dir = root / "labels" / split
+        label_dir.mkdir(parents=True, exist_ok=True)
+        Image.new("L", (64, 64), label_value).save(label_dir / name, format="PNG")
+
+
+def _run_levir_eval(monkeypatch, capsys, args: list[str]) -> int:
+    import scripts.evaluate_levir_harmonization as levir_module
+
+    monkeypatch.setattr("sys.argv", ["evaluate_levir_harmonization.py", *args])
+    return levir_module.main()
+
+
+def test_levir_evaluator_no_pairs_fails(monkeypatch, capsys, tmp_path) -> None:
+    with pytest.raises(SystemExit, match="No paired PNG"):
+        _run_levir_eval(
+            monkeypatch, capsys,
+            ["--root", str(tmp_path / "root"), "--split", "test",
+             "--output-dir", str(tmp_path / "out")],
+        )
+
+
+def test_levir_evaluator_success_and_metrics(tmp_path, monkeypatch, capsys) -> None:
+    root = tmp_path / "root"
+    _make_levir_pair(root, "test", "pair_001.png")
+    _make_levir_pair(root, "test", "pair_002.png", t1_value=90, t2_value=160)
+    code = _run_levir_eval(
+        monkeypatch, capsys,
+        ["--root", str(root), "--split", "test", "--max-pairs", "10",
+         "--output-dir", str(tmp_path / "out")],
+    )
+    assert code == 0
+    out_dir = tmp_path / "out"
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["processed"] == 2
+    assert summary["failed"] == 0
+    assert summary["split"] == "test"
+    assert "pif_ratio" in summary["metrics"]
+    assert summary["metrics"]["pif_ratio"]["n"] == 2
+    assert "bootstrap_95_ci" in summary["metrics"]["pif_ratio"]
+    assert len(summary["metrics"]["pif_ratio"]["bootstrap_95_ci"]) == 2
+    grouped = json.loads((out_dir / "grouped_summary.json").read_text(encoding="utf-8"))
+    assert grouped["labels_available"] is True
+    assert grouped["has_change"]["pif_ratio"]["n"] == 2
+    # CSV rows / CSV 行
+    rows = list(csv.DictReader((out_dir / "metrics.csv").open(encoding="utf-8")))
+    assert {row["pair"] for row in rows} == {"pair_001", "pair_002"}
+    assert all(row["has_change"] == "True" for row in rows)
+    assert all(row["changed_mad_before"] != "" for row in rows)
+    failed = json.loads((out_dir / "failed_pairs.json").read_text(encoding="utf-8"))
+    assert failed == []
+    # stdout carries the summary / stdout 携带摘要
+    assert json.loads(capsys.readouterr().out)["processed"] == 2
+
+
+def test_levir_evaluator_isolated_failure(tmp_path, monkeypatch, capsys) -> None:
+    root = tmp_path / "root"
+    _make_levir_pair(root, "val", "good_001.png")
+    _make_levir_pair(root, "val", "broken_002.png", corrupt=True)
+    _make_levir_pair(root, "val", "good_003.png", t1_value=80, t2_value=170)
+    code = _run_levir_eval(
+        monkeypatch, capsys,
+        ["--root", str(root), "--split", "val", "--max-pairs", "10",
+         "--output-dir", str(tmp_path / "out")],
+    )
+    assert code == 2  # failures visible in the exit code
+    out_dir = tmp_path / "out"
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["processed"] == 2  # successful rows preserved
+    assert summary["failed"] == 1
+    failed = json.loads((out_dir / "failed_pairs.json").read_text(encoding="utf-8"))
+    assert failed[0]["pair"] == "broken_002.png"
+    assert failed[0]["error_type"] != ""
+    rows = list(csv.DictReader((out_dir / "metrics.csv").open(encoding="utf-8")))
+    assert {row["pair"] for row in rows} == {"good_001", "good_003"}
+
+
+def test_levir_evaluator_labels_absent(tmp_path, monkeypatch, capsys) -> None:
+    root = tmp_path / "root"
+    _make_levir_pair(root, "test", "no_label.png", with_label=False)
+    code = _run_levir_eval(
+        monkeypatch, capsys,
+        ["--root", str(root), "--split", "test", "--output-dir", str(tmp_path / "out")],
+    )
+    assert code == 0
+    out_dir = tmp_path / "out"
+    rows = list(csv.DictReader((out_dir / "metrics.csv").open(encoding="utf-8")))
+    assert rows[0]["has_change"] == ""
+    assert "changed_mad_before" not in rows[0]  # no masked metrics without labels
+    grouped = json.loads((out_dir / "grouped_summary.json").read_text(encoding="utf-8"))
+    assert grouped["labels_available"] is False
+    assert grouped["has_change"] == {}
+
+
+def test_levir_bootstrap_deterministic_and_calibration(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    import scripts.evaluate_levir_harmonization as levir_module
+
+    values = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]
+    first = levir_module._bootstrap_ci(values)
+    second = levir_module._bootstrap_ci(values)
+    assert first == second  # fixed seed, deterministic
+    root = tmp_path / "root"
+    _make_levir_pair(root, "test", "c_001.png")
+    _make_levir_pair(root, "test", "c_002.png", t1_value=95, t2_value=155)
+    code = _run_levir_eval(
+        monkeypatch, capsys,
+        ["--root", str(root), "--split", "test", "--output-dir", str(tmp_path / "out"),
+         "--write-calibration"],
+    )
+    assert code == 0
+    calibration = json.loads(
+        (tmp_path / "out" / "calibration.json").read_text(encoding="utf-8")
+    )
+    assert calibration["sample_count"] == 2
+    assert set(calibration["pif_ratio"]) == {"p01", "p05", "p50", "p95", "p99"}
+    assert "pif_mad_improvement" in calibration
+    assert "transform_gain_abs_max" in calibration
+    assert calibration["algorithm_version"] != ""
+
+
+def test_levir_evaluator_source_read_only_and_no_model_imports(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Source images stay byte-for-byte unchanged; the script imports no
+    models/application/Judge/legacy packages. 源图像逐字节不变；脚本不 import
+    models/application/Judge/legacy 包。"""
+    import ast
+
+    root = tmp_path / "root"
+    _make_levir_pair(root, "test", "ro_001.png")
+    first_file = root / "images" / "test" / "A" / "ro_001.png"
+    second_file = root / "images" / "test" / "B" / "ro_001.png"
+    first_before = first_file.read_bytes()
+    second_before = second_file.read_bytes()
+    label_before = (root / "labels" / "test" / "ro_001.png").read_bytes()
+    code = _run_levir_eval(
+        monkeypatch, capsys,
+        ["--root", str(root), "--split", "test", "--output-dir", str(tmp_path / "out")],
+    )
+    assert code == 0
+    assert first_file.read_bytes() == first_before
+    assert second_file.read_bytes() == second_before
+    assert (root / "labels" / "test" / "ro_001.png").read_bytes() == label_before
+    # no model/application/judge/legacy imports / 无模型/应用/Judge/旧包导入
+    tree = ast.parse(
+        Path("scripts/evaluate_levir_harmonization.py").read_text(encoding="utf-8")
+    )
+    forbidden = {"models", "application", "evaluation", "workflows", "spacers_agent", "eval"}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert alias.name.split(".")[0] not in forbidden, alias.name
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            assert node.module.split(".")[0] not in forbidden, node.module
