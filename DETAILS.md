@@ -6,7 +6,7 @@
 
 | 文件 | 职责 |
 |---|---|
-| `architecture/allowed_python_files.txt` | **最终架构批准路径**（冻结）：整个新架构最终允许出现的全部 Python 路径；未创建的未来路径不代表已实现；Task 11H 已批准数据集工具未来路径（data/downloader.py、data/loader.py、application/commands/download_data.py，边界见 docs/architecture/11H_DATASET_UTILITY_PATHS.md，不实现） |
+| `architecture/allowed_python_files.txt` | **最终架构批准路径**（冻结）：整个新架构最终允许出现的全部 Python 路径；未创建的未来路径不代表已实现；Task 11H 已批准数据集工具未来路径（data/downloader.py、data/loader.py、application/commands/download_data.py，边界见 docs/architecture/11H_DATASET_UTILITY_PATHS.md，不实现）；Task 11I 已批准 LEVIR 协调评估器脚本路径（scripts/evaluate_levir_harmonization.py，边界见 docs/architecture/11I_LEVIR_HARMONIZATION_EVALUATOR.md，不实现） |
 | `architecture/implementation_status.json` | **当前实际实现状态**：implemented_files（存在且非空）与 pending_files；实际生产 .py 必须被精确声明 |
 | `architecture/ALLOWLIST_CHANGE_POLICY.md` | 白名单变更政策（普通任务禁止修改白名单） |
 

@@ -256,6 +256,7 @@ tests/models/test_response_cache.py
 
 # === Migration tooling ===
 scripts/generate_migration_fixtures.py
+scripts/evaluate_levir_harmonization.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py
