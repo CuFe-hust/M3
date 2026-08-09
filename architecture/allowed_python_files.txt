@@ -60,6 +60,7 @@ agents/visual_base.py
 agents/counting/__init__.py
 agents/counting/schema.py
 agents/counting/settings.py
+agents/counting/expert_catalog.py
 agents/counting/agent.py
 agents/counting/target_parser.py
 agents/counting/geometry.py
@@ -70,6 +71,7 @@ agents/counting/backends/__init__.py
 agents/counting/backends/base.py
 agents/counting/backends/registry.py
 agents/counting/backends/selector.py
+agents/counting/backends/semantic_segmentation.py
 agents/counting/backends/qwen_point.py
 agents/counting/backends/quantity_proposal.py
 agents/counting/backends/yolo_adapter.py
@@ -190,8 +192,10 @@ tests/agents/counting/test_evidence.py
 tests/agents/counting/test_executor.py
 tests/agents/counting/test_point_pipeline.py
 tests/agents/counting/test_backend_registry.py
+tests/agents/counting/test_expert_catalog.py
 tests/agents/counting/test_qwen_point_backend.py
 tests/agents/counting/test_quantity_proposal_backend.py
+tests/agents/counting/test_semantic_segmentation_backend.py
 tests/agents/counting/test_yolo_adapter.py
 tests/agents/counting/test_yolo_runtime.py
 tests/agents/change/test_pair_validator.py
@@ -255,6 +259,7 @@ tests/models/test_qwen_client_offline.py
 tests/models/test_request_sanitization.py
 tests/models/test_response_cache.py
 tests/models/test_segformer_runtime.py
+tests/models/test_segformer_transformers.py
 
 # === Migration tooling ===
 scripts/generate_migration_fixtures.py
