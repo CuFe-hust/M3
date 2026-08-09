@@ -28,6 +28,7 @@ dev = [
 yolo = ["ultralytics==8.4.102"]
 yolo-onnx = ["onnxruntime-gpu>=1.23", "numpy>=1.26", "opencv-python>=4.8"]
 segformer = ["torch>=2.2", "transformers>=5.7.0", "safetensors>=0.4"]
+change-semantic = ["torch>=2.2", "transformers>=5.7.0", "safetensors>=0.4"]
 qwen35-gb10 = ["huggingface-hub>=1.0.0", "kernels>=0.15.2,<0.16.0"]
 
 [tool.setuptools.packages.find]

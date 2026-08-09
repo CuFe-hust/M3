@@ -1,7 +1,9 @@
 # Local model asset manifest
 
-Binary weights are local-only and ignored by Git. Logical IDs are portable;
-physical checkpoint paths are supplied by application configuration.
+Binary weights are local-only by default. The two SegFormer checkpoints listed
+below are explicit Git LFS assets: Git stores pointers while an LFS checkout
+materializes the binaries in the worktree. Logical IDs are portable; physical
+checkpoint paths are supplied by application configuration.
 
 | Model | Logical ID | Task | Dataset | Local asset | Runtime | SHA256 | Source |
 |---|---|---|---|---|---|---|---|
@@ -11,7 +13,8 @@ physical checkpoint paths are supplied by application configuration.
 | Qwen3-VL 4B | `Qwen/Qwen3-VL-4B-Instruct` | main-flow VLM | — | configurable external checkpoint | Transformers | revision-based | Spark checkpoint verified |
 | Qwen3.5 9B | `Qwen/Qwen3.5-9B` | main-flow VLM | — | configurable external checkpoint | Transformers | revision-based | Spark checkpoint and invocation verified |
 
-The iSAID `classes.json` mapping is checkpoint metadata and is authoritative.
-The OEM source asset contains only placeholder `LABEL_0..8` labels in
-`config.json`; the runtime preserves those labels rather than guessing a
-human-readable order.
+The iSAID `classes.json` mapping is the only authoritative class-name source;
+placeholder `LABEL_*` values in `config.json` must never replace it. The OEM
+asset has no equivalent authoritative class file, so its class names are
+unknown (`None`/empty) even though its output-channel dimension remains usable.
+Placeholder labels must not be published as semantic metadata.

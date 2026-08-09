@@ -23,7 +23,7 @@ from models.base import (
     ModelAssetPointerError,
 )
 from models.segformer_transformers import SegFormerRuntime
-from models.settings import SegFormerSettings
+from models.settings import ModelSettings, SegFormerSettings
 
 
 _ISAID_LABELS = (
@@ -134,6 +134,46 @@ def test_import_is_lazy_and_does_not_load_heavy_runtimes() -> None:
         text=True,
     )
     assert result.stdout.strip() == "[]"
+
+
+def test_core_models_import_does_not_load_torch_or_transformers() -> None:
+    script = (
+        "import sys; import models; "
+        "print(sorted({'torch','transformers'} & set(sys.modules)))"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.stdout.strip() == "[]"
+
+
+def test_model_settings_declare_authoritative_classes_without_filesystem_access(
+    tmp_path: Path,
+) -> None:
+    settings = ModelSettings()
+    assert settings.segformer_isaid.classes_filename == "classes.json"
+    assert settings.segformer_oem.classes_filename is None
+    assert settings.segformer_isaid.allow_download is False
+    assert settings.segformer_oem.allow_download is False
+    assert str(settings.segformer_isaid.model_path) not in (
+        settings.segformer_isaid.logical_model_id
+    )
+
+    missing = SegFormerSettings(
+        model_path=tmp_path / "missing-checkpoint",
+        logical_model_id="segformer-missing-test",
+        classes_filename="missing-classes.json",
+    )
+    assert missing.classes_filename == "missing-classes.json"
+
+
+def test_classes_filename_does_not_change_logical_model_identity() -> None:
+    with_classes = SegFormerSettings(classes_filename="classes.json")
+    without_classes = SegFormerSettings(classes_filename=None)
+    assert with_classes.logical_model_id == without_classes.logical_model_id
 
 
 def test_predict_wraps_preprocess_inference_and_class_mapping(tmp_path: Path) -> None:

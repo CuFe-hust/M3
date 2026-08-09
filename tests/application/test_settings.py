@@ -33,6 +33,11 @@ def test_default_settings() -> None:
     assert settings.models.segformer_oem.model_path == Path(
         "models/segformer_mitb2_oem"
     )
+    assert settings.models.segformer_isaid.logical_model_id == (
+        "SegFormer-MiT-B2:iSAID:local"
+    )
+    assert settings.models.segformer_isaid.classes_filename == "classes.json"
+    assert settings.models.segformer_oem.classes_filename is None
     assert settings.backend.yolo.enabled is False
     assert settings.agents.counting.default_backend == "auto"
 
@@ -54,6 +59,36 @@ router:
     assert settings.models.qwen.model == "qwen3-vl-4b-instruct"
     assert settings.runs.root == Path("outputs/custom")
     assert settings.router.confidence_threshold == 0.8
+
+
+def test_segformer_yaml_round_trip_keeps_physical_and_logical_identity_separate(
+    tmp_path: Path,
+) -> None:
+    path = _yaml_path(
+        tmp_path,
+        """
+models:
+  segformer_isaid:
+    model_path: C:\\checkpoints\\segformer-isaid
+    logical_model_id: segformer-mitb2-isaid-test
+    classes_filename: missing-classes.json
+""",
+    )
+    settings = load_settings(path, environ={})
+    assert settings.models.segformer_isaid.model_path == Path(
+        r"C:\checkpoints\segformer-isaid"
+    )
+    assert settings.models.segformer_isaid.logical_model_id == (
+        "segformer-mitb2-isaid-test"
+    )
+    snapshot = settings.safe_snapshot()
+    assert snapshot["models"]["segformer_isaid"]["model_path"] == (
+        "C:/checkpoints/segformer-isaid"
+    )
+    assert snapshot["models"]["segformer_isaid"]["logical_model_id"] == (
+        "segformer-mitb2-isaid-test"
+    )
+    assert AppSettings.model_validate(snapshot).safe_snapshot() == snapshot
 
 
 def test_load_settings_env_overrides(tmp_path: Path) -> None:

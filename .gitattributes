@@ -1,0 +1,2 @@
+models/segformer_mitb2_isaid/model.safetensors filter=lfs diff=lfs merge=lfs -text
+models/segformer_mitb2_oem/model.safetensors filter=lfs diff=lfs merge=lfs -text

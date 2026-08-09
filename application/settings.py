@@ -102,6 +102,17 @@ class AppSettings(BaseModel):
         payload = self.model_dump(mode="json")
         payload["runs"]["root"] = _posix(self.runs.root)
         payload["paths"]["dataset_root"] = _posix(self.paths.dataset_root)
+        for profile_name, profile in (
+            ("segformer_isaid", self.models.segformer_isaid),
+            ("segformer_oem", self.models.segformer_oem),
+        ):
+            payload["models"][profile_name]["model_path"] = _posix(
+                profile.model_path
+            )
+            if profile.processor_path is not None:
+                payload["models"][profile_name]["processor_path"] = _posix(
+                    profile.processor_path
+                )
         return payload
 
     def safe_snapshot(self) -> dict[str, Any]:

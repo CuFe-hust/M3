@@ -6,7 +6,7 @@ models:
     logical_model_id: SegFormer-MiT-B2:iSAID:local
     weights_filename: model.safetensors
     weights_sha256: f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a
-    classes_filename: classes.json
+    classes_filename: classes.json  # authoritative iSAID names
     device: auto
     dtype: auto
     allow_download: false
@@ -15,7 +15,7 @@ models:
     logical_model_id: SegFormer-MiT-B2:OpenEarthMap:local
     weights_filename: model.safetensors
     weights_sha256: d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab
-    classes_filename: null
+    classes_filename: null  # OEM has no authoritative class names
     device: auto
     dtype: auto
     allow_download: false

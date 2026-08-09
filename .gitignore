@@ -25,11 +25,13 @@ runs/
 .env.local
 /secrets.txt
 
-# Model weights (local only, never commit)
+# Model weights are local by default. Explicit exceptions below are Git LFS assets.
 weights/
 *.pt
 *.pth
 *.safetensors
+!models/segformer_mitb2_isaid/model.safetensors
+!models/segformer_mitb2_oem/model.safetensors
 *.ckpt
 *.bin
 *.onnx
