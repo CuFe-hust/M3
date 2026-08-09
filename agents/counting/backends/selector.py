@@ -1,8 +1,9 @@
-"""Deterministic and auditable counting-backend planning.
+"""Deterministic, capability-based counting backend planning.
 
-确定且可审计的计数后端执行计划。Selector 只基于 mode、task、CountTargetSpec、
-通用 hints 与 backend capability 做选择；backend 类型通过显式 kind 识别，
-绝不从名称推断。源码不包含任何数据集名或问题正则。
+Planning uses only configured/enabled state, explicit backend kind, target
+support, and neutral hints. Runtime availability is deliberately deferred to
+the executor. 规划仅使用配置/启用状态、显式 kind、目标能力和中性 hints；运行时
+可用性由 Executor 验证。
 """
 
 from __future__ import annotations
@@ -21,16 +22,21 @@ from agents.errors import CountingBackendUnavailableError
 
 COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
-# Neutral hints supplied by default when the caller provides none; they enable
-# capability gating without any data-source knowledge.
-# 调用方未提供时的中性默认 hints；它们在无需任何数据来源知识的前提下启用
-# 能力门控。
+# Kind rank is absolute; backend priority only orders experts of the same kind.
+# kind rank 是绝对顺序；backend priority 只在同 kind 专家之间生效。
+KIND_RANK: dict[BackendKind, int] = {
+    "yolo_obb": 400,
+    "semantic_segmentation": 300,
+    "quantity_proposal": 200,
+    "qwen_point": 100,
+}
+
 _DEFAULT_HINTS: dict[str, Any] = {"quantity_estimation": True}
 
 
 class BackendSelector:
-    """Select a backend plan from configured mode and target capability.
-    根据配置模式与目标能力选择后端执行计划。"""
+    """Build a stable ordered backend plan from explicit capabilities.
+    根据显式能力建立稳定的有序 backend plan。"""
 
     def __init__(self, registry: BackendRegistry, *, default_backend: str = "auto") -> None:
         self._registry = registry
@@ -38,10 +44,6 @@ class BackendSelector:
 
     @property
     def default_backend(self) -> str:
-        """Configured default backend mode; public read-only access for
-        trace/reporting without private-field peeking.
-        已配置的默认后端模式；公开只读访问，供 trace/报告使用而无需偷看
-        私有字段。"""
         return self._default_backend
 
     def plan(
@@ -51,66 +53,38 @@ class BackendSelector:
         task: str,
         hints: dict[str, Any] | None = None,
     ) -> BackendPlan | None:
-        """Plan a primary backend before availability checks can hide a bad
-        deployment. Non-counting tasks yield no plan. Auto priority: enabled
-        YOLO → enabled quantity proposal → qwen_point.
-        在可用性检查隐藏部署错误之前规划主后端。非计数任务不产生计划。
-        auto 优先级：已启用 YOLO → 已启用数量提议 → qwen_point。"""
+        """Plan without consulting transient runtime availability.
+        生成计划时不查询临时运行时可用性。"""
+
         if task not in COUNTING_TASKS:
             return None
         effective_hints = hints if hints is not None else _DEFAULT_HINTS
-        yolo_candidates = self._yolo_candidates(target, effective_hints)
+        ordered = self._ordered_candidates(target, effective_hints)
+
         if self._default_backend == "qwen_point":
-            return self._named_plan("qwen_point", (), "explicit_qwen_point", target)
-        if self._default_backend == "yolo_obb":
-            if not yolo_candidates:
-                return self._named_plan(
-                    "qwen_point", (), "explicit_yolo_unsupported_target_qwen", target
-                )
-            selected = max(
-                yolo_candidates, key=lambda backend: (backend.priority, backend.name)
-            )
-            return BackendPlan(
-                selected.name,
-                ("qwen_point",),
-                (
-                    f"task_{task}",
-                    "explicit_yolo",
-                    "highest_priority_supported_yolo",
-                ),
-                self._target_classes(selected, target),
-            )
-        if yolo_candidates:
-            selected = max(
-                yolo_candidates, key=lambda backend: (backend.priority, backend.name)
-            )
-            return BackendPlan(
-                selected.name,
-                ("qwen_point",),
-                (
-                    f"task_{task}",
-                    "target_supported_by_yolo",
-                    "highest_priority_supported_yolo",
-                ),
-                self._target_classes(selected, target),
-            )
-        quantity_candidates = self._quantity_candidates(target, effective_hints)
-        if quantity_candidates:
-            selected = max(
-                quantity_candidates,
-                key=lambda backend: (backend.priority, backend.name),
-            )
-            return BackendPlan(
-                selected.name,
-                (),
-                (
-                    f"task_{task}",
-                    "target_supported_by_quantity_proposal",
-                    "highest_priority_supported_quantity_proposal",
-                ),
-                self._target_classes(selected, target),
-            )
-        return self._named_plan("qwen_point", (), "no_supported_detector_qwen", target)
+            ordered = [item for item in ordered if _validate_kind(item) == "qwen_point"]
+            reason = "explicit_qwen_point"
+        elif self._default_backend == "yolo_obb":
+            yolo = [item for item in ordered if _validate_kind(item) == "yolo_obb"]
+            qwen = [item for item in ordered if _validate_kind(item) == "qwen_point"]
+            ordered = [*yolo, *qwen]
+            reason = "explicit_yolo" if yolo else "explicit_yolo_unsupported_target_qwen"
+        else:
+            reason = self._auto_reason(ordered)
+
+        if not ordered:
+            return None
+        primary = ordered[0]
+        return BackendPlan(
+            primary_backend_name=primary.name,
+            fallback_backend_names=tuple(item.name for item in ordered[1:]),
+            reason_codes=(
+                f"task_{task}",
+                reason,
+                "fixed_kind_rank_then_priority_then_name",
+            ),
+            target_classes=self._target_classes(primary, target),
+        )
 
     def select(
         self,
@@ -119,10 +93,9 @@ class BackendSelector:
         task: str,
         hints: dict[str, Any] | None = None,
     ) -> BackendSelection | None:
-        """Return a single selection for callers that do not need a full plan.
-        Availability is checked here without changing plan-time semantics.
-        为不需要完整计划的调用方返回单一选择。此处检查可用性，但不改变
-        计划期语义。"""
+        """Return one currently available primary for legacy callers.
+        为旧调用方返回当前可用的 primary。"""
+
         plan = self.plan(target, task=task, hints=hints)
         if plan is None:
             return None
@@ -130,58 +103,79 @@ class BackendSelector:
         if not backend.is_available():
             return None
         return BackendSelection(
-            plan.primary_backend_name, plan.reason_codes, plan.target_classes
+            plan.primary_backend_name,
+            plan.reason_codes,
+            plan.target_classes,
         )
 
     def backend_by_name(self, name: str):
-        """Resolve a backend through the registry public API.
-        通过注册表公开 API 解析后端。"""
         backend = self._registry.get(name)
         _validate_kind(backend)
         return backend
+
+    def _ordered_candidates(
+        self,
+        target: CountTargetSpec,
+        hints: dict[str, Any],
+    ) -> list[Any]:
+        candidates: list[Any] = []
+        for backend in self._registry.items():
+            _validate_kind(backend)
+            _validate_plan_contract(backend)
+            try:
+                enabled = backend.is_enabled()
+                supported = backend.supports(target, hints=hints)
+            except Exception as error:
+                raise _invalid_contract_error() from error
+            if not isinstance(enabled, bool) or not isinstance(supported, bool):
+                raise _invalid_contract_error()
+            if enabled and supported:
+                candidates.append(backend)
+        return sorted(
+            candidates,
+            key=lambda backend: (
+                -KIND_RANK[_validate_kind(backend)],
+                -backend.priority,
+                backend.name,
+            ),
+        )
+
+    def _kind_candidates(
+        self,
+        kind: BackendKind,
+        target: CountTargetSpec,
+        hints: dict[str, Any],
+    ) -> list[Any]:
+        return [
+            backend
+            for backend in self._ordered_candidates(target, hints)
+            if _validate_kind(backend) == kind
+        ]
 
     def _yolo_candidates(
         self,
         target: CountTargetSpec,
         hints: dict[str, Any],
     ) -> list[Any]:
-        """Configured, enabled YOLO backends that explicitly support the
-        target. 已配置、启用且明确支持目标的 YOLO 后端。"""
-        return [
-            backend
-            for backend in self._registry.items()
-            if _validate_kind(backend) == "yolo_obb"
-            and backend.is_enabled()
-            and backend.supports(target, hints=hints)
-        ]
+        return self._kind_candidates("yolo_obb", target, hints)
 
     def _quantity_candidates(
         self,
         target: CountTargetSpec,
         hints: dict[str, Any],
     ) -> list[Any]:
-        """Configured, enabled quantity-proposal backends that explicitly
-        support the target. 已配置、启用且明确支持目标的数量提议后端。"""
-        return [
-            backend
-            for backend in self._registry.items()
-            if _validate_kind(backend) == "quantity_proposal"
-            and backend.is_enabled()
-            and backend.supports(target, hints=hints)
-        ]
+        return self._kind_candidates("quantity_proposal", target, hints)
 
-    def _named_plan(
-        self,
-        primary: str,
-        fallbacks: tuple[str, ...],
-        reason: str,
-        target: CountTargetSpec,
-    ) -> BackendPlan | None:
-        try:
-            backend = self.backend_by_name(primary)
-        except KeyError:
-            return None
-        return BackendPlan(primary, fallbacks, (reason,), self._target_classes(backend, target))
+    @staticmethod
+    def _auto_reason(ordered: list[Any]) -> str:
+        if not ordered:
+            return "no_supported_backend"
+        return {
+            "yolo_obb": "target_supported_by_yolo",
+            "semantic_segmentation": "target_supported_by_semantic_segmentation",
+            "quantity_proposal": "target_supported_by_quantity_proposal",
+            "qwen_point": "no_supported_specialist_qwen",
+        }[_validate_kind(ordered[0])]
 
     @staticmethod
     def _target_classes(backend: object, target: CountTargetSpec) -> tuple[str, ...]:
@@ -192,10 +186,9 @@ class BackendSelector:
 
 
 def _validate_kind(backend: object) -> BackendKind:
-    """Require an explicit, known backend kind; unknown kinds fail with a
-    fixed public message that never echoes raw name/kind values.
-    要求显式、已知的后端 kind；未知 kind 以固定公共消息失败，绝不回显原始
-    name/kind 值。"""
+    """Require an explicit known kind without echoing hostile values.
+    要求显式且已知的 kind，不回显不可信值。"""
+
     kind = getattr(backend, "kind", None)
     if kind not in KNOWN_BACKEND_KINDS:
         raise CountingBackendUnavailableError(
@@ -204,3 +197,23 @@ def _validate_kind(backend: object) -> BackendKind:
             reason_code="INVALID_BACKEND_KIND",
         )
     return kind  # type: ignore[return-value]
+
+
+def _validate_plan_contract(backend: object) -> None:
+    if (
+        not isinstance(getattr(backend, "name", None), str)
+        or not getattr(backend, "name", "").strip()
+        or not isinstance(getattr(backend, "priority", None), int)
+        or isinstance(getattr(backend, "priority", None), bool)
+        or not callable(getattr(backend, "is_enabled", None))
+        or not callable(getattr(backend, "supports", None))
+    ):
+        raise _invalid_contract_error()
+
+
+def _invalid_contract_error() -> CountingBackendUnavailableError:
+    return CountingBackendUnavailableError(
+        "unknown-target",
+        primary_backend="unknown-backend",
+        reason_code="INVALID_BACKEND_CONTRACT",
+    )

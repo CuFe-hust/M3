@@ -20,6 +20,7 @@ from agents.base import AgentContext, AgentExecution
 from agents.counting.backends.base import BackendPlan, CountingRequest
 from agents.counting.backends.registry import BackendRegistry
 from agents.counting.backends.selector import BackendSelector
+from agents.counting.expert_catalog import ExpertCatalog
 from agents.counting.executor import (
     CountingExecutionPolicy,
     CountingExecutionResult,
@@ -59,10 +60,13 @@ class CountingAgent:
         fallback_to_qwen_on_error: bool = True,
         verify_empty_with_qwen: bool = True,
         trust_empty_detection: bool = False,
+        verify_empty_semantic_with_vlm: bool = False,
+        expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
         self._target_prompt = target_prompt
         self._target_prompt_version = target_prompt_version
+        self._expert_catalog = expert_catalog
         self._selector = BackendSelector(
             backend_registry, default_backend=default_backend
         )
@@ -73,6 +77,7 @@ class CountingAgent:
                 fallback_to_qwen_on_error=fallback_to_qwen_on_error,
                 verify_empty_with_qwen=verify_empty_with_qwen,
                 trust_empty_detection=trust_empty_detection,
+                verify_empty_semantic_with_vlm=verify_empty_semantic_with_vlm,
             ),
         )
 
@@ -101,6 +106,8 @@ class CountingAgent:
                 self.name, sample.sample_id, cause="TARGET_PARSE_FAILED"
             ) from exc
         hints: dict[str, Any] = {"quantity_estimation": True}
+        if self._expert_catalog is not None:
+            hints.update(self._expert_catalog.target_hints(target))
         plan = self._selector.plan(target, task=sample.task, hints=hints)
         if plan is None:
             raise CountingBackendUnavailableError(
@@ -161,13 +168,20 @@ class CountingAgent:
             "route": "CountingAgent.run -> BackendSelector.plan -> " + " -> ".join(attempted),
             "requested_backend_mode": self._selector.default_backend,
             "primary_backend": state.primary_backend,
+            "primary": state.primary_backend,
             "primary_backend_kind": state.primary_kind,
             "review_backend": state.review_backend,
+            "review_error_type": state.review_error_type,
             "final_backend": state.final_backend,
+            "final": state.final_backend,
             "final_backend_kind": state.final_kind,
             "executed_backend": state.final_backend,
             "backend": state.final_backend,
+            "candidate_backends": list(state.candidate_backends),
             "attempted_backends": attempted,
+            "fallback_history": [
+                entry.to_trace() for entry in state.fallback_history
+            ],
             "selection_reason": list(plan.reason_codes),
             "target": target.canonical_label,
             "target_classes": list(plan.target_classes),

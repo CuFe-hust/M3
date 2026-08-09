@@ -22,6 +22,7 @@ from agents.counting.backends.base import (
 )
 from agents.counting.backends.registry import BackendRegistry
 from agents.counting.backends.qwen_point import QwenPointCountingBackend
+from agents.counting.expert_catalog import ExpertCatalog
 from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
 from agents.counting.settings import CountingSettings
 from agents.errors import (
@@ -112,6 +113,7 @@ class _FakeYoloBackend:
     def __init__(self, error: Exception | None = None, final_count: int = 1) -> None:
         self._error = error
         self._final_count = final_count
+        self.last_hints: Any | None = None
 
     def is_enabled(self) -> bool:
         return True
@@ -120,6 +122,7 @@ class _FakeYoloBackend:
         return True
 
     def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
+        self.last_hints = hints
         return True
 
     def trace_profile(self) -> dict[str, object]:
@@ -473,6 +476,30 @@ def test_agent_has_no_dataset_branch_or_judge() -> None:
     assert "report" not in source.casefold()
 
 
+def test_agent_injects_catalog_target_hints_without_model_selection(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    _image(root)
+    client = _FakeClient()
+    yolo = _FakeYoloBackend(final_count=1)
+    catalog = ExpertCatalog.load(
+        REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
+    )
+    registry = _registry(_qwen_backend(client), yolo)
+
+    asyncio.run(
+        _agent(client, registry, expert_catalog=catalog).run(
+            _sample(root),
+            _context(root),
+        )
+    )
+
+    assert yolo.last_hints["canonical_label"] == "small-vehicle"
+    assert yolo.last_hints["countable"] is True
+    forbidden = {"selected_model", "selected_backend", "checkpoint"}
+    assert forbidden.isdisjoint(CountTargetSpec.model_fields)
+    assert forbidden.isdisjoint(yolo.last_hints)
+
+
 # ── 全路径主输出契约 / primary payload across all paths (25.5) ───────────
 
 
@@ -667,17 +694,28 @@ def test_quantity_proposal_positive_result_payload(tmp_path: Path) -> None:
     assert "agent_result.json" in execution2.additional_results
 
 
-def test_quantity_proposal_runtime_error_is_agent_error(tmp_path: Path) -> None:
-    """Quantity proposal runtime errors become AgentExecutionError and never
-    take the detector fallback path. 数量提议运行时错误转换为
-    AgentExecutionError，绝不走检测器回退路径。"""
+def test_quantity_proposal_runtime_error_falls_back_to_qwen(tmp_path: Path) -> None:
+    """Quantity runtime failures continue through the ordered chain.
+    Quantity 运行时失败会继续执行有序候选链。"""
     root = tmp_path / "data"
     _image(root)
     client = _FakeClient()
     quantity = _FakeQuantityProposalBackend(error=RuntimeError("proposal boom"))
     registry = _registry(_qwen_backend(client), quantity)
-    with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
-        asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    execution = asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
+    assert execution.trace["final_backend"] == "qwen_point"
+    assert execution.trace["attempted_backends"] == [
+        "quantity_proposal",
+        "qwen_point",
+    ]
+    assert execution.trace["fallback_history"] == [
+        {
+            "backend": "quantity_proposal",
+            "kind": "quantity_proposal",
+            "reason_code": "BACKEND_RUNTIME_ERROR",
+            "error_type": "RuntimeError",
+        }
+    ]
 
 
 _SENSITIVE_ERROR_TEXT = (
@@ -699,18 +737,13 @@ def test_public_error_and_trace_are_sanitized(tmp_path: Path) -> None:
     client = _FakeClient()
     quantity = _FakeQuantityProposalBackend(error=RuntimeError(_SENSITIVE_ERROR_TEXT))
     registry = _registry(_qwen_backend(client), quantity)
-    with pytest.raises(AgentExecutionError) as info:
-        asyncio.run(_agent(client, registry).run(_sample(root), _context(root)))
-    # The public message carries only the stable cause code; the raw exception
-    # text stays in __cause__ (standard chaining) but never in the message.
-    # 公共消息只携带稳定 cause code；原始异常文本保留在 __cause__（标准
-    # chaining），绝不进入消息。
-    public_text = str(info.value)
-    assert public_text == (
-        "Agent 'counting_agent' failed on sample 's1': PRIMARY_BACKEND_FAILED"
+    execution = asyncio.run(
+        _agent(client, registry).run(_sample(root), _context(root))
     )
+    assert execution.trace["final_backend"] == "qwen_point"
+    assert execution.trace["fallback_history"][0]["error_type"] == "RuntimeError"
     for token in ("/home/user/private", "sk-test-secret", "Bearer abcdef", "base64,AAAA"):
-        assert token not in public_text, token
+        assert token not in str(execution.trace), token
 
     # A successful run with a backend trace must also stay clean.
     # 成功运行的后端 trace 同样保持干净。

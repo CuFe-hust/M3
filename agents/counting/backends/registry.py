@@ -64,6 +64,24 @@ class BackendRegistry:
             and backend.supports(target, hints=hints)
         ]
 
+    def list_configured(
+        self,
+        target: CountTargetSpec,
+        *,
+        hints: Any | None = None,
+        exclude_names: frozenset[str] = frozenset(),
+    ) -> list[CountingBackend]:
+        """Return enabled explicit supporters without checking availability.
+        返回已启用且明确支持目标的 backend，不检查运行时可用性。"""
+
+        return [
+            backend
+            for backend in self._backends
+            if backend.name not in exclude_names
+            and backend.is_enabled()
+            and backend.supports(target, hints=hints)
+        ]
+
     def items(self) -> tuple[CountingBackend, ...]:
         """Return registered backends in stable registration order without
         exposing registry storage. 按稳定注册顺序返回后端，不暴露内部存储。"""

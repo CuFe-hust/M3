@@ -117,15 +117,22 @@ class _FakeYoloBackend:
     kind = "yolo_obb"
     priority = 100
 
-    def __init__(self, error: Exception | None = None, final_count: int = 1) -> None:
+    def __init__(
+        self,
+        error: Exception | None = None,
+        final_count: int = 1,
+        *,
+        available: bool = True,
+    ) -> None:
         self._error = error
         self._final_count = final_count
+        self._available = available
 
     def is_enabled(self) -> bool:
         return True
 
     def is_available(self) -> bool:
-        return True
+        return self._available
 
     def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
         return True
@@ -188,15 +195,22 @@ class _FakeQuantityProposalBackend:
     kind = "quantity_proposal"
     priority = 5
 
-    def __init__(self, final_count: int = 0, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        final_count: int = 0,
+        error: Exception | None = None,
+        *,
+        available: bool = True,
+    ) -> None:
         self._final_count = final_count
         self._error = error
+        self._available = available
 
     def is_enabled(self) -> bool:
         return True
 
     def is_available(self) -> bool:
-        return True
+        return self._available
 
     def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
         return True
@@ -251,6 +265,12 @@ class _FakeQuantityProposalBackend:
 class _UnknownKindBackend(_FakeYoloBackend):
     name = "mystery"
     kind = "mystery_kind"
+
+
+class _FakeSemanticBackend(_FakeQuantityProposalBackend):
+    name = "segmenter-a"
+    kind = "semantic_segmentation"
+    priority = 100
 
 
 class _FakeRaisingQwenBackend:
@@ -326,6 +346,7 @@ def _executor(
     fallback_to_qwen_on_error: bool = True,
     verify_empty_with_qwen: bool = True,
     trust_empty_detection: bool = False,
+    verify_empty_semantic_with_vlm: bool = False,
 ) -> CountingPlanExecutor:
     selector = BackendSelector(_registry(*backends))
     return CountingPlanExecutor(
@@ -335,6 +356,7 @@ def _executor(
             fallback_to_qwen_on_error=fallback_to_qwen_on_error,
             verify_empty_with_qwen=verify_empty_with_qwen,
             trust_empty_detection=trust_empty_detection,
+            verify_empty_semantic_with_vlm=verify_empty_semantic_with_vlm,
         ),
     )
 
@@ -462,6 +484,114 @@ def test_failing_fallback_backend_raises_fallback_backend_failed(tmp_path: Path)
         _run(executor, BackendPlan("det-a", ("qwen_point",)), tmp_path)
 
 
+def test_yolo_unavailable_advances_to_semantic(tmp_path: Path) -> None:
+    semantic = _FakeSemanticBackend(final_count=2)
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), semantic, _FakeYoloBackend(available=False)),
+        BackendPlan("det-a", ("segmenter-a", "qwen_point")),
+        tmp_path,
+    )
+
+    assert result.final_backend == "segmenter-a"
+    assert result.attempted_backends == ("det-a", "segmenter-a")
+    assert [item.to_trace() for item in result.fallback_history] == [
+        {
+            "backend": "det-a",
+            "kind": "yolo_obb",
+            "reason_code": "BACKEND_UNAVAILABLE",
+            "error_type": "BackendUnavailable",
+        }
+    ]
+
+
+def test_yolo_runtime_error_advances_to_semantic(tmp_path: Path) -> None:
+    result = _run(
+        _executor(
+            _qwen_backend(_FakeClient()),
+            _FakeSemanticBackend(final_count=1),
+            _FakeYoloBackend(error=RuntimeError("detector failed")),
+        ),
+        BackendPlan("det-a", ("segmenter-a", "qwen_point")),
+        tmp_path,
+    )
+
+    assert result.final_backend == "segmenter-a"
+    assert result.fallback_history[0].error_type == "RuntimeError"
+
+
+@pytest.mark.parametrize(
+    "semantic",
+    [
+        _FakeSemanticBackend(available=False),
+        _FakeSemanticBackend(error=RuntimeError("semantic failed")),
+    ],
+)
+def test_semantic_failure_advances_to_quantity(
+    semantic: _FakeSemanticBackend,
+    tmp_path: Path,
+) -> None:
+    result = _run(
+        _executor(
+            _qwen_backend(_FakeClient()),
+            _FakeQuantityProposalBackend(final_count=3),
+            semantic,
+        ),
+        BackendPlan("segmenter-a", ("quantity_proposal", "qwen_point")),
+        tmp_path,
+    )
+
+    assert result.final_backend == "quantity_proposal"
+    assert result.attempted_backends == ("segmenter-a", "quantity_proposal")
+
+
+def test_all_specialists_fail_before_qwen(tmp_path: Path) -> None:
+    result = _run(
+        _executor(
+            _qwen_backend(_FakeClient()),
+            _FakeYoloBackend(error=RuntimeError("yolo")),
+            _FakeSemanticBackend(error=RuntimeError("semantic")),
+            _FakeQuantityProposalBackend(error=RuntimeError("quantity")),
+        ),
+        BackendPlan(
+            "det-a",
+            ("segmenter-a", "quantity_proposal", "qwen_point"),
+        ),
+        tmp_path,
+    )
+
+    assert result.final_backend == "qwen_point"
+    assert result.attempted_backends == (
+        "det-a",
+        "segmenter-a",
+        "quantity_proposal",
+        "qwen_point",
+    )
+    assert [item.backend for item in result.fallback_history] == [
+        "det-a",
+        "segmenter-a",
+        "quantity_proposal",
+    ]
+
+
+def test_qwen_failure_after_all_specialists_is_terminal(tmp_path: Path) -> None:
+    executor = _executor(
+        _FakeRaisingQwenBackend(RuntimeError("qwen")),
+        _FakeYoloBackend(error=RuntimeError("yolo")),
+        _FakeSemanticBackend(error=RuntimeError("semantic")),
+        _FakeQuantityProposalBackend(error=RuntimeError("quantity")),
+    )
+
+    with pytest.raises(AgentExecutionError, match="FALLBACK_BACKEND_FAILED"):
+        _run(
+            executor,
+            BackendPlan(
+                "det-a",
+                ("segmenter-a", "quantity_proposal", "qwen_point"),
+            ),
+            tmp_path,
+        )
+
+
 # ── zero review / 零计数复核 ──────────────────────────────────────────────
 
 
@@ -487,6 +617,51 @@ def test_zero_review_overrides_detector_zero(tmp_path: Path) -> None:
     assert result.fallback_reason_code == "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
     assert result.attempted_backends == ("det-a", "qwen_point")
     assert result.outcome.counting.final_count == 1
+
+
+def test_yolo_zero_uses_next_semantic_expert_for_review(tmp_path: Path) -> None:
+    result = _run(
+        _executor(
+            _qwen_backend(_FakeClient()),
+            _FakeSemanticBackend(final_count=2),
+            _FakeYoloBackend(final_count=0),
+        ),
+        BackendPlan("det-a", ("segmenter-a", "qwen_point")),
+        tmp_path,
+    )
+
+    assert result.review_backend == "segmenter-a"
+    assert result.final_backend == "segmenter-a"
+    assert result.outcome.counting.final_count == 2
+    assert result.fallback_kind == "zero_review"
+
+
+def test_semantic_zero_review_requires_explicit_policy(tmp_path: Path) -> None:
+    semantic = _FakeSemanticBackend(final_count=0)
+    quantity = _FakeQuantityProposalBackend(final_count=2)
+    plan = BackendPlan("segmenter-a", ("quantity_proposal", "qwen_point"))
+
+    retained = _run(
+        _executor(_qwen_backend(_FakeClient()), quantity, semantic),
+        plan,
+        tmp_path,
+    )
+    reviewed = _run(
+        _executor(
+            _qwen_backend(_FakeClient()),
+            quantity,
+            semantic,
+            verify_empty_semantic_with_vlm=True,
+        ),
+        plan,
+        tmp_path,
+    )
+
+    assert retained.final_backend == "segmenter-a"
+    assert retained.outcome.counting.final_count == 0
+    assert reviewed.review_backend == "quantity_proposal"
+    assert reviewed.final_backend == "quantity_proposal"
+    assert reviewed.outcome.counting.final_count == 2
 
 
 def test_zero_review_confirms_zero_retains_detector(tmp_path: Path) -> None:
@@ -547,24 +722,24 @@ def test_zero_review_disabled_skips_verification(tmp_path: Path) -> None:
 # ── 边界 / boundaries ──────────────────────────────────────────────────────
 
 
-def test_non_detector_unavailable_error_never_falls_back(tmp_path: Path) -> None:
-    """Quantity proposal is not a detector: an unavailable-type error from it
-    must fail instead of taking the detector fallback path.
-    数量提议不是检测器：来自它的 unavailable 类错误必须失败，绝不走检测器
-    回退路径。"""
+def test_quantity_unavailable_falls_back_to_qwen(tmp_path: Path) -> None:
+    """Every specialist may advance to Qwen when unavailable.
+    每种 specialist 不可用时都可以继续到 Qwen。"""
     quantity = _FakeQuantityProposalBackend(
         error=DetectorWeightsMissingError("quantity_proposal", "det.pt")
     )
     executor = _executor(_qwen_backend(_FakeClient()), quantity)
-    with pytest.raises(CountingBackendUnavailableError, match="PRIMARY_BACKEND_UNAVAILABLE"):
-        _run(executor, BackendPlan("quantity_proposal", ("qwen_point",)), tmp_path)
+    result = _run(executor, BackendPlan("quantity_proposal", ("qwen_point",)), tmp_path)
+    assert result.final_backend == "qwen_point"
+    assert result.fallback_history[0].reason_code == "BACKEND_UNAVAILABLE"
 
 
-def test_non_detector_runtime_error_never_falls_back(tmp_path: Path) -> None:
+def test_quantity_runtime_error_falls_back_to_qwen(tmp_path: Path) -> None:
     quantity = _FakeQuantityProposalBackend(error=RuntimeError("proposal boom"))
     executor = _executor(_qwen_backend(_FakeClient()), quantity)
-    with pytest.raises(AgentExecutionError, match="PRIMARY_BACKEND_FAILED"):
-        _run(executor, BackendPlan("quantity_proposal", ("qwen_point",)), tmp_path)
+    result = _run(executor, BackendPlan("quantity_proposal", ("qwen_point",)), tmp_path)
+    assert result.final_backend == "qwen_point"
+    assert result.fallback_history[0].reason_code == "BACKEND_RUNTIME_ERROR"
 
 
 def test_invalid_backend_kind_raises_stable_error(tmp_path: Path) -> None:

@@ -57,17 +57,22 @@ class _FakeBackend:
         name: str,
         *,
         priority: int = 100,
+        enabled: bool = True,
         available: bool = True,
         supported_targets: tuple[str, ...] = ("car",),
         load_log: list[str] | None = None,
     ) -> None:
         self.name = name
         self.priority = priority
+        self._enabled = enabled
         self._available = available
         self._supported = set(supported_targets)
         self.supports_calls: list[tuple[str, Any]] = []
         if load_log is not None:
             load_log.append(name)
+
+    def is_enabled(self) -> bool:
+        return self._enabled
 
     def is_available(self) -> bool:
         return self._available
@@ -173,6 +178,16 @@ def test_registry_list_available_filters() -> None:
     assert [b.name for b in hits] == ["qwen_point"]
     # exclude_names removes candidates. / exclude_names 排除候选。
     assert registry.list_available(_TARGET, exclude_names=frozenset({"qwen_point"})) == []
+
+
+def test_registry_list_configured_ignores_runtime_availability() -> None:
+    registry = BackendRegistry()
+    configured = _FakeBackend("configured", available=False)
+    disabled = _FakeBackend("disabled", enabled=False)
+    registry.register(configured)
+    registry.register(disabled)
+
+    assert registry.list_configured(_TARGET) == [configured]
 
 
 def test_registry_supports_receives_neutral_hints() -> None:

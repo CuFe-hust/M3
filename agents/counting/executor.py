@@ -1,9 +1,9 @@
-"""Runtime execution of an approved counting backend plan.
+"""Ordered execution of a capability-based counting backend plan.
 
-执行已选定 BackendPlan 的运行时执行器。Executor 负责 primary backend 调用、
-detector unavailable/runtime 回退、detector zero review 与结构化执行结果；
-它不负责 target 解析、backend 规划或 AgentExecution 包装。所有公共错误为
-稳定错误，结果对象绝不携带原始异常文本、绝对路径、密钥或 Base64。
+Specialist failures advance through the declared chain; Qwen and invalid
+contracts are terminal. Zero is always valid and only enters explicit review.
+专家失败时按声明顺序继续；Qwen 与非法契约为终止错误。零始终是合法结果，
+只能由显式复核策略触发额外调用。
 """
 
 from __future__ import annotations
@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from agents.base import AgentContext
 from agents.counting.backends.base import (
+    KNOWN_BACKEND_KINDS,
     BackendKind,
     BackendPlan,
     CountingBackendOutcome,
@@ -30,8 +31,6 @@ from agents.errors import (
 )
 from agents.schema import AgentName
 
-# Detector-loading failures that make a YOLO primary backend unavailable.
-# 使 YOLO 主后端不可用的检测器加载失败类型。
 _UNAVAILABLE_ERRORS = (
     DetectorWeightsMissingError,
     DetectorWeightsHashMismatchError,
@@ -40,30 +39,53 @@ _UNAVAILABLE_ERRORS = (
     DetectorClassMapMismatchError,
 )
 
+
 @dataclass(frozen=True)
 class CountingExecutionPolicy:
-    """Execution knobs deciding when a detector may fall back or be reviewed.
-    决定检测器何时允许回退或复核的执行开关。"""
+    """Explicit fallback and zero-review switches.
+    显式 fallback 与 zero-review 开关。"""
 
     fallback_to_qwen_on_unavailable: bool
     fallback_to_qwen_on_error: bool
     verify_empty_with_qwen: bool
     trust_empty_detection: bool
+    verify_empty_semantic_with_vlm: bool = False
+
+
+@dataclass(frozen=True)
+class BackendFailureRecord:
+    """One path-free failed attempt suitable for public trace.
+    一条不含路径的失败尝试，可安全写入公共 trace。"""
+
+    backend: str
+    kind: BackendKind
+    reason_code: str
+    error_type: str
+
+    def to_trace(self) -> dict[str, str]:
+        return {
+            "backend": self.backend,
+            "kind": self.kind,
+            "reason_code": self.reason_code,
+            "error_type": self.error_type,
+        }
 
 
 @dataclass(frozen=True)
 class CountingExecutionResult:
-    """Full structured state of one plan execution; every public trace field is
-    derived from these attributes. 一次计划执行的完整结构化状态；所有公开
-    trace 字段都可由这些属性导出。"""
+    """Structured execution state used to build the public agent trace.
+    用于构建公共 Agent trace 的结构化执行状态。"""
 
     outcome: CountingBackendOutcome
     primary_backend: str
     primary_kind: BackendKind
     final_backend: str
     final_kind: BackendKind
+    candidate_backends: tuple[str, ...]
     attempted_backends: tuple[str, ...]
     review_backend: str | None
+    review_error_type: str | None
+    fallback_history: tuple[BackendFailureRecord, ...]
     fallback_triggered: bool
     fallback_kind: str | None
     fallback_reason_code: str | None
@@ -72,9 +94,8 @@ class CountingExecutionResult:
 
 
 class CountingPlanExecutor:
-    """Execute an approved BackendPlan with explicit fallback and zero review.
-    执行已批准 BackendPlan：primary 调用、detector unavailable/runtime 回退
-    与 detector zero review；绝不静默隐藏回退。"""
+    """Execute every declared candidate in order until one succeeds.
+    按声明顺序执行候选 backend，直到一个成功。"""
 
     def __init__(
         self,
@@ -93,222 +114,414 @@ class CountingPlanExecutor:
         context: AgentContext,
         agent_name: AgentName,
     ) -> CountingExecutionResult:
-        """Run the primary backend, fall back when a detector cannot run, and
-        review detector-zero results when enabled. 执行主后端；检测器无法运行
-        时回退；启用时对检测器零结果进行复核。"""
-        primary = self._selector.backend_by_name(plan.primary_backend_name)
-        primary_kind = _backend_kind(
-            primary, agent_name=agent_name, sample_id=request.sample.sample_id
-        )
-        attempted = [plan.primary_backend_name]
-        final_backend = plan.primary_backend_name
-        final_kind: BackendKind = primary_kind
-        review_backend: str | None = None
-        fallback_triggered = False
-        fallback_kind: str | None = None
-        fallback_reason_code: str | None = None
-        fallback_error_type: str | None = None
-        yolo_trace: dict[str, object] | None = (
-            dict(primary.trace_profile())
-            if primary_kind == "yolo_obb"
-            and callable(getattr(primary, "trace_profile", None))
-            else None
-        )
-        try:
-            outcome = await primary.count(request, context)
-        except _UNAVAILABLE_ERRORS as exc:
-            if (
-                primary_kind != "yolo_obb"
-                or not self._policy.fallback_to_qwen_on_unavailable
-                or not plan.fallback_backend_names
-            ):
-                raise CountingBackendUnavailableError(
-                    request.target.canonical_label,
-                    primary_backend=plan.primary_backend_name,
-                    reason_code="PRIMARY_BACKEND_UNAVAILABLE",
-                ) from exc
-            return await self._fallback(
-                plan=plan,
-                request=request,
-                context=context,
-                attempted=attempted,
-                primary_kind=primary_kind,
-                yolo_trace=yolo_trace,
-                kind="unavailable",
-                error=exc,
-                agent_name=agent_name,
-            )
-        except Exception as exc:
-            if (
-                primary_kind != "yolo_obb"
-                or not self._policy.fallback_to_qwen_on_error
-                or not plan.fallback_backend_names
-            ):
-                raise AgentExecutionError(
-                    agent_name,
-                    request.sample.sample_id,
-                    cause="PRIMARY_BACKEND_FAILED",
-                ) from exc
-            return await self._fallback(
-                plan=plan,
-                request=request,
-                context=context,
-                attempted=attempted,
-                primary_kind=primary_kind,
-                yolo_trace=yolo_trace,
-                kind="runtime_error",
-                error=exc,
-                agent_name=agent_name,
-            )
-        else:
-            if primary_kind == "yolo_obb":
-                yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
-                if (
-                    outcome.counting.final_count == 0
-                    and self._policy.verify_empty_with_qwen
-                    and not self._policy.trust_empty_detection
-                ):
-                    yolo_trace["zero_review_triggered"] = True
-                    review_name = (
-                        plan.fallback_backend_names[0]
-                        if plan.fallback_backend_names
-                        else "qwen_point"
-                    )
-                    review_backend = review_name
-                    yolo_trace["zero_review_backend"] = review_name
-                    try:
-                        review_backend_obj = self._selector.backend_by_name(review_name)
-                        attempted.append(review_name)
-                        review = await review_backend_obj.count(request, context)
-                        yolo_trace["zero_review_status"] = review.counting.status
-                        yolo_trace["zero_review_result_count"] = review.counting.final_count
-                        if review.counting.final_count > 0:
-                            outcome = review
-                            final_backend = review_name
-                            final_kind = _backend_kind(
-                                review_backend_obj,
-                                agent_name=agent_name,
-                                sample_id=request.sample.sample_id,
-                            )
-                            fallback_triggered = True
-                            fallback_kind = "zero_review"
-                            fallback_reason_code = "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
-                            yolo_trace["zero_overridden"] = True
-                        else:
-                            yolo_trace["zero_overridden"] = False
-                    except Exception:
-                        yolo_trace.update(
-                            {
-                                "zero_review_status": "failed",
-                                "zero_review_result_count": None,
-                                "zero_overridden": False,
-                            }
-                        )
-                        warning = IssueRecord(
-                            code="DETECTOR_ZERO_REVIEW_FAILED",
-                            message=(
-                                "Qwen zero review failed; detector zero result "
-                                "retained."
-                            ),
-                        )
-                        outcome = CountingBackendOutcome(
-                            counting=outcome.counting.model_copy(
-                                update={
-                                    "status": (
-                                        "completed_with_warnings"
-                                        if outcome.counting.status == "completed"
-                                        else outcome.counting.status
-                                    ),
-                                    "warnings": [
-                                        *outcome.counting.warnings,
-                                        warning,
-                                    ],
-                                }
-                            ),
-                            agent_result=outcome.agent_result,
-                            trace=outcome.trace,
-                        )
-            return CountingExecutionResult(
-                outcome=outcome,
-                primary_backend=plan.primary_backend_name,
-                primary_kind=primary_kind,
-                final_backend=final_backend,
-                final_kind=final_kind,
-                attempted_backends=tuple(attempted),
-                review_backend=review_backend,
-                fallback_triggered=fallback_triggered,
-                fallback_kind=fallback_kind,
-                fallback_reason_code=fallback_reason_code,
-                fallback_error_type=fallback_error_type,
-                yolo_trace=yolo_trace,
-            )
-
-    async def _fallback(
-        self,
-        *,
-        plan: BackendPlan,
-        request: CountingRequest,
-        context: AgentContext,
-        attempted: list[str],
-        primary_kind: BackendKind,
-        yolo_trace: dict[str, object] | None,
-        kind: str,
-        error: Exception,
-        agent_name: AgentName,
-    ) -> CountingExecutionResult:
-        """Execute the first fallback backend and return the full result; a
-        missing or failing fallback fails with a stable error.
-        执行第一个回退后端并返回完整结果；回退后端缺失或失败时以稳定错误
-        失败。"""
-        name = plan.fallback_backend_names[0]
-        attempted.append(name)
-        try:
-            backend = self._selector.backend_by_name(name)
-        except KeyError as exc:
-            raise CountingBackendUnavailableError(
-                request.target.canonical_label,
-                primary_backend=name,
-                reason_code="FALLBACK_BACKEND_MISSING",
-            ) from exc
-        try:
-            outcome = await backend.count(request, context)
-        except Exception as exc:
+        candidates = (plan.primary_backend_name, *plan.fallback_backend_names)
+        if len(candidates) != len(set(candidates)):
             raise AgentExecutionError(
                 agent_name,
                 request.sample.sample_id,
-                cause="FALLBACK_BACKEND_FAILED",
-            ) from exc
+                cause="INVALID_BACKEND_PLAN",
+            )
+
+        primary = self._resolve_backend(
+            plan.primary_backend_name,
+            request=request,
+            agent_name=agent_name,
+            primary=True,
+        )
+        primary_kind = _backend_kind(
+            primary,
+            agent_name=agent_name,
+            sample_id=request.sample.sample_id,
+        )
+        yolo_trace = _yolo_profile(primary, primary_kind)
+        attempted: list[str] = []
+        history: list[BackendFailureRecord] = []
+        outcome: CountingBackendOutcome | None = None
+        final_backend = plan.primary_backend_name
+        final_kind = primary_kind
+        succeeded_index = -1
+
+        for index, name in enumerate(candidates):
+            backend = self._resolve_backend(
+                name,
+                request=request,
+                agent_name=agent_name,
+                primary=index == 0,
+            )
+            kind = _backend_kind(
+                backend,
+                agent_name=agent_name,
+                sample_id=request.sample.sample_id,
+            )
+            _validate_backend_contract(
+                backend,
+                agent_name=agent_name,
+                sample_id=request.sample.sample_id,
+            )
+            attempted.append(name)
+
+            try:
+                available = backend.is_available()
+            except Exception as error:
+                if self._record_or_raise(
+                    history,
+                    backend=name,
+                    kind=kind,
+                    reason_code="BACKEND_RUNTIME_ERROR",
+                    error=error,
+                    index=index,
+                    candidate_count=len(candidates),
+                    request=request,
+                    agent_name=agent_name,
+                ):
+                    continue
+                raise AssertionError("unreachable")
+            if not isinstance(available, bool):
+                raise AgentExecutionError(
+                    agent_name,
+                    request.sample.sample_id,
+                    cause="INVALID_BACKEND_CONTRACT",
+                )
+            if not available:
+                if self._record_or_raise(
+                    history,
+                    backend=name,
+                    kind=kind,
+                    reason_code="BACKEND_UNAVAILABLE",
+                    error=BackendUnavailable(),
+                    index=index,
+                    candidate_count=len(candidates),
+                    request=request,
+                    agent_name=agent_name,
+                ):
+                    continue
+                raise AssertionError("unreachable")
+
+            try:
+                candidate_outcome = await backend.count(request, context)
+            except Exception as error:
+                reason = (
+                    "BACKEND_UNAVAILABLE"
+                    if isinstance(error, _UNAVAILABLE_ERRORS)
+                    else "BACKEND_RUNTIME_ERROR"
+                )
+                if self._record_or_raise(
+                    history,
+                    backend=name,
+                    kind=kind,
+                    reason_code=reason,
+                    error=error,
+                    index=index,
+                    candidate_count=len(candidates),
+                    request=request,
+                    agent_name=agent_name,
+                ):
+                    continue
+                raise AssertionError("unreachable")
+
+            if not isinstance(candidate_outcome, CountingBackendOutcome):
+                raise AgentExecutionError(
+                    agent_name,
+                    request.sample.sample_id,
+                    cause="INVALID_BACKEND_CONTRACT",
+                )
+            outcome = candidate_outcome
+            final_backend = name
+            final_kind = kind
+            succeeded_index = index
+            if kind == "yolo_obb":
+                yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
+            break
+
+        if outcome is None:
+            raise AgentExecutionError(
+                agent_name,
+                request.sample.sample_id,
+                cause="BACKEND_CHAIN_EXHAUSTED",
+            )
+
+        original_outcome = outcome
+        review_backend: str | None = None
+        review_error_type: str | None = None
+        zero_overridden = False
+        review_index = self._review_index(
+            candidates,
+            succeeded_index=succeeded_index,
+            final_kind=final_kind,
+        )
+        if outcome.counting.final_count == 0 and review_index is not None:
+            review_backend = candidates[review_index]
+            attempted.append(review_backend)
+            review_obj = self._resolve_backend(
+                review_backend,
+                request=request,
+                agent_name=agent_name,
+                primary=False,
+            )
+            review_kind = _backend_kind(
+                review_obj,
+                agent_name=agent_name,
+                sample_id=request.sample.sample_id,
+            )
+            _validate_backend_contract(
+                review_obj,
+                agent_name=agent_name,
+                sample_id=request.sample.sample_id,
+            )
+            if yolo_trace is not None and final_kind == "yolo_obb":
+                yolo_trace.update(
+                    {
+                        "zero_review_triggered": True,
+                        "zero_review_backend": review_backend,
+                    }
+                )
+            try:
+                review_available = review_obj.is_available()
+                if not isinstance(review_available, bool):
+                    raise InvalidBackendContract()
+                if not review_available:
+                    raise BackendUnavailable()
+                review = await review_obj.count(request, context)
+                if not isinstance(review, CountingBackendOutcome):
+                    raise InvalidBackendContract()
+                if yolo_trace is not None and final_kind == "yolo_obb":
+                    yolo_trace.update(
+                        {
+                            "zero_review_status": review.counting.status,
+                            "zero_review_result_count": review.counting.final_count,
+                        }
+                    )
+                if review.counting.final_count > 0:
+                    outcome = review
+                    final_backend = review_backend
+                    final_kind = review_kind
+                    zero_overridden = True
+            except InvalidBackendContract as error:
+                raise AgentExecutionError(
+                    agent_name,
+                    request.sample.sample_id,
+                    cause="INVALID_BACKEND_CONTRACT",
+                ) from error
+            except Exception as error:
+                review_error_type = type(error).__name__
+                outcome = _with_review_warning(original_outcome, source_kind=final_kind)
+                if yolo_trace is not None and final_kind == "yolo_obb":
+                    yolo_trace.update(
+                        {
+                            "zero_review_status": "failed",
+                            "zero_review_result_count": None,
+                        }
+                    )
+            if yolo_trace is not None and primary_kind == "yolo_obb":
+                yolo_trace["zero_overridden"] = zero_overridden
+
+        first_failure = history[0] if history else None
+        fallback_kind = None
+        fallback_reason_code = None
+        fallback_error_type = None
+        if first_failure is not None:
+            fallback_kind = (
+                "unavailable"
+                if first_failure.reason_code == "BACKEND_UNAVAILABLE"
+                else "runtime_error"
+            )
+            fallback_reason_code = (
+                "PRIMARY_BACKEND_UNAVAILABLE"
+                if first_failure.reason_code == "BACKEND_UNAVAILABLE"
+                else "PRIMARY_BACKEND_FAILED"
+            )
+            fallback_error_type = first_failure.error_type
+        elif zero_overridden:
+            fallback_kind = "zero_review"
+            fallback_reason_code = (
+                "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
+                if primary_kind == "yolo_obb"
+                else "SEMANTIC_ZERO_OVERRIDDEN_BY_REVIEW"
+            )
+
         return CountingExecutionResult(
             outcome=outcome,
             primary_backend=plan.primary_backend_name,
             primary_kind=primary_kind,
-            final_backend=name,
-            final_kind=_backend_kind(
-                backend, agent_name=agent_name, sample_id=request.sample.sample_id
-            ),
+            final_backend=final_backend,
+            final_kind=final_kind,
+            candidate_backends=candidates,
             attempted_backends=tuple(attempted),
-            review_backend=None,
-            fallback_triggered=True,
-            fallback_kind=kind,
-            fallback_reason_code=(
-                "PRIMARY_BACKEND_UNAVAILABLE"
-                if kind == "unavailable"
-                else "PRIMARY_BACKEND_FAILED"
-            ),
-            fallback_error_type=type(error).__name__,
+            review_backend=review_backend,
+            review_error_type=review_error_type,
+            fallback_history=tuple(history),
+            fallback_triggered=bool(history) or zero_overridden,
+            fallback_kind=fallback_kind,
+            fallback_reason_code=fallback_reason_code,
+            fallback_error_type=fallback_error_type,
             yolo_trace=yolo_trace,
         )
 
-
-def _backend_kind(backend: object, *, agent_name: str, sample_id: str) -> BackendKind:
-    """Resolve the explicit backend kind; unknown kinds fail with a stable
-    error instead of being treated as detectors.
-    解析显式后端 kind；未知 kind 以稳定错误失败而非当作检测器。"""
-    kind = getattr(backend, "kind", None)
-    if kind not in {"qwen_point", "quantity_proposal", "yolo_obb"}:
+    def _record_or_raise(
+        self,
+        history: list[BackendFailureRecord],
+        *,
+        backend: str,
+        kind: BackendKind,
+        reason_code: str,
+        error: Exception,
+        index: int,
+        candidate_count: int,
+        request: CountingRequest,
+        agent_name: AgentName,
+    ) -> bool:
+        history.append(
+            BackendFailureRecord(
+                backend=backend,
+                kind=kind,
+                reason_code=reason_code,
+                error_type=type(error).__name__,
+            )
+        )
+        unavailable = reason_code == "BACKEND_UNAVAILABLE"
+        policy_allows = (
+            self._policy.fallback_to_qwen_on_unavailable
+            if unavailable
+            else self._policy.fallback_to_qwen_on_error
+        )
+        can_continue = (
+            kind != "qwen_point"
+            and index + 1 < candidate_count
+            and policy_allows
+        )
+        if can_continue:
+            return True
+        if unavailable:
+            raise CountingBackendUnavailableError(
+                request.target.canonical_label,
+                primary_backend=backend,
+                reason_code=(
+                    "PRIMARY_BACKEND_UNAVAILABLE"
+                    if index == 0
+                    else "FALLBACK_BACKEND_UNAVAILABLE"
+                ),
+            ) from error
         raise AgentExecutionError(
             agent_name,
-            sample_id,
-            cause="INVALID_BACKEND_KIND",
-        )
+            request.sample.sample_id,
+            cause=("PRIMARY_BACKEND_FAILED" if index == 0 else "FALLBACK_BACKEND_FAILED"),
+        ) from error
+
+    def _resolve_backend(
+        self,
+        name: str,
+        *,
+        request: CountingRequest,
+        agent_name: AgentName,
+        primary: bool,
+    ):
+        try:
+            return self._selector.backend_by_name(name)
+        except KeyError as error:
+            raise CountingBackendUnavailableError(
+                request.target.canonical_label,
+                primary_backend=name,
+                reason_code=(
+                    "PRIMARY_BACKEND_MISSING" if primary else "FALLBACK_BACKEND_MISSING"
+                ),
+            ) from error
+        except CountingBackendUnavailableError:
+            raise
+        except Exception as error:
+            raise AgentExecutionError(
+                agent_name,
+                request.sample.sample_id,
+                cause="INVALID_BACKEND_CONTRACT",
+            ) from error
+
+    def _review_index(
+        self,
+        candidates: tuple[str, ...],
+        *,
+        succeeded_index: int,
+        final_kind: BackendKind,
+    ) -> int | None:
+        if (
+            final_kind == "yolo_obb"
+            and not self._policy.trust_empty_detection
+            and self._policy.verify_empty_with_qwen
+        ):
+            return succeeded_index + 1 if succeeded_index + 1 < len(candidates) else None
+        if final_kind != "semantic_segmentation":
+            return None
+        if not self._policy.verify_empty_semantic_with_vlm:
+            return None
+        for index in range(succeeded_index + 1, len(candidates)):
+            backend = self._selector.backend_by_name(candidates[index])
+            if getattr(backend, "kind", None) in {
+                "quantity_proposal",
+                "qwen_point",
+            }:
+                return index
+        return None
+
+
+class BackendUnavailable(RuntimeError):
+    """Internal path-free availability marker. / 内部无路径可用性标记。"""
+
+
+class InvalidBackendContract(RuntimeError):
+    """Internal path-free contract marker. / 内部无路径契约标记。"""
+
+
+def _backend_kind(backend: object, *, agent_name: str, sample_id: str) -> BackendKind:
+    kind = getattr(backend, "kind", None)
+    if kind not in KNOWN_BACKEND_KINDS:
+        raise AgentExecutionError(agent_name, sample_id, cause="INVALID_BACKEND_KIND")
     return kind  # type: ignore[return-value]
+
+
+def _validate_backend_contract(
+    backend: object,
+    *,
+    agent_name: str,
+    sample_id: str,
+) -> None:
+    if (
+        not isinstance(getattr(backend, "name", None), str)
+        or not isinstance(getattr(backend, "priority", None), int)
+        or not callable(getattr(backend, "is_available", None))
+        or not callable(getattr(backend, "count", None))
+    ):
+        raise AgentExecutionError(agent_name, sample_id, cause="INVALID_BACKEND_CONTRACT")
+
+
+def _yolo_profile(backend: object, kind: BackendKind) -> dict[str, object] | None:
+    profile = getattr(backend, "trace_profile", None)
+    return dict(profile()) if kind == "yolo_obb" and callable(profile) else None
+
+
+def _with_review_warning(
+    outcome: CountingBackendOutcome,
+    *,
+    source_kind: BackendKind,
+) -> CountingBackendOutcome:
+    code = (
+        "DETECTOR_ZERO_REVIEW_FAILED"
+        if source_kind == "yolo_obb"
+        else "SEMANTIC_ZERO_REVIEW_FAILED"
+    )
+    warning = IssueRecord(
+        code=code,
+        message="Zero review failed; original zero result retained.",
+    )
+    counting = outcome.counting
+    return CountingBackendOutcome(
+        counting=counting.model_copy(
+            update={
+                "status": (
+                    "completed_with_warnings"
+                    if counting.status == "completed"
+                    else counting.status
+                ),
+                "warnings": [*counting.warnings, warning],
+            }
+        ),
+        agent_result=outcome.agent_result,
+        trace=outcome.trace,
+    )

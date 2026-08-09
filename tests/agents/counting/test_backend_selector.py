@@ -14,6 +14,7 @@ import pytest
 from agents.counting.backends.registry import BackendRegistry
 from agents.counting.backends.selector import BackendSelector
 from agents.counting.schema import CountTargetSpec, CountingResult
+from agents.errors import CountingBackendUnavailableError
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -59,12 +60,23 @@ class _FakeYoloBackend:
     kind = "yolo_obb"
     priority = 100
 
-    def __init__(self, available: bool = True, supported: bool = True) -> None:
+    def __init__(
+        self,
+        available: bool = True,
+        supported: bool = True,
+        *,
+        enabled: bool = True,
+        name: str = "det-a",
+        priority: int = 100,
+    ) -> None:
         self._available = available
         self._supported = supported
+        self._enabled = enabled
+        self.name = name
+        self.priority = priority
 
     def is_enabled(self) -> bool:
-        return self._available
+        return self._enabled
 
     def is_available(self) -> bool:
         return self._available
@@ -109,6 +121,17 @@ class _FakeQuantityBackend:
         )
 
 
+class _FakeSemanticBackend(_FakeYoloBackend):
+    name = "segmenter-a"
+    kind = "semantic_segmentation"
+    priority = 999
+
+    def __init__(self, **kwargs: Any) -> None:
+        kwargs.setdefault("name", "segmenter-a")
+        kwargs.setdefault("priority", 999)
+        super().__init__(**kwargs)
+
+
 def _registry(*backends) -> BackendRegistry:
     registry = BackendRegistry()
     for backend in backends:
@@ -128,8 +151,8 @@ def test_auto_prefers_highest_priority_supported_detector() -> None:
     plan = selector.plan(_TARGET, task="counting")
     assert plan is not None
     assert plan.primary_backend_name == "det-a"
-    assert plan.fallback_backend_names == ("qwen_point",)
-    assert "highest_priority_supported_yolo" in plan.reason_codes
+    assert plan.fallback_backend_names == ("quantity_proposal", "qwen_point")
+    assert "target_supported_by_yolo" in plan.reason_codes
 
 
 def test_auto_falls_back_to_qwen_without_supported_detector() -> None:
@@ -137,13 +160,13 @@ def test_auto_falls_back_to_qwen_without_supported_detector() -> None:
     plan = selector.plan(_TARGET, task="counting")
     assert plan.primary_backend_name == "qwen_point"
     assert plan.fallback_backend_names == ()
-    assert "no_supported_detector_qwen" in plan.reason_codes
+    assert "no_supported_specialist_qwen" in plan.reason_codes
 
 
-def test_auto_excludes_unavailable_detectors() -> None:
+def test_auto_plan_keeps_enabled_but_unavailable_detector() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(available=False))
     plan = selector.plan(_TARGET, task="counting")
-    assert plan.primary_backend_name == "qwen_point"
+    assert plan.primary_backend_name == "det-a"
 
 
 # ── 计划期不可用性 / plan-time unavailability (25.5) ─────────────────────
@@ -188,7 +211,7 @@ def test_explicit_yolo_mode_plans_supported_but_unavailable_detector() -> None:
 
 
 def test_disabled_detector_is_excluded_from_plan() -> None:
-    selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(available=False))
+    selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(enabled=False))
     plan = selector.plan(_TARGET, task="counting")
     assert plan.primary_backend_name == "qwen_point"
 
@@ -248,11 +271,10 @@ def test_caller_hints_override_defaults() -> None:
 
 
 def test_select_returns_none_when_primary_unavailable() -> None:
-    """When the only detector is unavailable and no fallback backend is
-    registered, no plan (and no selection) exists. 唯一检测器不可用且未注册
-    任何回退后端时，不存在任何计划与选择。"""
+    """Availability affects legacy select but never removes the plan.
+    availability 影响旧 select，但绝不从 plan 中移除 backend。"""
     selector = _selector(_FakeYoloBackend(available=False))
-    assert selector.plan(_TARGET, task="counting") is None
+    assert selector.plan(_TARGET, task="counting").primary_backend_name == "det-a"
     assert selector.select(_TARGET, task="counting") is None
     assert selector.select(_TARGET, task="general_vqa") is None  # non-counting / 非计数
 
@@ -296,6 +318,71 @@ def test_auto_prefers_yolo_over_quantity() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(), _FakeQuantityBackend())
     plan = selector.plan(_TARGET, task="counting")
     assert plan.primary_backend_name == "det-a"
+    assert plan.fallback_backend_names == ("quantity_proposal", "qwen_point")
+
+
+def test_auto_orders_detection_segmentation_quantity_qwen() -> None:
+    selector = _selector(
+        _FakeQuantityBackend(),
+        _FakeSemanticBackend(),
+        _FakeQwenBackend(),
+        _FakeYoloBackend(priority=1),
+    )
+
+    plan = selector.plan(_TARGET, task="counting")
+
+    assert plan.primary_backend_name == "det-a"
+    assert plan.fallback_backend_names == (
+        "segmenter-a",
+        "quantity_proposal",
+        "qwen_point",
+    )
+
+
+def test_semantic_priority_cannot_outrank_detection_kind() -> None:
+    selector = _selector(
+        _FakeQwenBackend(),
+        _FakeSemanticBackend(priority=999),
+        _FakeYoloBackend(priority=0),
+    )
+
+    plan = selector.plan(_TARGET, task="counting")
+
+    assert (plan.primary_backend_name, *plan.fallback_backend_names) == (
+        "det-a",
+        "segmenter-a",
+        "qwen_point",
+    )
+
+
+def test_same_kind_uses_priority_then_stable_name_tie_break() -> None:
+    selector = _selector(
+        _FakeQwenBackend(),
+        _FakeYoloBackend(name="det-z", priority=50),
+        _FakeYoloBackend(name="det-b", priority=100),
+        _FakeYoloBackend(name="det-a", priority=100),
+    )
+
+    plan = selector.plan(_TARGET, task="counting")
+
+    assert (plan.primary_backend_name, *plan.fallback_backend_names) == (
+        "det-a",
+        "det-b",
+        "det-z",
+        "qwen_point",
+    )
+
+
+def test_segmentation_is_primary_when_detection_has_no_label() -> None:
+    selector = _selector(
+        _FakeQwenBackend(),
+        _FakeYoloBackend(supported=False),
+        _FakeSemanticBackend(),
+    )
+
+    plan = selector.plan(_TARGET, task="counting")
+
+    assert plan.primary_backend_name == "segmenter-a"
     assert plan.fallback_backend_names == ("qwen_point",)
 
 
@@ -303,7 +390,7 @@ def test_auto_falls_back_to_quantity_without_yolo() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend())
     plan = selector.plan(_TARGET, task="counting")
     assert plan.primary_backend_name == "quantity_proposal"
-    assert plan.fallback_backend_names == ()
+    assert plan.fallback_backend_names == ("qwen_point",)
     assert "target_supported_by_quantity_proposal" in plan.reason_codes
 
 
@@ -330,6 +417,24 @@ def test_unknown_kind_fails_stably() -> None:
 
     selector = _selector(_FakeQwenBackend(), _UnknownKindBackend())
     with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_KIND"):
+        selector.plan(_TARGET, task="counting")
+
+
+def test_invalid_backend_contract_is_terminal() -> None:
+    class _InvalidContractBackend:
+        name = "broken"
+        kind = "semantic_segmentation"
+        priority = 1
+
+        def is_enabled(self) -> str:
+            return "yes"
+
+        def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
+            return True
+
+    selector = _selector(_FakeQwenBackend(), _InvalidContractBackend())
+
+    with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_CONTRACT"):
         selector.plan(_TARGET, task="counting")
 
 
