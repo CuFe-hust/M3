@@ -123,6 +123,15 @@ async def _run(args: argparse.Namespace) -> int:
         )
         run_id = manifest.run_id
         run_dir = settings.runs.root / run_id
+        # The actual fresh effective seam value is computed exactly once:
+        # config may disable seam verification, and the CLI may only disable
+        # it further — never enable it against config. The same value is
+        # persisted and used for execution. 实际 fresh 生效 seam 值只计算
+        # 一次：config 可禁用 seam 校验，CLI 只能进一步禁用——绝不能在
+        # config 禁用时启用它。同一值用于持久化与执行。
+        effective_seam_verify = (
+            settings.counting.seam_verify and not args.no_seam_verify
+        )
         # Unsupplied budgets are normalized to the explicit configured
         # defaults so the persisted snapshot is always a complete
         # re-executable invocation (distinguishable from legacy runs that
@@ -146,7 +155,7 @@ async def _run(args: argparse.Namespace) -> int:
             evaluate=args.evaluate,
             target_spec=target_spec,
             target_hash=target_hash,
-            seam_verify=not args.no_seam_verify,
+            seam_verify=effective_seam_verify,
             max_qwen_calls=max_qwen,
             max_deepseek_calls=max_deepseek,
             render=args.render,
@@ -188,7 +197,6 @@ async def _run(args: argparse.Namespace) -> int:
     # 文档化）。
     effective_evaluate = request.evaluate
     effective_render = bool(request.count_render)
-    effective_seam_verify = request.count_seam_verify
     effective_max_qwen = request.count_max_qwen_calls
     effective_max_deepseek = request.count_max_deepseek_calls
     effective_target_spec = request.count_target_spec
@@ -208,17 +216,20 @@ async def _run(args: argparse.Namespace) -> int:
     metadata: dict[str, Any] = {}
     if effective_target_spec is not None:
         metadata["count_target_hint"] = effective_target_spec
-    effective_settings = settings
-    if effective_seam_verify is False:
-        # Request-local override only; global settings stay untouched.
-        # 仅请求局部覆盖；全局配置保持不变。
-        effective_settings = settings.model_copy(
-            update={
-                "counting": settings.counting.model_copy(
-                    update={"seam_verify": False}
-                )
-            }
-        )
+    # The persisted seam value is authoritative in BOTH directions: for a
+    # fresh run it equals the single effective value computed above; for a
+    # resumed execution it unconditionally overwrites the current config so
+    # config drift can never change the original seam mode.
+    # 持久化 seam 值在两个方向都权威：fresh 时它等于上面计算的唯一有效值；
+    # resume 执行时无条件覆盖当前 config，使 config 漂移绝不可能改变原始
+    # seam 模式。
+    effective_settings = settings.model_copy(
+        update={
+            "counting": settings.counting.model_copy(
+                update={"seam_verify": bool(request.count_seam_verify)}
+            )
+        }
+    )
     runtime = Runtime.create(
         settings=effective_settings,
         project_root=project_root,

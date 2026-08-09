@@ -4933,3 +4933,173 @@ def test_run_dataset_resume_preflight_before_runtime_create(
     )
     assert code == 0
     assert len(creates) == 1  # exactly one create / 恰好一次 create
+
+# ── 11G.5.2.1 seam verify effective-value fidelity / seam 有效值保真 ────────
+
+
+def _count_image_with_seam_config(
+    tmp_path: Path,
+    monkeypatch,
+    capsys,
+    *,
+    seam_verify: bool,
+    no_seam_verify: bool,
+    run_id: str,
+    resume: bool = False,
+    force: bool = False,
+    config_seam_verify: bool | None = None,
+) -> tuple[int, bool, bool]:
+    """Run count-image under a YAML config and capture both the persisted
+    seam value and the settings passed to Runtime.create.
+    在 YAML 配置下运行 count-image，捕获持久化 seam 值与传入
+    Runtime.create 的 settings。"""
+    import argparse
+
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    effective_config = (
+        config_seam_verify if config_seam_verify is not None else seam_verify
+    )
+    config = tmp_path / "seam-config.yaml"
+    config.write_text(
+        f"counting:\n  seam_verify: {str(effective_config).lower()}\n",
+        encoding="utf-8",
+    )
+    _make_images(tmp_path / "imgs", ["img.png"])
+    captured = {}
+    client = _FakeCountClient()
+    runtime = _count_image_runtime(tmp_path, client)
+
+    def capturing_create(cls, **kwargs):
+        captured["seam_verify"] = kwargs["settings"].counting.seam_verify
+        return runtime
+
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(capturing_create)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    args = argparse.Namespace(
+        config=str(config),
+        image=str(tmp_path / "imgs" / "img.png"),
+        question="how many vehicles?",
+        target_spec=None,
+        run_id=run_id,
+        evaluate=False,
+        render=False,
+        resume=resume,
+        force=force,
+        no_seam_verify=no_seam_verify,
+        max_qwen_calls=None,
+        max_deepseek_calls=None,
+    )
+    code = run_count_image(args)
+    request = json.loads(
+        (tmp_path / "runs" / run_id / "run_request.json").read_text(encoding="utf-8")
+    )
+    if resume:
+        capsys.readouterr()
+    return code, captured["seam_verify"], request["count_seam_verify"]
+
+
+def test_count_image_seam_truth_table_config_false_cli_default(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """11G.5.2.1: config=false + CLI default → persisted false, executed false.
+    config=false + CLI 默认 → 持久化 false、执行 false。"""
+    code, executed, persisted = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=False, no_seam_verify=False, run_id="t-false-default",
+    )
+    assert code == 0
+    assert persisted is False
+    assert executed is False
+
+
+def test_count_image_seam_truth_table_config_true_cli_default(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """config=true + CLI default → persisted true, executed true.
+    config=true + CLI 默认 → 持久化 true、执行 true。"""
+    code, executed, persisted = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=True, no_seam_verify=False, run_id="t-true-default",
+    )
+    assert code == 0
+    assert persisted is True
+    assert executed is True
+
+
+def test_count_image_seam_truth_table_config_true_no_seam(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """config=true + --no-seam-verify → persisted false, executed false.
+    config=true + --no-seam-verify → 持久化 false、执行 false。"""
+    code, executed, persisted = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=True, no_seam_verify=True, run_id="t-true-no-seam",
+    )
+    assert code == 0
+    assert persisted is False
+    assert executed is False
+
+
+def test_count_image_seam_truth_table_config_false_no_seam(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """config=false + --no-seam-verify → persisted false, executed false.
+    config=false + --no-seam-verify → 持久化 false、执行 false。"""
+    code, executed, persisted = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=False, no_seam_verify=True, run_id="t-false-no-seam",
+    )
+    assert code == 0
+    assert persisted is False
+    assert executed is False
+
+
+def test_count_image_seam_config_drift_persisted_false_survives_true_config(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """11G.5.2.1: persisted false must survive a later config=true on force
+    resume. 持久化 false 必须在 config 变为 true 后的 force resume 中存活。"""
+    code, executed, persisted = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=False, no_seam_verify=False, run_id="drift-false",
+    )
+    assert code == 0
+    assert persisted is False and executed is False
+    capsys.readouterr()
+    # config now says true; force resume must still execute with false
+    # 当前 config 变为 true；force resume 仍必须以 false 执行
+    code, executed, _ = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=True, no_seam_verify=False, run_id="drift-false",
+        resume=True, force=True, config_seam_verify=True,
+    )
+    assert code == 0
+    assert executed is False
+
+
+def test_count_image_seam_config_drift_persisted_true_survives_false_config(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Persisted true must be actively restored when the current config says
+    false on force resume. 持久化 true 必须在当前 config 为 false 的 force
+    resume 中被主动恢复。"""
+    code, executed, persisted = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=True, no_seam_verify=False, run_id="drift-true",
+    )
+    assert code == 0
+    assert persisted is True and executed is True
+    capsys.readouterr()
+    # config now says false; force resume must still execute with true
+    # 当前 config 变为 false；force resume 仍必须以 true 执行
+    code, executed, _ = _count_image_with_seam_config(
+        tmp_path, monkeypatch, capsys,
+        seam_verify=False, no_seam_verify=False, run_id="drift-true",
+        resume=True, force=True, config_seam_verify=False,
+    )
+    assert code == 0
+    assert executed is True
