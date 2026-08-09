@@ -92,16 +92,21 @@ def test_pending_and_implemented_are_disjoint() -> None:
 
 
 def test_implementation_status_exact_coverage() -> None:
-    """actual production files == declared (implemented ∪ pending), with
-    separate error listings for each direction.
-    实际生产文件必须与 declared 精确相等；两个方向分别列出错误。"""
+    """Actual production files must equal declared implemented files; pending
+    paths are approved future paths that must not be pre-created (AGENTS.md),
+    so their absence is legal and never reported as missing.
+    实际生产文件必须等于 declared implemented 文件；pending 是已批准未来
+    路径且不得预先创建（AGENTS.md），缺失合法、绝不报 missing。"""
     actual = _actual_production_relative_paths()
-    declared = _declared_paths()
+    status = _status()
+    declared = set(status["implemented_files"]) | set(status["pending_files"])
     undeclared = sorted(actual - declared)
-    missing = sorted(declared - actual)
+    missing = sorted(set(status["implemented_files"]) - actual)
     assert not undeclared, f"undeclared actual production files: {undeclared}"
-    assert not missing, f"declared but missing files: {missing}"
-    assert actual == declared
+    assert not missing, f"declared implemented files missing: {missing}"
+    # Pending approved future paths are not required on disk (AGENTS.md
+    # forbids pre-creating them). pending 已批准未来路径不要求存在于磁盘
+    # （AGENTS.md 禁止预先创建）。
 
 
 def _pending_modules() -> set[str]:

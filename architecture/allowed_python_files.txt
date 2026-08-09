@@ -22,6 +22,8 @@ data/schema.py
 data/registry.py
 data/selection.py
 data/validation.py
+data/downloader.py
+data/loader.py
 data/adapters/__init__.py
 data/adapters/base.py
 data/adapters/levir_cc.py
@@ -161,6 +163,7 @@ application/commands/list_datasets.py
 application/commands/smoke_qwen.py
 application/commands/summarize_evaluations.py
 application/commands/count_image.py
+application/commands/download_data.py
 
 # === Tests (explicit test files; future test paths require separate approval) ===
 tests/__init__.py
