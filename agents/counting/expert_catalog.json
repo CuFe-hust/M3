@@ -1,0 +1,196 @@
+{
+  "schema_version": 1,
+  "targets": {
+    "aircraft": {
+      "aliases": [],
+      "countable": true,
+      "hints": ["multi_label", "verify_empty"]
+    },
+    "airport": {
+      "aliases": [],
+      "countable": true,
+      "hints": ["large_extent", "verify_empty"]
+    },
+    "background": {
+      "aliases": [],
+      "countable": false,
+      "hints": ["stuff_class", "unsupported"]
+    },
+    "baseball-diamond": {
+      "aliases": ["baseball diamond"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "basketball-court": {
+      "aliases": ["basketball court"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "bridge": {
+      "aliases": ["bridges"],
+      "countable": false,
+      "hints": ["ambiguous_extent", "unsupported"]
+    },
+    "container-crane": {
+      "aliases": ["container crane"],
+      "countable": true,
+      "hints": ["small_object", "verify_empty"]
+    },
+    "ground-track-field": {
+      "aliases": ["ground track field", "running track"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "harbor": {
+      "aliases": ["harbour"],
+      "countable": false,
+      "hints": ["ambiguous_extent", "unsupported"]
+    },
+    "helicopter": {
+      "aliases": ["helicopters"],
+      "countable": true,
+      "hints": ["small_object", "dense_instances", "verify_empty"]
+    },
+    "helipad": {
+      "aliases": ["helicopter pad"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "large-vehicle": {
+      "aliases": ["large vehicle", "truck"],
+      "countable": true,
+      "hints": ["dense_instances", "verify_empty"]
+    },
+    "plane": {
+      "aliases": ["airplane", "aeroplane"],
+      "countable": true,
+      "hints": ["small_object", "dense_instances", "verify_empty"]
+    },
+    "roundabout": {
+      "aliases": ["traffic circle"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "ship": {
+      "aliases": ["vessel", "boat"],
+      "countable": true,
+      "hints": ["dense_instances", "verify_empty"]
+    },
+    "small-vehicle": {
+      "aliases": ["small vehicle", "car", "passenger car"],
+      "countable": true,
+      "hints": ["small_object", "dense_instances", "verify_empty"]
+    },
+    "soccer-ball-field": {
+      "aliases": ["soccer ball field", "football field", "soccer field"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "storage-tank": {
+      "aliases": ["storage tank", "oil tank"],
+      "countable": true,
+      "hints": ["dense_instances", "verify_empty"]
+    },
+    "swimming-pool": {
+      "aliases": ["swimming pool"],
+      "countable": true,
+      "hints": ["areal_instance", "verify_empty"]
+    },
+    "tennis-court": {
+      "aliases": ["tennis court"],
+      "countable": true,
+      "hints": ["areal_instance", "dense_instances", "verify_empty"]
+    },
+    "vehicle": {
+      "aliases": ["vehicles"],
+      "countable": true,
+      "hints": ["multi_label", "dense_instances", "verify_empty"]
+    }
+  },
+  "experts": [
+    {
+      "backend_name": "yolov5m_obb_csl_dotav20",
+      "kind": "yolo_obb",
+      "logical_model_id": "YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m",
+      "enabled": true,
+      "status": "active",
+      "priority": 100,
+      "asset": {
+        "model_dir": "models/yolo_obb",
+        "class_map": "configs/yolo.example.yaml",
+        "weights": "models/yolo_obb/yolov5m_obb_csl_dotav20.onnx",
+        "sha256": "c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a"
+      },
+      "verification": {"class_map": "verified"},
+      "supports": {
+        "aircraft": {"model_labels": ["plane", "helicopter"], "counting_mode": "native_detection"},
+        "airport": {"model_labels": ["airport"], "counting_mode": "native_detection"},
+        "baseball-diamond": {"model_labels": ["baseball diamond"], "counting_mode": "native_detection"},
+        "basketball-court": {"model_labels": ["basketball court"], "counting_mode": "native_detection"},
+        "container-crane": {"model_labels": ["container crane"], "counting_mode": "native_detection"},
+        "ground-track-field": {"model_labels": ["ground track field"], "counting_mode": "native_detection"},
+        "helicopter": {"model_labels": ["helicopter"], "counting_mode": "native_detection"},
+        "helipad": {"model_labels": ["helipad"], "counting_mode": "native_detection"},
+        "large-vehicle": {"model_labels": ["large vehicle"], "counting_mode": "native_detection"},
+        "plane": {"model_labels": ["plane"], "counting_mode": "native_detection"},
+        "roundabout": {"model_labels": ["roundabout"], "counting_mode": "native_detection"},
+        "ship": {"model_labels": ["ship"], "counting_mode": "native_detection"},
+        "small-vehicle": {"model_labels": ["small vehicle"], "counting_mode": "native_detection"},
+        "soccer-ball-field": {"model_labels": ["soccer ball field"], "counting_mode": "native_detection"},
+        "storage-tank": {"model_labels": ["storage tank"], "counting_mode": "native_detection"},
+        "swimming-pool": {"model_labels": ["swimming pool"], "counting_mode": "native_detection"},
+        "tennis-court": {"model_labels": ["tennis court"], "counting_mode": "native_detection"},
+        "vehicle": {"model_labels": ["small vehicle", "large vehicle"], "counting_mode": "native_detection"}
+      }
+    },
+    {
+      "backend_name": "segmenter_isaid_001",
+      "kind": "semantic_segmentation",
+      "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
+      "enabled": true,
+      "status": "active",
+      "priority": 100,
+      "asset": {
+        "model_dir": "models/segformer_mitb2_isaid",
+        "class_map": "models/segformer_mitb2_isaid/classes.json",
+        "weights": "models/segformer_mitb2_isaid/model.safetensors",
+        "sha256": "f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a"
+      },
+      "verification": {"class_map": "verified"},
+      "supports": {
+        "background": {"model_labels": ["background"], "counting_mode": "unsupported"},
+        "baseball-diamond": {"model_labels": ["baseball_diamond"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "basketball-court": {"model_labels": ["basketball_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "bridge": {"model_labels": ["Bridge"], "counting_mode": "unsupported"},
+        "ground-track-field": {"model_labels": ["Ground_Track_Field"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "harbor": {"model_labels": ["Harbor"], "counting_mode": "unsupported"},
+        "helicopter": {"model_labels": ["Helicopter"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "large-vehicle": {"model_labels": ["Large_Vehicle"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "plane": {"model_labels": ["plane"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "roundabout": {"model_labels": ["Roundabout"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "ship": {"model_labels": ["ship"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "small-vehicle": {"model_labels": ["Small_Vehicle"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "soccer-ball-field": {"model_labels": ["Soccer_ball_field"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "storage-tank": {"model_labels": ["storage_tank"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "swimming-pool": {"model_labels": ["Swimming_pool"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}},
+        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "min_mean_confidence": 0.45}}
+      }
+    },
+    {
+      "backend_name": "segmenter_oem_001",
+      "kind": "semantic_segmentation",
+      "logical_model_id": "SegFormer-MiT-B2:OpenEarthMap:local",
+      "enabled": false,
+      "status": "blocked_unverified_class_map",
+      "priority": 100,
+      "asset": {
+        "model_dir": "models/segformer_mitb2_oem",
+        "class_map": null,
+        "weights": "models/segformer_mitb2_oem/model.safetensors",
+        "sha256": "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
+      },
+      "verification": {"class_map": "unverified"},
+      "supports": {}
+    }
+  ]
+}

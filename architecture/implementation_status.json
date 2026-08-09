@@ -81,6 +81,7 @@
     "agents/counting/backends/yolov5_obb_onnx.py",
     "agents/counting/evidence.py",
     "agents/counting/executor.py",
+    "agents/counting/expert_catalog.py",
     "agents/counting/geometry.py",
     "agents/counting/point_pipeline.py",
     "agents/counting/schema.py",
@@ -192,8 +193,6 @@
   ],
   "pending_files": [
     "agents/counting/backends/semantic_segmentation.py",
-    "agents/counting/expert_catalog.py",
-    "tests/agents/counting/test_expert_catalog.py",
     "tests/agents/counting/test_semantic_segmentation_backend.py",
     "tests/models/test_segformer_transformers.py"
   ],
