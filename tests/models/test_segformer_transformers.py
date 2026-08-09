@@ -702,3 +702,19 @@ def test_dense_cache_identity_never_contains_physical_checkpoint_path(
     }
     assert identity.revision == "revision-1"
     assert str(settings.model_path) not in repr(identity)
+
+
+def test_local_checkpoints_include_the_audited_mitb2_processor_contract() -> None:
+    expected = {
+        "do_normalize": True,
+        "do_resize": True,
+        "feature_extractor_type": "SegformerFeatureExtractor",
+        "image_mean": [0.485, 0.456, 0.406],
+        "image_std": [0.229, 0.224, 0.225],
+        "reduce_labels": False,
+        "resample": 2,
+        "size": 512,
+    }
+    for directory in ("segformer_mitb2_isaid", "segformer_mitb2_oem"):
+        path = _REPO_ROOT / "models" / directory / "preprocessor_config.json"
+        assert json.loads(path.read_text(encoding="utf-8")) == expected

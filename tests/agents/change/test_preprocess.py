@@ -279,8 +279,10 @@ def test_prepared_pair_keeps_runtime_arrays_outside_serializable_result(
 def test_semantic_settings_default_disabled_and_validate_geometry() -> None:
     settings = AgentChangeSettings()
     assert settings.semantic.enabled is False
+    assert settings.semantic.feature_stage == 1
     assert settings.semantic.tile_size == 768
-    assert settings.semantic.tile_overlap == 128
+    assert settings.semantic.tile_overlap == 64
+    assert settings.proposals.pif_threshold_k == 4.5
     with pytest.raises(ValueError, match="tile_overlap"):
         ChangeSemanticSettings(tile_size=128, tile_overlap=128)
 

@@ -18,3 +18,10 @@ placeholder `LABEL_*` values in `config.json` must never replace it. The OEM
 asset has no equivalent authoritative class file, so its class names are
 unknown (`None`/empty) even though its output-channel dimension remains usable.
 Placeholder labels must not be published as semantic metadata.
+
+Both SegFormer directories include the canonical NVIDIA MiT-B2
+`preprocessor_config.json` pinned from upstream revision
+`3a609931044a9a83814802af9d861a47a1397636`. It supplies the audited ImageNet
+normalization contract required for fully local `AutoImageProcessor` loading;
+the tiled runtime still passes `do_resize=False`, so the upstream 512 default
+never resizes inference tiles.

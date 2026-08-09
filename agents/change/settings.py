@@ -56,7 +56,7 @@ class ChangeProposalSettings(BaseModel):
     fusion_feature_weight: float = Field(default=0.50, ge=0.0)
     fusion_semantic_weight: float = Field(default=0.25, ge=0.0)
     threshold_mode: Literal["pif_robust"] = "pif_robust"
-    pif_threshold_k: float = Field(default=4.0, ge=0.0)
+    pif_threshold_k: float = Field(default=4.5, ge=0.0)
     threshold_floor: float = Field(default=0.10, ge=0.0, le=1.0)
     pif_fallback_quantile: float = Field(default=0.90, gt=0.0, lt=1.0)
     mask_close_kernel: int = Field(default=5, ge=1)
@@ -82,9 +82,9 @@ class ChangeSemanticSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
-    feature_stage: int = -1
+    feature_stage: int = 1
     tile_size: int = Field(default=768, ge=128)
-    tile_overlap: int = Field(default=128, ge=0)
+    tile_overlap: int = Field(default=64, ge=0)
     local_match_radius: int = Field(default=1, ge=0, le=3)
     min_pif_feature_cells: int = Field(default=32, ge=1)
     feature_scale_epsilon: float = Field(default=1e-3, gt=0.0)
