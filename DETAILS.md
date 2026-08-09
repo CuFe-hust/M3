@@ -716,7 +716,9 @@ pointer；没有新增第二套 YOLO loader。
 将 semantic component centroid 转成共享 `GlobalPointObservation`，随后复用 owner-core
 和 seam 去重形成 `CountingResult`。最终数量只由 accepted points 导出。该方式是
 semantic instance approximation；相接对象会形成单一 component，可能低估数量，当前不做
-watershed 或隐式 instance splitting。该 backend 尚未接入 Selector/fallback 顺序。
+watershed 或隐式 instance splitting。composition root 已按 `ExpertCatalog` 将 enabled
+semantic expert 构造成 lazy client/backend，并接入固定优先级和 ordered fallback；OEM
+因缺少 verified class map 保持 disabled。
 
 ---
 
@@ -736,6 +738,7 @@ allow_download
 min_pixels
 max_pixels
 revision
+segformer_experts
 ```
 
 默认：
@@ -1206,6 +1209,7 @@ counting_result.json
 ```text
 qwen_point
 quantity_proposal
+semantic_segmentation
 yolo_obb
 ```
 
@@ -1215,7 +1219,15 @@ yolo_obb
 
 ### `quantity_proposal`
 
-提供数量/定位 proposal 的路径，不等同 detector。
+提供数量 proposal + grounded localization point 的路径，不等同 detector。它已由
+composition root 注册；定位点进入共享 accepted-point truth。
+
+### `semantic_segmentation`
+
+消费 verified semantic class map，并只对 catalog 明确批准为
+`connected_components` 的 target 计数。component centroid 进入共享 point pipeline。
+这是 semantic instance approximation，不是 instance segmentation；相接对象可能合并成
+一个 component 而低估数量。
 
 ### `yolo_obb`
 
@@ -1237,6 +1249,17 @@ CountingPlanExecutor
 
 Selector 不负责吞掉实际 runtime error。
 
+固定 kind 优先级是：
+
+```text
+yolo_obb > semantic_segmentation > quantity_proposal > qwen_point
+```
+
+同 kind 才按 `priority DESC, backend_name ASC` 排序。`BackendPlan` 保存 primary 与完整
+ordered fallback chain；executor 逐个尝试并记录 backend、kind、reason code 与 error type。
+invalid kind/contract 和最终 Qwen failure 是 terminal。合法 `final_count == 0` 不是失败，
+只有显式 zero-review policy 才能复核；复核失败保留原零并记录 warning。
+
 ## 25.4 Target parser
 
 目标优先级：
@@ -1255,6 +1278,9 @@ InvalidCountTargetHintError
 
 不得静默忽略。
 
+解析后的 target 只和 `ExpertCatalog` 的 canonical label、显式 aliases、dataset-neutral
+hints 匹配；VLM 不返回 backend/checkpoint 决策。
+
 ## 25.5 YOLO
 
 YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
@@ -1269,6 +1295,31 @@ allow_cpu_fallback
 ```
 
 不能仅因为 import 包就要求本地一定安装全部 YOLO runtime。
+
+## 25.6 Point、small-object 与 seam 稳定契约
+
+所有 backend 保持：
+
+```text
+final_count == sum(point.accepted for point in global_points)
+```
+
+tile 使用 core + halo；halo 只提供上下文，centroid/point 落 owner core 才归属该 tile。
+small-object 策略来自 catalog hints，可启用 minimum scan depth、empty-tile second pass 和
+保持宽高比的 optional upscale，不读取 dataset 名。seam 先做 deterministic strong/clear
+判定，仅 ambiguous band 调用可选视觉 reviewer；`uncertain`、异常或预算耗尽均不合并并留下
+unresolved warning。YOLO OBB 自身的 overlap 去重不会再被 point seam 重复处理。
+
+## 25.7 ExpertCatalog、资产与 trace
+
+`ExpertCatalog` 是 routing capability truth，记录 canonical target、aliases、neutral hints、
+dataset-neutral backend name、显式 kind、priority、logical model id、project-relative assets、
+verified class map、model labels 与 counting mode。YOLO settings 只负责 inference/runtime
+参数，bootstrap 在注册前校验其 labels 与 catalog 一致。
+
+SegFormer/YOLO 权重默认只来自本地 Git LFS 或外部资产，不自动下载；loader 校验 SHA256。
+公共 trace 不保存 mask、tensor、prompt、base64、secret 或绝对路径，并至少记录 canonical
+target、候选/尝试/final backend、fallback history、counting mode 与 accepted count。
 
 ---
 
@@ -1338,6 +1389,9 @@ cv2/numpy 等视觉依赖保持可选边界，不应使基础 import 强制依�
 ```text
 PromptCatalog
 Qwen client
+ExpertCatalog
+lazy SegFormer clients by logical model id
+Counting backend registry
 AgentRegistry
 TaskRouter
 TaskResolver
@@ -2032,6 +2086,11 @@ smooth_error_score
 只有 Ground Truth count 可用时才能形成有意义的 deterministic count comparison。
 
 不得为缺 GT 样本伪造 gold。
+
+运行策略 benchmark 在 deterministic metrics 之外读取持久化 trace，统计 expert usage、
+per-backend exact accuracy、fallback/zero-review/seam/Qwen-call 指标；它只能评估当前固定
+策略，不能自动重排 backend priority。无真实 checkpoint、数据集或目标硬件时必须标记为
+synthetic/offline gate，不能冒充 live 模型质量结果。
 
 ---
 
@@ -3000,6 +3059,11 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 
 迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`，没有经训练
 语义验证的 `classes.json`。当前 runtime 保留该事实，不用网络资料猜测类别顺序。
+
+### 79.7 Semantic connected-component counting
+
+SegFormer 输出 semantic region 而非 instance mask。相接实例可能形成一个 component 并
+低估数量；当前不隐藏加入 watershed 或 instance splitting。此限制应在 benchmark 中单列。
 
 ---
 

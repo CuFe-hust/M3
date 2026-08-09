@@ -8,6 +8,7 @@ DeepSeek 客户端仅在注入 api_key 时创建（无 key 即 judge 禁用，�
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -24,9 +25,12 @@ from agents.counting import (
 from agents.counting.backends import BackendRegistry
 from agents.counting.backends.quantity_proposal import QuantityProposalBackend
 from agents.counting.backends.qwen_point import QwenPointCountingBackend
+from agents.counting.backends.semantic_segmentation import (
+    SemanticSegmentationCountingBackend,
+)
 from agents.counting.backends.yolo_obb import YoloOBBCountingBackend
 from agents.counting.backends.yolo_model_store import YoloModelStore
-from agents.counting.expert_catalog import ExpertCatalog
+from agents.counting.expert_catalog import ExpertCatalog, ExpertSpec
 from agents.counting.schema import CountTargetSpec
 from agents.counting.settings import CountingTargetStrategy
 from agents.general_vqa import GeneralVQAAgent
@@ -42,6 +46,7 @@ from evaluation.judges.deepseek import DeepSeekJudgeClient
 from models.base import DenseSemanticClient, VisionLanguageClient
 from models.cache import JsonResponseCache
 from models.entry import create_model
+from models.settings import SegFormerSettings
 from reporting.builder import build_report
 from reporting.schema import Report
 from reporting.visualization import render_counting_overlay
@@ -80,6 +85,10 @@ class RuntimeComponents:
     )
 
 
+class RuntimeCompositionError(ValueError):
+    """A fail-closed composition contract failed without exposing host paths."""
+
+
 def assemble_runtime(
     settings: AppSettings,
     *,
@@ -105,11 +114,22 @@ def assemble_runtime(
             repair_prompt=catalog["json_repair"],
             cache=service_cache,
         )
+    asset_root = Path(__file__).resolve().parents[1]
+    expert_catalog = _load_expert_catalog(asset_root)
+    segformer_clients = _build_segformer_clients(
+        settings,
+        expert_catalog,
+        project_root=asset_root,
+    )
     if settings.agents.change.semantic.enabled and semantic_client is None:
-        semantic_client = create_model(
-            "segformer_transformers",
-            settings=settings.models.segformer_isaid,
+        semantic_client = segformer_clients.get(
+            settings.models.segformer_isaid.logical_model_id
         )
+        if semantic_client is None:
+            semantic_client = create_model(
+                "segformer_transformers",
+                settings=settings.models.segformer_isaid,
+            )
     if not settings.agents.change.semantic.enabled:
         semantic_client = None
     agent_registry = _build_agent_registry(
@@ -117,6 +137,9 @@ def assemble_runtime(
         catalog,
         qwen_client,
         semantic_client,
+        expert_catalog=expert_catalog,
+        segformer_clients=segformer_clients,
+        project_root=asset_root,
     )
     router = TaskRouter()
     task_resolver = TaskResolver(
@@ -196,21 +219,23 @@ def _build_agent_registry(
     catalog: PromptCatalog,
     qwen_client: VisionLanguageClient,
     semantic_client: DenseSemanticClient | None = None,
+    *,
+    expert_catalog: ExpertCatalog | None = None,
+    segformer_clients: dict[str, Any] | None = None,
+    project_root: Path | None = None,
 ) -> AgentRegistry:
     """Register every business agent in stable order; all routable tasks must
     be covered. 按稳定顺序注册全部业务 Agent；所有可路由任务必须有覆盖。"""
 
-    expert_catalog = ExpertCatalog.load(
-        Path(__file__).resolve().parents[1]
-        / "agents"
-        / "counting"
-        / "expert_catalog.json"
-    )
+    root = project_root or Path(__file__).resolve().parents[1]
+    expert_catalog = expert_catalog or _load_expert_catalog(root)
     backend_registry = _build_backend_registry(
         settings,
         catalog,
         qwen_client,
         expert_catalog=expert_catalog,
+        segformer_clients=segformer_clients,
+        project_root=root,
     )
     counting_agent = CountingAgent(
         qwen_client,
@@ -262,6 +287,8 @@ def _build_backend_registry(
     qwen_client: VisionLanguageClient,
     *,
     expert_catalog: ExpertCatalog | None = None,
+    segformer_clients: dict[str, Any] | None = None,
+    project_root: Path | None = None,
 ) -> BackendRegistry:
     """The Qwen point backend is always registered; YOLO backends only when
     enabled. Qwen 点式后端恒注册；YOLO 后端仅启用时注册。"""
@@ -280,6 +307,8 @@ def _build_backend_registry(
             prompt_version=catalog.version("count_tile"),
             empty_review_prompt=catalog["zero_review"],
             empty_review_prompt_version=catalog.version("zero_review"),
+            seam_prompt=catalog["seam"],
+            seam_prompt_version=catalog.version("seam"),
             strategy_resolver=strategy_resolver,
         )
     )
@@ -295,16 +324,194 @@ def _build_backend_registry(
     )
     if settings.backend.yolo.enabled:
         model_store = YoloModelStore()
-        for detector in settings.backend.yolo.detectors:
+        for detector in sorted(
+            settings.backend.yolo.detectors,
+            key=lambda item: item.name,
+        ):
             if detector.enabled:
+                validated_detector = detector
+                if expert_catalog is not None:
+                    validated_detector = _catalog_validated_yolo_detector(
+                        detector,
+                        expert_catalog,
+                    )
                 registry.register(
                     YoloOBBCountingBackend(
-                        detector,
+                        validated_detector,
                         counting=settings.counting,
                         model_store=model_store,
                     )
                 )
+    if expert_catalog is not None:
+        root = project_root or Path(__file__).resolve().parents[1]
+        clients = segformer_clients or _build_segformer_clients(
+            settings,
+            expert_catalog,
+            project_root=root,
+        )
+        for expert in _semantic_experts(expert_catalog):
+            registry.register(
+                SemanticSegmentationCountingBackend(
+                    clients[expert.logical_model_id],
+                    expert,
+                    settings.counting,
+                )
+            )
     return registry
+
+
+def _load_expert_catalog(project_root: Path) -> ExpertCatalog:
+    return ExpertCatalog.load(
+        project_root / "agents" / "counting" / "expert_catalog.json"
+    )
+
+
+def _semantic_experts(catalog: ExpertCatalog) -> tuple[ExpertSpec, ...]:
+    # C1 intentionally exposed lookup/candidates only.  Composition needs the
+    # complete immutable declarations to instantiate enabled model providers.
+    experts = getattr(catalog, "_experts", ())
+    return tuple(
+        sorted(
+            (
+                expert
+                for expert in experts
+                if expert.enabled and expert.kind == "semantic_segmentation"
+            ),
+            key=lambda expert: expert.backend_name,
+        )
+    )
+
+
+def _build_segformer_clients(
+    settings: AppSettings,
+    catalog: ExpertCatalog,
+    *,
+    project_root: Path,
+) -> dict[str, Any]:
+    """Create lazy clients from catalog assets, reusing equal logical models."""
+
+    clients: dict[str, Any] = {}
+    identities: dict[str, tuple[SegFormerSettings, tuple[tuple[int, str], ...]]] = {}
+    for expert in _semantic_experts(catalog):
+        runtime = _segformer_runtime_settings(settings, expert, project_root)
+        labels = _verified_class_map(expert, project_root)
+        identity = (runtime, tuple(labels.items()))
+        existing = identities.get(expert.logical_model_id)
+        if existing is not None:
+            if existing != identity:
+                raise RuntimeCompositionError(
+                    "SegFormer logical model id maps to inconsistent assets"
+                )
+            continue
+        clients[expert.logical_model_id] = create_model(
+            "segformer_transformers",
+            settings=runtime,
+            id_to_label=labels,
+        )
+        identities[expert.logical_model_id] = identity
+    return clients
+
+
+def _segformer_runtime_settings(
+    settings: AppSettings,
+    expert: ExpertSpec,
+    project_root: Path,
+) -> SegFormerSettings:
+    try:
+        profile = settings.models.segformer_profile(
+            backend_name=expert.backend_name,
+            logical_model_id=expert.logical_model_id,
+        )
+    except ValueError as error:
+        raise RuntimeCompositionError(str(error)) from None
+    model_dir = _safe_asset(project_root, expert.asset.model_dir)
+    class_map = _safe_asset(project_root, expert.asset.class_map)
+    weights = _safe_asset(project_root, expert.asset.weights)
+    if class_map.parent != model_dir or weights.parent != model_dir:
+        raise RuntimeCompositionError("SegFormer assets must share the declared model directory")
+    payload = profile.model_dump()
+    payload.update(
+        {
+            "model_path": model_dir,
+            "logical_model_id": expert.logical_model_id,
+            "weights_filename": weights.name,
+            "weights_sha256": expert.asset.sha256,
+            "classes_filename": class_map.name,
+            "processor_path": None,
+            "allow_download": False,
+        }
+    )
+    return SegFormerSettings.model_validate(payload)
+
+
+def _safe_asset(project_root: Path, reference: str | None) -> Path:
+    if reference is None:
+        raise RuntimeCompositionError(
+            "enabled SegFormer expert has an incomplete asset declaration"
+        )
+    root = project_root.resolve()
+    candidate = (root / Path(reference)).resolve()
+    if candidate == root or root not in candidate.parents:
+        raise RuntimeCompositionError("expert asset escapes the project root")
+    return candidate
+
+
+def _verified_class_map(expert: ExpertSpec, project_root: Path) -> dict[int, str]:
+    path = _safe_asset(project_root, expert.asset.class_map)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+        raw = document["id2name"]
+        count = document["num_classes"]
+        inverse = document["name2id"]
+    except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
+        raise RuntimeCompositionError("SegFormer class map is missing or invalid") from None
+    if not isinstance(raw, dict) or not raw or count != len(raw):
+        raise RuntimeCompositionError("SegFormer class map is inconsistent")
+    expected_keys = {str(index) for index in range(len(raw))}
+    if set(raw) != expected_keys:
+        raise RuntimeCompositionError("SegFormer class ids must be contiguous")
+    labels = {index: raw[str(index)] for index in range(len(raw))}
+    if any(not isinstance(label, str) or not label.strip() for label in labels.values()):
+        raise RuntimeCompositionError("SegFormer class labels must be non-empty strings")
+    if inverse != {label: index for index, label in labels.items()}:
+        raise RuntimeCompositionError("SegFormer class map inverse differs from id mapping")
+    declared = {
+        label
+        for support in expert.supports.values()
+        for label in support.model_labels
+    }
+    if not declared.issubset(set(labels.values())):
+        raise RuntimeCompositionError("SegFormer catalog labels differ from verified class map")
+    return labels
+
+
+def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> Any:
+    try:
+        expert = catalog.expert(detector.name)
+    except KeyError:
+        raise RuntimeCompositionError(
+            "enabled YOLO detector is absent from expert catalog"
+        ) from None
+    if expert.kind != "yolo_obb" or not expert.enabled:
+        raise RuntimeCompositionError("YOLO detector catalog declaration is not enabled")
+    if expert.logical_model_id != detector.model_id:
+        raise RuntimeCompositionError("YOLO logical model id differs from expert catalog")
+    backend = YoloOBBCountingBackend(detector, counting=CountingSettings())
+    for canonical, support in expert.supports.items():
+        if support.counting_mode == "unsupported":
+            continue
+        target = CountTargetSpec(
+            canonical_label=canonical,
+            inclusion_rule="include the declared target",
+            exclusion_rule="exclude every other object",
+        )
+        resolved = {value.casefold() for value in backend.resolve_target_classes(target)}
+        expected = {value.casefold() for value in support.model_labels}
+        if resolved != expected:
+            raise RuntimeCompositionError(
+                "YOLO catalog model labels differ from detector declarations"
+            )
+    return detector.model_copy(update={"priority": expert.priority})
 
 
 def _target_strategy(

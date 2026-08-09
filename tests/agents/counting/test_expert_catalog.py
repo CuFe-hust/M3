@@ -37,7 +37,7 @@ def _load_payload(tmp_path: Path, payload: dict[str, object]) -> ExpertCatalog:
 def test_valid_catalog_loads_and_exposes_capability_specs() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
-    expert = catalog.expert("segmenter_isaid_001")
+    expert = catalog.expert("segmenter_mitb2_001")
 
     assert expert.kind == "semantic_segmentation"
     assert expert.priority == 100
@@ -50,7 +50,7 @@ def test_yolo_capabilities_use_declared_detector_identity_and_labels() -> None:
         (REPO_ROOT / "configs" / "yolo.example.yaml").read_text(encoding="utf-8")
     )
     detector = config["backend"]["yolo"]["detectors"][0]
-    expert = ExpertCatalog.load(CATALOG_PATH).expert("yolov5m_obb_csl_dotav20")
+    expert = ExpertCatalog.load(CATALOG_PATH).expert("detector_obb_csl_001")
     capability_labels = {
         label
         for support in expert.supports.values()
@@ -69,7 +69,7 @@ def test_isaid_capabilities_use_only_verified_class_map_labels() -> None:
             REPO_ROOT / "models" / "segformer_mitb2_isaid" / "classes.json"
         ).read_text(encoding="utf-8")
     )
-    expert = ExpertCatalog.load(CATALOG_PATH).expert("segmenter_isaid_001")
+    expert = ExpertCatalog.load(CATALOG_PATH).expert("segmenter_mitb2_001")
     capability_labels = {
         label
         for support in expert.supports.values()
@@ -134,8 +134,8 @@ def test_explicit_alias_resolves_to_canonical_target() -> None:
     hints = catalog.target_hints(_target("car"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "yolov5m_obb_csl_dotav20",
-        "segmenter_isaid_001",
+        "detector_obb_csl_001",
+        "segmenter_mitb2_001",
     )
     assert hints["canonical_label"] == "small-vehicle"
 
@@ -158,7 +158,7 @@ def test_candidates_have_deterministic_kind_priority_name_order(tmp_path: Path) 
         "detector_a",
         "detector_b",
         "detector_z",
-        "segmenter_isaid_001",
+        "segmenter_mitb2_001",
     )
 
 
@@ -187,14 +187,14 @@ def test_separator_and_case_normalization_maps_isaid_label() -> None:
     candidates = catalog.candidates(_target("Small_Vehicle"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "yolov5m_obb_csl_dotav20",
-        "segmenter_isaid_001",
+        "detector_obb_csl_001",
+        "segmenter_mitb2_001",
     )
 
 
 def test_unsupported_target_has_no_candidates_or_hints() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
-    isaid = catalog.expert("segmenter_isaid_001")
+    isaid = catalog.expert("segmenter_mitb2_001")
 
     assert catalog.candidates(_target("water")) == ()
     assert catalog.target_hints(_target("water")) == {}
@@ -256,6 +256,6 @@ def test_kind_filter_is_explicit_and_validated() -> None:
         _target("plane"), kinds=frozenset({"semantic_segmentation"})
     )
 
-    assert tuple(expert.backend_name for expert in semantic) == ("segmenter_isaid_001",)
+    assert tuple(expert.backend_name for expert in semantic) == ("segmenter_mitb2_001",)
     with pytest.raises(ValueError, match="unknown expert kind filter"):
         catalog.candidates(_target("plane"), kinds=frozenset({"unknown"}))

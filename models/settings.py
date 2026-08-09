@@ -168,6 +168,41 @@ class ModelSettings(BaseModel):
             classes_filename=None,
         )
     )
+    # Additional runtime-only profiles are keyed by the stable catalog
+    # backend name.  Their asset identity is replaced by the catalog at the
+    # composition boundary; these values only carry provider/device policy.
+    segformer_experts: dict[str, SegFormerSettings] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_segformer_expert_profiles(self) -> "ModelSettings":
+        normalized = [name.strip() for name in self.segformer_experts]
+        if any(not name for name in normalized) or len(normalized) != len(set(normalized)):
+            raise ValueError("SegFormer expert profile names must be non-empty and unique")
+        if tuple(normalized) != tuple(self.segformer_experts):
+            raise ValueError("SegFormer expert profile names must be trimmed")
+        return self
+
+    def segformer_profile(
+        self,
+        *,
+        backend_name: str,
+        logical_model_id: str,
+    ) -> SegFormerSettings:
+        """Resolve provider policy without making bootstrap expert-specific."""
+
+        explicit = self.segformer_experts.get(backend_name)
+        if explicit is not None:
+            if explicit.logical_model_id != logical_model_id:
+                raise ValueError("SegFormer profile logical model id differs from catalog")
+            return explicit
+        matches = [
+            profile
+            for profile in (self.segformer_isaid, self.segformer_oem)
+            if profile.logical_model_id == logical_model_id
+        ]
+        if len(matches) != 1:
+            raise ValueError("SegFormer catalog expert has no unique runtime profile")
+        return matches[0]
 
 
 def _plain_filename(value: str, *, where: str) -> str:

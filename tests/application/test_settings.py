@@ -41,6 +41,7 @@ def test_default_settings() -> None:
     )
     assert settings.models.segformer_isaid.classes_filename == "classes.json"
     assert settings.models.segformer_oem.classes_filename is None
+    assert settings.models.segformer_experts == {}
     assert settings.backend.yolo.enabled is False
     assert settings.agents.counting.default_backend == "auto"
 
@@ -91,6 +92,33 @@ models:
     assert snapshot["models"]["segformer_isaid"]["logical_model_id"] == (
         "segformer-mitb2-isaid-test"
     )
+    assert AppSettings.model_validate(snapshot).safe_snapshot() == snapshot
+
+
+def test_additional_segformer_profile_round_trips_with_safe_paths(
+    tmp_path: Path,
+) -> None:
+    path = _yaml_path(
+        tmp_path,
+        """
+models:
+  segformer_experts:
+    segmenter_extra_001:
+      model_path: D:\\models\\extra
+      logical_model_id: segformer-extra-local
+      classes_filename: labels.json
+""",
+    )
+    settings = load_settings(path, environ={})
+    profile = settings.models.segformer_profile(
+        backend_name="segmenter_extra_001",
+        logical_model_id="segformer-extra-local",
+    )
+    assert profile.model_path == Path(r"D:\models\extra")
+    snapshot = settings.safe_snapshot()
+    assert snapshot["models"]["segformer_experts"]["segmenter_extra_001"][
+        "model_path"
+    ] == "D:/models/extra"
     assert AppSettings.model_validate(snapshot).safe_snapshot() == snapshot
 
 

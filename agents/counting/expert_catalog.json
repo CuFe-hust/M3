@@ -109,7 +109,7 @@
   },
   "experts": [
     {
-      "backend_name": "yolov5m_obb_csl_dotav20",
+      "backend_name": "detector_obb_csl_001",
       "kind": "yolo_obb",
       "logical_model_id": "YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m",
       "enabled": true,
@@ -144,7 +144,7 @@
       }
     },
     {
-      "backend_name": "segmenter_isaid_001",
+      "backend_name": "segmenter_mitb2_001",
       "kind": "semantic_segmentation",
       "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
       "enabled": true,

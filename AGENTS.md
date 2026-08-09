@@ -542,12 +542,15 @@ supported_tasks
 - 主结果文件名为 `counting_result.json`;
 - 如果需要 `AgentResult`，只能作为附加结果；
 - Backend 类型使用显式 `BackendKind`，不得从类名或字符串猜类型；
-- `qwen_point`、`quantity_proposal`、`yolo_obb` 的职责保持分离；
+- `qwen_point`、`quantity_proposal`、`semantic_segmentation`、`yolo_obb` 的职责保持分离；
 - selector 只规划，不偷偷吞掉不可用 detector；
 - executor 负责运行时 fallback 与执行状态；
 - YOLO 模型加载必须保持惰性；
 - detector 不得因为依赖缺失而让普通 import 崩溃；
-- seam / tile 几何与去重应保持确定性。
+- seam / tile 几何与去重应保持确定性；
+- 新增 expert 以 `ExpertCatalog`、资产和 composition 配置为主，不在 `CountingAgent` 增加 model-specific 分支；
+- VLM 只解析 `CountTargetSpec`，不得选择 backend、checkpoint 或模型路径；
+- 启用的 SegFormer expert 必须使用已验证 class map，不得从 `LABEL_N` 占位标签猜语义。
 
 计数目标解析优先级：
 

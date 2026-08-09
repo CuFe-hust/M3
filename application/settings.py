@@ -113,6 +113,11 @@ class AppSettings(BaseModel):
                 payload["models"][profile_name]["processor_path"] = _posix(
                     profile.processor_path
                 )
+        for backend_name, profile in self.models.segformer_experts.items():
+            serialized = payload["models"]["segformer_experts"][backend_name]
+            serialized["model_path"] = _posix(profile.model_path)
+            if profile.processor_path is not None:
+                serialized["processor_path"] = _posix(profile.processor_path)
         return payload
 
     def safe_snapshot(self) -> dict[str, Any]:

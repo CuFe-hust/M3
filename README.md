@@ -215,7 +215,7 @@ allow_download = false
 
 ### 本地专家模型
 
-仓库支持三份已验证的本地专家模型资产：
+仓库声明三份本地专家模型资产：
 
 ```text
 models/segformer_mitb2_isaid/model.safetensors
@@ -223,8 +223,9 @@ models/segformer_mitb2_oem/model.safetensors
 models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
 ```
 
-这些权重必须是真实二进制并保持 Git ignored；代码会在加载前区分文件缺失、
-Git LFS pointer 和 SHA256 不匹配。小型 `config.json`、`classes.json`、
+大权重通过 Git LFS 或本地外部存储管理；Git 对象不得直接包含大 binary。工作树中的
+LFS 文件可以是已 hydrated binary，部署也可以提供 catalog 指向的本地资产。代码会在
+加载前区分文件缺失、Git LFS pointer 和 SHA256 不匹配。小型 `config.json`、`classes.json`、
 `metrics.json` 可以版本化。资产摘要和逻辑 ID 见
 [`models/MODELS.md`](models/MODELS.md)。
 
@@ -939,8 +940,27 @@ counting_result.json
 ```text
 qwen_point
 quantity_proposal
+semantic_segmentation
 yolo_obb
 ```
+
+`auto` 模式只按显式 capability 采用固定顺序：
+
+```text
+Detection > Semantic Segmentation > QuantityProposal > QwenPoint
+```
+
+同类 expert 才按 catalog priority 排序。模型暂时不可用或运行失败时，executor 按计划的
+完整 fallback chain 继续；QwenPoint 失败是 terminal，不会伪造结果。合法零计数不会自动
+触发 fallback，只有显式 zero-review policy 可以复核。
+
+SegFormer 只在 verified class map 和 target-specific `connected_components` policy 同时
+成立时成为候选。它输出 semantic region 而不是 instance mask，相接对象可能合并成一个
+component 并造成 undercount。OEM 当前没有 verified class map，因此默认不注册。
+
+小目标 minimum scan depth、empty-tile review、optional upscale 和 ambiguous seam visual
+review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset 名。新增同类 expert
+主要修改 catalog、资产和 composition settings，不要求修改 `CountingAgent`。
 
 目标解析优先级：
 

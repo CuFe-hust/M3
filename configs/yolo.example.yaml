@@ -11,7 +11,7 @@ backend:
     fallback_to_qwen_on_error: true
     verify_empty_with_qwen: true
     detectors:
-      - name: yolov5m_obb_csl_dotav20
+      - name: detector_obb_csl_001
         enabled: true
         weights: models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
         runtime: onnx_yolov5_obb

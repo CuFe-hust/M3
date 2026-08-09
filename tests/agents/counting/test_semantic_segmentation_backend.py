@@ -208,6 +208,29 @@ def test_tiny_component_is_rejected_by_label_policy(tmp_path: Path) -> None:
     assert outcome.trace["area_rejected_count"] == 1
 
 
+def test_large_connected_region_is_rejected_by_label_policy(tmp_path: Path) -> None:
+    outcome = _run(
+        _FakeClient([_output(8, 8, [(1, 1, 7, 7, 0.9)])]),
+        tmp_path,
+        expert=_expert(max_area_ratio=0.25),
+    )
+
+    assert outcome.counting.final_count == 0
+    assert outcome.trace["area_rejected_count"] == 1
+
+
+def test_border_component_is_kept_when_centroid_belongs_to_owner_core(
+    tmp_path: Path,
+) -> None:
+    outcome = _run(
+        _FakeClient([_output(8, 8, [(0, 2, 2, 5, 0.9)])]),
+        tmp_path,
+    )
+
+    assert outcome.counting.final_count == 1
+    assert outcome.counting.global_points[0].accepted is True
+
+
 def test_centroid_outside_owner_core_is_rejected(tmp_path: Path) -> None:
     first = lambda image: _output(image.width, image.height, [(4, 1, 6, 3, 0.9)])
     empty = lambda image: _output(image.width, image.height)
