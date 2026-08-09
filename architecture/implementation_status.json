@@ -65,6 +65,7 @@
     "agents/change/harmonizer.py",
     "agents/change/pair_validator.py",
     "agents/change/preprocess.py",
+    "agents/change/proposal_fusion.py",
     "agents/change/reviewer.py",
     "agents/change/schema.py",
     "agents/change/semantic_difference.py",
@@ -195,9 +196,7 @@
     "workflows/task_resolver.py"
   ],
   "pending_files": [
-    "agents/change/proposal_fusion.py",
     "agents/change/perception.py",
-    "tests/agents/change/test_proposal_fusion.py",
     "tests/agents/change/test_perception.py",
     "tests/integration/test_change_v2_vertical_slice.py"
   ],
