@@ -5999,9 +5999,10 @@ def test_parity_normalization_ignores_git_dirty_environment_state() -> None:
 
 def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
     """evaluate-run --deepseek over the parity dataset run refreshes the
-    report bundle; its normalized report equals the locked fixture.
+    report bundle. The locked fixture continues to cover legacy deterministic
+    fields while E4 Judge metrics are asserted as a separate new contract.
     evaluate-run --deepseek 对 parity 数据集运行刷新报告 bundle；规范化后
-    的报告等于锁定的 fixture。"""
+    旧确定性字段仍等于锁定 fixture，E4 Judge 指标作为独立新契约断言。"""
     from application.commands import evaluate_run as evaluate_run_module
     from application.commands.evaluate_run import run_evaluate_run
 
@@ -6029,7 +6030,26 @@ def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
     report = json.loads(
         (tmp_path / "runs" / "parity-run" / "report" / "report.json").read_text(encoding="utf-8")
     )
-    assert _parity_normalize(report) == _parity_fixture("evaluate_run.json")
+    semantic = report["tasks"][0]["judge_metrics"]["vqa_semantic_equivalence"]
+    assert semantic == {
+        "total": 1,
+        "deterministic_exact_correct": 0,
+        "eligible_mismatches": 1,
+        "judged_mismatches": 1,
+        "semantic_equivalent_mismatches": 1,
+        "semantic_non_equivalent_mismatches": 0,
+        "judge_failures": 0,
+        "unresolved_mismatches": 0,
+        "coverage": 1.0,
+        "corrected_correct": 1,
+        "lower_bound_score": 1.0,
+        "complete": True,
+        "score": 1.0,
+    }
+    legacy_parity = _parity_normalize(report)
+    for task in legacy_parity["tasks"]:
+        task.pop("judge_metrics", None)
+    assert legacy_parity == _parity_fixture("evaluate_run.json")
 
 
 def test_parity_summarize_file_mode(tmp_path, monkeypatch, capsys) -> None:

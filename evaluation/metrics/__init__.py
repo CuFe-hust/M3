@@ -15,6 +15,7 @@ from evaluation.metrics.grounding import (
 )
 from evaluation.metrics.vqa import (
     aggregate_vqa,
+    aggregate_vqa_semantic_judge,
     exact_match,
     merge_vqa_evaluation,
     normalize_answer,
@@ -28,6 +29,7 @@ __all__ = [
     "aggregate_counting",
     "aggregate_grounding",
     "aggregate_vqa",
+    "aggregate_vqa_semantic_judge",
     "box_iou",
     "count_deterministic_metrics",
     "evaluate_caption",

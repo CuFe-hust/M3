@@ -12,6 +12,7 @@ import pytest
 
 from evaluation.metrics.vqa import (
     aggregate_vqa,
+    aggregate_vqa_semantic_judge,
     exact_match,
     merge_vqa_evaluation,
     normalize_answer,
@@ -23,6 +24,24 @@ from evaluation.records import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _semantic_record(
+    sample_id: str,
+    *,
+    exact: bool,
+    judge_status: str = "not_requested",
+    judge_parsed: object | None = None,
+    judge_error: str | None = None,
+) -> EvaluationRecord:
+    return EvaluationRecord(
+        sample_id=sample_id,
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=exact),
+        judge_status=judge_status,  # type: ignore[arg-type]
+        judge_parsed=judge_parsed,
+        judge_error=judge_error,
+    )
 
 
 def test_normalize_answer_lowercase_punctuation_whitespace() -> None:
@@ -109,6 +128,104 @@ def test_aggregate_vqa_empty() -> None:
     summary = aggregate_vqa([])
     assert summary["total"] == 0
     assert summary["score"] == 0.0
+
+
+def test_semantic_judge_aggregate_all_exact_is_complete() -> None:
+    summary = aggregate_vqa_semantic_judge(
+        [_semantic_record("s1", exact=True), _semantic_record("s2", exact=True)]
+    )
+    assert summary == {
+        "total": 2,
+        "deterministic_exact_correct": 2,
+        "eligible_mismatches": 0,
+        "judged_mismatches": 0,
+        "semantic_equivalent_mismatches": 0,
+        "semantic_non_equivalent_mismatches": 0,
+        "judge_failures": 0,
+        "unresolved_mismatches": 0,
+        "coverage": 1.0,
+        "corrected_correct": 2,
+        "lower_bound_score": 1.0,
+        "complete": True,
+        "score": 1.0,
+    }
+
+
+def test_semantic_judge_complete_accepts_dict_and_object() -> None:
+    class _Score:
+        score = 0
+
+    records = [
+        _semantic_record(
+            "s1", exact=False, judge_status="succeeded", judge_parsed={"score": 1}
+        ),
+        _semantic_record(
+            "s2", exact=False, judge_status="succeeded", judge_parsed=_Score()
+        ),
+    ]
+    summary = aggregate_vqa_semantic_judge(records)
+    assert summary["judged_mismatches"] == 2
+    assert summary["semantic_equivalent_mismatches"] == 1
+    assert summary["semantic_non_equivalent_mismatches"] == 1
+    assert summary["coverage"] == 1.0
+    assert summary["corrected_correct"] == 1
+    assert summary["complete"] is True
+    assert summary["score"] == 0.5
+
+
+def test_semantic_judge_aggregate_partial_is_confirmed_lower_bound_only() -> None:
+    records = [
+        _semantic_record("exact", exact=True),
+        _semantic_record(
+            "equivalent",
+            exact=False,
+            judge_status="succeeded",
+            judge_parsed={"score": 1},
+        ),
+        _semantic_record("unresolved", exact=False),
+    ]
+    summary = aggregate_vqa_semantic_judge(records)
+    assert summary["eligible_mismatches"] == 2
+    assert summary["judged_mismatches"] == 1
+    assert summary["unresolved_mismatches"] == 1
+    assert summary["coverage"] == 0.5
+    assert summary["corrected_correct"] == 2
+    assert summary["lower_bound_score"] == pytest.approx(2 / 3)
+    assert summary["complete"] is False
+    assert summary["score"] is None
+    assert aggregate_vqa(records) == {
+        "metric": "exact_match_accuracy",
+        "correct": 1,
+        "total": 3,
+        "score": pytest.approx(1 / 3),
+    }
+
+
+def test_semantic_judge_failure_and_invalid_score_stay_unresolved() -> None:
+    records = [
+        _semantic_record(
+            "failed", exact=False, judge_status="failed", judge_error="RuntimeError"
+        ),
+        _semantic_record(
+            "invalid",
+            exact=False,
+            judge_status="succeeded",
+            judge_parsed={"score": True},
+        ),
+        _semantic_record(
+            "string",
+            exact=False,
+            judge_status="succeeded",
+            judge_parsed={"score": "1"},
+        ),
+    ]
+    summary = aggregate_vqa_semantic_judge(records)
+    assert summary["judge_failures"] == 1
+    assert summary["judged_mismatches"] == 0
+    assert summary["unresolved_mismatches"] == 3
+    assert summary["coverage"] == 0.0
+    assert summary["complete"] is False
+    assert summary["score"] is None
 
 
 def test_record_serialization_is_stable() -> None:

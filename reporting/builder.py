@@ -9,7 +9,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from evaluation.metrics.aggregate import aggregate_counting, aggregate_grounding, aggregate_vqa
+from evaluation.metrics.aggregate import (
+    aggregate_counting,
+    aggregate_grounding,
+    aggregate_vqa,
+)
+from evaluation.metrics.vqa import aggregate_vqa_semantic_judge
+from evaluation.records import VQADeterministicMetrics
 from reporting.adapters import (
     iter_current_predictions,
     load_evaluation,
@@ -134,6 +140,7 @@ def _build_task_summary(run_task: str, samples: list[ReportSample]) -> TaskSumma
         agent_usage=agent_usage,
         judge_status_counts=judge_counts,
         metrics=_aggregate_metrics(samples),
+        judge_metrics=_aggregate_judge_metrics(samples),
     )
 
 
@@ -166,6 +173,29 @@ def _aggregate_metrics(samples: list[ReportSample]) -> dict[str, Any]:
     if caption_count:
         result["caption"] = {"record_count": caption_count}
     return result
+
+
+def _aggregate_judge_metrics(samples: list[ReportSample]) -> dict[str, Any]:
+    """Aggregate persisted VQA semantic Judge quality without model calls;
+    counting Judge remains represented only by status and audit outputs.
+    仅从持久化记录聚合 VQA 语义 Judge 质量，不调用模型；counting Judge 仍只由
+    状态数量与审计产物表示。"""
+
+    records = [
+        sample.evaluation
+        for sample in samples
+        if sample.evaluation is not None
+        and sample.evaluation.task == "general_vqa"
+        and isinstance(
+            sample.evaluation.deterministic_metrics,
+            VQADeterministicMetrics,
+        )
+    ]
+    if not records:
+        return {}
+    return {
+        "vqa_semantic_equivalence": aggregate_vqa_semantic_judge(records),
+    }
 
 
 def _find_dataset(run_dir: Path) -> str | None:

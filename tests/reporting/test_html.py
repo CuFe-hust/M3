@@ -17,6 +17,7 @@ from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.records import EvaluationRecord, VQADeterministicMetrics
 from reporting.builder import build_report
 from reporting.html import build_html
+from reporting.schema import Report, ReportSample, TaskSummary
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
@@ -129,3 +130,89 @@ def test_html_contains_stable_fields_only(tmp_path: Path) -> None:
     assert "evil-1" in document
     assert "general_vqa_agent" in document
     assert "exact_match=True" in document
+
+
+def _semantic_report(*, complete: bool) -> Report:
+    semantic = {
+        "total": 100,
+        "deterministic_exact_correct": 80,
+        "eligible_mismatches": 20,
+        "judged_mismatches": 20 if complete else 10,
+        "semantic_equivalent_mismatches": 8 if complete else 6,
+        "semantic_non_equivalent_mismatches": 12 if complete else 4,
+        "judge_failures": 0 if complete else 2,
+        "unresolved_mismatches": 0 if complete else 10,
+        "coverage": 1.0 if complete else 0.5,
+        "corrected_correct": 88 if complete else 86,
+        "lower_bound_score": 0.88 if complete else 0.86,
+        "complete": complete,
+        "score": 0.88 if complete else None,
+    }
+    evaluation = EvaluationRecord(
+        sample_id="semantic-1",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=False),
+        judge_status="succeeded",
+        judge_parsed={"score": 1, "concise_rationale": "same meaning"},
+    )
+    task = TaskSummary(
+        run_task="general_vqa",
+        total=100,
+        succeeded=100,
+        partial=0,
+        failed=0,
+        skipped=0,
+        fallback_count=0,
+        fallback_rate=0.0,
+        metrics={
+            "general_vqa": {
+                "metric": "exact_match_accuracy",
+                "correct": 80,
+                "total": 100,
+                "score": 0.8,
+            }
+        },
+        judge_metrics={"vqa_semantic_equivalence": semantic},
+    )
+    return Report(
+        run_id="semantic-run",
+        total=1,
+        succeeded=1,
+        partial=0,
+        failed=0,
+        skipped=0,
+        tasks=[task],
+        samples=[
+            ReportSample(
+                sample_id="semantic-1",
+                run_task="general_vqa",
+                task="general_vqa",
+                state="succeeded",
+                judge_status="succeeded",
+                evaluation=evaluation,
+            )
+        ],
+    )
+
+
+def test_html_marks_incomplete_semantic_score_as_lower_bound() -> None:
+    document = build_html(_semantic_report(complete=False))
+    assert "Exact-match accuracy: 0.800000" in document
+    assert "Semantic judge coverage: 50.00%" in document
+    assert "Semantic equivalent mismatches: 6" in document
+    assert "Judge failures: 2" in document
+    assert "Unresolved mismatches: 10" in document
+    assert "Complete: false" in document
+    assert "Judge-assisted semantic accuracy: incomplete" in document
+    assert "Confirmed lower bound: 0.860000" in document
+    assert "Judge-assisted semantic accuracy: 0.860000" not in document
+    assert "exact_match=False judge_score=1" in document
+
+
+def test_html_displays_complete_semantic_accuracy() -> None:
+    document = build_html(_semantic_report(complete=True))
+    assert "Semantic judge coverage: 100.00%" in document
+    assert "Complete: true" in document
+    assert "Judge-assisted semantic accuracy: 0.880000" in document
+    assert "Judge-assisted semantic accuracy: incomplete" not in document
+    assert "Confirmed lower bound:" not in document

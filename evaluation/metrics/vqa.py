@@ -116,6 +116,72 @@ def aggregate_vqa(
     }
 
 
+def aggregate_vqa_semantic_judge(
+    records: Sequence[EvaluationRecord],
+) -> dict[str, Any]:
+    """Aggregate the optional semantic judge over deterministic VQA
+    mismatches. Incomplete judge coverage yields only a confirmed lower bound;
+    it never masquerades as complete semantic accuracy.
+    仅在确定性 VQA mismatch 上聚合可选语义 Judge。Judge 覆盖不完整时只给出
+    已确认下界，绝不伪装成完整语义准确率。"""
+
+    total = len(records)
+    deterministic_exact_correct = sum(
+        int(_exact_of(record)) for record in records
+    )
+    eligible_mismatches = total - deterministic_exact_correct
+    semantic_equivalent_mismatches = 0
+    semantic_non_equivalent_mismatches = 0
+    judge_failures = 0
+    for record in records:
+        if _exact_of(record):
+            continue
+        if record.judge_status == "failed":
+            judge_failures += 1
+            continue
+        if record.judge_status != "succeeded":
+            continue
+        score = _binary_judge_score(record.judge_parsed)
+        if score == 1:
+            semantic_equivalent_mismatches += 1
+        elif score == 0:
+            semantic_non_equivalent_mismatches += 1
+    judged_mismatches = (
+        semantic_equivalent_mismatches + semantic_non_equivalent_mismatches
+    )
+    unresolved_mismatches = eligible_mismatches - judged_mismatches
+    coverage = judged_mismatches / eligible_mismatches if eligible_mismatches else 1.0
+    corrected_correct = deterministic_exact_correct + semantic_equivalent_mismatches
+    lower_bound_score = corrected_correct / total if total else 0.0
+    complete = unresolved_mismatches == 0
+    return {
+        "total": total,
+        "deterministic_exact_correct": deterministic_exact_correct,
+        "eligible_mismatches": eligible_mismatches,
+        "judged_mismatches": judged_mismatches,
+        "semantic_equivalent_mismatches": semantic_equivalent_mismatches,
+        "semantic_non_equivalent_mismatches": semantic_non_equivalent_mismatches,
+        "judge_failures": judge_failures,
+        "unresolved_mismatches": unresolved_mismatches,
+        "coverage": coverage,
+        "corrected_correct": corrected_correct,
+        "lower_bound_score": lower_bound_score,
+        "complete": complete,
+        "score": lower_bound_score if complete else None,
+    }
+
+
+def _binary_judge_score(parsed: Any) -> int | None:
+    """Read only a literal integer 0/1 from a dict or score-bearing object."""
+
+    score = (
+        parsed.get("score")
+        if isinstance(parsed, dict)
+        else getattr(parsed, "score", None)
+    )
+    return score if type(score) is int and score in (0, 1) else None
+
+
 def _exact_of(record: VQAEvaluationRecord | EvaluationRecord) -> bool:
     if isinstance(record, VQAEvaluationRecord):
         return record.exact_match

@@ -75,7 +75,8 @@ def _task_section(task: TaskSummary) -> str:
         else ""
     )
     metrics_html = _metrics_html(task.metrics)
-    return summary + agent_table + judge_table + metrics_html
+    judge_metrics_html = _judge_metrics_html(task.judge_metrics)
+    return summary + agent_table + judge_table + metrics_html + judge_metrics_html
 
 
 def _metrics_html(metrics: dict[str, Any]) -> str:
@@ -90,11 +91,58 @@ def _metrics_html(metrics: dict[str, Any]) -> str:
             f"<td>{_esc(str(key))}</td><td>{_esc(_format_number(value))}</td>"
             for key, value in sorted(payload.items())
         )
+        exact_summary = ""
+        if family == "general_vqa" and "score" in payload:
+            exact_summary = (
+                "<p>Exact-match accuracy: "
+                f"{_esc(_format_number(payload['score']))}</p>"
+            )
         blocks.append(
             f"<h3>Metrics: {_esc(family)}</h3>"
+            f"{exact_summary}"
             f"<table><tr>{items}</tr></table>"
         )
     return "".join(blocks)
+
+
+def _judge_metrics_html(judge_metrics: dict[str, Any]) -> str:
+    """Render already-computed semantic Judge metrics without recalculation.
+    只展示已计算的语义 Judge 指标，不在 HTML 中重新聚合。"""
+
+    payload = judge_metrics.get("vqa_semantic_equivalence")
+    if not isinstance(payload, dict):
+        return ""
+    coverage = payload.get("coverage")
+    coverage_text = (
+        f"{coverage:.2%}"
+        if isinstance(coverage, (int, float)) and not isinstance(coverage, bool)
+        else "unknown"
+    )
+    complete = payload.get("complete") is True
+    rows = [
+        f"<p>Semantic judge coverage: {_esc(coverage_text)}</p>",
+        "<p>Semantic equivalent mismatches: "
+        f"{_esc(_format_number(payload.get('semantic_equivalent_mismatches')))}</p>",
+        "<p>Judge failures: "
+        f"{_esc(_format_number(payload.get('judge_failures')))}</p>",
+        "<p>Unresolved mismatches: "
+        f"{_esc(_format_number(payload.get('unresolved_mismatches')))}</p>",
+        f"<p>Complete: {'true' if complete else 'false'}</p>",
+    ]
+    if complete:
+        rows.append(
+            "<p>Judge-assisted semantic accuracy: "
+            f"{_esc(_format_number(payload.get('score')))}</p>"
+        )
+    else:
+        rows.extend(
+            [
+                "<p>Judge-assisted semantic accuracy: incomplete</p>",
+                "<p>Confirmed lower bound: "
+                f"{_esc(_format_number(payload.get('lower_bound_score')))}</p>",
+            ]
+        )
+    return "<h3>VQA semantic judge</h3>" + "".join(rows)
 
 
 def _samples_table(report: Report) -> str:
@@ -131,7 +179,13 @@ def _sample_metric_text(sample: ReportSample) -> str:
         return ""
     metrics = evaluation.deterministic_metrics
     if evaluation.task == "general_vqa":
-        return f"exact_match={getattr(metrics, 'exact_match', None)}"
+        exact_text = f"exact_match={getattr(metrics, 'exact_match', None)}"
+        judge_score = _sample_judge_score(evaluation)
+        return (
+            f"{exact_text} judge_score={judge_score}"
+            if judge_score is not None
+            else exact_text
+        )
     if evaluation.task == "counting":
         return (
             f"predicted={getattr(metrics, 'predicted_count', None)} "
@@ -146,6 +200,18 @@ def _sample_metric_text(sample: ReportSample) -> str:
     if evaluation.task == "caption":
         return "caption record"
     return ""
+
+
+def _sample_judge_score(evaluation: Any) -> int | None:
+    if getattr(evaluation, "judge_status", None) != "succeeded":
+        return None
+    parsed = getattr(evaluation, "judge_parsed", None)
+    score = (
+        parsed.get("score")
+        if isinstance(parsed, dict)
+        else getattr(parsed, "score", None)
+    )
+    return score if type(score) is int and score in (0, 1) else None
 
 
 def _format_number(value: Any) -> str:

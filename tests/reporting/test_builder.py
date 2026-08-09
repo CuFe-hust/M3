@@ -143,12 +143,21 @@ def _trace(
     }
 
 
-def _vqa_record(sample_id: str, exact: bool, judge: str = "not_requested") -> EvaluationRecord:
+def _vqa_record(
+    sample_id: str,
+    exact: bool,
+    judge: str = "not_requested",
+    *,
+    judge_parsed: object | None = None,
+    judge_error: str | None = None,
+) -> EvaluationRecord:
     return EvaluationRecord(
         sample_id=sample_id,
         task="general_vqa",
         deterministic_metrics=VQADeterministicMetrics(exact_match=exact),
         judge_status=judge,  # type: ignore[arg-type]
+        judge_parsed=judge_parsed,
+        judge_error=judge_error,
     )
 
 
@@ -343,6 +352,69 @@ def test_build_report_mixed_states(tmp_path: Path) -> None:
     assert samples["s4"].judge_status == "not_requested"
 
 
+def test_report_separates_deterministic_and_semantic_judge_metrics(
+    tmp_path: Path,
+) -> None:
+    run_dir = _create_run(tmp_path)
+    records = [
+        _vqa_record("exact", exact=True),
+        _vqa_record(
+            "equivalent",
+            exact=False,
+            judge="succeeded",
+            judge_parsed={"score": 1, "concise_rationale": "same meaning"},
+        ),
+        _vqa_record("unresolved", exact=False),
+    ]
+    for record in records:
+        _write_sample(
+            run_dir,
+            run_task="general_vqa",
+            sample=_sample(record.sample_id),
+            status=_status(record.sample_id, "general_vqa", "succeeded"),
+            evaluation=record,
+        )
+    task = build_report(run_dir).tasks[0]
+    assert task.metrics["general_vqa"] == {
+        "metric": "exact_match_accuracy",
+        "correct": 1,
+        "total": 3,
+        "score": 1 / 3,
+    }
+    assert "coverage" not in task.metrics["general_vqa"]
+    semantic = task.judge_metrics["vqa_semantic_equivalence"]
+    assert semantic["deterministic_exact_correct"] == 1
+    assert semantic["eligible_mismatches"] == 2
+    assert semantic["semantic_equivalent_mismatches"] == 1
+    assert semantic["coverage"] == 0.5
+    assert semantic["corrected_correct"] == 2
+    assert semantic["lower_bound_score"] == 2 / 3
+    assert semantic["complete"] is False
+    assert semantic["score"] is None
+
+
+def test_no_vqa_records_have_empty_judge_metrics_and_counting_judge_is_excluded(
+    tmp_path: Path,
+) -> None:
+    run_dir = _create_run(tmp_path)
+    counting = _counting_record("count-1", exact=1).model_copy(
+        update={
+            "judge_status": "succeeded",
+            "judge_parsed": {"verdict": "correct"},
+        }
+    )
+    _write_sample(
+        run_dir,
+        run_task="counting",
+        sample=_sample("count-1", task="counting", question="How many?"),
+        status=_status("count-1", "counting", "succeeded"),
+        evaluation=counting,
+    )
+    report = build_report(run_dir)
+    assert report.tasks[0].metrics["counting"]["exact_match_accuracy"] == 1.0
+    assert report.tasks[0].judge_metrics == {}
+
+
 def test_build_report_last_row_wins(tmp_path: Path) -> None:
     run_dir = _create_run(tmp_path)
     _write_sample(
@@ -413,6 +485,7 @@ def test_exporters_json_and_csv(tmp_path: Path) -> None:
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     assert payload["total"] == 4
     assert len(payload["samples"]) == 4
+    assert all("judge_metrics" in task for task in payload["tasks"])
     csv_text = csv_path.read_text(encoding="utf-8-sig")
     assert csv_text.startswith("run_task,sample_id,task,state")
     assert "general_vqa,s1,general_vqa,succeeded" in csv_text
