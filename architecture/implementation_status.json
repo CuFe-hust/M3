@@ -67,6 +67,7 @@
     "agents/change/preprocess.py",
     "agents/change/reviewer.py",
     "agents/change/schema.py",
+    "agents/change/semantic_difference.py",
     "agents/change/settings.py",
     "agents/counting/__init__.py",
     "agents/counting/agent.py",
@@ -194,10 +195,8 @@
     "workflows/task_resolver.py"
   ],
   "pending_files": [
-    "agents/change/semantic_difference.py",
     "agents/change/proposal_fusion.py",
     "agents/change/perception.py",
-    "tests/agents/change/test_semantic_difference.py",
     "tests/agents/change/test_proposal_fusion.py",
     "tests/agents/change/test_perception.py",
     "tests/integration/test_change_v2_vertical_slice.py"
