@@ -119,8 +119,7 @@ backend import 为同一对象）；公共入口只抛稳定错误，trace 不�
   是独立扩展线（见 `docs/architecture/12_SEGMENTATION_TRACK.md`），不阻塞
   core release candidate。
 - 验收状态：**FULL_FUNCTIONAL_PARITY=PASS**（离线全功能对等门，含命令矩阵/离线 parity fixtures/Windows 最终离线门，见
-  `docs/architecture/10_WINDOWS_INTEGRATION_GATE.md` 最终 parity 段）；**FINAL_LIVE_GATE=PENDING**（Spark 真机验收：本地
-  Qwen3-VL-4B-Instruct checkpoint 权重缺失，就位后按 99_FINAL_LIVE_GATE 执行；不声称 Spark/Qwen 已通过）。
+  `docs/architecture/10_WINDOWS_INTEGRATION_GATE.md` 最终 parity 段）；**FINAL_LIVE_GATE=PENDING**（真机验收被 ENVIRONMENT_BLOCKER 阻塞：Qwen checkpoint 缺失（HF cache 仅空 refs）、本地无真实数据集、无 Spark 目标机配置；执行步骤见 docs/architecture/99_FINAL_LIVE_GATE_RUNBOOK.md；不声称 Spark/Qwen 已通过）。
 
 ## 安装与测试
 
