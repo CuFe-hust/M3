@@ -1,10 +1,13 @@
 """Public `judge-vqa-run` CLI command: DeepSeek judge pass for one run.
 
-公开 `judge-vqa-run` CLI 命令：单个 run 的 DeepSeek judge 补判。仅处理执行
-任务为 general_vqa 的 succeeded 样本；使用当前 JudgeService/哈希/产物
-（vqa_evaluation.json 与 deepseek_vqa_judge/ 产物）；已 succeeded 的 judge
-默认跳过，--force 无视状态强制重判（从持久化 agent answer 重判）。绝不构造/
-调用 Qwen。judge 失败保留确定性记录并记录稳定 judge_error。
+All runtime tasks in the canonical VQA evaluation family are eligible. By
+default only deterministic mismatches are judged; exact matches never call
+DeepSeek, and --force only re-judges an otherwise eligible mismatch.
+
+公开 `judge-vqa-run` CLI 命令：单个 run 的 DeepSeek judge 补判。处理 canonical
+VQA evaluation family 中的全部 succeeded mismatch 样本；exact 样本始终跳过，
+已 succeeded 的 eligible judge 默认跳过，--force 仅强制重判 eligible mismatch。
+绝不构造/调用 Qwen。judge 失败保留确定性记录并记录稳定 judge_error。
 """
 
 from __future__ import annotations
@@ -18,7 +21,10 @@ from pathlib import Path
 from application.prompts import PromptCatalog
 from application.settings import load_settings
 from evaluation.judges.deepseek import DeepSeekJudgeClient
-from evaluation.records import EVALUATION_FILENAME_BY_TASK
+from evaluation.records import (
+    EVALUATION_FILENAME_BY_TASK,
+    evaluation_task_for_runtime_task,
+)
 from models.cache import JsonResponseCache
 from reporting.adapters import load_evaluation, load_sample, load_status
 from reporting.builder import build_report
@@ -30,7 +36,6 @@ EXIT_OK = 0
 EXIT_RUNTIME = 1
 EXIT_INTERRUPTED = 130
 
-_VQA_TASK = "general_vqa"
 _AGENT_RESULT_FILENAME = "agent_result.json"
 
 
@@ -132,7 +137,9 @@ def _build_judge_service(
     )
     return JudgeService(
         judge_prompt=catalog["count_judge"],
+        judge_prompt_version=catalog.version("count_judge"),
         vqa_judge_prompt=catalog["vqa_judge"],
+        vqa_judge_prompt_version=catalog.version("vqa_judge"),
         judge_client=client,
         model_id=settings.models.deepseek.model,
         counting_min_confidence=settings.counting.min_confidence,
@@ -146,10 +153,10 @@ def _judge_run(
     *,
     force: bool,
 ) -> list[dict]:
-    """Judge every succeeded sample whose execution task is general_vqa; a
-    persisted succeeded judge is skipped unless force.
-    审核执行任务为 general_vqa 的全部 succeeded 样本；持久化 succeeded
-    judge 除非 force 否则跳过。"""
+    """Judge every succeeded VQA-family mismatch; skip exact matches and a
+    persisted succeeded judge unless force.
+    审核 VQA family 的全部 succeeded mismatch；exact 始终跳过，持久化
+    succeeded judge 除非 force 否则跳过。"""
 
     judged: list[dict] = []
     tasks_dir = run_dir / "tasks"
@@ -168,16 +175,21 @@ def _judge_run(
             if status is None or status.state != "succeeded":
                 continue
             execution_task = status.task  # executed task, authoritative / 执行任务
-            if execution_task != _VQA_TASK:
-                continue  # only execution task general_vqa / 仅执行任务 general_vqa
+            if evaluation_task_for_runtime_task(execution_task) != "general_vqa":
+                continue
             sample = load_sample(sample_dir)
             if sample is None:
                 judged.append(
                     {"sample_id": status.sample_id, "status": "skipped_missing_sample"}
                 )
                 continue
+            existing = load_evaluation(sample_dir, execution_task)
+            if existing is not None and _is_exact_vqa(existing):
+                judged.append(
+                    {"sample_id": status.sample_id, "status": "skipped_exact"}
+                )
+                continue
             if not force:
-                existing = load_evaluation(sample_dir, _VQA_TASK)
                 if existing is not None and existing.judge_status == "succeeded":
                     judged.append(
                         {"sample_id": status.sample_id, "status": "skipped_succeeded"}
@@ -191,7 +203,7 @@ def _judge_run(
                         sample=sample,
                         candidate_answer="",
                         sample_dir=sample_dir,
-                        judge_policy="all",
+                        judge_policy="errors-only",
                         call_budget=None,
                     )
                 artifact_writer.write_evaluation(
@@ -200,11 +212,15 @@ def _judge_run(
                     filename=EVALUATION_FILENAME_BY_TASK["general_vqa"],
                 )
                 judged.append(
-                    {
-                        "sample_id": status.sample_id,
-                        "judge_status": record.judge_status,
-                        "judge_error": record.judge_error,
-                    }
+                    (
+                        {"sample_id": status.sample_id, "status": "skipped_exact"}
+                        if _is_exact_vqa(record)
+                        else {
+                            "sample_id": status.sample_id,
+                            "judge_status": record.judge_status,
+                            "judge_error": record.judge_error,
+                        }
+                    )
                 )
             except Exception as error:
                 # The deterministic record stays untouched; only the stable
@@ -217,6 +233,13 @@ def _judge_run(
                     }
                 )
     return judged
+
+
+def _is_exact_vqa(record: object) -> bool:
+    """Return the deterministic VQA exact result without consulting judge data."""
+
+    metrics = getattr(record, "deterministic_metrics", None)
+    return bool(getattr(metrics, "exact_match", False))
 
 
 def _force_judge(
@@ -237,6 +260,6 @@ def _force_judge(
         sample=sample,
         candidate_answer=answer,
         sample_dir=sample_dir,
-        judge_policy="all",
+        judge_policy="errors-only",
         call_budget=None,
     )

@@ -48,10 +48,17 @@ class _FakeJudgeClient:
         return response_model.model_validate(self.verdict.model_dump())
 
 
-def _service(client=None, *, model_id: str = "deepseek-model") -> JudgeService:
+def _service(
+    client=None,
+    *,
+    model_id: str = "deepseek-model",
+    vqa_prompt_version: str = "v2",
+) -> JudgeService:
     return JudgeService(
         judge_prompt="counting judge prompt",
+        judge_prompt_version="v1",
         vqa_judge_prompt="vqa judge prompt",
+        vqa_judge_prompt_version=vqa_prompt_version,
         judge_client=client,
         model_id=model_id,
         counting_min_confidence=0.2,
@@ -273,7 +280,7 @@ def test_vqa_request_meta_and_text_only_payload(tmp_path: Path) -> None:
     )
     payload, meta, system_prompt = client.calls[0]
     assert meta.request_id == "s1:deepseek-vqa"
-    assert meta.prompt_version == "deepseek-vqa-judge-v1"
+    assert meta.prompt_version == "v2"
     assert meta.sample_id == "s1"
     assert meta.artifact_dir == tmp_path / "deepseek_vqa_judge"
     assert system_prompt == "vqa judge prompt"
@@ -281,6 +288,28 @@ def test_vqa_request_meta_and_text_only_payload(tmp_path: Path) -> None:
     assert payload["deterministic_metrics"] == {"exact_match": 1}
     serialized = json.dumps(payload).casefold()
     assert "image" not in serialized
+
+
+def test_vqa_prompt_version_changes_request_hash_and_meta(tmp_path: Path) -> None:
+    first = _FakeJudgeClient(verdict=_vqa_verdict())
+    second = _FakeJudgeClient(verdict=_vqa_verdict())
+    _service(first, vqa_prompt_version="v2").judge_vqa(
+        sample=_sample(),
+        candidate_answer="no",
+        sample_dir=tmp_path,
+        judge_policy="errors-only",
+    )
+    _service(second, vqa_prompt_version="v3").judge_vqa(
+        sample=_sample(),
+        candidate_answer="no",
+        sample_dir=tmp_path,
+        judge_policy="errors-only",
+    )
+    first_meta = first.calls[0][1]
+    second_meta = second.calls[0][1]
+    assert first_meta.prompt_version == "v2"
+    assert second_meta.prompt_version == "v3"
+    assert first_meta.request_hash != second_meta.request_hash
 
 
 # ── counting post-hoc judge / 计数事后 judge ────────────────────────────────
@@ -325,7 +354,7 @@ def test_judge_counting_with_client(tmp_path: Path) -> None:
     assert payload["target_spec"]["canonical_label"] == "car"
     assert payload["prediction"]["final_count"] == 2
     assert meta.request_id == "s1:deepseek"
-    assert meta.prompt_version == "deepseek-judge-v1"
+    assert meta.prompt_version == "v1"
     assert meta.artifact_dir == tmp_path
 
 

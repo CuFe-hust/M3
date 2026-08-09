@@ -564,7 +564,9 @@ def test_shared_budget_across_attempts_and_judge(tmp_path: Path) -> None:
     judge_client = _FakeJudgeClient(verdict=VQAAnswerJudgeResult(score=1))
     judge_service = JudgeService(
         judge_prompt="counting prompt",
+        judge_prompt_version="v1",
         vqa_judge_prompt="vqa prompt",
+        vqa_judge_prompt_version="v2",
         judge_client=judge_client,
     )
     runner = _runner(
@@ -652,7 +654,9 @@ def test_vqa_judge_succeeds(tmp_path: Path) -> None:
     judge_client = _FakeJudgeClient(verdict=VQAAnswerJudgeResult(score=1))
     judge_service = JudgeService(
         judge_prompt="counting prompt",
+        judge_prompt_version="v1",
         vqa_judge_prompt="vqa prompt",
+        vqa_judge_prompt_version="v2",
         judge_client=judge_client,
     )
     agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
@@ -677,7 +681,9 @@ def test_vqa_judge_failure_keeps_deterministic(tmp_path: Path) -> None:
     judge_client = _FakeJudgeClient(error=RuntimeError("secret-raw-detail"))
     judge_service = JudgeService(
         judge_prompt="counting prompt",
+        judge_prompt_version="v1",
         vqa_judge_prompt="vqa prompt",
+        vqa_judge_prompt_version="v2",
         judge_client=judge_client,
     )
     agent = _FakeAgent(
@@ -708,7 +714,9 @@ def test_vqa_judge_policy_none_records_not_requested(tmp_path: Path) -> None:
     judge_client = _FakeJudgeClient(verdict=VQAAnswerJudgeResult(score=1))
     judge_service = JudgeService(
         judge_prompt="counting prompt",
+        judge_prompt_version="v1",
         vqa_judge_prompt="vqa prompt",
+        vqa_judge_prompt_version="v2",
         judge_client=judge_client,
     )
     agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
@@ -721,6 +729,82 @@ def test_vqa_judge_policy_none_records_not_requested(tmp_path: Path) -> None:
     )
     assert outcome.evaluation is not None
     assert outcome.evaluation.judge_status == "not_requested"
+    assert judge_client.calls == 0
+
+
+@pytest.mark.parametrize(
+    ("task", "agent_name"),
+    [
+        ("general_vqa", "general_vqa_agent"),
+        ("multiple_choice_vqa", "general_vqa_agent"),
+        ("scene_classification", "general_vqa_agent"),
+        ("spatial_relation", "spatial_agent"),
+        ("change_qa", "change_agent"),
+    ],
+)
+def test_every_vqa_family_mismatch_uses_semantic_judge(
+    tmp_path: Path,
+    task: str,
+    agent_name: str,
+) -> None:
+    judge_client = _FakeJudgeClient(verdict=VQAAnswerJudgeResult(score=1))
+    judge_service = JudgeService(
+        judge_prompt="counting prompt",
+        judge_prompt_version="v1",
+        vqa_judge_prompt="vqa prompt",
+        vqa_judge_prompt_version="v2",
+        judge_client=judge_client,
+    )
+    agent = _FakeAgent(
+        agent_name,
+        (task,),
+        payload=AgentResult(
+            agent_name=agent_name,
+            answer="semantic paraphrase",
+            status="completed",
+        ),
+    )
+    sample = (
+        _change_sample()
+        if task == "change_qa"
+        else _sample(task=task, answers=["official answer"])
+    )
+    outcome = _run(
+        _runner([agent], judge_service=judge_service),
+        sample,
+        _sample_dir(tmp_path),
+        judge_policy="errors-only",
+    )
+    assert judge_client.calls == 1
+    assert outcome.evaluation is not None
+    assert outcome.evaluation.task == "general_vqa"
+    assert outcome.evaluation.deterministic_metrics.exact_match is False
+    assert outcome.evaluation.judge_status == "succeeded"
+
+
+def test_non_vqa_family_never_uses_vqa_semantic_judge(tmp_path: Path) -> None:
+    judge_client = _FakeJudgeClient(verdict=VQAAnswerJudgeResult(score=1))
+    judge_service = JudgeService(
+        judge_prompt="counting prompt",
+        judge_prompt_version="v1",
+        vqa_judge_prompt="vqa prompt",
+        vqa_judge_prompt_version="v2",
+        judge_client=judge_client,
+    )
+    agent = _FakeAgent(
+        "caption_agent",
+        ("caption",),
+        payload=AgentResult(
+            agent_name="caption_agent", answer="candidate", status="completed"
+        ),
+    )
+    outcome = _run(
+        _runner([agent], judge_service=judge_service),
+        _sample(task="caption", answers=["reference"]),
+        _sample_dir(tmp_path),
+        judge_policy="errors-only",
+    )
+    assert outcome.status.state == "succeeded"
     assert judge_client.calls == 0
 
 

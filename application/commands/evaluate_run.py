@@ -152,7 +152,9 @@ def _build_judge_service(
     )
     return JudgeService(
         judge_prompt=catalog["count_judge"],
+        judge_prompt_version=catalog.version("count_judge"),
         vqa_judge_prompt=catalog["vqa_judge"],
+        vqa_judge_prompt_version=catalog.version("vqa_judge"),
         judge_client=client,
         model_id=settings.models.deepseek.model,
         counting_min_confidence=settings.counting.min_confidence,
@@ -225,6 +227,15 @@ def _evaluate_run(
                 }
             )
             continue
+        evaluation_family = evaluation_task_for_runtime_task(execution_task)
+        if (
+            judge_service is not None
+            and evaluation_family == "general_vqa"
+            and evaluation_before is not None
+            and evaluation_before.judge_status == "succeeded"
+            and (not force_judge or _is_exact_vqa(evaluation))
+        ):
+            evaluation = _preserve_existing_judge(evaluation, evaluation_before)
         artifact_writer.write_evaluation(sample_dir, evaluation, filename=name)
         evaluated.append(
             {
@@ -233,23 +244,24 @@ def _evaluate_run(
                 "filename": name,
             }
         )
-        if judge_service is not None and execution_task == "general_vqa":
-            judge_results.append(
-                _judge_one(
-                    judge_service,
-                    sample,
-                    sample_dir,
-                    # The skip decision uses the pre-recompute record so a
-                    # succeeded judge survives the deterministic rewrite.
-                    # skip 判断使用重算前的记录，使 succeeded judge 在确定性
-                    # 重写后仍被跳过。
-                    existing=evaluation_before,
-                    force=force_judge,
+        if judge_service is not None and evaluation_family == "general_vqa":
+            if _is_exact_vqa(evaluation):
+                judge_results.append(
+                    {"sample_id": sample.sample_id, "status": "skipped_exact"}
                 )
-            )
+            else:
+                judge_results.append(
+                    _judge_one(
+                        judge_service,
+                        sample,
+                        sample_dir,
+                        existing=evaluation_before,
+                        force=force_judge,
+                    )
+                )
         elif (
             judge_service is not None
-            and evaluation_task_for_runtime_task(execution_task) == "counting"
+            and evaluation_family == "counting"
         ):
             judge_results.append(
                 _judge_counting_one(
@@ -262,6 +274,30 @@ def _evaluate_run(
                 )
             )
     return evaluated, not_applicable, judge_results
+
+
+def _is_exact_vqa(evaluation: EvaluationRecord) -> bool:
+    """Return the deterministic VQA exact result without consulting judge data."""
+
+    metrics = evaluation.deterministic_metrics
+    return bool(getattr(metrics, "exact_match", False))
+
+
+def _preserve_existing_judge(
+    deterministic: EvaluationRecord,
+    existing: EvaluationRecord,
+) -> EvaluationRecord:
+    """Carry a succeeded sidecar onto freshly recomputed deterministic metrics."""
+
+    return deterministic.model_copy(
+        update={
+            "judge_status": existing.judge_status,
+            "judge_raw": existing.judge_raw,
+            "judge_parsed": existing.judge_parsed,
+            "judge_inconsistency": existing.judge_inconsistency,
+            "judge_error": existing.judge_error,
+        }
+    )
 
 
 def _judge_counting_one(
@@ -378,7 +414,7 @@ def _judge_one(
                 sample=sample,
                 candidate_answer="",
                 sample_dir=sample_dir,
-                judge_policy="all",
+                judge_policy="errors-only",
                 call_budget=None,
             )
         artifact_writer = ArtifactWriter()
@@ -418,7 +454,7 @@ def _force_judge(
         sample=sample,
         candidate_answer=answer,
         sample_dir=sample_dir,
-        judge_policy="all",
+        judge_policy="errors-only",
         call_budget=None,
     )
 

@@ -462,7 +462,10 @@ class SampleRunner:
         evaluation, filename = build_deterministic_evaluation(
             sample=sample, execution_payload=execution.payload
         )
-        if task == "general_vqa" and self.judge_service is not None:
+        if (
+            evaluation_task_for_runtime_task(task) == "general_vqa"
+            and self.judge_service is not None
+        ):
             candidate_answer = str(getattr(execution.payload, "answer", ""))
             try:
                 evaluation = await asyncio.to_thread(

@@ -2549,14 +2549,14 @@ def test_evaluate_run_deepseek_skip_and_force_judge(
     existing = EvaluationRecord(
         sample_id="v1",
         task="general_vqa",
-        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        deterministic_metrics=VQADeterministicMetrics(exact_match=False),
         judge_status="succeeded",
     )
     _make_offline_run(
         tmp_path,
         [
             {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
-                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"},
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "no", "status": "completed"},
                                              "evaluation": existing.model_dump(mode="json"),
                                              "evaluation_file": "vqa_evaluation.json"}},
             _offline_counting_sample("c1"),
@@ -2592,7 +2592,7 @@ def test_evaluate_run_deepseek_skip_and_force_judge(
         (vqa_dir / "vqa_evaluation.json").read_text(encoding="utf-8")
     )
     assert evaluation["judge_status"] == "succeeded"
-    assert evaluation["deterministic_metrics"]["exact_match"] is True
+    assert evaluation["deterministic_metrics"]["exact_match"] is False
 
 
 def test_evaluate_run_judge_failure_preserves_deterministic(
@@ -2614,7 +2614,7 @@ def test_evaluate_run_judge_failure_preserves_deterministic(
         tmp_path,
         [
             {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
-                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "no", "status": "completed"}}},
         ],
     )
     code = run_evaluate_run(
@@ -2632,7 +2632,81 @@ def test_evaluate_run_judge_failure_preserves_deterministic(
         (vqa_dir / "vqa_evaluation.json").read_text(encoding="utf-8")
     )
     assert evaluation["judge_status"] == "failed"
-    assert evaluation["deterministic_metrics"]["exact_match"] is True  # preserved
+    assert evaluation["deterministic_metrics"]["exact_match"] is False  # preserved
+
+
+def test_evaluate_run_exact_vqa_never_calls_deepseek_even_when_forced(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import evaluate_run as evaluate_run_module
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    judge = _OfflineFakeJudgeClient()
+    monkeypatch.setattr(
+        evaluate_run_module, "DeepSeekJudgeClient", lambda *a, **k: judge
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    _make_offline_run(
+        tmp_path,
+        [
+            {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+        ],
+    )
+    code = run_evaluate_run(_offline_args(deepseek=True, force_judge=True))
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["judge"] == [{"sample_id": "v1", "status": "skipped_exact"}]
+    assert judge.calls == []
+
+
+def test_evaluate_run_deepseek_covers_every_runtime_vqa_family(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import evaluate_run as evaluate_run_module
+    from application.commands.evaluate_run import run_evaluate_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    judge = _OfflineFakeJudgeClient()
+    monkeypatch.setattr(
+        evaluate_run_module, "DeepSeekJudgeClient", lambda *a, **k: judge
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    entries = []
+    for task, agent_name in (
+        ("general_vqa", "general_vqa_agent"),
+        ("multiple_choice_vqa", "general_vqa_agent"),
+        ("scene_classification", "general_vqa_agent"),
+        ("spatial_relation", "spatial_agent"),
+        ("change_qa", "change_agent"),
+    ):
+        sample_id = f"evaluate-{task}"
+        entry = _offline_vqa_sample(sample_id)
+        entry["sample"]["task"] = task
+        entry["execution_task"] = task
+        entry["payload_file"] = "agent_result.json"
+        entry["payload"] = {
+            "agent_name": agent_name,
+            "answer": "no",
+            "status": "completed",
+        }
+        if task == "change_qa":
+            entry["sample"]["images"] = [
+                {"image_id": "i0", "path": "t1.png", "role": "t1"},
+                {"image_id": "i1", "path": "t2.png", "role": "t2"},
+            ]
+        entries.append(entry)
+    _make_offline_run(tmp_path, entries)
+    code = run_evaluate_run(_offline_args(deepseek=True))
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert {item["sample_id"] for item in out["judge"]} == {
+        entry["sample_id"] for entry in entries
+    }
+    assert len(judge.calls) == 5
 
 
 def test_evaluate_run_missing_deepseek_key_fails(tmp_path, monkeypatch, capsys) -> None:
@@ -2663,15 +2737,25 @@ def test_judge_vqa_run_skip_and_force(tmp_path, monkeypatch, capsys) -> None:
     existing = EvaluationRecord(
         sample_id="v1",
         task="general_vqa",
-        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        deterministic_metrics=VQADeterministicMetrics(exact_match=False),
         judge_status="succeeded",
+    )
+    exact = EvaluationRecord(
+        sample_id="v2",
+        task="general_vqa",
+        deterministic_metrics=VQADeterministicMetrics(exact_match=True),
+        judge_status="not_requested",
     )
     _make_offline_run(
         tmp_path,
         [
             {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
-                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"},
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "no", "status": "completed"},
                                              "evaluation": existing.model_dump(mode="json"),
+                                             "evaluation_file": "vqa_evaluation.json"}},
+            {**_offline_vqa_sample("v2"), **{"payload_file": "agent_result.json",
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"},
+                                             "evaluation": exact.model_dump(mode="json"),
                                              "evaluation_file": "vqa_evaluation.json"}},
             _offline_counting_sample("c1"),
         ],
@@ -2681,6 +2765,7 @@ def test_judge_vqa_run_skip_and_force(tmp_path, monkeypatch, capsys) -> None:
     out = json.loads(capsys.readouterr().out)
     judged = {item["sample_id"]: item for item in out["judged"]}
     assert judged["v1"]["status"] == "skipped_succeeded"
+    assert judged["v2"]["status"] == "skipped_exact"
     assert "c1" not in judged  # only execution task general_vqa
     assert not judge.calls
     code = run_judge_vqa_run(
@@ -2690,7 +2775,55 @@ def test_judge_vqa_run_skip_and_force(tmp_path, monkeypatch, capsys) -> None:
     out = json.loads(capsys.readouterr().out)
     judged = {item["sample_id"]: item for item in out["judged"]}
     assert judged["v1"]["judge_status"] == "succeeded"
+    assert judged["v2"]["status"] == "skipped_exact"
     assert len(judge.calls) == 1
+
+
+def test_judge_vqa_run_covers_every_runtime_vqa_family(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import judge_vqa_run as judge_run_module
+    from application.commands.judge_vqa_run import run_judge_vqa_run
+
+    _BoomCreateModel.arm(monkeypatch)
+    judge = _OfflineFakeJudgeClient()
+    monkeypatch.setattr(
+        judge_run_module, "DeepSeekJudgeClient", lambda *a, **k: judge
+    )
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test-key")
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    entries = []
+    for task, agent_name in (
+        ("general_vqa", "general_vqa_agent"),
+        ("multiple_choice_vqa", "general_vqa_agent"),
+        ("scene_classification", "general_vqa_agent"),
+        ("spatial_relation", "spatial_agent"),
+        ("change_qa", "change_agent"),
+    ):
+        sample_id = f"family-{task}"
+        entry = _offline_vqa_sample(sample_id)
+        entry["sample"]["task"] = task
+        entry["execution_task"] = task
+        entry["payload_file"] = "agent_result.json"
+        entry["payload"] = {
+            "agent_name": agent_name,
+            "answer": "no",
+            "status": "completed",
+        }
+        if task == "change_qa":
+            entry["sample"]["images"] = [
+                {"image_id": "i0", "path": "t1.png", "role": "t1"},
+                {"image_id": "i1", "path": "t2.png", "role": "t2"},
+            ]
+        entries.append(entry)
+    _make_offline_run(tmp_path, entries)
+    code = run_judge_vqa_run(_offline_args())
+    assert code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert {item["sample_id"] for item in out["judged"]} == {
+        entry["sample_id"] for entry in entries
+    }
+    assert len(judge.calls) == 5
 
 
 def test_judge_vqa_run_failure_records_stable_error(
@@ -2710,7 +2843,7 @@ def test_judge_vqa_run_failure_records_stable_error(
         tmp_path,
         [
             {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
-                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "no", "status": "completed"}}},
         ],
     )
     code = run_judge_vqa_run(_offline_args())
@@ -2726,7 +2859,7 @@ def test_judge_vqa_run_failure_records_stable_error(
         (vqa_dir / "vqa_evaluation.json").read_text(encoding="utf-8")
     )
     assert evaluation["judge_status"] == "failed"
-    assert evaluation["deterministic_metrics"]["exact_match"] is True
+    assert evaluation["deterministic_metrics"]["exact_match"] is False
 
 
 def test_offline_commands_missing_run_fails(tmp_path, monkeypatch, capsys) -> None:
@@ -4341,7 +4474,7 @@ def test_evaluate_run_persists_refreshed_report_bundle(
         [
             _offline_counting_sample("c1", final_count=0),
             {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
-                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "no", "status": "completed"}}},
         ],
     )
     run_dir = tmp_path / "runs" / "offline-run"
@@ -4387,7 +4520,7 @@ def test_judge_vqa_run_persists_refreshed_report_bundle(
         tmp_path,
         [
             {**_offline_vqa_sample("v1"), **{"payload_file": "agent_result.json",
-                                             "payload": {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}}},
+                                             "payload": {"agent_name": "general_vqa_agent", "answer": "no", "status": "completed"}}},
         ],
     )
     run_dir = tmp_path / "runs" / "offline-run"

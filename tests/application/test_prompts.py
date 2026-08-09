@@ -45,6 +45,9 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.version("count_tile") == "v4"
     assert catalog.version("general") == "v2"
     assert catalog.version("task_resolver") == "v1"
+    assert catalog.version("vqa_judge") == "v2"
+    assert catalog.asset("vqa_judge").path.name == "deepseek_vqa_judge_v2.md"
+    assert (REPO_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").is_file()
 
 
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
@@ -53,6 +56,21 @@ def test_catalog_snapshot_paths_stable_and_existing() -> None:
     assert len(paths) == 16  # 17 keys, general_vqa_v2 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
+
+
+def test_vqa_judge_v2_declares_semantic_text_only_rules() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["vqa_judge"].casefold()
+    for required in (
+        "meaning, not surface form",
+        "question-sensitive",
+        "number words and digits",
+        "option label",
+        "contradiction",
+        "cannot inspect an image",
+        "official reference answers are authoritative",
+        "return json only",
+    ):
+        assert required in prompt
 
 
 def test_catalog_unknown_key_fails_stable() -> None:
@@ -96,7 +114,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "seam_verify_v1.md",
         "task_resolver_v1.md",
         "deepseek_judge_v1.md",
-        "deepseek_vqa_judge_v1.md",
+        "deepseek_vqa_judge_v2.md",
         "json_repair_v1.md",
     ):
         (prompts_root / filename).write_text(f"# {filename}\ncontent\n", encoding="utf-8")

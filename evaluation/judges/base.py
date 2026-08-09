@@ -123,7 +123,6 @@ def build_vqa_judge_payload(
     构建不含图像数据或路径的 VQA judge 载荷。"""
 
     return {
-        "task": "general_vqa_answer_validation",
         "question": question,
         "prediction": {"answer": candidate_answer},
         "ground_truth": {"answers": reference_answers},

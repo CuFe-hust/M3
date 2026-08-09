@@ -658,7 +658,7 @@ class DatasetRunner:
             if evaluation is None:
                 return  # fail closed: coordinate/geometry/reference mismatch
             self.artifact_writer.write_evaluation(sample_dir, evaluation, filename=filename)
-        if task == "general_vqa":
+        if evaluation_task_for_runtime_task(task) == "general_vqa":
             judge_service = self.sample_runner.judge_service
             if judge_service is not None and self._judge_policy_for(sample.sample_id) != "none":
                 evaluation = await asyncio.to_thread(

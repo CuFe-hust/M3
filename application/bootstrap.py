@@ -110,7 +110,9 @@ def assemble_runtime(
     judge_client = _build_judge_client(settings, catalog, api_key)
     judge_service = JudgeService(
         judge_prompt=catalog["count_judge"],
+        judge_prompt_version=catalog.version("count_judge"),
         vqa_judge_prompt=catalog["vqa_judge"],
+        vqa_judge_prompt_version=catalog.version("vqa_judge"),
         judge_client=judge_client,
         model_id=settings.models.deepseek.model,
         counting_min_confidence=settings.counting.min_confidence,

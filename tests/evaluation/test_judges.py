@@ -170,7 +170,12 @@ def test_vqa_payload_shape_and_text_only() -> None:
         reference_answers=["yes", "Yes."],
         candidate_answer="yes",
     )
-    assert payload["task"] == "general_vqa_answer_validation"
+    assert set(payload) == {
+        "question",
+        "prediction",
+        "ground_truth",
+        "deterministic_metrics",
+    }
     assert payload["prediction"] == {"answer": "yes"}
     assert payload["ground_truth"] == {"answers": ["yes", "Yes."]}
     assert payload["deterministic_metrics"] == {"exact_match": 1}

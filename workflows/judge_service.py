@@ -45,14 +45,18 @@ class JudgeService:
         self,
         *,
         judge_prompt: str,
+        judge_prompt_version: str,
         vqa_judge_prompt: str,
+        vqa_judge_prompt_version: str,
         judge_client: JudgeClient | None = None,
         model_id: str = "deepseek",
         counting_min_confidence: float = 0.2,
     ) -> None:
         self.judge_client = judge_client
         self._judge_prompt = judge_prompt
+        self._judge_prompt_version = judge_prompt_version
         self._vqa_judge_prompt = vqa_judge_prompt
+        self._vqa_judge_prompt_version = vqa_judge_prompt_version
         self._model_id = model_id
         self._counting_min_confidence = counting_min_confidence
 
@@ -95,12 +99,12 @@ class JudgeService:
                     request_hash=build_judge_request_hash(
                         model=self._model_id,
                         prompt_text=self._judge_prompt,
-                        prompt_version="deepseek-judge-v1",
+                        prompt_version=self._judge_prompt_version,
                         sample_id=sample_id,
                         payload=payload,
                         response_schema=DeepSeekJudgeResult.model_json_schema(),
                     ),
-                    prompt_version="deepseek-judge-v1",
+                    prompt_version=self._judge_prompt_version,
                     sample_id=sample_id,
                     artifact_dir=artifact_dir,
                 ),
@@ -173,12 +177,12 @@ class JudgeService:
                     request_hash=build_judge_request_hash(
                         model=self._model_id,
                         prompt_text=self._vqa_judge_prompt,
-                        prompt_version="deepseek-vqa-judge-v1",
+                        prompt_version=self._vqa_judge_prompt_version,
                         sample_id=sample.sample_id,
                         payload=payload,
                         response_schema=VQAAnswerJudgeResult.model_json_schema(),
                     ),
-                    prompt_version="deepseek-vqa-judge-v1",
+                    prompt_version=self._vqa_judge_prompt_version,
                     sample_id=sample.sample_id,
                     artifact_dir=sample_dir / "deepseek_vqa_judge",
                 ),

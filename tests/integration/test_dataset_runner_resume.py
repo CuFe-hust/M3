@@ -330,7 +330,11 @@ def test_resume_rejudges_failed_judge(tmp_path: Path) -> None:
         VQAAnswerJudgeResult(score=1), error=RuntimeError("judge secret")
     )
     judge_service = JudgeService(
-        judge_prompt="p", vqa_judge_prompt="v", judge_client=judge_client
+        judge_prompt="p",
+        judge_prompt_version="v1",
+        vqa_judge_prompt="v",
+        vqa_judge_prompt_version="v2",
+        judge_client=judge_client,
     )
     root, client, _, _, dataset_runner, run_dir = _setup(
         tmp_path, judge_service=judge_service, judge_policy="all"
@@ -359,7 +363,11 @@ def test_resume_judge_policy_none_does_not_rejudge(tmp_path: Path) -> None:
         VQAAnswerJudgeResult(score=1), error=RuntimeError("judge secret")
     )
     judge_service = JudgeService(
-        judge_prompt="p", vqa_judge_prompt="v", judge_client=judge_client
+        judge_prompt="p",
+        judge_prompt_version="v1",
+        vqa_judge_prompt="v",
+        vqa_judge_prompt_version="v2",
+        judge_client=judge_client,
     )
     root, client, _, _, dataset_runner, run_dir = _setup(
         tmp_path, judge_service=judge_service, judge_policy="all"
@@ -847,7 +855,11 @@ def test_judge_runs_off_the_event_loop(tmp_path: Path) -> None:
 
     judge_client = _BlockingJudgeClient(VQAAnswerJudgeResult(score=1))
     judge_service = JudgeService(
-        judge_prompt="p", vqa_judge_prompt="v", judge_client=judge_client
+        judge_prompt="p",
+        judge_prompt_version="v1",
+        vqa_judge_prompt="v",
+        vqa_judge_prompt_version="v2",
+        judge_client=judge_client,
     )
     samples = [_vqa_sample(), _vqa_sample2()]
     root, _, _, _, dataset_runner, _ = _setup(
