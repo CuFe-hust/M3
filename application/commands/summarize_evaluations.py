@@ -19,7 +19,11 @@ from typing import Any
 
 from application.settings import load_settings
 from evaluation.metrics.aggregate import aggregate
-from evaluation.records import EvaluationRecord, VQAEvaluationRecord
+from evaluation.records import (
+    EVALUATION_FILENAME_BY_TASK,
+    EvaluationRecord,
+    VQAEvaluationRecord,
+)
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
@@ -27,12 +31,7 @@ EXIT_INTERRUPTED = 130
 
 # Evaluation artifact names produced by the shared deterministic dispatch.
 # 共享确定性分派产出的评估产物名。
-_KNOWN_EVALUATION_FILENAMES = (
-    "vqa_evaluation.json",
-    "counting_evaluation.json",
-    "grounding_evaluation.json",
-    "caption_evaluation.json",
-)
+_KNOWN_EVALUATION_FILENAMES = tuple(EVALUATION_FILENAME_BY_TASK.values())
 
 
 def run_summarize_evaluations(args: argparse.Namespace) -> int:

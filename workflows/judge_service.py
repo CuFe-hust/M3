@@ -26,7 +26,11 @@ from evaluation.judges.base import (
 )
 from evaluation.metrics.counting import merge_count_evaluation
 from evaluation.metrics.vqa import merge_vqa_evaluation, to_evaluation_record
-from evaluation.records import EvaluationRecord, VQAEvaluationRecord
+from evaluation.records import (
+    EVALUATION_FILENAME_BY_TASK,
+    EvaluationRecord,
+    VQAEvaluationRecord,
+)
 from models.base import RequestMeta
 from workflows.call_budget import CallBudget
 
@@ -211,7 +215,9 @@ class JudgeService:
         期间审核 VQA 答案：已持久化的 succeeded 评估原样返回（绝不重判）；
         缺失/损坏/failed 的评估用持久化 agent 答案重新审核。"""
 
-        evaluation_path = sample_dir / "vqa_evaluation.json"
+        evaluation_path = (
+            sample_dir / EVALUATION_FILENAME_BY_TASK["general_vqa"]
+        )
         if evaluation_path.is_file():
             existing = self._load_existing_evaluation(evaluation_path)
             if existing is not None and existing.judge_status == "succeeded":

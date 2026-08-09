@@ -37,6 +37,7 @@ from application.prompts import PromptCatalog
 from application.runtime import Runtime
 from application.settings import load_settings
 from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
+from evaluation.records import EVALUATION_FILENAME_BY_TASK
 from reporting.visualization import render_counting_overlay
 from workflows.call_budget import CallBudget
 from workflows.dataset_runner import storage_key
@@ -49,7 +50,6 @@ EXIT_INTERRUPTED = 130
 
 _STATUS_FILENAME = "status.json"
 _COUNTING_RESULT_FILENAME = "counting_result.json"
-_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
 _OVERLAY_FILENAME = "overlay.png"
 
 
@@ -205,7 +205,9 @@ async def _run(args: argparse.Namespace) -> int:
         # artifacts the persisted intent does not produce. 对持久化意图不
         # 产出的产物，在已校验样本目录内窄范围清理。
         if not effective_evaluate:
-            evaluation_path = sample_dir / _COUNTING_EVALUATION_FILENAME
+            evaluation_path = (
+                sample_dir / EVALUATION_FILENAME_BY_TASK["counting"]
+            )
             if evaluation_path.is_file():
                 evaluation_path.unlink()
         if not effective_render:

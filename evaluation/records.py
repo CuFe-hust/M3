@@ -14,6 +14,52 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 EvaluationTask = Literal["counting", "general_vqa", "grounding", "caption"]
 
+# Canonical production contract from runtime tasks to deterministic evaluation
+# families and their artifact filenames. Keep both mappings immutable so every
+# workflow, application command, and report reader observes the same dispatch.
+# runtime task 到确定性评测族及其产物文件名的生产权威契约。两个映射均保持
+# 不可变，使 workflow、应用命令和报告读取层共享同一分派。
+RUNTIME_TASK_TO_EVALUATION_TASK: MappingProxyType[str, EvaluationTask] = (
+    MappingProxyType(
+        {
+            "counting": "counting",
+            "fine_grained_counting": "counting",
+            "general_vqa": "general_vqa",
+            "multiple_choice_vqa": "general_vqa",
+            "scene_classification": "general_vqa",
+            "grounding": "grounding",
+            "caption": "caption",
+        }
+    )
+)
+
+EVALUATION_FILENAME_BY_TASK: MappingProxyType[EvaluationTask, str] = MappingProxyType(
+    {
+        "counting": "counting_evaluation.json",
+        "general_vqa": "vqa_evaluation.json",
+        "grounding": "grounding_evaluation.json",
+        "caption": "caption_evaluation.json",
+    }
+)
+
+
+def evaluation_task_for_runtime_task(task: str) -> EvaluationTask | None:
+    """Return the canonical evaluation family, or None for an unsupported
+    runtime task. 返回 canonical 评测族；不支持的 runtime task 返回 None。"""
+
+    return RUNTIME_TASK_TO_EVALUATION_TASK.get(task)
+
+
+def evaluation_filename_for_runtime_task(task: str) -> str | None:
+    """Return the deterministic artifact filename for a runtime task without
+    guessing unknown tasks. 返回 runtime task 的确定性评测产物名，未知任务
+    绝不猜测。"""
+
+    evaluation_task = evaluation_task_for_runtime_task(task)
+    if evaluation_task is None:
+        return None
+    return EVALUATION_FILENAME_BY_TASK[evaluation_task]
+
 
 class CountDeterministicMetrics(BaseModel):
     """Deterministic metrics for a counting sample with a known count.

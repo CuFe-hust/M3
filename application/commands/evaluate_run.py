@@ -22,10 +22,14 @@ from application.settings import load_settings
 from agents.counting.schema import CountingResult, CountTargetSpec
 from data.schema import UnifiedSample
 from evaluation.judges.deepseek import DeepSeekJudgeClient
-from evaluation.records import EvaluationRecord
+from evaluation.records import (
+    EVALUATION_FILENAME_BY_TASK,
+    EvaluationRecord,
+    evaluation_filename_for_runtime_task,
+    evaluation_task_for_runtime_task,
+)
 from models.cache import JsonResponseCache
 from reporting.adapters import (
-    evaluation_filename_for_task,
     load_evaluation,
     load_payload,
     load_sample,
@@ -35,14 +39,12 @@ from reporting.builder import build_report
 from workflows.artifact_writer import ArtifactWriter
 from workflows.judge_service import JudgeService
 from workflows.run_store import RunManifest
-from workflows.sample_runner import _COUNTING_TASKS, build_deterministic_evaluation
+from workflows.sample_runner import build_deterministic_evaluation
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
 EXIT_INTERRUPTED = 130
 
-_VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
-_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
 _AGENT_RESULT_FILENAME = "agent_result.json"
 
 
@@ -178,7 +180,7 @@ def _evaluate_run(
         if status is None or status.state != "succeeded":
             continue
         execution_task = status.task  # executed task, authoritative / 执行任务，权威
-        filename = evaluation_filename_for_task(execution_task)
+        filename = evaluation_filename_for_runtime_task(execution_task)
         if filename is None:
             not_applicable.append(
                 {
@@ -245,7 +247,10 @@ def _evaluate_run(
                     force=force_judge,
                 )
             )
-        elif judge_service is not None and execution_task in _COUNTING_TASKS:
+        elif (
+            judge_service is not None
+            and evaluation_task_for_runtime_task(execution_task) == "counting"
+        ):
             judge_results.append(
                 _judge_counting_one(
                     judge_service,
@@ -300,7 +305,9 @@ def _judge_counting_one(
         )
         artifact_writer = ArtifactWriter()
         artifact_writer.write_evaluation(
-            sample_dir, record, filename=_COUNTING_EVALUATION_FILENAME
+            sample_dir,
+            record,
+            filename=EVALUATION_FILENAME_BY_TASK["counting"],
         )
         return {
             "sample_id": sample.sample_id,
@@ -376,7 +383,9 @@ def _judge_one(
             )
         artifact_writer = ArtifactWriter()
         artifact_writer.write_evaluation(
-            sample_dir, record, filename=_VQA_EVALUATION_FILENAME
+            sample_dir,
+            record,
+            filename=EVALUATION_FILENAME_BY_TASK["general_vqa"],
         )
         return {
             "sample_id": sample.sample_id,

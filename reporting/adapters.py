@@ -19,36 +19,12 @@ from typing import Any
 from agents.counting.schema import CountingResult
 from agents.schema import AgentResult
 from data.schema import UnifiedSample
-from evaluation.records import EvaluationRecord
+from evaluation.records import (
+    EvaluationRecord,
+    evaluation_filename_for_runtime_task,
+    evaluation_task_for_runtime_task,
+)
 from workflows.schema import SampleRunStatus
-
-# Mirrors the runtime contract in workflows.sample_runner; the architecture
-# rule forbids reporting from importing that module, so the mapping is
-# maintained locally. 镜像 workflows.sample_runner 中的运行时契约；架构规则
-# 禁止 reporting 导入该模块，因此映射在本模块本地维护。
-_VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
-_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
-_GROUNDING_EVALUATION_FILENAME = "grounding_evaluation.json"
-_CAPTION_EVALUATION_FILENAME = "caption_evaluation.json"
-
-_VQA_TASKS = frozenset({"general_vqa", "multiple_choice_vqa", "scene_classification"})
-_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
-
-
-def evaluation_filename_for_task(task: str) -> str | None:
-    """Sample-level deterministic evaluation artifact for a task; None when
-    the task has no wired sample-level metric. 任务的样本级确定性评估产物名；
-    无已接线样本级指标时返回 None。"""
-
-    if task in _VQA_TASKS:
-        return _VQA_EVALUATION_FILENAME
-    if task in _COUNTING_TASKS:
-        return _COUNTING_EVALUATION_FILENAME
-    if task == "grounding":
-        return _GROUNDING_EVALUATION_FILENAME
-    if task == "caption":
-        return _CAPTION_EVALUATION_FILENAME
-    return None
 
 
 def read_json(path: Path) -> Any | None:
@@ -135,7 +111,7 @@ def load_evaluation(sample_dir: Path, task: str) -> EvaluationRecord | None:
     missing or corrupt files return None. 按执行任务读取样本级确定性评估；
     缺失或损坏文件返回 None。"""
 
-    filename = evaluation_filename_for_task(task)
+    filename = evaluation_filename_for_runtime_task(task)
     if filename is None:
         return None
     raw = read_json(sample_dir / filename)
@@ -154,12 +130,15 @@ def load_payload(sample_dir: Path, task: str) -> object | None:
     counting_result.json，其余已评估任务读 agent_result.json）；缺失或损坏
     返回 None。"""
 
-    if task in _COUNTING_TASKS:
+    family = evaluation_task_for_runtime_task(task)
+    if family == "counting":
         path = sample_dir / "counting_result.json"
         model = CountingResult
-    else:
+    elif family is not None:
         path = sample_dir / "agent_result.json"
         model = AgentResult
+    else:
+        return None
     raw = read_json(path)
     if not isinstance(raw, dict):
         return None

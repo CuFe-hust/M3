@@ -29,7 +29,12 @@ from data.schema import CHANGE_TASKS, UnifiedSample
 from evaluation.metrics.counting import merge_count_evaluation
 from evaluation.metrics.grounding import box_iou, grounding_deterministic_metrics
 from evaluation.metrics.vqa import merge_vqa_evaluation
-from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
+from evaluation.records import (
+    CaptionDeterministicMetrics,
+    EvaluationRecord,
+    evaluation_filename_for_runtime_task,
+    evaluation_task_for_runtime_task,
+)
 from models.base import VisionLanguageClient
 from routing.router import TaskRouter
 from routing.schema import RoutingDecision, TaskResolution
@@ -42,40 +47,12 @@ from workflows.schema import SampleRunOutcome, SampleRunStatus
 # 候选 attempt plan 的硬上限：绝不跑所有 Agent。
 MAX_ATTEMPTS = 3
 
-_VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
-_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
-_GROUNDING_EVALUATION_FILENAME = "grounding_evaluation.json"
-_CAPTION_EVALUATION_FILENAME = "caption_evaluation.json"
-
-# Tasks wired to the VQA exact-match deterministic metric.
-# 已接线 VQA 严格匹配确定性指标的任务。
-_VQA_TASKS = frozenset({"general_vqa", "multiple_choice_vqa", "scene_classification"})
-# Tasks wired to the counting deterministic metric.
-# 已接线计数确定性指标的任务。
-_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
-
 # Prediction coordinate frame mandated by the Agent contract
 # (agents.schema.VisualEvidence). Ground truth must declare the identical
 # frame before any IoU is computed; other frames fail closed.
 # Agent 契约（agents.schema.VisualEvidence）强制的预测坐标系。真值必须声明
 # 相同坐标系才计算 IoU；其他坐标系一律 fail-closed。
 _GROUNDING_PREDICTION_FRAME = "normalized_0_999_top_left"
-
-
-def evaluation_filename_for_task(task: str) -> str | None:
-    """Sample-level deterministic evaluation artifact for a task; None when
-    the task has no wired sample-level metric. 任务的样本级确定性评估产物名；
-    无已接线样本级指标时返回 None。"""
-
-    if task in _VQA_TASKS:
-        return _VQA_EVALUATION_FILENAME
-    if task in _COUNTING_TASKS:
-        return _COUNTING_EVALUATION_FILENAME
-    if task == "grounding":
-        return _GROUNDING_EVALUATION_FILENAME
-    if task == "caption":
-        return _CAPTION_EVALUATION_FILENAME
-    return None
 
 
 def build_deterministic_evaluation(
@@ -102,10 +79,11 @@ def build_deterministic_evaluation(
     None；caption 无参考答案返回 None。"""
 
     task = execution_task or sample.task
-    filename = evaluation_filename_for_task(task)
-    if filename is None:
+    family = evaluation_task_for_runtime_task(task)
+    filename = evaluation_filename_for_runtime_task(task)
+    if family is None or filename is None:
         return None, None
-    if task in _VQA_TASKS:
+    if family == "general_vqa":
         candidate_answer = str(getattr(execution_payload, "answer", ""))
         references = (
             list(sample.ground_truth.answers)
@@ -119,7 +97,7 @@ def build_deterministic_evaluation(
             candidate_answer=candidate_answer,
         )
         return evaluation, filename
-    if task in _COUNTING_TASKS:
+    if family == "counting":
         if not isinstance(execution_payload, CountingResult):
             return None, None  # fail closed: never fabricate counting metrics
         evaluation = merge_count_evaluation(
@@ -128,10 +106,10 @@ def build_deterministic_evaluation(
             ground_truth=sample.ground_truth,
         )
         return evaluation, filename
-    if task == "grounding":
+    if family == "grounding":
         evaluation = _grounding_evaluation(sample, execution_payload)
         return evaluation, filename if evaluation is not None else None
-    if task == "caption":
+    if family == "caption":
         evaluation = _caption_evaluation(sample, execution_payload)
         return evaluation, filename if evaluation is not None else None
     return None, None

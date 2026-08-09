@@ -32,14 +32,17 @@ from agents.counting.schema import CountingResult
 from agents.schema import AgentResult
 from data.adapters.base import DatasetAdapter
 from data.schema import SampleDraft, UnifiedSample
+from evaluation.records import (
+    EVALUATION_FILENAME_BY_TASK,
+    evaluation_filename_for_runtime_task,
+    evaluation_task_for_runtime_task,
+)
 from routing.schema import TaskResolutionRequest
 from workflows.artifact_writer import ArtifactWriter
 from workflows.call_budget import CallBudgetFactory
 from workflows.sample_runner import (
     SampleRunner,
-    _COUNTING_TASKS,
     build_deterministic_evaluation,
-    evaluation_filename_for_task,
 )
 from workflows.schema import DatasetRunSummary, SampleRunStatus
 from workflows.task_resolver import (
@@ -53,9 +56,6 @@ from workflows.task_resolver import (
 # names. / 存储键长度：sha256(sample_id) 十六进制摘要截断为目录名。
 STORAGE_KEY_LENGTH = 24
 
-# Artifact filenames shared with SampleRunner. / 与 SampleRunner 共享的产物文件名。
-_VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
-_COUNTING_EVALUATION_FILENAME = "counting_evaluation.json"
 _AGENT_RESULT_FILENAME = "agent_result.json"
 _COUNTING_RESULT_FILENAME = "counting_result.json"
 _STATUS_FILENAME = "status.json"
@@ -639,7 +639,7 @@ class DatasetRunner:
         经 fresh run 使用的同一共享分派补写缺失的确定性评估，然后仅对
         general_vqa 重跑缺失或失败的 VQA judge。绝不为了补文件而伪造指标。"""
 
-        filename = evaluation_filename_for_task(task)
+        filename = evaluation_filename_for_runtime_task(task)
         if filename is None:
             return
         evaluation_path = sample_dir / filename
@@ -670,7 +670,9 @@ class DatasetRunner:
                     call_budget=None,
                 )
                 self.artifact_writer.write_evaluation(
-                    sample_dir, evaluation, filename=_VQA_EVALUATION_FILENAME
+                    sample_dir,
+                    evaluation,
+                    filename=EVALUATION_FILENAME_BY_TASK["general_vqa"],
                 )
 
     def _load_persisted_payload(
@@ -684,12 +686,15 @@ class DatasetRunner:
         code. 按任务加载持久化执行载荷：计数任务读 counting_result.json，
         其余已评估任务读 agent_result.json；缺失或损坏以稳定 code 失败。"""
 
-        if task in _COUNTING_TASKS:
+        family = evaluation_task_for_runtime_task(task)
+        if family == "counting":
             result_path = sample_dir / _COUNTING_RESULT_FILENAME
             model = CountingResult
-        else:
+        elif family is not None:
             result_path = sample_dir / _AGENT_RESULT_FILENAME
             model = AgentResult
+        else:
+            raise ResumeSupplementError("UNSUPPORTED_EVALUATION_TASK")
         if not result_path.is_file():
             raise ResumeSupplementError("PERSISTED_RESULT_MISSING")
         try:

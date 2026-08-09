@@ -666,10 +666,10 @@ class Runtime:
         ``render_errors_notes.json``。"""
 
         from agents.counting.schema import CountingResult
+        from evaluation.records import evaluation_task_for_runtime_task
         from reporting.adapters import iter_current_predictions, load_status
         from reporting.visualization import render_counting_overlay
         from workflows.dataset_runner import storage_key
-        from workflows.sample_runner import _COUNTING_TASKS
 
         notes: list[dict[str, Any]] = []
         for row in iter_current_predictions(run_dir):
@@ -689,7 +689,7 @@ class Runtime:
             # status.task / prediction.task。
             status = load_status(sample_dir)
             execution_task = status.task if status is not None else row.get("task")
-            if execution_task not in _COUNTING_TASKS:
+            if evaluation_task_for_runtime_task(execution_task) != "counting":
                 notes.append(
                     {
                         "sample_id": sample_id,

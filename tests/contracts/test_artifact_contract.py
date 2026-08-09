@@ -14,6 +14,12 @@ from agents.base import AgentExecution
 from agents.counting.schema import CountingResult
 from agents.schema import AgentResult
 from data.schema import UnifiedSample
+from evaluation.records import (
+    EVALUATION_FILENAME_BY_TASK,
+    RUNTIME_TASK_TO_EVALUATION_TASK,
+    evaluation_filename_for_runtime_task,
+    evaluation_task_for_runtime_task,
+)
 from workflows.artifact_writer import (
     AGENT_RESULT_FILENAME,
     AGENT_TRACE_FILENAME,
@@ -27,6 +33,52 @@ from workflows.artifact_writer import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_evaluation_family_contract_maps_only_e1_supported_tasks() -> None:
+    assert dict(RUNTIME_TASK_TO_EVALUATION_TASK) == {
+        "counting": "counting",
+        "fine_grained_counting": "counting",
+        "general_vqa": "general_vqa",
+        "multiple_choice_vqa": "general_vqa",
+        "scene_classification": "general_vqa",
+        "grounding": "grounding",
+        "caption": "caption",
+    }
+    for task in ("change_qa", "spatial_relation", "change_caption", "unknown"):
+        assert evaluation_task_for_runtime_task(task) is None
+        assert evaluation_filename_for_runtime_task(task) is None
+
+
+def test_evaluation_family_filenames_are_one_to_one_and_immutable() -> None:
+    import pytest
+
+    assert dict(EVALUATION_FILENAME_BY_TASK) == {
+        "counting": "counting_evaluation.json",
+        "general_vqa": "vqa_evaluation.json",
+        "grounding": "grounding_evaluation.json",
+        "caption": "caption_evaluation.json",
+    }
+    assert len(set(EVALUATION_FILENAME_BY_TASK.values())) == 4
+    for runtime_task, family in RUNTIME_TASK_TO_EVALUATION_TASK.items():
+        assert (
+            evaluation_filename_for_runtime_task(runtime_task)
+            == EVALUATION_FILENAME_BY_TASK[family]
+        )
+    with pytest.raises(TypeError):
+        RUNTIME_TASK_TO_EVALUATION_TASK["change_qa"] = "general_vqa"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        EVALUATION_FILENAME_BY_TASK["caption"] = "other.json"  # type: ignore[index]
+
+
+def test_production_consumers_do_not_maintain_private_family_mappings() -> None:
+    production_roots = ("workflows", "reporting", "application")
+    for root in production_roots:
+        for path in (REPO_ROOT / root).rglob("*.py"):
+            source = path.read_text(encoding="utf-8")
+            assert "_VQA_TASKS" not in source, path
+            assert "_COUNTING_TASKS" not in source, path
+            assert "evaluation_filename_for_task" not in source, path
 
 
 def test_all_golden_filenames_are_declared() -> None:

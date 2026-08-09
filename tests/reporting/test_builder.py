@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 
 from agents.base import AgentExecution
+from agents.counting.schema import CountingResult
 from agents.schema import AgentResult
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.records import (
@@ -20,10 +21,38 @@ from evaluation.records import (
     VQADeterministicMetrics,
 )
 from reporting.builder import build_report
+from reporting.adapters import load_payload
 from reporting.exporters import write_csv, write_json
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
+
+
+def test_load_payload_uses_canonical_fine_grained_counting_family(
+    tmp_path: Path,
+) -> None:
+    payload = CountingResult(
+        sample_id="fg1",
+        target="car",
+        question="How many cars?",
+        source_width=10,
+        source_height=10,
+        tile_count=0,
+        final_count=0,
+        status="completed",
+    )
+    (tmp_path / "counting_result.json").write_text(
+        payload.model_dump_json(), encoding="utf-8"
+    )
+    assert load_payload(tmp_path, "fine_grained_counting") == payload
+
+
+def test_load_payload_does_not_treat_unknown_task_as_vqa(tmp_path: Path) -> None:
+    (tmp_path / "agent_result.json").write_text(
+        AgentResult(agent_name="general_vqa_agent", answer="x").model_dump_json(),
+        encoding="utf-8",
+    )
+    assert load_payload(tmp_path, "unknown") is None
 
 
 def _storage_key(sample_id: str) -> str:

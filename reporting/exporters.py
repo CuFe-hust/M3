@@ -19,6 +19,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from evaluation.records import evaluation_task_for_runtime_task
 from reporting.schema import Report, ReportSample
 
 # Stable schema version for the metadata export. / 元数据导出的稳定 schema 版本。
@@ -41,11 +42,6 @@ _CSV_COLUMNS = (
 
 _MME_CONTAINER_KEYS = ("samples", "data", "annotations", "items", "images")
 _MME_QUESTION_ID_KEYS = ("Question_id", "question_id")
-
-# Counting task family for judge artifact directory selection.
-# 用于 judge 产物目录选择的计数任务族。
-_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
-
 
 def write_json(report: Report, path: Path) -> Path:
     """Write the report as stable-layout JSON. 以稳定布局写出 JSON 报告。"""
@@ -189,11 +185,13 @@ def _load_request_meta(
     )
     if sample_dir is None:
         return None
-    task = sample.task
-    if task in _COUNTING_TASKS:
+    family = evaluation_task_for_runtime_task(sample.task)
+    if family == "counting":
         meta_path = sample_dir / "deepseek" / "request_meta.json"
-    else:
+    elif family == "general_vqa":
         meta_path = sample_dir / "deepseek_vqa_judge" / "request_meta.json"
+    else:
+        return None
     try:
         raw = json.loads(meta_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):

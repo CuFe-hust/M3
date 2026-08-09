@@ -18,6 +18,7 @@ from pathlib import Path
 from application.prompts import PromptCatalog
 from application.settings import load_settings
 from evaluation.judges.deepseek import DeepSeekJudgeClient
+from evaluation.records import EVALUATION_FILENAME_BY_TASK
 from models.cache import JsonResponseCache
 from reporting.adapters import load_evaluation, load_sample, load_status
 from reporting.builder import build_report
@@ -30,7 +31,6 @@ EXIT_RUNTIME = 1
 EXIT_INTERRUPTED = 130
 
 _VQA_TASK = "general_vqa"
-_VQA_EVALUATION_FILENAME = "vqa_evaluation.json"
 _AGENT_RESULT_FILENAME = "agent_result.json"
 
 
@@ -195,7 +195,9 @@ def _judge_run(
                         call_budget=None,
                     )
                 artifact_writer.write_evaluation(
-                    sample_dir, record, filename=_VQA_EVALUATION_FILENAME
+                    sample_dir,
+                    record,
+                    filename=EVALUATION_FILENAME_BY_TASK["general_vqa"],
                 )
                 judged.append(
                     {
