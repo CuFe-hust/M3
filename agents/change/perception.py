@@ -104,7 +104,7 @@ class ChangePerceptionPipeline:
                 legacy_proposals,
                 semantic_status="disabled",
                 semantic_reason_code=reason,
-                segformer_model=None,
+                identity=None,
             )
 
         if self._semantic_client is None:
@@ -112,7 +112,7 @@ class ChangePerceptionPipeline:
                 ChangePerceptionError("SEGFORMER_CLIENT_MISSING"),
                 low_level_map=low_level_map,
                 legacy_proposals=legacy_proposals,
-                segformer_model=None,
+                identity=None,
             )
 
         identity: ModelCacheIdentity | None = None
@@ -184,20 +184,26 @@ class ChangePerceptionPipeline:
                 ChangePerceptionError(reason_code),
                 low_level_map=low_level_map,
                 legacy_proposals=legacy_proposals,
-                segformer_model=identity.model if identity is not None else None,
+                identity=identity,
             )
 
-        diagnostics = _base_diagnostics(
+        diagnostics = self._base_diagnostics(
             semantic_status="success",
             semantic_reason_code=None,
             proposal_source="fused_change_v2",
-            segformer_model=identity.model,
+            identity=identity,
         )
         diagnostics.update(
             {
                 "feature_residual": feature_result.diagnostics,
                 "semantic_difference": semantic_result.diagnostics,
                 "fusion": fusion_result.diagnostics,
+                "score_maps": {
+                    "low_level": _score_statistics(low_level_map, np=np),
+                    "feature": _score_statistics(feature_result.score_map, np=np),
+                    "semantic": _score_statistics(semantic_result.score_map, np=np),
+                    "fused": _score_statistics(fusion_result.fused_score_map, np=np),
+                },
             }
         )
         return ChangePerceptionResult(
@@ -205,9 +211,9 @@ class ChangePerceptionPipeline:
             proposals=fusion_result.proposals,
             diagnostics=diagnostics,
             component_maps={
-                "low_level_map": low_level_map,
-                "feature_map": feature_result.score_map,
-                "semantic_map": semantic_result.score_map,
+                "low_level_difference_map": low_level_map,
+                "feature_residual_map": feature_result.score_map,
+                "semantic_difference_map": semantic_result.score_map,
                 "binary_change_mask": fusion_result.binary_change_mask,
             },
             component_masks=fusion_result.component_masks,
@@ -219,7 +225,7 @@ class ChangePerceptionPipeline:
         *,
         low_level_map: Any,
         legacy_proposals: list[ChangeProposal],
-        segformer_model: str | None,
+        identity: ModelCacheIdentity | None,
     ) -> ChangePerceptionResult:
         if self._settings.semantic.failure_policy == "fail":
             raise error
@@ -228,28 +234,77 @@ class ChangePerceptionPipeline:
             legacy_proposals,
             semantic_status="fallback",
             semantic_reason_code=error.reason_code,
-            segformer_model=segformer_model,
+            identity=identity,
         )
 
-    @staticmethod
     def _legacy_result(
+        self,
         low_level_map: Any,
         legacy_proposals: list[ChangeProposal],
         *,
         semantic_status: str,
         semantic_reason_code: str | None,
-        segformer_model: str | None,
+        identity: ModelCacheIdentity | None,
     ) -> ChangePerceptionResult:
+        np = _require_numpy()
         return ChangePerceptionResult(
             score_map=low_level_map,
             proposals=legacy_proposals,
-            diagnostics=_base_diagnostics(
-                semantic_status=semantic_status,
-                semantic_reason_code=semantic_reason_code,
-                proposal_source="difference_map_v1",
-                segformer_model=segformer_model,
-            ),
+            diagnostics={
+                **self._base_diagnostics(
+                    semantic_status=semantic_status,
+                    semantic_reason_code=semantic_reason_code,
+                    proposal_source="difference_map_v1",
+                    identity=identity,
+                ),
+                "score_maps": {
+                    "low_level": _score_statistics(low_level_map, np=np),
+                },
+            },
         )
+
+    def _base_diagnostics(
+        self,
+        *,
+        semantic_status: str,
+        semantic_reason_code: str | None,
+        proposal_source: str,
+        identity: ModelCacheIdentity | None,
+    ) -> dict[str, object]:
+        semantic = self._settings.semantic
+        perception_mode = (
+            "fused_v2"
+            if semantic_status == "success"
+            else "fallback_legacy"
+            if semantic_status == "fallback"
+            else "legacy"
+        )
+        return {
+            "perception_mode": perception_mode,
+            "perception_version": PERCEPTION_VERSION,
+            "semantic_enabled": semantic.enabled,
+            "semantic_status": semantic_status,
+            "semantic_reason_code": semantic_reason_code,
+            "semantic_reason_codes": (
+                [semantic_reason_code] if semantic_reason_code is not None else []
+            ),
+            "proposal_source": proposal_source,
+            "semantic_model": identity.model if identity is not None else None,
+            "semantic_client_version": (
+                identity.client_version if identity is not None else None
+            ),
+            "semantic_model_revision": identity.revision if identity is not None else None,
+            # Backward-compatible logical-id alias. Never a physical checkpoint path.
+            "segformer_model": identity.model if identity is not None else None,
+            "feature_stage": semantic.feature_stage,
+            "tile_size": semantic.tile_size,
+            "tile_overlap": semantic.tile_overlap,
+            "local_match_radius": semantic.local_match_radius,
+            "threshold_floor": self._settings.proposals.threshold_floor,
+            "feature_residual_version": FEATURE_RESIDUAL_VERSION,
+            "semantic_difference_version": SEMANTIC_DIFFERENCE_VERSION,
+            "fusion_version": PROPOSAL_FUSION_VERSION,
+        }
 
 
 def _require_numpy():
@@ -393,22 +448,17 @@ def _fallback_reason_code(error: BaseException) -> str | None:
     return None
 
 
-def _base_diagnostics(
-    *,
-    semantic_status: str,
-    semantic_reason_code: str | None,
-    proposal_source: str,
-    segformer_model: str | None,
-) -> dict[str, object]:
+def _score_statistics(value: Any, *, np: Any) -> dict[str, float]:
+    """Return compact numeric audit data for a score map."""
+
+    score_map = np.asarray(value, dtype=np.float64)
+    if score_map.ndim != 2 or not bool(np.all(np.isfinite(score_map))):
+        raise ValueError("CHANGE_SCORE_MAP_INVALID")
     return {
-        "perception_version": PERCEPTION_VERSION,
-        "semantic_status": semantic_status,
-        "semantic_reason_code": semantic_reason_code,
-        "proposal_source": proposal_source,
-        "segformer_model": segformer_model,
-        "feature_residual_version": FEATURE_RESIDUAL_VERSION,
-        "semantic_difference_version": SEMANTIC_DIFFERENCE_VERSION,
-        "fusion_version": PROPOSAL_FUSION_VERSION,
+        "min": float(np.min(score_map)),
+        "median": float(np.median(score_map)),
+        "p95": float(np.quantile(score_map, 0.95)),
+        "max": float(np.max(score_map)),
     }
 
 

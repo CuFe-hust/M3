@@ -143,10 +143,19 @@ def test_enabled_pipeline_calls_two_frames_and_returns_v2_proposals() -> None:
     assert result.diagnostics["segformer_model"] == "segformer-logical-test"
     assert result.diagnostics["perception_version"] == PERCEPTION_VERSION
     assert set(result.component_maps or {}) == {
-        "low_level_map",
-        "feature_map",
-        "semantic_map",
+        "low_level_difference_map",
+        "feature_residual_map",
+        "semantic_difference_map",
         "binary_change_mask",
+    }
+    assert result.diagnostics["perception_mode"] == "fused_v2"
+    assert result.diagnostics["semantic_model"] == "segformer-logical-test"
+    assert result.diagnostics["semantic_client_version"] == "test-v1"
+    assert set(result.diagnostics["score_maps"]) == {
+        "low_level",
+        "feature",
+        "semantic",
+        "fused",
     }
     assert result.component_masks
 

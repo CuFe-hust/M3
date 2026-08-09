@@ -67,6 +67,13 @@ def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
     assert components.task_resolver is not None
     assert components.judge_service is not None
     assert components.dataset_runner_factory is not None
+    change_agent = components.agent_registry.get("change_agent")
+    runtime_prompt = getattr(change_agent, "_prompt")
+    assert runtime_prompt.text == components.prompt_catalog["change"]
+    assert runtime_prompt.version == components.prompt_catalog.version("change")
+    assert components.prompt_catalog.asset("change").path in (
+        components.prompt_catalog.snapshot_paths()
+    )
 
 
 def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:

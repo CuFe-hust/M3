@@ -1036,7 +1036,7 @@ change_caption
 change_qa
 ```
 
-处理有序时相图对，包含 pair validation、单次 harmonization、proposal perception、artifact publish 与 review。默认关闭 semantic auxiliary path，保持 V1 difference proposal；启用时由 bootstrap 单独构造并注入抽象 `DenseSemanticClient`，按 low-level、PIF feature residual、confidence-weighted semantic difference 和 robust fusion 生成 V2 proposal。SegFormer 不消耗 Qwen budget；失败按显式策略稳定降级或在 Qwen 调用前终止。raw T1/T2 始终是语义事实依据，harmonized 图、SegFormer 输出和 proposal mask 仅用于注意力引导。
+处理有序时相图对，包含 pair validation、单次 harmonization、proposal perception、artifact publish 与 rule-only review。默认关闭 semantic auxiliary path，保持 V1 difference proposal；启用时由 bootstrap 单独构造并注入抽象 `DenseSemanticClient`，按 low-level、PIF feature residual、confidence-weighted semantic difference 和 robust fusion 生成 V2 proposal。每个 V2 proposal 发布三路 score、融合图、二值 mask、crop-local mask/overlay 与相对路径清单；trace 记录阈值来源、fallback、组件有效权重和 SegFormer logical identity，绝不记录 checkpoint 绝对路径或完整 feature/probability tensor。SegFormer 不消耗 Qwen budget；失败按显式策略稳定降级或在 Qwen 调用前终止。raw T1/T2 始终是语义事实依据，harmonized 图、SegFormer 输出和 proposal mask 仅用于注意力引导。Change runtime prompt 由 bootstrap 从 `PromptCatalog` 注入，运行时文本、版本、request hash 与 run prompt snapshot 共享同一权威资产。
 
 ---
 

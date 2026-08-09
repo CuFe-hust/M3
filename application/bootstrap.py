@@ -227,7 +227,9 @@ def _build_agent_registry(
     change_agent = ChangeAgent(
         qwen_client,
         semantic_client=semantic_client,
-        prompt=None,
+        prompt=PromptBinding(
+            text=catalog["change"], version=catalog.version("change")
+        ),
         settings=settings.agents.change,
     )
     grounding_agent = GroundingAgent(qwen_client)

@@ -121,6 +121,10 @@ def fuse_change_proposals(
         "pif_pixels": pif_pixels,
         "pif_ratio": float(pif_pixels / (height * width)),
         "threshold_comparison": ">",
+        "score_min": float(np.min(fused_score)),
+        "score_median": float(np.median(fused_score)),
+        "score_p95": float(np.quantile(fused_score, 0.95)),
+        "score_max": float(np.max(fused_score)),
         "version": PROPOSAL_FUSION_VERSION,
     }
 

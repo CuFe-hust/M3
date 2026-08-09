@@ -35,34 +35,7 @@ from models.base import (
 )
 from models.images import UnsupportedImageFormatError, detect_image_mime, image_to_data_url
 
-# Neutral dual-path prompt text extended with V2 auxiliary-evidence authority.
-# The repository prompt file is intentionally not read by agents.
-# 中性双路径提示词加入 V2 辅助证据权威边界；Agent 不读取仓库提示词文件。
-_DEFAULT_PROMPT_TEXT = (
-    "You analyze bi-temporal remote-sensing imagery with auditable dual-path "
-    "evidence. The raw T1/T2 images and raw candidate crops are the "
-    "authoritative source for object identity, fine texture, and small "
-    "targets. Harmonized images are comparison aids used to suppress sensor, "
-    "exposure, color, and resolution-domain differences; they are not a "
-    "replacement for raw high-resolution facts. The proposal overlay and "
-    "proposal boxes are attention hints, not proof of real change. SegFormer "
-    "labels and features are attention hints only, and proposal masks are not "
-    "proof. Semantic conclusions must be supported by authoritative raw "
-    "T1/T2 evidence. "
-    "Describe only changes visibly supported by the supplied full images or "
-    "candidate crops. Do not classify brightness, color, shadow, seasonal, or "
-    "sharpness differences as land-cover or object changes by themselves. "
-    "When evidence is insufficient, answer `uncertain` rather than inventing "
-    "a change. If no proposal is present, still inspect the raw full pair and "
-    "distinguish `no_visible_change` from `insufficient_evidence`. "
-    "For change_caption, give a concise change description. For change_qa, "
-    "answer the question directly. Preserve relevant proposal-aligned boxes "
-    "in evidence_items and record proposal identifiers and whether raw or "
-    "harmonized evidence was used in geometry."
-)
-
-_DEFAULT_PROMPT_VERSION = "change_dual_path_v2"
-
+# Runtime prompt authority is injected from the versioned PromptCatalog.
 InputMode = Literal["raw_only", "harmonized_only", "dual_path"]
 
 
@@ -98,9 +71,9 @@ class ChangeAgent:
     ) -> None:
         self._client = client
         self._semantic_client = semantic_client
-        self._prompt = prompt or PromptBinding(
-            text=_DEFAULT_PROMPT_TEXT, version=_DEFAULT_PROMPT_VERSION
-        )
+        if prompt is None:
+            raise ValueError("ChangeAgent requires an injected PromptBinding")
+        self._prompt = prompt
         self._settings = settings or AgentChangeSettings()
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
@@ -141,6 +114,10 @@ class ChangeAgent:
         content, image_hashes, image_manifest = self._build_evidence(
             sample, context, preprocess, mode
         )
+        perception_audit = _perception_audit(
+            preprocess,
+            settings=settings,
+        )
         payload: dict[str, Any] = {
             "question": sample.question,
             "task": sample.task,
@@ -153,23 +130,7 @@ class ChangeAgent:
                 "reason_codes": preprocess.decision.reason_codes,
                 "used_for_proposal": preprocess.decision.used_for_proposal,
             },
-            "perception": {
-                "perception_version": preprocess.diagnostics.get(
-                    "perception_version"
-                ),
-                "semantic_status": preprocess.diagnostics.get("semantic_status"),
-                "semantic_reason_code": preprocess.diagnostics.get(
-                    "semantic_reason_code"
-                ),
-                "segformer_model": preprocess.diagnostics.get("segformer_model"),
-                "feature_residual_version": preprocess.diagnostics.get(
-                    "feature_residual_version"
-                ),
-                "semantic_difference_version": preprocess.diagnostics.get(
-                    "semantic_difference_version"
-                ),
-                "fusion_version": preprocess.diagnostics.get("fusion_version"),
-            },
+            "perception": perception_audit,
             "proposals": [
                 {
                     "proposal_id": item.proposal_id,
@@ -252,25 +213,16 @@ class ChangeAgent:
                 preprocess.transform_summary.get("sharpness_adjustment_used", False)
             ),
             "proposal_count": len(preprocess.proposals),
-            "proposal_source": preprocess.diagnostics.get(
-                "proposal_source", "difference_map_v1"
-            ),
-            "perception_version": preprocess.diagnostics.get("perception_version"),
-            "semantic_status": preprocess.diagnostics.get("semantic_status"),
+            **perception_audit,
+            # Compatibility aliases retained for readers of the Task 08 trace.
             "semantic_reason_code": preprocess.diagnostics.get(
                 "semantic_reason_code"
             ),
-            "segformer_model": preprocess.diagnostics.get("segformer_model"),
-            "feature_residual_version": preprocess.diagnostics.get(
-                "feature_residual_version"
-            ),
-            "semantic_difference_version": preprocess.diagnostics.get(
-                "semantic_difference_version"
-            ),
-            "fusion_version": preprocess.diagnostics.get("fusion_version"),
+            "segformer_model": preprocess.diagnostics.get("semantic_model"),
             "review_used": settings.review.enabled,
             "review_warnings": review_warnings,
             "preprocess_artifacts": preprocess.artifact_files,
+            "perception_artifacts": preprocess.artifact_files,
         }
         return AgentExecution(
             agent_name=self.name,
@@ -416,3 +368,61 @@ class ChangeAgent:
                 sample_id,
                 cause=f"{kind}_read_failed:{type(error).__name__}",
             ) from error
+
+
+def _perception_audit(
+    preprocess: ChangePreprocessResult,
+    *,
+    settings: AgentChangeSettings,
+) -> dict[str, object]:
+    """Flatten compact perception diagnostics into the request/trace contract."""
+
+    diagnostics = preprocess.diagnostics
+    fusion = diagnostics.get("fusion")
+    fusion_data = fusion if isinstance(fusion, dict) else {}
+    feature = diagnostics.get("feature_residual")
+    feature_data = feature if isinstance(feature, dict) else {}
+    reason_codes = diagnostics.get("semantic_reason_codes")
+    if not isinstance(reason_codes, list):
+        reason = diagnostics.get("semantic_reason_code")
+        reason_codes = [reason] if isinstance(reason, str) and reason else []
+    return {
+        "perception_mode": diagnostics.get("perception_mode", "legacy"),
+        "perception_version": diagnostics.get("perception_version"),
+        "semantic_enabled": bool(
+            diagnostics.get("semantic_enabled", settings.semantic.enabled)
+        ),
+        "semantic_status": diagnostics.get("semantic_status"),
+        "semantic_reason_codes": reason_codes,
+        "semantic_model": diagnostics.get("semantic_model"),
+        "semantic_client_version": diagnostics.get("semantic_client_version"),
+        "semantic_model_revision": diagnostics.get("semantic_model_revision"),
+        "feature_stage": diagnostics.get(
+            "feature_stage", settings.semantic.feature_stage
+        ),
+        "tile_size": diagnostics.get("tile_size", settings.semantic.tile_size),
+        "tile_overlap": diagnostics.get(
+            "tile_overlap", settings.semantic.tile_overlap
+        ),
+        "local_match_radius": diagnostics.get(
+            "local_match_radius", settings.semantic.local_match_radius
+        ),
+        "feature_residual_version": diagnostics.get("feature_residual_version"),
+        "semantic_difference_version": diagnostics.get(
+            "semantic_difference_version"
+        ),
+        "fusion_version": diagnostics.get("fusion_version"),
+        "fusion_effective_weights": fusion_data.get("effective_weights", {}),
+        "threshold_mode": fusion_data.get("threshold_mode"),
+        "threshold_value": fusion_data.get("threshold"),
+        "threshold_floor": diagnostics.get(
+            "threshold_floor", settings.proposals.threshold_floor
+        ),
+        "pif_feature_cells": feature_data.get("pif_feature_cells"),
+        "pif_threshold_fallback_used": fusion_data.get(
+            "pif_threshold_fallback_used", False
+        ),
+        "proposal_count": len(preprocess.proposals),
+        "proposal_source": diagnostics.get("proposal_source", "difference_map_v1"),
+        "score_maps": diagnostics.get("score_maps", {}),
+    }

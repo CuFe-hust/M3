@@ -32,6 +32,7 @@ from agents.change.settings import (
 )
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentResult
+from agents.visual_base import PromptBinding
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from models.base import ModelCacheIdentity
 
@@ -109,6 +110,10 @@ def _sample(
 
 
 def _agent(client: _RecordingClient | None = None, **kwargs) -> ChangeAgent:
+    kwargs.setdefault(
+        "prompt",
+        PromptBinding(text="Raw T1/T2 evidence is authoritative.", version="v2"),
+    )
     return ChangeAgent(client or _RecordingClient(), **kwargs)
 
 
@@ -487,7 +492,7 @@ def test_trace_contains_pif_mad_sharpness_review_artifacts(tmp_path: Path) -> No
         "preprocess_artifacts",
     }
     assert trace["image_roles"] == ["t1", "t2"]
-    assert trace["prompt_version"] == "change_dual_path_v2"
+    assert trace["prompt_version"] == "v2"
     assert trace["preprocess_artifacts"]["validation_report"].startswith("change_preprocess/")
 
 

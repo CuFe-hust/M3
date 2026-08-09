@@ -261,7 +261,7 @@ def publish_change_proposals(
                 expected_shape=raw_t2_crop.shape[:2],
             )
             _write_image(crops / mask_basename, component_mask)
-            overlay_filename = f"{proposal.proposal_id}_change_mask_overlay.png"
+            overlay_filename = f"{proposal.proposal_id}_mask_overlay.png"
             _write_image(
                 crops / overlay_filename,
                 _render_change_mask_overlay(raw_t2_crop, component_mask),

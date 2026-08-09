@@ -17,8 +17,15 @@ from agents.change.settings import (
     ChangeSemanticSettings,
 )
 from agents.errors import AgentExecutionError
+from agents.visual_base import PromptBinding
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from models.base import DenseSemanticOutput, ModelCacheIdentity
+
+
+_PROMPT = PromptBinding(
+    text="Raw T1/T2 evidence is authoritative; auxiliary maps are hints only.",
+    version="v2",
+)
 
 
 class _Budget:
@@ -165,6 +172,7 @@ def _run(
         ChangeAgent(
             qwen,
             semantic_client=dense_client,
+            prompt=_PROMPT,
             settings=settings,
         ).run(
             _sample(root, invalid=invalid),
@@ -213,11 +221,26 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     assert len(qwen.calls) == 1
     assert budget.qwen_calls == 1
     assert execution.trace["semantic_status"] == "success"
+    assert execution.trace["perception_mode"] == "fused_v2"
+    assert execution.trace["semantic_enabled"] is True
+    assert execution.trace["semantic_reason_codes"] == []
+    assert execution.trace["semantic_model"] == "segformer-logical-test"
+    assert execution.trace["semantic_client_version"] == "test-v1"
+    assert execution.trace["semantic_model_revision"] is None
     assert execution.trace["proposal_source"] == "fused_change_v2"
     assert execution.trace["segformer_model"] == "segformer-logical-test"
     assert execution.trace["feature_residual_version"] == "pif_robust_local_cosine_v1"
     assert execution.trace["semantic_difference_version"] == "confidence_weighted_js_v1"
     assert execution.trace["fusion_version"] == "weighted_pif_robust_fusion_v1"
+    assert execution.trace["fusion_effective_weights"]
+    assert execution.trace["threshold_mode"] in {"pif_robust", "no_change_floor"}
+    assert isinstance(execution.trace["threshold_value"], float)
+    assert execution.trace["pif_feature_cells"] > 0
+    assert all(
+        not Path(relative).is_absolute()
+        for relative in execution.trace["perception_artifacts"].values()
+    )
+    assert str(tmp_path) not in json.dumps(execution.trace)
 
     payload = _payload(qwen)
     assert payload["proposals"]
@@ -228,7 +251,7 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
         "semantic",
         "fused",
     }
-    assert payload["perception"]["segformer_model"] == "segformer-logical-test"
+    assert payload["perception"]["semantic_model"] == "segformer-logical-test"
     assert str(tmp_path) not in json.dumps(payload)
 
     roles = [item["role"] for item in payload["image_manifest"]]
@@ -242,15 +265,31 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     crop_roles = roles[5:]
     assert "change_000:change_000_raw_t1" in crop_roles
     assert "change_000:change_000_raw_t2" in crop_roles
-    assert "change_000:change_000_change_mask_overlay" in crop_roles
+    assert "change_000:change_000_mask_overlay" in crop_roles
     assert crop_roles.index("change_000:change_000_raw_t1") < crop_roles.index(
         "change_000:change_000_raw_t2"
-    ) < crop_roles.index("change_000:change_000_change_mask_overlay")
+    ) < crop_roles.index("change_000:change_000_mask_overlay")
 
     proposal_file = tmp_path / "artifacts" / "change_preprocess" / "proposals.json"
     proposals = json.loads(proposal_file.read_text(encoding="utf-8"))
+    assert all(not Path(path).is_absolute() for path in proposals[0]["evidence_filenames"])
+    assert not Path(proposals[0]["mask_filename"]).is_absolute()
+    assert all(isinstance(value, float) for value in proposals[0]["component_scores"].values())
     mask_path = tmp_path / "artifacts" / proposals[0]["mask_filename"]
     assert mask_path.is_file()
+    expected_v2_artifacts = {
+        "low_level_difference_map.png",
+        "feature_residual_map.png",
+        "semantic_difference_map.png",
+        "fused_change_map.png",
+        "binary_change_mask.png",
+        "proposal_overlay.png",
+        "proposals.json",
+        "crops/change_000_mask.png",
+        "crops/change_000_mask_overlay.png",
+    }
+    artifact_root = tmp_path / "artifacts" / "change_preprocess"
+    assert all((artifact_root / relative).is_file() for relative in expected_v2_artifacts)
 
 
 def test_invalid_pair_calls_neither_dense_nor_qwen(tmp_path: Path) -> None:
@@ -263,6 +302,7 @@ def test_invalid_pair_calls_neither_dense_nor_qwen(tmp_path: Path) -> None:
             ChangeAgent(
                 qwen,
                 semantic_client=dense,
+                prompt=_PROMPT,
                 settings=_settings(enabled=True),
             ).run(
                 _sample(tmp_path, invalid=True),
@@ -291,7 +331,18 @@ def test_missing_client_fallback_calls_qwen_once(tmp_path: Path) -> None:
     assert budget.qwen_calls == 1
     assert execution.trace["semantic_status"] == "fallback"
     assert execution.trace["semantic_reason_code"] == "SEGFORMER_CLIENT_MISSING"
+    assert execution.trace["semantic_reason_codes"] == ["SEGFORMER_CLIENT_MISSING"]
+    assert execution.trace["perception_mode"] == "fallback_legacy"
     assert execution.trace["proposal_source"] == "difference_map_v1"
+    artifact_root = tmp_path / "artifacts" / "change_preprocess"
+    for filename in (
+        "low_level_difference_map.png",
+        "feature_residual_map.png",
+        "semantic_difference_map.png",
+        "fused_change_map.png",
+        "binary_change_mask.png",
+    ):
+        assert not (artifact_root / filename).exists()
 
 
 def test_missing_client_fail_policy_calls_no_qwen(tmp_path: Path) -> None:
@@ -303,6 +354,7 @@ def test_missing_client_fail_policy_calls_no_qwen(tmp_path: Path) -> None:
             ChangeAgent(
                 qwen,
                 semantic_client=None,
+                prompt=_PROMPT,
                 settings=_settings(enabled=True, policy="fail"),
             ).run(
                 _sample(tmp_path),
@@ -353,3 +405,18 @@ def test_segformer_logical_identity_participates_in_qwen_request_hash(
     assert first_execution.trace["segformer_model"] == "segformer-logical-a"
     assert second_execution.trace["segformer_model"] == "segformer-logical-b"
     assert first_qwen.calls[0]["request_hash"] != second_qwen.calls[0]["request_hash"]
+
+
+def test_repeated_fake_run_has_stable_trace_and_artifact_contract(tmp_path: Path) -> None:
+    first, _, _ = _run(
+        tmp_path / "first",
+        settings=_settings(enabled=True),
+        dense_client=_DenseClient(),
+    )
+    second, _, _ = _run(
+        tmp_path / "second",
+        settings=_settings(enabled=True),
+        dense_client=_DenseClient(),
+    )
+
+    assert first.trace == second.trace

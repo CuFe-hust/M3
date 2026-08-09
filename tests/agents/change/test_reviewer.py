@@ -115,6 +115,29 @@ def test_semantic_change_with_proposals_is_clean() -> None:
     assert reviewed.status == "completed"
 
 
+def test_reviewer_does_not_treat_v2_component_hints_as_semantic_truth() -> None:
+    proposal = _proposal().model_copy(
+        update={
+            "source": "fused_change_v2",
+            "component_scores": {
+                "low_level": 0.4,
+                "feature": 0.9,
+                "semantic": 0.8,
+                "fused": 0.75,
+            },
+        }
+    )
+    result = _result(
+        answer="A truck appeared.",
+        evidence_items=[VisualEvidence(label="truck", box=[150, 150, 250, 250])],
+    )
+
+    reviewed, warnings = review_result(result, [proposal], ChangeReviewSettings())
+
+    assert warnings == []
+    assert reviewed.status == "completed"
+
+
 def test_geometry_records_review_and_proposal_ids() -> None:
     result = _result()
     reviewed, _ = review_result(
