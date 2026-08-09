@@ -25,6 +25,7 @@ dev = [
   "huggingface_hub>=0.28.0",
   "transformers>=4.57.0",
 ]
+change = ["numpy>=1.26", "opencv-python>=4.8", "Pillow>=10.0.0"]
 yolo = ["ultralytics==8.4.102"]
 yolo-onnx = ["onnxruntime-gpu>=1.23", "numpy>=1.26", "opencv-python>=4.8"]
 segformer = ["torch>=2.2", "transformers>=5.7.0", "safetensors>=0.4"]

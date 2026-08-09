@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -206,6 +208,38 @@ def test_disabled_path_calls_no_dense_model_and_preserves_v1_source(tmp_path: Pa
     assert budget.qwen_calls == 1
     assert execution.trace["semantic_status"] == "disabled"
     assert execution.trace["proposal_source"] == "difference_map_v1"
+    artifact_root = tmp_path / "artifacts" / "change_preprocess"
+    assert (artifact_root / "difference_map.png").is_file()
+    assert (artifact_root / "proposal_overlay.png").is_file()
+    assert (artifact_root / "proposals.json").is_file()
+    for v2_filename in (
+        "low_level_difference_map.png",
+        "feature_residual_map.png",
+        "semantic_difference_map.png",
+        "fused_change_map.png",
+        "binary_change_mask.png",
+    ):
+        assert not (artifact_root / v2_filename).exists()
+
+
+def test_change_v1_import_path_does_not_load_semantic_runtime() -> None:
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import agents.change.agent; import application.bootstrap; "
+                "print(sorted({'torch', 'transformers', "
+                "'models.segformer_transformers'} & set(sys.modules)))"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[2],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.stdout.strip() == "[]"
 
 
 def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Path) -> None:
@@ -269,6 +303,17 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     assert crop_roles.index("change_000:change_000_raw_t1") < crop_roles.index(
         "change_000:change_000_raw_t2"
     ) < crop_roles.index("change_000:change_000_mask_overlay")
+    assert (
+        sum(
+            role.endswith("_raw_t1") or role.endswith("_raw_t2")
+            for role in crop_roles
+        )
+        >= 2
+    )
+
+    proposal_box = payload["proposals"][0]["box"]
+    expected_change_box = [250, 250, 500, 500]
+    assert _box_intersection_area(proposal_box, expected_change_box) > 0
 
     proposal_file = tmp_path / "artifacts" / "change_preprocess" / "proposals.json"
     proposals = json.loads(proposal_file.read_text(encoding="utf-8"))
@@ -420,3 +465,10 @@ def test_repeated_fake_run_has_stable_trace_and_artifact_contract(tmp_path: Path
     )
 
     assert first.trace == second.trace
+
+
+def _box_intersection_area(first: list[int], second: list[int]) -> int:
+    return max(0, min(first[2], second[2]) - max(first[0], second[0])) * max(
+        0,
+        min(first[3], second[3]) - max(first[1], second[1]),
+    )

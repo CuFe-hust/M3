@@ -1,0 +1,5 @@
+agents:
+  change:
+    semantic:
+      enabled: true
+      local_match_radius: 1

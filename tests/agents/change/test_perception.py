@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,8 @@ from agents.change.settings import (
     ChangeProposalSettings,
     ChangeSemanticSettings,
 )
-from models.base import DenseSemanticOutput, ModelCacheIdentity
+from agents.errors import OptionalDependencyMissingError
+from models.base import DenseSemanticOutput, ModelAssetMissingError, ModelCacheIdentity
 
 
 def _prepared() -> ChangePreparedPair:
@@ -117,6 +119,20 @@ class _DenseClient:
     def infer(self, image: Any, **kwargs: Any) -> DenseSemanticOutput:
         self.calls.append({"image": image, **kwargs})
         return self.outputs[len(self.calls) - 1]
+
+
+class _RaisingDenseClient(_DenseClient):
+    def __init__(self, error: BaseException) -> None:
+        super().__init__()
+        self.error = error
+
+    def infer(self, image: Any, **kwargs: Any) -> DenseSemanticOutput:
+        self.calls.append({"image": image, **kwargs})
+        raise self.error
+
+
+class SegFormerInferenceError(RuntimeError):
+    """Concrete-backend-shaped fake without importing the concrete backend."""
 
 
 def test_semantic_disabled_uses_legacy_without_dense_calls() -> None:
@@ -261,6 +277,78 @@ def test_unlisted_programming_error_is_not_swallowed() -> None:
 
     with pytest.raises(RuntimeError, match="unexpected implementation bug"):
         ChangePerceptionPipeline(_BuggyClient(), _settings()).run(_prepared())
+
+
+def _failure_matrix_case(
+    scenario: str,
+) -> tuple[_DenseClient, ChangePreparedPair]:
+    prepared = _prepared()
+    if scenario == "torch_missing":
+        return (
+            _RaisingDenseClient(
+                OptionalDependencyMissingError("change-semantic", dependency="torch")
+            ),
+            prepared,
+        )
+    if scenario == "checkpoint_missing":
+        return (
+            _RaisingDenseClient(ModelAssetMissingError("checkpoint missing")),
+            prepared,
+        )
+    if scenario == "hidden_state_invalid":
+        return (
+            _RaisingDenseClient(
+                SegFormerInferenceError("SEGFORMER_FEATURE_GRID_UNRESOLVED")
+            ),
+            prepared,
+        )
+    if scenario == "insufficient_pif":
+        return _DenseClient(), replace(
+            prepared,
+            pif_mask=np.zeros_like(prepared.pif_mask),
+        )
+    first, second = _outputs()
+    if scenario == "nan_feature":
+        features = np.asarray(second.features).copy()
+        features[0, 0, 0] = np.nan
+        invalid = replace(second, features=features)
+        return _DenseClient((first, invalid)), prepared
+    if scenario == "grid_mismatch":
+        invalid = replace(second, original_size=(63, 64))
+        return _DenseClient((first, invalid)), prepared
+    raise AssertionError(scenario)
+
+
+@pytest.mark.parametrize(
+    ("scenario", "reason_code"),
+    [
+        ("torch_missing", "SEGFORMER_DEPENDENCY_MISSING"),
+        ("checkpoint_missing", "SEGFORMER_CHECKPOINT_MISSING"),
+        ("hidden_state_invalid", "SEGFORMER_FEATURE_GRID_UNRESOLVED"),
+        ("insufficient_pif", "FEATURE_RESIDUAL_INSUFFICIENT_PIF"),
+        ("nan_feature", "FEATURE_RESIDUAL_NONFINITE"),
+        ("grid_mismatch", "SEGFORMER_PAIR_GRID_MISMATCH"),
+    ],
+)
+@pytest.mark.parametrize("policy", ["fallback_legacy", "fail"])
+def test_semantic_failure_matrix_has_explicit_policy_behavior(
+    scenario: str,
+    reason_code: str,
+    policy: str,
+) -> None:
+    client, prepared = _failure_matrix_case(scenario)
+    pipeline = ChangePerceptionPipeline(client, _settings(policy=policy))
+
+    if policy == "fail":
+        with pytest.raises(ChangePerceptionError, match=reason_code):
+            pipeline.run(prepared)
+        return
+
+    result = pipeline.run(prepared)
+    assert result.diagnostics["perception_mode"] == "fallback_legacy"
+    assert result.diagnostics["semantic_reason_code"] == reason_code
+    assert result.diagnostics["proposal_source"] == "difference_map_v1"
+    assert result.component_maps is None
 
 
 def test_perception_imports_only_abstract_model_contract() -> None:

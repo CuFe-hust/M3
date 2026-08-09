@@ -8,6 +8,7 @@ import json
 import socket
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -38,6 +39,36 @@ from models.segformer_transformers import (
 from models.settings import SegFormerSettings
 
 _CLASS_MAP = {0: "background", 1: "vehicle"}
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _requirement_name(requirement: str) -> str:
+    return (
+        requirement.split("[", 1)[0]
+        .split("<", 1)[0]
+        .split(">", 1)[0]
+        .split("=", 1)[0]
+    )
+
+
+def test_core_and_change_extra_do_not_require_segformer_runtime_dependencies() -> None:
+    project = tomllib.loads((_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
+    heavy = {"torch", "transformers", "safetensors"}
+    core = {_requirement_name(item) for item in project["dependencies"]}
+    change = {
+        _requirement_name(item)
+        for item in project["optional-dependencies"]["change"]
+    }
+    semantic = {
+        _requirement_name(item)
+        for item in project["optional-dependencies"]["change-semantic"]
+    }
+
+    assert core.isdisjoint(heavy)
+    assert change.isdisjoint(heavy)
+    assert heavy <= semantic
 
 
 class _FakeModel:

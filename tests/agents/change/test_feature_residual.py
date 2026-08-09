@@ -49,7 +49,16 @@ def test_per_channel_shift_and_scale_are_removed_by_robust_normalization() -> No
         local_match_radius=0,
     )
 
+    first_unit = first / np.maximum(np.linalg.norm(first, axis=0), 1e-6)
+    second_unit = second / np.maximum(np.linalg.norm(second, axis=0), 1e-6)
+    naive_residual = np.clip(
+        (1.0 - np.sum(first_unit * second_unit, axis=0)) / 2.0,
+        0.0,
+        1.0,
+    )
+
     assert float(np.median(result.score_map)) < 1e-6
+    assert float(np.median(naive_residual)) > 0.05
 
 
 def test_local_direction_change_scores_higher_than_unchanged_region() -> None:
@@ -236,6 +245,35 @@ def test_module_has_no_model_dependency() -> None:
     )
 
     assert "models" not in imported_roots
+
+
+def test_large_feature_grid_smoke_uses_vectorized_spatial_math() -> None:
+    first = _features(seed=67, shape=(320, 64, 64))
+    second = first.copy()
+    second[:, 24:40, 24:40] *= np.float32(-1.0)
+
+    result = compute_feature_residual(
+        first,
+        second,
+        _full_pif(64, 64),
+        local_match_radius=1,
+    )
+
+    assert result.score_map.shape == (64, 64)
+    assert bool(np.all(np.isfinite(result.score_map)))
+    source = Path(feature_residual_module.__file__ or "").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    forbidden_ranges = {
+        argument.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "range"
+        for argument in node.args
+        if isinstance(argument, ast.Name)
+        and argument.id in {"height", "width", "channels"}
+    }
+    assert forbidden_ranges == set()
 
 
 @pytest.mark.parametrize(

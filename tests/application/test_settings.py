@@ -14,6 +14,9 @@ import pytest
 from application.settings import AppSettings, load_settings
 
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
 def _yaml_path(tmp_path: Path, text: str) -> Path:
     path = tmp_path / "settings.yaml"
     path.write_text(text, encoding="utf-8")
@@ -180,3 +183,51 @@ def test_snapshot_preserves_host_paths_with_forward_slashes() -> None:
     docstring = AppSettings.to_config_payload.__doc__ or ""
     assert "machine-portable" not in docstring
     assert "host" in docstring
+
+
+@pytest.mark.parametrize(
+    ("filename", "expected"),
+    [
+        ("legacy.yaml", {"enabled": False}),
+        (
+            "low_semantic.yaml",
+            {"enabled": True, "feature_weight": 0.0, "semantic_weight": 0.5},
+        ),
+        (
+            "low_feature.yaml",
+            {"enabled": True, "feature_weight": 2 / 3, "semantic_weight": 0.0},
+        ),
+        (
+            "three_source.yaml",
+            {"enabled": True, "feature_weight": 0.5, "semantic_weight": 0.25},
+        ),
+        ("pif_robust.yaml", {"enabled": True, "threshold_mode": "pif_robust"}),
+        ("local_match_r0.yaml", {"enabled": True, "radius": 0}),
+        ("local_match_r1.yaml", {"enabled": True, "radius": 1}),
+    ],
+)
+def test_change_ablation_presets_are_valid_partial_app_settings(
+    filename: str,
+    expected: dict[str, object],
+) -> None:
+    settings = load_settings(
+        REPO_ROOT / "configs" / "change_ablations" / filename,
+        environ={},
+    )
+
+    assert settings.agents.change.semantic.enabled is expected["enabled"]
+    if "feature_weight" in expected:
+        assert settings.agents.change.proposals.fusion_feature_weight == pytest.approx(
+            expected["feature_weight"]
+        )
+    if "semantic_weight" in expected:
+        assert settings.agents.change.proposals.fusion_semantic_weight == pytest.approx(
+            expected["semantic_weight"]
+        )
+    if "threshold_mode" in expected:
+        assert (
+            settings.agents.change.proposals.threshold_mode
+            == expected["threshold_mode"]
+        )
+    if "radius" in expected:
+        assert settings.agents.change.semantic.local_match_radius == expected["radius"]

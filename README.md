@@ -135,6 +135,14 @@ python -m pip install -e ".[dev]"
 python -m pip install -e ".[change]"
 ```
 
+Change V2 的 SegFormer auxiliary path 使用独立重依赖 extra；默认 V1、纯数学
+测试和 core import 不需要它：
+
+```bash
+python -m pip install -e ".[dev,change]"          # offline/core tests
+python -m pip install -e ".[change-semantic]"    # explicit SegFormer runtime
+```
+
 迁移/部分离线工具需要 NumPy 时：
 
 ```bash
@@ -225,6 +233,10 @@ SegFormer 可选依赖：
 ```bash
 python -m pip install -e ".[segformer]"
 ```
+
+Change V2 消融配置位于 `configs/change_ablations/`。这些文件是可直接传给
+`--config` 的 partial YAML，覆盖 legacy、low+semantic、low+feature、三路融合、
+PIF robust 和 local-match radius 对照；它们不扩展 evaluation public contract。
 
 调用层：
 

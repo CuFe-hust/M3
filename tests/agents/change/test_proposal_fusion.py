@@ -229,6 +229,45 @@ def test_missing_component_weights_are_renormalized_over_available_maps() -> Non
     assert result.diagnostics["fallback_reason"] == "SEMANTIC_UNAVAILABLE"
 
 
+@pytest.mark.parametrize(
+    ("weights", "expected_score"),
+    [
+        ((0.50, 0.00, 0.50), 0.40),  # low + semantic
+        ((1 / 3, 2 / 3, 0.00), 0.60),  # low + feature
+        ((0.25, 0.50, 0.25), 0.60),  # three-source
+    ],
+)
+def test_ablation_zero_weights_are_respected_without_runtime_switches(
+    weights: tuple[float, float, float],
+    expected_score: float,
+) -> None:
+    low = np.full((16, 16), 0.2, dtype=np.float32)
+    feature = np.full((16, 16), 0.8, dtype=np.float32)
+    semantic = np.full((16, 16), 0.6, dtype=np.float32)
+    settings = _settings(
+        fusion_low_level_weight=weights[0],
+        fusion_feature_weight=weights[1],
+        fusion_semantic_weight=weights[2],
+    )
+
+    result = fuse_change_proposals(
+        low,
+        feature,
+        semantic,
+        np.ones((16, 16), dtype=np.uint8),
+        settings,
+    )
+
+    assert float(np.median(result.fused_score_map)) == pytest.approx(expected_score)
+    assert result.diagnostics["effective_weights"] == pytest.approx(
+        {
+            "low_level": weights[0],
+            "feature": weights[1],
+            "semantic": weights[2],
+        }
+    )
+
+
 def test_edge_component_padding_is_clipped_and_mask_is_crop_local() -> None:
     low, feature, semantic = _maps()
     low[0:8, 0:8] = 0.9
