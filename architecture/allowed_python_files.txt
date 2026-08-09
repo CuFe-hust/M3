@@ -93,6 +93,10 @@ agents/change/harmonizer.py
 agents/change/difference_proposal.py
 agents/change/preprocess.py
 agents/change/reviewer.py
+agents/change/feature_residual.py
+agents/change/semantic_difference.py
+agents/change/proposal_fusion.py
+agents/change/perception.py
 agents/grounding/__init__.py
 agents/grounding/agent.py
 agents/caption/__init__.py
@@ -204,6 +208,10 @@ tests/agents/change/test_difference_proposal.py
 tests/agents/change/test_preprocess.py
 tests/agents/change/test_reviewer.py
 tests/agents/change/test_agent.py
+tests/agents/change/test_feature_residual.py
+tests/agents/change/test_semantic_difference.py
+tests/agents/change/test_proposal_fusion.py
+tests/agents/change/test_perception.py
 tests/agents/counting/test_backend_selector.py
 tests/agents/counting/test_target_parser.py
 tests/agents/counting/test_agent.py
@@ -283,6 +291,7 @@ tests/integration/test_sample_runner_vertical_slice.py
 tests/integration/test_dataset_runner_resume.py
 tests/integration/test_auto_task_dataset_vertical_slice.py
 tests/integration/test_run_dataset_vertical_slice.py
+tests/integration/test_change_v2_vertical_slice.py
 
 # === Top-level entry tests ===
 tests/test_main.py

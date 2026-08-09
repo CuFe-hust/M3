@@ -170,6 +170,7 @@ def test_agents_never_import_concrete_model_implementations() -> None:
     assert _is_allowed("models.images", allow)
     for forbidden in (
         "models.qwen_transformers",
+        "models.segformer_transformers",
         "models.entry",
         "models.qwen3_vl",
         "models.qwen3_vl.baseline",

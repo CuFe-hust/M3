@@ -107,6 +107,7 @@
       "workflows**",
       "models.entry",
       "models.qwen_transformers",
+      "models.segformer_transformers",
       "models.qwen3_vl**",
       "models.qwen3_5**"
     ],

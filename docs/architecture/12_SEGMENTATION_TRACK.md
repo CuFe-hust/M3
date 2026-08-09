@@ -97,6 +97,20 @@ evaluation/metrics/segmentation.py
 task 封闭集；`agents.*.agent` 与 `workflows.sample_runner` 的 reporting
 禁止项保持。若选 A，则不需要任何 task 契约变更。
 
+### 4.1 ChangeAgent V2 Route A 架构批准
+
+后续 ChangeAgent V2 Task 01 architecture gate 已批准 Route A 的
+auxiliary perception 子路径：复用已经实现的
+`models/segformer_transformers.py`，并预留
+`agents/change/feature_residual.py`、
+`agents/change/semantic_difference.py`、
+`agents/change/proposal_fusion.py` 与 `agents/change/perception.py`。
+
+agent 层只依赖抽象 dense semantic contract；不得 import concrete
+SegFormer。此次批准不新增 `semantic_segmentation` public task，不改动
+task、routing、evaluation 或 reporting 的封闭集。上述 Change 模块及其
+测试路径当前仅获批准、尚未实现，后续按 Tasks 02–12 分步实施。
+
 ## 5. 模型资产政策（两条路线通用）
 
 - **权重**：Git LFS / 外部目录策略；git 对象只存 LFS 指针（保持现状）。

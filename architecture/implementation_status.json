@@ -192,8 +192,17 @@
     "workflows/task_resolver.py"
   ],
   "pending_files": [
+    "agents/change/feature_residual.py",
+    "agents/change/semantic_difference.py",
+    "agents/change/proposal_fusion.py",
+    "agents/change/perception.py",
     "agents/counting/backends/semantic_segmentation.py",
+    "tests/agents/change/test_feature_residual.py",
+    "tests/agents/change/test_semantic_difference.py",
+    "tests/agents/change/test_proposal_fusion.py",
+    "tests/agents/change/test_perception.py",
     "tests/agents/counting/test_semantic_segmentation_backend.py",
+    "tests/integration/test_change_v2_vertical_slice.py",
     "tests/models/test_segformer_transformers.py"
   ],
   "reference_commit": "ec962eb87c3ad0b8c1502efcbd08db0daec48868",
