@@ -103,11 +103,28 @@ class ClassMapVerificationSpec(_FrozenModel):
     class_map: Literal["verified", "unverified"]
 
 
+class MorphologyPolicySpec(_FrozenModel):
+    """Explicit morphology only; zero disables the operation.
+    仅允许显式形态学配置；零表示关闭对应操作。"""
+
+    open_kernel: int = Field(default=0, ge=0, le=31)
+    close_kernel: int = Field(default=0, ge=0, le=31)
+
+    @model_validator(mode="after")
+    def kernels_are_disabled_or_odd(self) -> "MorphologyPolicySpec":
+        if any(value and value % 2 == 0 for value in (self.open_kernel, self.close_kernel)):
+            raise ValueError("morphology kernels must be zero or odd")
+        return self
+
+
 class CountingPolicySpec(_FrozenModel):
-    """Optional, backend-neutral thresholds declared by a capability."""
+    """Thresholds explicitly declared by one expert capability.
+    单项专家能力显式声明的阈值。"""
 
     min_component_area_px: int | None = Field(default=None, ge=1)
+    max_component_area_ratio: float | None = Field(default=None, gt=0.0, le=1.0)
     min_mean_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    morphology: MorphologyPolicySpec = Field(default_factory=MorphologyPolicySpec)
 
 
 class ExpertTargetSupportSpec(_FrozenModel):
@@ -174,6 +191,7 @@ class ExpertSpec(_FrozenModel):
         for support in self.supports.values():
             if support.counting_mode == "connected_components" and (
                 support.policy.min_component_area_px is None
+                or support.policy.max_component_area_ratio is None
                 or support.policy.min_mean_confidence is None
             ):
                 raise ValueError("connected-components support requires component thresholds")

@@ -148,7 +148,12 @@ class PointProvenance(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source: Literal["qwen_point", "yolo_obb_center", "fused"] = "qwen_point"
+    source: Literal[
+        "qwen_point",
+        "semantic_component_centroid",
+        "yolo_obb_center",
+        "fused",
+    ] = "qwen_point"
     backend_name: str | None = None
     model_id: str | None = None
     source_class: str | None = None

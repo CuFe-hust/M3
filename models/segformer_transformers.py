@@ -76,6 +76,7 @@ class SegmentationResult:
     width: int
     height: int
     classes: tuple[ClassInfo, ...]
+    id_to_label: Mapping[int, str]
     logical_model_id: str
     model_revision: str | None
     weights_sha256: str
@@ -340,6 +341,10 @@ class SegFormerRuntime:
                 ClassInfo(class_id=class_id, name=self._metadata.labels[class_id])
                 for class_id in class_ids
             ),
+            id_to_label={
+                class_id: label
+                for class_id, label in enumerate(self._metadata.labels)
+            },
             logical_model_id=self.settings.logical_model_id,
             model_revision=self.settings.revision,
             weights_sha256=self._actual_weights_sha256,

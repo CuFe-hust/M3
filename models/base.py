@@ -462,6 +462,7 @@ class SemanticSegmentationOutput(Protocol):
     height: int
     mask: Any
     confidence_map: Any
+    id_to_label: Mapping[int, str]
     logical_model_id: str
     model_revision: str | None
     weights_sha256: str

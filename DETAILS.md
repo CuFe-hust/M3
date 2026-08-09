@@ -711,6 +711,13 @@ YOLO 的新版 Counting 实现已经是旧版的加强版，仍保持唯一实�
 通用 `models.base.validate_local_model_asset` 在模型 runtime 之前统一拦截 LFS
 pointer；没有新增第二套 YOLO loader。
 
+`agents/counting/backends/semantic_segmentation.py` 只消费 ExpertCatalog 明确批准的
+`connected_components` capability：按 per-label confidence/area/morphology policy
+将 semantic component centroid 转成共享 `GlobalPointObservation`，随后复用 owner-core
+和 seam 去重形成 `CountingResult`。最终数量只由 accepted points 导出。该方式是
+semantic instance approximation；相接对象会形成单一 component，可能低估数量，当前不做
+watershed 或隐式 instance splitting。该 backend 尚未接入 Selector/fallback 顺序。
+
 ---
 
 # 15. Qwen Settings

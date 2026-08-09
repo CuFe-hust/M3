@@ -28,6 +28,7 @@ from models.base import (
 BackendKind = Literal[
     "qwen_point",
     "quantity_proposal",
+    "semantic_segmentation",
     "yolo_obb",
 ]
 
