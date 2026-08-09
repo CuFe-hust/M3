@@ -114,6 +114,8 @@ class AppSettings(BaseModel):
 
 _ENV_OVERRIDES = {
     "QWEN_MODEL": ("models", "qwen", "model"),
+    "SEGFORMER_ISAID_MODEL": ("models", "segformer_isaid", "model_path"),
+    "SEGFORMER_OEM_MODEL": ("models", "segformer_oem", "model_path"),
     "DEEPSEEK_BASE_URL": ("models", "deepseek", "base_url"),
     "DEEPSEEK_MODEL": ("models", "deepseek", "model"),
     "DATASET_ROOT": ("paths", "dataset_root"),

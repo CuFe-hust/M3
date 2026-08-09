@@ -3,30 +3,32 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "m3"
+name = "spacers-agent"
 version = "0.1.0"
-description = "Remote-sensing multimodal agent evaluation system."
+description = "Local orchestration foundations for remote-sensing multi-Agent evaluation."
 requires-python = ">=3.11"
 dependencies = [
+  "openai>=1.0",
   "pydantic>=2.8",
-  "Pillow>=10.0",
+  "pydantic-settings>=2.4",
   "PyYAML>=6.0",
-  "typing-extensions>=4.12",
+  "Pillow>=10.0.0",
+  "numpy>=1.26",
+  "opencv-python>=4.8",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "pytest>=8.0",
+  "pytest>=8.0.0",
   "pytest-asyncio>=0.23",
-  "build>=1.2",
-]
-migration = [
   "numpy>=1.26",
+  "huggingface_hub>=0.28.0",
+  "transformers>=4.57.0",
 ]
-change = [
-  "numpy>=1.26",
-  "opencv-python-headless>=4.10",
-]
+yolo = ["ultralytics==8.4.102"]
+yolo-onnx = ["onnxruntime-gpu>=1.23", "numpy>=1.26", "opencv-python>=4.8"]
+segformer = ["torch>=2.2", "transformers>=5.7.0", "safetensors>=0.4"]
+qwen35-gb10 = ["huggingface-hub>=1.0.0", "kernels>=0.15.2,<0.16.0"]
 
 [tool.setuptools.packages.find]
 include = [
@@ -46,5 +48,5 @@ pythonpath = ["."]
 markers = [
   "live_qwen: requires an explicitly authorized live Qwen service",
   "live_deepseek: requires an explicitly authorized live DeepSeek API",
-  "live_dataset: requires an explicitly authorized local dataset",
+  "live_dataset: requires an explicitly authorized local server dataset",
 ]

@@ -6,6 +6,7 @@ application/settings.py 负责。
 
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -79,6 +80,58 @@ class DeepSeekSettings(BaseModel):
     max_retries: int = Field(default=3, ge=0)
 
 
+class SegFormerSettings(BaseModel):
+    """Settings for one local fine-tuned SegFormer checkpoint.
+    单个本地微调 SegFormer checkpoint 的配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Physical checkpoint directory; never used as the logical model identity.
+    # 物理 checkpoint 目录；绝不作为逻辑模型身份。
+    model_path: Path = Path("models/segformer_mitb2_isaid")
+    logical_model_id: str = "SegFormer-MiT-B2:iSAID:local"
+    weights_filename: str = "model.safetensors"
+    weights_sha256: str = (
+        "f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a"
+    )
+    classes_filename: str | None = "classes.json"
+    processor_path: Path | None = None
+    device: str = "auto"
+    dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
+    allow_download: bool = False
+    revision: str | None = None
+
+    @model_validator(mode="after")
+    def validate_runtime_declaration(self) -> "SegFormerSettings":
+        """Validate identity, filenames, digest, and device without touching
+        the filesystem. 在不访问文件系统的前提下校验身份、文件名、摘要与设备。"""
+
+        self.logical_model_id = validate_logical_model_id(
+            self.logical_model_id,
+            where="logical_model_id",
+        )
+        self.weights_filename = _plain_filename(
+            self.weights_filename,
+            where="weights_filename",
+        )
+        if self.classes_filename is not None:
+            self.classes_filename = _plain_filename(
+                self.classes_filename,
+                where="classes_filename",
+            )
+        digest = self.weights_sha256.strip().casefold()
+        if len(digest) != 64 or any(
+            character not in "0123456789abcdef" for character in digest
+        ):
+            raise ValueError("weights_sha256 must be a 64-character hexadecimal digest")
+        self.weights_sha256 = digest
+        if self.device not in {"auto", "cpu", "cuda"} and not (
+            self.device.startswith("cuda:") and self.device[5:].isdigit()
+        ):
+            raise ValueError("device must be auto, cpu, cuda, or cuda:<index>")
+        return self
+
+
 class ModelSettings(BaseModel):
     """Group model settings without storing secret values.
     聚合模型配置且不保存密钥值。"""
@@ -87,3 +140,29 @@ class ModelSettings(BaseModel):
 
     qwen: QwenSettings = Field(default_factory=QwenSettings)
     deepseek: DeepSeekSettings = Field(default_factory=DeepSeekSettings)
+    segformer_isaid: SegFormerSettings = Field(default_factory=SegFormerSettings)
+    segformer_oem: SegFormerSettings = Field(
+        default_factory=lambda: SegFormerSettings(
+            model_path=Path("models/segformer_mitb2_oem"),
+            logical_model_id="SegFormer-MiT-B2:OpenEarthMap:local",
+            weights_sha256=(
+                "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
+            ),
+            classes_filename=None,
+        )
+    )
+
+
+def _plain_filename(value: str, *, where: str) -> str:
+    """Require one cross-platform plain filename with no directory parts.
+    要求跨平台安全、且不含目录部分的纯文件名。"""
+
+    normalized = value.strip()
+    if not normalized or normalized in {".", ".."}:
+        raise ValueError(f"{where} must be a plain filename")
+    if (
+        PurePosixPath(normalized).name != normalized
+        or PureWindowsPath(normalized).name != normalized
+    ):
+        raise ValueError(f"{where} must be a plain filename")
+    return normalized

@@ -148,6 +148,78 @@ class MissingModelCacheIdentityError(RuntimeError):
     客户端未暴露有效缓存身份时抛出；模型调用绝不使用伪造身份回退。"""
 
 
+class ModelAssetError(RuntimeError):
+    """Base error for an unusable local model asset.
+    本地模型资产不可用时的基础错误。"""
+
+
+class ModelAssetMissingError(ModelAssetError, FileNotFoundError):
+    """Raised when a configured local model asset does not exist.
+    配置的本地模型资产不存在时抛出。"""
+
+
+class ModelAssetPointerError(ModelAssetError):
+    """Raised when a Git LFS pointer is supplied instead of model bytes.
+    将 Git LFS 指针误作模型二进制时抛出。"""
+
+
+class ModelAssetHashMismatchError(ModelAssetError):
+    """Raised when a local model asset fails its declared SHA-256 check.
+    本地模型资产未通过声明的 SHA-256 校验时抛出。"""
+
+
+_GIT_LFS_POINTER_PREFIX = b"version https://git-lfs.github.com/spec/v1"
+
+
+def validate_local_model_asset(
+    path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> str:
+    """Validate one local model file and return its SHA-256 digest.
+
+    Validation is deliberately performed before any optional runtime sees the
+    file, producing stable errors for a missing file, a Git LFS pointer, or a
+    digest mismatch. The error text only contains the basename so persisted
+    public errors cannot leak a machine-specific absolute path.
+    在任何可选运行时读取文件前校验本地模型文件，并返回 SHA-256。对于文件
+    缺失、Git LFS 指针和摘要不匹配给出稳定错误；错误文本只包含 basename，
+    避免公共持久化错误泄漏机器绝对路径。
+    """
+
+    if expected_sha256 is not None:
+        expected_sha256 = expected_sha256.strip().casefold()
+        if len(expected_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in expected_sha256
+        ):
+            raise ValueError("expected_sha256 must be a 64-character hexadecimal digest")
+    if not path.is_file():
+        raise ModelAssetMissingError(f"model asset is missing: {path.name}")
+    try:
+        with path.open("rb") as file:
+            prefix = file.read(len(_GIT_LFS_POINTER_PREFIX))
+            if prefix == _GIT_LFS_POINTER_PREFIX:
+                raise ModelAssetPointerError(
+                    "model weight is a Git LFS pointer; actual binary has not "
+                    f"been downloaded: {path.name}"
+                )
+            digest = hashlib.sha256()
+            digest.update(prefix)
+            for block in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(block)
+    except OSError as error:
+        raise ModelAssetError(
+            f"model asset could not be read: {path.name} ({type(error).__name__})"
+        ) from error
+    actual = digest.hexdigest()
+    if expected_sha256 is not None and actual != expected_sha256:
+        raise ModelAssetHashMismatchError(
+            f"model asset digest mismatch for {path.name}: expected "
+            f"{expected_sha256}, got {actual}"
+        )
+    return actual
+
+
 def require_model_cache_identity(
     client: object,
     *,

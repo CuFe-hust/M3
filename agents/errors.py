@@ -109,6 +109,11 @@ class DetectorWeightsHashMismatchError(RuntimeError):
     当本地检测器权重摘要与声明摘要不一致时抛出。"""
 
 
+class DetectorWeightsPointerError(RuntimeError):
+    """Raised when detector weights are only a Git LFS pointer.
+    detector 权重仍只是 Git LFS 指针时抛出。"""
+
+
 class DetectorTaskMismatchError(RuntimeError):
     """Raised when a loaded detector is not the configured task type.
     当加载的检测器不是配置任务类型时抛出。"""

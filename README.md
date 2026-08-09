@@ -1,194 +1,1444 @@
-# M3 — New Architecture (new_structure)
+# M3
 
-本仓库正处于**新架构重建阶段**。行为参考是 `try_yolo` 分支的锁定提交
-`ec962eb87c3ad0b8c1502efcbd08db0daec48868`（只读，不合并、不修改）。
+面向太空智算的多模态遥感大模型应用探索。
 
-## 当前状态（Task 00–33 完成，25.5–25.7 / 33.5 / 33.6 / 33.7 hardening 完成；新计划 Task 01–09 完成（06.5/06.6/06.6.1 hardening 含内）——核心运行时链路已就绪：Judge → SampleRunner → DatasetRunner → auto-task seam → Reporting → Application/Bootstrap → `main.py run-dataset`；Task 11A 手动 `ask` 路径已恢复：PublicAnswer/`Runtime.ask`/`main.py ask`；Task 11B 本地 HTTP 服务已恢复：`main.py serve`（隐式默认）/`GET /health`/`POST /ask`；Task 11C 核心运维命令已恢复：`run-init`/`health`/`list-datasets`/`smoke-qwen`/`resume-run`/`inspect-data`；Task 11C2 run-dataset 运维面已恢复：adapter default 任务模式/`--sample-ids`/`--num-shards` 别名/`--render-errors`/确定性 `--judge-sample-rate`（持久化，resume 一致）；Task 11D 计数维护工具已恢复：`count-image`/`render-count`/`summarize-evaluations`（基于当前 CountingAgent/SampleRunner/Reporting/EvaluationRecord）；Task 11E 离线评估运维已恢复：`evaluate-run`/`judge-vqa-run`（零 Qwen 构造/调用，共享确定性 dispatch 按执行任务定键，可选 DeepSeek 仅 Judge）；Task 11F 标准与数据集评估 seam 已实施：`evaluation/standard`（外部评估器适配器 + `standard-evaluate` CLI）与 `evaluation/datasets`（VRSBench 官方评估 seam）；Task 11G 基准/报告导出已恢复：`reporting/exporters` 的 samples.jsonl/deepseek_audit.jsonl/元数据 JSON/external_standard 命名空间/MME 官方提交导出（源只读）；Task 11G.5 功能恢复硬化完成：`run_request.json` 调用产物（真实 dataset root/judge 策略持久化，resume 原样重建）、render-errors 执行任务与路径 containment、count-image 冻结身份与 `--evaluate` 开关、summarize-evaluations 文件模式、evaluate-run counting DeepSeek、统一报告 bundle 持久化（`runs/<run_id>/report/`）、deepseek audit 真实 RequestMeta；Task 11G.5.1 一致性收口完成：run-dataset `--resume` 与 resume-run 共用 run_request 权威重建（CLI 偏离稳定拒绝）、数据集根一次性 canonicalize、count-image 零 Qwen resume 要求合法匹配结果、evaluate-run/judge-vqa-run 刷新报告 bundle、中性 CountTargetSpec 重建；Task 11G.5.2 调用/Judge 保真硬化完成：count-image 完整保真快照（结构化 target spec+稳定哈希/seam/预算/render/evaluate，resume/force 持久化权威、旧运行 force 稳定拒绝）、离线 counting Judge 目标优先级对齐 CountingAgent（normalization hint → metadata hint → 中性回退）、run-dataset `--resume` 预检在 Runtime.create 之前（非法调用零模型加载）；Task 11G.5.2.1 seam 有效值保真完成：fresh 持久化实际生效值（`settings.counting.seam_verify AND NOT --no-seam-verify`）而非 CLI 原始意图，resume/force 无条件以持久化值双向重建，config 漂移无法改变原始 seam 模式；Task 11H 架构变更：批准显式数据集工具未来路径；Task 11I 架构变更：批准 LEVIR 协调评估器脚本路径（scripts/evaluate_levir_harmonization.py，仅架构批准不实现）；Task 11I2 LEVIR 协调评估器已实现：`scripts/evaluate_levir_harmonization.py`（当前 PairHarmonizer、图对失败隔离、全套指标与确定性 bootstrap CI、分组汇总、仅输出校准、源只读、零 Qwen/DeepSeek）；Task 11J 全功能对等门（离线）已通过：16 个公开命令全部恢复、离线 parity fixtures 锁定、wheel 包含全部批准模块、Windows 最终离线门通过；FULL_FUNCTIONAL_PARITY=PASS（CI 对精确 HEAD 确认中），FINAL_LIVE_GATE=PENDING；Task 11H2 数据集下载与加载工具已实现：`download-data` 命令（唯一自动下载路径，官方 HF 目标、惰性 huggingface_hub、安全 zip 提取）与 `load_dataset_samples`/`load_dataset_drafts` 便捷加载（无隐式网络））
+M3 当前采用分层的多模态遥感 Agent 架构，围绕 **统一样本契约、任务解析与确定性路由、领域 Agent、可恢复运行、确定性评测、可选 Judge 和只读报告** 组织代码。主流程默认面向本地 Qwen 多模态模型，支持数据集批量评测、手动问答、计数、变化理解、空间关系、Grounding、Caption、VQA，以及运行后的评测与报告导出。
 
-- 迁移基线文档：`docs/migration/BASELINE_INVENTORY.md`、`BASELINE_COMMANDS.txt`
-- Golden fixtures（离线行为契约）：`tests/fixtures/migration/`
-- 架构守卫（文件白名单 / import 依赖 DAG / 旧包禁止 / 打包发现）：`tests/architecture/`。import DAG 边界：领域层（agents/workflows/evaluation.metrics）只依赖模型协议（`models.base`/`models.images`），具体模型实现（`models.entry`/`models.qwen_transformers`/`models.qwen3_*`）只允许 composition root（application）选择；`routing` 不依赖 models；`evaluation.judges` 经 path rule 显式批准后可依赖模型契约/配置（path rule 优先于 package 规则）
-- 数据层：`data/`（统一样本契约、4 个数据集 Adapter、校验/选择/审计）
-- 模型层基础：`models/`（协议/缓存/图像工具/配置声明、统一 entry、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装）
-- Agent 通用契约：`agents/`（AgentResult/VisualEvidence、AgentContext/AgentExecution、Registry、错误类型、数据集无关 VisualAgentBase）
-- 领域 Agents：`agents/general_vqa/`、`agents/caption/`、`agents/grounding/`（薄视觉 Agent，含 MCQ/Grounding 输出约束）
-- 计数子系统：`agents/counting/`（契约/几何/证据/pipeline/backends/选择器/目标解析/CountingAgent/CountingPlanExecutor，主输出恒为 CountingResult，后端使用显式 kind；Executor 承担 primary 执行、运行时 fallback 与 zero review）
-- 空间子系统：`agents/spatial/`（通用 SpatialQuerySpec、几何规则、候选复核、证据合并与 SpatialAgent；候选复核使用真实内容 MIME，canonical label 不做词形猜测）
-- 变化子系统：`agents/change/`（PairValidator/Harmonizer/DifferenceProposal/Preprocess/Reviewer/双路径 ChangeAgent；cv2 与 numpy 为可选依赖 `[change]` extra，base 导入不触发；无效时相图对在模型调用前稳定失败）
-- 路由：`routing/`（同步确定性 Thin Router，不读 question、不调用模型）
-- 工作流：`workflows/`（CallBudget、EventWriter/RunStore、ArtifactWriter、TaskResolver、SampleRunner、运行契约；JSONL 写入进程内并发安全，跨进程并发追加不受当前工作流层支持）
-- 单样本执行：`SampleRunner`（路由→attempt plan→Agent→产物→确定性评估→可选 judge→trace→状态；低置信度 TaskResolution 按最多 3 个候选构建去重 attempt plan，绝不跑所有 Agent；候选样本 model_copy 重建、不兼容稳定跳过；共享逐样本 CallBudget（可外部注入，贯穿 resolver 与 attempts）；确定性评估经**共享 dispatch**（`build_deterministic_evaluation`，fresh 与 resume 同一 helper）：general_vqa/multiple_choice_vqa/scene_classification→VQA exact-match（vqa_evaluation.json）、counting/fine_grained_counting→计数（counting_evaluation.json，非 CountingResult 载荷 fail-closed）、grounding→轴对齐 IoU（grounding_evaluation.json，**仅 prediction 与 GT 同为 normalized_0_999_top_left 且均为 4-value xyxy 时产出**；source_pixels_top_left 与 8-point polygon 当前 fail-closed，等待 official evaluator / 显式坐标转换）、caption→逐样本候选+参考（caption_evaluation.json）；spatial_relation/change_qa/change_caption 无样本级指标；仅 general_vqa 走 judge 且经 asyncio.to_thread 不阻塞事件循环）
-- 可移植产物路径：`SampleRunStatus.result_path` = sample-relative 结果 basename（如 `agent_result.json`/`counting_result.json`），**schema 级强制 plain basename**（拒绝 absolute/drive/UNC/dot-dot/嵌套/控制字符；旧版绝对路径 status 在 resume 时视为无效并重新执行样本）；`predictions.jsonl` 行内 `result_path` = run-relative（由实际 sample 目录推导，如 `tasks/auto/samples/<key>/agent_result.json`，绝不根据 status.task 拼目录）；机器绝对路径绝不进入任何产物；resume 确定性评估以 `status.task` 作为 execution task 显式传给共享 dispatch（候选兜底后不会因 canonical resolved sample.task 生成错误指标族）
-- 候选兜底一致性：`sample.json` 保存 canonical resolved sample（task=解析任务，绝不因 fallback 覆盖）；`status.json` 保存最终执行 task；`agent_trace.json` 显式记录 `resolved_task` 与 `execution_task`（`task_type` 固定等于 resolved_task）；`routing_decision.json` 最终写成功 execution task 的决策；resume 按 `status.task`（执行任务）决定补判类型，绝不按解析任务误补；`fallback_used` 涵盖 routing fallback / partial fallback / 候选任务兜底（candidate index > 0）
-- 报告：`reporting/`（只读层：schema/adapters/builder/html/exporters/visualization）
-  —— 从执行索引与样本产物构建 `Report`（逐样本行 + 每 task 汇总：状态计数、
-  fallback 率、agent 使用、judge 状态、离线确定性指标聚合；caption 只计记录
-  数，语料级指标留给可选 pycocoevalcap）；HTML 完全离线（无 CDN/Base64，用户
-  与模型文本全部转义，只输出稳定 code 与 run 相对路径）；CSV utf-8-sig；
-  counting overlay（源图 + CountingResult，尺寸不匹配稳定失败）；绝不调用
-  模型、绝不重新计算结果
-- 应用层：`application/`（唯一 composition root）——settings（YAML + 环境变量
-  覆盖，密钥值绝不进入 snapshot/repr/artifact，只声明环境变量名）、prompts
-  （17 个逻辑键现役绑定，构造时一次性加载，缺失明确报错，快照路径去重）、
-  bootstrap（唯一创建 Qwen 客户端——一次组装恰好一次；DeepSeek 仅在注入
-  api_key 时创建，无 key 即 judge 禁用；BackendRegistry/AgentRegistry/
-  TaskResolver/JudgeService/SampleRunner/DatasetRunner factory/Reporting
-  服务全部组装；路由覆盖校验）、runtime（高层用例：run_dataset 委托
-  DatasetRunner + build_report + `build_dataset_run_options` + 手动 `ask`——
-  PublicAnswer/`Runtime.ask`：单主 Agent、无 Judge/评测/fallback；显式任务零
-  resolver，auto 经 TaskResolver（空问题确定性规则，有问即一次模型调用）；
-  手动图片目录第一层自然排序收集（jpg/jpeg/png/webp/tif/tiff/bmp、忽略隐藏、
-  损坏/超 8 张失败），`ImageRef.path` 相对图片目录且 `AgentContext.data_root`
-  指向它，请求产物只含 `manual://input` + 相对路径、`artifact_dir` run-root
-  相对）、commands（`ask` CLI 薄接线 + `serve` 串行本地 HTTP 服务——仅
-  `GET /health`（就绪元数据，无模型/Judge 调用）与 `POST /ask`（委托
-  `Runtime.ask`，source=http_service）；1 MiB 请求体上限（413 + 排空）、
-  坏 JSON/非对象/缺 image_dir→400、非法请求→400 固定稳定错误、内部异常→500
-  稳定类型名；未知路径 404 JSON；端口校验 1..65535；服务进程一次
-  `Runtime.create()`（Qwen 一次、无 DeepSeek），handler 绝不构造模型客户端；
-  仅 stdlib http.server；运维命令——`run-init`（RunStore.create_run，快照与
-  fresh Runtime 一致，重复显式 id 稳定失败）、`health qwen|deepseek [--live]`
-  （正常模式只输出元数据与 env 名、绝不输出密钥值；live 注入 fake 客户端或
-  构造真实客户端后恰好一次探测）、`list-datasets`（DatasetRegistry.names()）、
-  `smoke-qwen --image --question`（直接 VisionLanguageClient 一次请求，不经
-  Agent 路由）、`resume-run --run-id`（读 RunManifest + config 快照 + run 目录
-  task 命名空间重建 DatasetRunOptions 委托 Runtime resume=True；缺失/损坏/
-  不足/不匹配稳定失败，绝不复制 DatasetRunner 循环）、`inspect-data --root
-  --output [--scan-mode quick|full]`（audit_dataset_root 只读审计）、
-  `count-image --image --question [--target-spec] [--run-id] [--evaluate]
-  [--render] [--resume] [--force] [--no-seam-verify] [--max-qwen-calls]
-  [--max-deepseek-calls]`（当前 CountingAgent + 当前 run/sample 存储；
-  resume succeeded 零 Qwen、force 重跑、旧版绝对 status 无效重跑、budget/
-  seam 覆盖仅请求局部；target-spec 经 CountTargetSpec 校验）、
-  `render-count --image --result --output`（当前 overlay；tile 调试仅在
-  有足够几何时，否则 tile_overlay=not_available，绝不猜测）、
-  `summarize-evaluations --run-id`（解析全部当前 EvaluationRecord，损坏
-  稳定失败，按 task 确定性聚合，无模型）、`evaluate-run --run-id
-  [--deepseek] [--only-missing] [--force-judge]`（离线确定性评估，零 Qwen
-  构造/调用；与 fresh/resume 共用共享 dispatch 且按执行任务 status.task
-  定键；不支持任务/不兼容几何 → not_applicable 绝不伪造指标；--deepseek
-  仅 Judge，失败保留确定性记录；--only-missing 只补缺失；输出刷新报告）、
-  `judge-vqa-run --run-id [--force]`（零 Qwen；仅执行任务 general_vqa；
-  succeeded judge 默认跳过、--force 重判；失败保留确定性记录）、
-  `standard-evaluate --result [--tool-dir] [--output] [--python]`（外部团队
-  标准评估器 seam：canonical result → evaluate.py → *.standard.json 校验
-  JSON 对象；shell=False；失败稳定；仅当结果关联当前 run 时刷新报告；
-  绝不复活旧 eval.audit_report）、`evaluation/datasets/`（VRSBench 官方
-  评估 seam：仅答案归一化/官方输入映射/封闭词汇元数据，绝不选 Agent/调
-  模型/改任务/重复通用指标，任务语义保留在数据层 normalizer））、报告导出
-  （`reporting/exporters`：write_samples_jsonl/deepseek_audit/元数据/
-  external_standard 命名空间/MME 官方提交——源数据只读、未关联字段原样
-  保留、无主机绝对路径、无 auth/原始 secret；新统一 Reporting 权威，
-  不重建旧 HTML builder）
-- 公开入口：`main.py run-dataset` + `main.py ask` + `main.py serve`（无子命令
-  隐式 serve）+ 运维命令（run-init/health/list-datasets/smoke-qwen/resume-run/
-  inspect-data/count-image/render-count/summarize-evaluations/evaluate-run/
-  judge-vqa-run/standard-evaluate 等）——
-  极薄接线：解析（`--dataset/--root/--split/--task/--auto-task/--sample-ids/
-  --run-id/--resume/--evaluate/--judge-policy/--judge-sample-rate/
-  --render-errors/--max-samples/--start-index/--shard-index/--shard-count
-  （别名 --num-shards）/--sample-concurrency/--fail-fast/--config`；
-  任务选择模式：`--task` 显式 / `--auto-task` 逐样本 resolver / 两者都不给 →
-  `adapter.supported_tasks`（不调 TaskResolver）/ 两者都给 → 参数错误；
-  `--sample-ids` 文件空白分隔 ID 喂 selection 管线（先于执行与 limit）；
-  evaluate 默认开、judge-policy 默认 none（offline by default））→ 配置 →
-  运行时（Qwen 一次加载，多 task/样本复用）→ `build_dataset_run_options`
-  （架构规则禁止 main 导入 workflows，构造在 application）→
-  `Runtime.run_dataset` → 汇总 JSON 与 run_dir → 退出码（0/1/2/130）；
-  `--judge-sample-rate` 由 SHA256(run_id:sample_id) 确定性抽样并持久化于
-  summary（resume 恢复同一策略）；`--render-errors` 执行后渲染失败样本
-  counting overlay（无模型调用，不支持转稳定 note）；公共错误只输出稳定
-  类型名，绝无原始异常/密钥；run-dataset 命令实现在
-  `application/commands/run_dataset.py`
-- 数据集执行：`DatasetRunner`（selection 固定顺序 adapter 稳定序→start_index→shard→sample_ids→limit（SHA256 分片）、resume 只跳过 succeeded 且按 `status.task` 执行任务经**同一共享 dispatch** 补判缺失确定性评估（general_vqa/multiple_choice_vqa/scene_classification/counting/fine_grained_counting/caption/grounding 兼容坐标时；不兼容坐标系绝不伪造指标）与缺失或失败 VQA judge（仅 general_vqa，受确定性抽样率约束）、单进程 asyncio 并发、fail-fast 取消不遗留 running、未启动样本记 `FAIL_FAST_NOT_STARTED`、`DatasetRunSummary` 计数强制闭合（含持久化 `judge_sample_rate`；resume 无显式率时恢复持久化值）、确定性 judge 抽样 `_judge_policy_for`（SHA256(run_id:sample_id) 模 10000 与率比较，绝不随机）；目录 `runs/<run_id>/tasks/<task>/samples/<sha256(sample_id)[:24]>`；`task=None` 是内部显式 auto-task mode（外部入口经 `DatasetRunOptions.auto_task=True` 选择）、`tasks=None` 是 adapter default 模式（运行全部 supported_tasks，不调 resolver）；`predictions.jsonl` 是 **append-only execution index**——`(run_task, sample_id)` 最后一行代表当前状态，行字段 sample_id/run_task/task/status/result_path/updated_at；数据集 probe 经 `ArtifactWriter.write_dataset_probe` 按 task 目录独立写 `tasks/<task>/dataset_probe.json`（`sample_file` dataset-relative，root 外稳定失败）——manifest.json 保持 RunManifest schema 可解析、绝不动态扩 schema）
-- 任务解析：`TaskResolver`（仅缺失 task 时可调用本地模型；明确 task 直接通过；空问题仅 caption/change_caption 两条确定性规则；低置信度只返回结构化候选，不执行 Agent；`TaskRouter` 保持同步确定性、不读 question、不调用模型）
-- 无 task 数据集 seam：`SampleDraft`（data/schema.py，pre-sample 契约、无角色校验）+ `DraftDatasetAdapter` 协议 + `data/adapters/manifest.py` 的 manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models；`samples_file` 经 `resolve_dataset_relative_path` 严格限制在 dataset root 内，拒绝遍历/绝对路径/UNC）+ `materialize_sample`（draft→UnifiedSample，任务解析后重建图像角色）+ DatasetRunner draft 模式（共享默认 CallBudget 贯穿 resolver 与 agent attempts，未知 task 绝不冒充 general_vqa，预 task 失败以稳定 code + 诚实 `unknown` 标签记录，单样本异常隔离不炸整批；`DatasetRunOptions.auto_task` 显式契约：auto_task=True 要求 tasks 为空、False 要求非空）
-- 评估：`evaluation/`（统一 EvaluationRecord 与确定性指标：counting/VQA/grounding/caption；corpus 级 caption 指标依赖可选 pycocoevalcap；judge 永不覆盖确定性指标）
-- Judge 层：`evaluation/judges/`（文本与结构化证据 Schema、JudgeClient 协议、纯载荷/稳定哈希——canonical hash 覆盖 model/prompt 文本与版本/sample_id/完整 payload/response schema、标准库 HTTP 的 DeepSeekJudgeClient——api_key 由 composition root 注入、绝不读环境变量、错误只含稳定 code）+ `workflows/judge_service.py`（策略 none/errors-only/all、仅真正发起 Judge 时 `reserve_deepseek`、失败保留确定性记录、resume 补判不重复；judge 异常以稳定类型名记录，绝不保存原始异常文本；`sample_dir/deepseek_vqa_judge/` 与 `samples/<id>/deepseek/` 产物：request_meta/raw_response/validation/parsed；async 边界经 `asyncio.to_thread` 不阻塞事件循环）
+当前分支 `new_structure` 是新的长期架构。旧 `try_yolo` 分支仅作为迁移和行为对齐参考，不再作为运行时依赖。
 
-计数后端契约：每个后端显式声明 `kind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
-只有 `yolo_obb` 进入 detector plan、zero-review 与 detector fallback；所有 YOLO tile
-均失败时 backend 抛出稳定错误并由 `CountingPlanExecutor` 执行显式 fallback
-（`CountingAgent` 只负责计划与打包）；tile warning 不保存原始异常文本；
-`CountingBackendUnavailableError` 全仓唯一（`agents.errors` 权威定义，顶层导出与
-backend import 为同一对象）；公共入口只抛稳定错误，trace 不含原始异常文本、
-绝对路径、密钥或 Base64。
+---
 
-**尚未实现**：
-- **semantic segmentation runtime: not implemented**——SegFormer/OEM/iSAID
-  是独立扩展线（见 `docs/architecture/12_SEGMENTATION_TRACK.md`），不阻塞
-  core release candidate。
-- 验收状态：**FULL_FUNCTIONAL_PARITY=PASS**（离线全功能对等门，含命令矩阵/离线 parity fixtures/Windows 最终离线门，见
-  `docs/architecture/10_WINDOWS_INTEGRATION_GATE.md` 最终 parity 段）；**FINAL_LIVE_GATE=PENDING**（真机验收被 ENVIRONMENT_BLOCKER 阻塞：Qwen checkpoint 缺失（HF cache 仅空 refs）、本地无真实数据集、无 Spark 目标机配置；执行步骤见 docs/architecture/99_FINAL_LIVE_GATE_RUNBOOK.md；不声称 Spark/Qwen 已通过）。
+## 1. 主要能力
 
-## 安装与测试
+当前公开任务包括：
 
-```bash
-python -m pip install -e ".[dev,migration,change]"
-python -m compileall \
-  data \
-  models \
-  agents \
-  routing \
-  workflows \
-  evaluation \
-  tests \
-  scripts/generate_migration_fixtures.py
-python -m pytest -q tests/architecture
-python -m pytest -q tests/contracts/test_data_schema_contract.py
-python -m pytest -q tests/parity/test_baseline_golden_fixtures.py
-python -m pytest -q tests/workflows
-python -m pytest -q tests/evaluation
-python -m pytest -q
+| Task | 说明 | 主要 Agent |
+|---|---|---|
+| `counting` | 通用目标计数 | CountingAgent |
+| `fine_grained_counting` | 细粒度目标计数 | CountingAgent |
+| `change_caption` | 双时相变化描述 | ChangeAgent |
+| `change_qa` | 双时相变化问答 | ChangeAgent |
+| `grounding` | 文本目标定位 | GroundingAgent |
+| `spatial_relation` | 空间关系理解 | SpatialAgent |
+| `scene_classification` | 遥感场景分类 | GeneralVQAAgent |
+| `general_vqa` | 通用遥感 VQA | GeneralVQAAgent |
+| `caption` | 遥感图像描述 | CaptionAgent |
+| `multiple_choice_vqa` | 多选 VQA | GeneralVQAAgent |
+
+内建数据集适配器：
+
+- **VRSBench**
+- **LEVIR-CC**
+- **MME-RealWorld**
+- **XLRS-Bench**
+- **XLRS-Bench-lite**
+
+另外支持显式 manifest 驱动的 `SampleDraft` 读取路径，用于没有标准逐样本 task 字段的数据。
+
+---
+
+## 2. 当前架构
+
+主链路：
+
+```text
+Dataset / Local Images
+        |
+        v
+data/
+  Adapter -> UnifiedSample
+          -> SampleDraft
+                |
+                v
+        TaskResolver (only when task is unknown)
+                |
+                v
+routing/
+  deterministic TaskRouter
+                |
+                v
+agents/
+  Counting / Change / Spatial / Grounding / Caption / General VQA
+                |
+                v
+workflows/
+  SampleRunner -> DatasetRunner
+                |
+                v
+evaluation/
+  deterministic metrics + optional DeepSeek Judge
+                |
+                v
+persisted run artifacts
+                |
+                v
+reporting/
+  read-only report / audit / export
+                |
+                v
+application/
+  composition root and use cases
+                |
+                v
+main.py
+  sole public CLI surface
 ```
 
-GitHub Actions（`.github/workflows/offline-tests.yml`，Ubuntu/Python 3.11）
-执行上述 Foundation tests；不运行 live 模型、真实数据集或密钥相关测试，
-也不下载真实模型权重、不运行 live GPU inference。
+几个最重要的边界：
 
-## 运行时边界说明
+- `data.schema.UnifiedSample` 是内部统一样本契约。
+- `TaskResolver` 回答“这是什么任务”，`TaskRouter` 回答“已知任务交给哪个 Agent”。
+- Router 是同步、确定性、无模型调用的。
+- Agent 依赖模型协议，不自行创建具体 Qwen 客户端。
+- `application/` 是唯一 composition root。
+- `reporting/` 只读取持久化结果，不重新推理。
+- `evaluation` 中的 Judge 永远不能覆盖确定性指标。
+- 新架构不依赖旧 `spacers_agent/` 和 `eval/`。
 
-- **Change 可选依赖**：base wheel 的 `import agents.change` 不要求 cv2/numpy
-  （惰性加载）；运行变化预处理/一致化/提议需要 `pip install "m3[change]"`
-  （`numpy` + `opencv-python-headless`）。缺少时相关函数抛出
-  `OptionalDependencyMissingError`。
-- **JSONL 并发边界**：`events.jsonl` / `predictions.jsonl` 的写入在单 Python
-  进程内对并发 writer 安全（按解析后路径身份的进程内锁 + 原子替换 + 有限
-  重试吸收 Windows 瞬态文件锁）；当前工作流层不支持跨进程并发追加。
-- **Caption 指标**：corpus 级 BLEU/METEOR/ROUGE/CIDEr 依赖可选
-  `pycocoevalcap`，缺少时 `evaluate_caption` 抛出明确 `RuntimeError`。
-- **Workflow 安全**：`run_id` 是经过校验的跨平台 plain identifier（拒绝
-  遍历/绝对路径/drive/UNC/控制字符、Windows 保留设备名（CON/PRN/AUX/NUL/
-  COM1-9/LPT1-9，含带扩展名形式）与尾点/尾空格，任何文件写入前失败）；
-  事件与配置的密钥扫描递归处理任意 Mapping/Sequence/Set（含 tuple、set、
-  frozenset 组合）嵌套。
-- **Evaluation 不变式**：`EvaluationRecord` 强制 task ↔ deterministic metric
-  类型一致（构造时失败，聚合器同样 fail-closed）；VQA canonical merge 返回
-  统一 `EvaluationRecord`（旧 `VQAEvaluationRecord` 仅作 legacy 兼容，可经
-  `to_evaluation_record` 显式转换）；Grounding IoU 阈值每条记录只判定一次，
-  聚合复用存储标志；task↔metrics 映射为内部不可变注册表，不可通过公共
-  顶层 API 修改。
+更完整的内部说明见 [`DETAILS.md`](DETAILS.md)，编码规则见 [`AGENTS.md`](AGENTS.md)。
 
-## 模型身份配置说明
+---
 
-- 本地 checkpoint 使用路径时必须显式设置稳定的 `cache_model_id`
-- `cache_model_id` 必须是逻辑标识符，不能是本地路径（POSIX 绝对、
-  Windows drive、UNC）或 `file://` URI；它用于 request hash 与 Agent trace，
-  物理 checkpoint 路径只传给 `from_pretrained`
+## 3. 环境要求
 
-## 目录职责（已实现部分）
+当前项目配置以 `pyproject.toml` 为准。
 
-- `architecture/allowed_python_files.txt`：**最终架构白名单**（冻结文件，普通任务
-  不得修改）；白名单中尚未创建的文件是已批准的未来路径，不代表已经实现
-- `architecture/implementation_status.json`：当前实际实现状态（implemented/pending）
-- `architecture/ALLOWLIST_CHANGE_POLICY.md`：白名单变更政策
-- `data/`：统一样本契约、Adapter、校验/选择/审计
-- `models/`：模型协议与请求哈希、响应缓存、图像工具、纯声明配置、
-  统一模型入口、本地 Transformers Qwen 客户端、Qwen3-VL 基线封装
-- `agents/`：AgentResult/AgentExecution 契约、安全校验、Registry、
-  错误类型、数据集无关 VisualAgentBase、general_vqa/caption/grounding
-  薄视觉 Agent、计数子系统（契约/几何/证据/pipeline/backends/选择器/Agent）
-- `routing/`：同步确定性 Thin Router（task→policy 表，不读 question）
-- `tests/`：架构守卫 / 契约 / Golden parity 测试
-- `docs/migration/`：迁移基线、Golden 说明
-- `scripts/`：Golden fixture 生成器（离线可复现）
+最低要求：
+
+```text
+Python >= 3.11
+```
+
+基础依赖：
+
+- Pydantic 2
+- Pillow
+- PyYAML
+- typing-extensions
+
+推荐先建立独立 Python 环境，再安装项目：
+
+```bash
+python -m pip install -U pip
+python -m pip install -e .
+```
+
+开发和测试：
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+变化检测相关可选依赖：
+
+```bash
+python -m pip install -e ".[change]"
+```
+
+迁移/部分离线工具需要 NumPy 时：
+
+```bash
+python -m pip install -e ".[migration]"
+```
+
+> CUDA、PyTorch、Transformers、ONNX Runtime、YOLO detector runtime 等与具体模型/硬件相关的依赖需要根据部署环境单独准备。仓库不会在普通 import 或离线测试时强制加载全部模型和 detector 运行时。
+
+---
+
+## 4. 本地 Qwen 模型
+
+主流程模型通过：
+
+```python
+models.entry.create_model(name, ...)
+```
+
+统一构造。
+
+当前模型入口：
+
+```text
+qwen_transformers
+qwen3_vl_baseline
+qwen3_5_transformers
+```
+
+Agent/Workflow 不直接 import 具体 Qwen 实现；具体模型只在 `application` composition root 选择和创建。
+
+### 本地 checkpoint
+
+默认 Qwen 配置使用逻辑模型名。实际部署时可以通过 YAML 或环境变量指定本地 checkpoint。
+
+例如：
+
+```yaml
+models:
+  qwen:
+    model: /path/to/Qwen3-VL-4B-Instruct
+    cache_model_id: qwen3-vl-4b-instruct-local
+    allow_download: false
+    device_map: auto
+    dtype: auto
+```
+
+如果 `model` 是本地绝对路径，必须同时提供与机器路径无关的：
+
+```text
+cache_model_id
+```
+
+它用于 request hash、cache identity 和 trace，避免把本机 checkpoint 绝对路径变成逻辑模型身份。
+
+也可以使用：
+
+```bash
+export QWEN_MODEL=/path/to/Qwen3-VL-4B-Instruct
+```
+
+覆盖模型路径。
+
+默认：
+
+```text
+allow_download = false
+```
+
+因此普通运行不会把“本地模型缺失”自动转换为 Hugging Face 下载。
+
+### 本地专家模型
+
+仓库支持三份已验证的本地专家模型资产：
+
+```text
+models/segformer_mitb2_isaid/model.safetensors
+models/segformer_mitb2_oem/model.safetensors
+models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+```
+
+这些权重必须是真实二进制并保持 Git ignored；代码会在加载前区分文件缺失、
+Git LFS pointer 和 SHA256 不匹配。小型 `config.json`、`classes.json`、
+`metrics.json` 可以版本化。资产摘要和逻辑 ID 见
+[`models/MODELS.md`](models/MODELS.md)。
+
+SegFormer 可选依赖：
+
+```bash
+python -m pip install -e ".[segformer]"
+```
+
+调用层：
+
+```python
+from models.segformer_transformers import SegFormerRuntime
+
+runtime = SegFormerRuntime(settings.models.segformer_isaid)
+result = runtime.predict(image)
+```
+
+该 runtime 封装本地加载、processor、device/dtype、预处理、logits 上采样、
+argmax 和类别映射。iSAID 必须读取经训练 mask 验证的 `classes.json`；OEM
+源资产只有 `LABEL_0..8` 占位标签，代码不会猜测另一套类别顺序。
+
+---
+
+## 5. 配置
+
+应用配置由 `application.settings.AppSettings` 管理。
+
+主要配置组：
+
+```text
+models
+counting
+runs
+router
+paths
+backend
+agents
+```
+
+运行时加载顺序：
+
+```text
+built-in defaults
+    -> optional YAML
+    -> supported environment overrides
+```
+
+公共入口支持：
+
+```bash
+python main.py --config /path/to/local.yaml <command> ...
+```
+
+不传 `--config` 时使用代码中的默认设置。
+
+当前支持的普通环境变量覆盖包括：
+
+```text
+QWEN_MODEL
+SEGFORMER_ISAID_MODEL
+SEGFORMER_OEM_MODEL
+DEEPSEEK_BASE_URL
+DEEPSEEK_MODEL
+DATASET_ROOT
+OUTPUT_ROOT
+```
+
+DeepSeek API key 的**值**不进入 AppSettings；配置只声明环境变量名，实际 secret 由 composition root 在需要 Judge 时读取并注入。
+
+---
+
+## 6. 数据准备
+
+### 6.1 查看内建数据集
+
+```bash
+python main.py list-datasets
+```
+
+### 6.2 显式下载官方数据
+
+项目默认不允许 loader/adapter 隐式联网。
+
+需要下载数据时使用明确命令：
+
+```bash
+python main.py download-data \
+  --root /data/m3 \
+  --datasets vrsbench
+```
+
+可以一次指定多个 dataset key：
+
+```bash
+python main.py download-data \
+  --root /data/m3 \
+  --datasets vrsbench levir_cc
+```
+
+下载逻辑位于：
+
+```text
+data/downloader.py
+```
+
+下载是显式行为，普通 `run-dataset` 不会因为数据不存在而偷偷联网。
+
+### 6.3 数据集只读审计
+
+在正式运行之前可以检查数据根目录：
+
+```bash
+python main.py inspect-data \
+  --root /data/m3/VRSBench \
+  --scan-mode quick
+```
+
+完整扫描：
+
+```bash
+python main.py inspect-data \
+  --root /data/m3/VRSBench \
+  --scan-mode full \
+  --output outputs/vrsbench-audit.json
+```
+
+Adapter 对源数据保持只读。
+
+---
+
+## 7. 统一样本契约
+
+跨 Adapter、Workflow、Router、Agent 和 Evaluation 的内部样本使用：
+
+```text
+data.schema.UnifiedSample
+```
+
+核心字段：
+
+```text
+sample_id
+dataset
+split
+task
+images
+question
+ground_truth
+metadata
+normalization
+```
+
+图片路径使用 dataset-root-relative 表示，不把机器绝对路径作为样本身份。
+
+双时相任务：
+
+```text
+change_caption
+change_qa
+```
+
+使用有序角色：
+
+```text
+t1 -> t2 -> context...
+```
+
+其他任务使用：
+
+```text
+image -> context...
+```
+
+对于没有明确逐样本 task 的数据，先生成：
+
+```text
+SampleDraft
+```
+
+再通过：
+
+```text
+TaskResolver -> materialize_sample -> UnifiedSample
+```
+
+---
+
+## 8. TaskResolver 与 Router
+
+任务未知时：
+
+```text
+explicit task
+    -> deterministic rule
+    -> model resolution
+```
+
+空问题当前有两条窄规则：
+
+```text
+1 image -> caption
+2 images -> change_caption
+```
+
+其他空问题不猜 `general_vqa`。
+
+模型解析只在：
+
+```text
+task unknown AND question non-empty
+```
+
+时发生。
+
+低置信度 TaskResolver 最多返回有限候选任务，并保留 `general_vqa` 兜底槽位；真正候选执行由 SampleRunner 完成。
+
+TaskRouter 本身：
+
+```text
+no question reading
+no model call
+no unknown-task guessing
+```
+
+---
+
+## 9. 快速开始
+
+### 9.1 查看所有命令
+
+```bash
+python main.py --help
+```
+
+查看某个命令：
+
+```bash
+python main.py run-dataset --help
+python main.py ask --help
+python main.py count-image --help
+```
+
+### 9.2 本地 HTTP 服务
+
+无子命令时默认启动：
+
+```bash
+python main.py
+```
+
+等价于：
+
+```bash
+python main.py serve --host 127.0.0.1 --port 8000
+```
+
+如果使用自定义配置：
+
+```bash
+python main.py --config /path/to/local.yaml serve
+```
+
+当前 HTTP surface：
+
+```text
+GET  /health
+POST /ask
+```
+
+服务进程只组装一次 Runtime；请求 handler 不重复加载 Qwen。
+
+默认监听 `127.0.0.1`。不要在没有额外安全措施时暴露到不受信任网络。
+
+---
+
+## 10. 手动 Ask
+
+对本地图片目录执行一次任务：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-001 \
+  --question "图中有多少架飞机？" \
+  --task counting
+```
+
+自动判断任务：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-002 \
+  --question "图中主要是什么场景？" \
+  --task auto
+```
+
+Caption 可以使用空问题：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-003 \
+  --task caption
+```
+
+输出到文件：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-003 \
+  --task caption \
+  --output outputs/manual-answer.json
+```
+
+手动 `ask` 是单请求路径，不等同于完整 DatasetRunner benchmark：它不会自动生成完整数据集评测和报告流程。
+
+---
+
+## 11. 数据集运行
+
+基本形式：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation
+```
+
+如果没有 `--task`，默认使用 Adapter 声明的支持任务集合。
+
+只运行某个任务：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa
+```
+
+多个任务使用逗号分隔：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa,caption,grounding
+```
+
+限制样本数做 smoke test：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --limit 20
+```
+
+指定 run id：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset LEVIR-CC \
+  --root /data/LEVIR-CC \
+  --split test \
+  --task change_caption \
+  --run-id levir-change-caption-v1
+```
+
+---
+
+## 12. Auto-task Dataset Mode
+
+对于显式使用 `SampleDraft` 的数据路径：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset <dataset-name> \
+  --root /data/<dataset> \
+  --split test \
+  --auto-task
+```
+
+三种模式语义不同：
+
+```text
+no --task
+    -> adapter default tasks
+
+--task task1,task2
+    -> explicit tasks
+
+--auto-task
+    -> per-sample TaskResolver
+```
+
+不要把“未传 `--task`”理解成自动任务识别。
+
+---
+
+## 13. Sharding 与并发
+
+分片：
+
+```bash
+python main.py run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --shard-index 0 \
+  --shard-count 4
+```
+
+`--num-shards` 是 `--shard-count` 的别名。
+
+当前分片使用稳定 SHA-256 逻辑，不使用 Python 随机 hash。
+
+单进程 asyncio 并发：
+
+```bash
+python main.py run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --sample-concurrency 4
+```
+
+当前 artifact JSONL 层只承诺**同一 Python 进程内**并发写入安全，不宣称多个独立进程可以同时追加同一个 run。
+
+---
+
+## 14. Resume
+
+首次运行：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --run-id vrsbench-vqa-v1
+```
+
+恢复：
+
+```bash
+python main.py --config /path/to/local.yaml resume-run \
+  --run-id vrsbench-vqa-v1
+```
+
+也可以通过 `run-dataset --resume` 进入同一恢复语义。
+
+Resume 的具体原始调用由：
+
+```text
+runs/<run_id>/run_request.json
+```
+
+持久化。
+
+系统不会因为当前 YAML、CLI 默认值发生变化就静默改变原运行的 task mode、dataset root、judge policy、sample selection 等关键行为。
+
+---
+
+## 15. 确定性评测
+
+`run-dataset` 默认：
+
+```text
+evaluate = true
+judge_policy = none
+```
+
+即默认做支持的确定性评测，但**不会默认调用 DeepSeek**。
+
+当前主要 deterministic metric family：
+
+### Counting
+
+```text
+predicted_count
+gold_count
+exact_match
+absolute_error
+relative_error
+smooth_error_score
+```
+
+### General VQA
+
+```text
+exact_match
+```
+
+### Grounding
+
+```text
+IoU
+IoU@0.5
+```
+
+当前内建 Grounding deterministic path 对坐标契约严格 fail-closed；不能把未知坐标系、source-pixel 坐标或 polygon 静默当成统一 xyxy。
+
+### Caption
+
+逐样本保存：
+
+```text
+candidate
+references
+```
+
+语料级 BLEU / METEOR / ROUGE / CIDEr 由 aggregate/标准 evaluator 路径负责，不把逐样本记录伪装成完整 corpus metric。
+
+---
+
+## 16. DeepSeek Judge
+
+Judge 是可选审计层，不取代 deterministic metrics。
+
+启用 Judge 前在运行环境设置：
+
+```bash
+export DEEPSEEK_API_KEY=...
+```
+
+数据集运行：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --judge-policy all
+```
+
+策略：
+
+```text
+none
+errors-only
+all
+```
+
+可以设置确定性 Judge 抽样率：
+
+```bash
+python main.py run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --judge-policy all \
+  --judge-sample-rate 0.1
+```
+
+Judge 结果与 deterministic metrics 并列记录：
+
+```text
+deterministic metrics
++
+judge_status / judge_parsed / judge_inconsistency
+```
+
+Judge 不能覆盖 deterministic exact-match、IoU 或 counting error。
+
+---
+
+## 17. 运行后评测
+
+对已有 run 做离线评测补全：
+
+```bash
+python main.py --config /path/to/local.yaml evaluate-run \
+  --run-id vrsbench-vqa-v1
+```
+
+仅补缺失项：
+
+```bash
+python main.py --config /path/to/local.yaml evaluate-run \
+  --run-id vrsbench-vqa-v1 \
+  --only-missing
+```
+
+在已有 run 上显式增加 DeepSeek Judge：
+
+```bash
+python main.py --config /path/to/local.yaml evaluate-run \
+  --run-id vrsbench-vqa-v1 \
+  --deepseek
+```
+
+VQA 专用 Judge pass：
+
+```bash
+python main.py --config /path/to/local.yaml judge-vqa-run \
+  --run-id vrsbench-vqa-v1
+```
+
+这些命令基于已经持久化的 prediction/result 工作，不通过重新调用 Qwen 生成第二份预测来“补评测”。
+
+---
+
+## 18. 外部标准评测
+
+团队或官方 evaluator 使用独立 seam：
+
+```bash
+python main.py standard-evaluate \
+  --result /path/to/canonical-result.jsonl \
+  --tool-dir /path/to/eval_standard
+```
+
+可指定 evaluator Python：
+
+```bash
+python main.py standard-evaluate \
+  --result /path/to/canonical-result.jsonl \
+  --tool-dir /path/to/eval_standard \
+  --python /path/to/python
+```
+
+外部标准指标存放在独立：
+
+```text
+external_standard
+```
+
+命名空间，不与内部 deterministic metric 名称混写。
+
+VRSBench 数据集特定 official seam 位于：
+
+```text
+evaluation/datasets/vrsbench.py
+```
+
+---
+
+## 19. 单图计数
+
+运行：
+
+```bash
+python main.py --config /path/to/local.yaml count-image \
+  --image /data/demo.png \
+  --question "How many buildings are visible?"
+```
+
+评测并渲染：
+
+```bash
+python main.py --config /path/to/local.yaml count-image \
+  --image /data/demo.png \
+  --question "How many buildings are visible?" \
+  --run-id demo-count \
+  --evaluate \
+  --render
+```
+
+可选：
+
+```text
+--target-spec
+--resume
+--force
+--no-seam-verify
+--max-qwen-calls
+--max-deepseek-calls
+```
+
+Count-image 会冻结影响行为的调用参数，使 resume/force 不被新的 CLI 默认值或 config 漂移悄悄改变。
+
+---
+
+## 20. Counting Pipeline
+
+CountingAgent 当前包含独立的：
+
+```text
+target parsing
+backend planning
+tile / point pipeline
+geometry
+evidence normalization
+seam handling
+backend execution
+runtime fallback
+```
+
+主结果：
+
+```text
+counting_result.json
+```
+
+`final_count` 与 accepted evidence 保持一致。
+
+当前显式 backend kind：
+
+```text
+qwen_point
+quantity_proposal
+yolo_obb
+```
+
+目标解析优先级：
+
+```text
+normalization.count_target_hint
+    -> legacy metadata count_target_hint
+    -> Qwen target parser
+```
+
+无效 hint 显式失败，不静默吞掉。
+
+---
+
+## 21. 可选 YOLO OBB Counting
+
+YOLO 默认不是必须依赖。
+
+启用 detector 后，Counting backend 可以注册 `yolo_obb` 路径；模型加载保持惰性，只在配置启用对应 detector 时触发。
+
+设计边界：
+
+- detector 权重由本地环境准备；
+- 不自动下载权重；
+- detector profile/权重 hash/task/class map 需要一致；
+- CUDA/CPU fallback 行为由 detector settings 声明；
+- detector unavailable/runtime error 可以按当前 counting policy 回退；
+- zero detection 可以进入独立 Qwen review；
+- `quantity_proposal` 不被当作 YOLO detector；
+- YOLO 输出最终仍转换进统一 CountingResult/evidence 契约。
+
+当前 `pyproject.toml` 声明了 `yolo` / `yolo-onnx` extras。二者按目标 runtime
+择一安装；不要同时无条件安装 CPU 与 GPU ONNX Runtime。CUDA provider、驱动
+和 ONNX Runtime 版本仍应以目标部署机器的已验证环境为准。
+
+---
+
+## 22. ChangeAgent
+
+变化任务：
+
+```text
+change_caption
+change_qa
+```
+
+输入是有序 T1/T2 图对。
+
+主要模块包括：
+
+```text
+pair validation
+harmonization
+difference proposal
+preprocess
+review
+```
+
+无效时相图对会尽可能在模型调用前失败。
+
+NumPy/OpenCV 相关能力属于：
+
+```bash
+python -m pip install -e ".[change]"
+```
+
+可选依赖。
+
+另有离线 LEVIR harmonization 评测脚本：
+
+```text
+scripts/evaluate_levir_harmonization.py
+```
+
+用于独立评估图像协调/校准表现，不调用 Qwen/DeepSeek 主推理链路。
+
+---
+
+## 23. 报告
+
+Reporting 是只读层。
+
+它从：
+
+```text
+predictions.jsonl
++
+sample/status/trace/result/evaluation artifacts
+```
+
+构建当前 run 的：
+
+```text
+Report
+ReportSample
+TaskSummary
+```
+
+不会：
+
+- 调 Qwen；
+- 调 Agent；
+- 重跑 TaskResolver；
+- 修改 prediction；
+- 为了报告重新计算另一套 prediction。
+
+标准报告 bundle：
+
+```text
+outputs/runs/<run_id>/report/
+├── report.html
+├── report.json
+├── samples.csv
+├── samples.jsonl
+├── metadata.json
+├── deepseek_audit.jsonl
+└── external_standard.json   # optional
+```
+
+HTML 完全离线，不依赖 CDN。
+
+CSV 使用 `utf-8-sig`，方便 Windows Excel。
+
+---
+
+## 24. 运行产物
+
+典型 run：
+
+```text
+outputs/runs/<run_id>/
+├── manifest.json
+├── config.snapshot.json
+├── run_request.json
+├── prompts.snapshot/
+├── events.jsonl
+├── predictions.jsonl
+├── report/
+└── tasks/
+    └── <run_task>/
+        ├── dataset_probe.json
+        ├── dataset_summary.json
+        └── samples/
+            └── <storage_key>/
+                ├── sample.json
+                ├── status.json
+                ├── routing_decision.json
+                ├── agent_result.json
+                │   or counting_result.json
+                ├── vqa_evaluation.json
+                │   or counting_evaluation.json
+                │   or grounding_evaluation.json
+                │   or caption_evaluation.json
+                └── agent_trace.json
+```
+
+不同 task 不一定都有逐样本 deterministic evaluation；系统不会为缺少定义的任务伪造指标。
+
+---
+
+## 25. 三种 Task 身份
+
+运行产物中需要区分：
+
+### Resolved task
+
+TaskResolver/UnifiedSample 的 canonical task：
+
+```text
+sample.json.task
+agent_trace.resolved_task
+```
+
+### Execution task
+
+实际 attempt 执行 task：
+
+```text
+status.json.task
+agent_trace.execution_task
+evaluation semantics
+```
+
+### Run task
+
+DatasetRunner namespace：
+
+```text
+predictions.jsonl.run_task
+tasks/<run_task>/
+```
+
+当低置信度 candidate fallback 成功时，这三个值可能不完全相同。
+
+Resume 和 Evaluation 不能把 resolved task 与 execution task 混为一谈。
+
+---
+
+## 26. Report / Artifact Path Safety
+
+`status.json.result_path` 是 sample-relative 的纯文件名，例如：
+
+```text
+agent_result.json
+counting_result.json
+```
+
+不会持久化为：
+
+```text
+C:\...
+/home/...
+../...
+```
+
+`predictions.jsonl.result_path` 是 run-relative 索引/展示路径。
+
+Reporting 使用冻结的 `(run_task, sample_id)` 推导真实 sample directory，不把任意 result path 当作文件读取权限。
+
+---
+
+## 27. 运维命令
+
+### 创建 run
+
+```bash
+python main.py run-init --run-id local-smoke
+```
+
+创建 run 本身不调用模型。
+
+### Qwen readiness
+
+```bash
+python main.py health qwen
+```
+
+显式 live probe：
+
+```bash
+python main.py --config /path/to/local.yaml health qwen --live
+```
+
+### DeepSeek readiness
+
+```bash
+python main.py health deepseek
+```
+
+显式 live probe：
+
+```bash
+python main.py health deepseek --live
+```
+
+### Direct Qwen smoke
+
+```bash
+python main.py --config /path/to/local.yaml smoke-qwen \
+  --image /data/test.png \
+  --question "Describe this image."
+```
+
+---
+
+## 28. Counting 可视化与评测汇总
+
+已经存在 CountingResult 时：
+
+```bash
+python main.py render-count \
+  --image /data/demo.png \
+  --result /path/to/counting_result.json \
+  --output outputs/counting-overlay.png
+```
+
+汇总一个 run：
+
+```bash
+python main.py summarize-evaluations \
+  --run-id <run-id>
+```
+
+或汇总显式 EvaluationRecord JSONL：
+
+```bash
+python main.py summarize-evaluations \
+  --input /path/to/evaluations.jsonl \
+  --output outputs/evaluation-summary.json
+```
+
+以上命令不重新运行主模型。
+
+---
+
+## 29. MME-RealWorld 官方提交
+
+Reporting exporter 支持基于原始 MME 记录构造官方提交：
+
+- 原始记录只读；
+- 按 question id 写入 prediction；
+- 只替换官方 `Output`；
+- 其他字段保持。
+
+相关逻辑位于：
+
+```text
+reporting/exporters.py
+```
+
+---
+
+## 30. 默认离线与安全约束
+
+默认行为：
+
+```text
+no model auto-download
+no dataset auto-download
+no DeepSeek call
+no cloud API
+```
+
+只有显式能力可能联网，例如：
+
+```text
+download-data
+health --live
+DeepSeek Judge
+显式允许 Qwen download
+```
+
+Secret value 不应进入：
+
+```text
+config snapshot
+manifest
+run request
+trace
+public error
+report metadata
+DeepSeek audit
+```
+
+不要把 DeepSeek key、Authorization header、本机 credential 或 Base64 image 写入配置、日志、测试 fixture 或文档。
+
+---
+
+## 31. 开发与测试
+
+运行全部测试：
+
+```bash
+python -m pytest
+```
+
+架构测试：
+
+```bash
+python -m pytest tests/architecture
+```
+
+领域测试按目录运行，例如：
+
+```bash
+python -m pytest tests/agents/counting
+python -m pytest tests/workflows
+python -m pytest tests/evaluation
+python -m pytest tests/reporting
+```
+
+迁移 parity：
+
+```bash
+python -m pytest tests/parity
+```
+
+Live tests 使用 pytest marker 单独区分：
+
+```text
+live_qwen
+live_deepseek
+live_dataset
+```
+
+默认开发验证不应因为缺少真实模型、API key 或真实数据集而偷偷联网。
+
+---
+
+## 32. 架构保护
+
+项目有机器可检查的架构控制文件：
+
+```text
+architecture/allowed_python_files.txt
+architecture/implementation_status.json
+architecture/import_rules.json
+architecture/ALLOWLIST_CHANGE_POLICY.md
+```
+
+重要规则：
+
+- Python 文件路径需要在 allowlist 中；
+- 普通任务不直接扩白名单；
+- `spacers_agent/**` 和 `eval/**` 永久禁止重新出现；
+- `main.py` 只 import `application`；
+- Router 不 import models；
+- Agent/Workflow 只依赖模型协议；
+- 具体模型实现只由 `application` 选择；
+- `__init__.py` 不承担业务副作用。
+
+---
+
+## 33. 迁移与行为基线
+
+新架构与旧 `try_yolo` 不是通过普通源码 diff 维护一致性。
+
+迁移参考：
+
+```text
+try_yolo@ec962eb87c3ad0b8c1502efcbd08db0daec48868
+```
+
+基线材料：
+
+```text
+docs/migration/
+tests/fixtures/migration/
+tests/parity/
+```
+
+迁移目标是保持需要保持的**可观察行为**，而不是复制旧包结构。
+
+例如旧：
+
+```text
+spacers_agent/
+eval/
+```
+
+已经被新的：
+
+```text
+agents/
+routing/
+workflows/
+evaluation/
+reporting/
+application/
+```
+
+取代。
+
+---
+
+## 34. 文档
+
+### 普通使用者
+
+当前文件：
+
+```text
+README.md
+```
+
+### 编码代理
+
+必须先读：
+
+```text
+AGENTS.md
+DETAILS.md
+```
+
+### 架构设计
+
+```text
+docs/architecture/
+```
+
+### 迁移与 parity
+
+```text
+docs/migration/
+```
+
+README 只维护用户需要的当前用法，不再记录 Task 00/11A/11G.5 等迁移流水账。
+
+---
+
+## 35. 当前边界
+
+当前架构已经完成主要离线实现与迁移收口，但实际运行能力仍取决于本地环境：
+
+- Qwen checkpoint 是否存在；
+- PyTorch/CUDA 是否与机器匹配；
+- VRSBench / MME / XLRS / LEVIR 数据是否已准备；
+- DeepSeek API key 是否在明确需要 Judge 时提供；
+- YOLO/ONNX detector runtime 与权重是否按目标设备准备；
+- Spark/4090/其他部署机器上的真实资源是否完成 live 验证。
+
+因此：
+
+```text
+offline tests passed
+```
+
+不等于：
+
+```text
+every live model / dataset / GPU / deployment gate passed
+```
+
+真实实验结果应结合对应运行配置、run artifacts 和报告记录。

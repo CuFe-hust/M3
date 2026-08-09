@@ -1,368 +1,3274 @@
-# DETAILS.md — 当前有效的模块所有权与接口契约
+# DETAILS.md — 当前架构与接口契约
 
-本文件记录当前已实现模块的所有权与契约；未列出的领域**尚未实现**。
+本文件记录 M3 新架构**当前有效**的项目结构、模块职责、核心接口、运行产物、评测与报告契约。
 
-## 当前模块所有权
+它主要面向 AI 编码代理和需要理解系统内部结构的开发者。
 
-| 文件 | 职责 |
-|---|---|
-| `architecture/allowed_python_files.txt` | **最终架构批准路径**（冻结）：整个新架构最终允许出现的全部 Python 路径；未创建的未来路径不代表已实现；Task 11H 已批准数据集工具未来路径（data/downloader.py、data/loader.py、application/commands/download_data.py，边界见 docs/architecture/11H_DATASET_UTILITY_PATHS.md，不实现）；Task 11I 已批准 LEVIR 协调评估器脚本路径（scripts/evaluate_levir_harmonization.py，边界见 docs/architecture/11I_LEVIR_HARMONIZATION_EVALUATOR.md）；Task 11I2 已实现：离线 LEVIR-协调评测/校准（当前 PairHarmonizer、A/B 图对+可选标签只读、全套指标、确定性 bootstrap CI、metrics.csv/summary/grouped/failed_pairs/可选 calibration.json、图对失败隔离、校准仅输出、零模型） |
-| `architecture/implementation_status.json` | **当前实际实现状态**：implemented_files（存在且非空）与 pending_files；实际生产 .py 必须被精确声明 |
-| `architecture/ALLOWLIST_CHANGE_POLICY.md` | 白名单变更政策（普通任务禁止修改白名单） |
+- 编码行为边界：见 `AGENTS.md`
+- Python 文件最终批准范围：见 `architecture/allowed_python_files.txt`
+- 当前实现状态：见 `architecture/implementation_status.json`
+- import DAG：见 `architecture/import_rules.json`
+- 迁移历史：见 `docs/migration/`
+- 重要架构决策：见 `docs/architecture/`
 
-| 模块 | 拥有类型/函数 | 说明 |
+本文件不是开发日志。Task 00、11G.5、11J 等迁移过程编号不在这里作为长期接口维护。
+
+---
+
+## 1. 当前状态
+
+文档整理基线：
+
+```text
+repository: CuFe-hust/M3
+branch: new_structure
+evaluation/reporting integration baseline:
+  E1-E5 through 396a5900411930e16c75ff9fe18af01080c33428
+legacy behavior reference:
+  try_yolo@ec962eb87c3ad0b8c1502efcbd08db0daec48868
+```
+
+当前 `architecture/implementation_status.json` 中生产 Python 文件已全部实现，`pending_files` 为空。
+
+E6 最终离线质量门记录：
+
+```text
+Full offline suite: 1648 passed
+compileall: clean
+git diff --check: clean
+```
+
+新架构已完成核心离线功能迁移与硬化。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
+
+---
+
+## 2. 文档职责
+
+### `AGENTS.md`
+
+回答：
+
+> “编码代理修改仓库时必须遵守什么？”
+
+例如：
+
+- 架构边界；
+- 最小修改；
+- 评测保护；
+- 测试；
+- offline；
+- secret；
+- allowlist。
+
+### `DETAILS.md`
+
+回答：
+
+> “当前系统是什么样，模块和接口怎么协作？”
+
+### `architecture/`
+
+机器约束：
+
+```text
+allowed_python_files.txt
+implementation_status.json
+import_rules.json
+ALLOWLIST_CHANGE_POLICY.md
+```
+
+### `docs/migration/`
+
+回答：
+
+> “旧 `try_yolo` 行为如何迁移到新架构？”
+
+### `docs/architecture/`
+
+回答：
+
+> “某个重要架构决策为什么这样设计？”
+
+---
+
+# 3. 总体架构
+
+当前主流程可以概括为：
+
+```text
+                    +-----------------------+
+                    |       main.py         |
+                    |  sole public CLI      |
+                    +-----------+-----------+
+                                |
+                                v
+                    +-----------------------+
+                    |     application/      |
+                    |   composition root    |
+                    +-----------+-----------+
+                                |
+              +-----------------+-----------------+
+              |                                   |
+              v                                   v
+      +---------------+                   +---------------+
+      |   data/       |                   |   models/     |
+      | schema/adapter|                   | protocol/model|
+      +-------+-------+                   +-------+-------+
+              |                                   |
+              | UnifiedSample / SampleDraft       | VisionLanguageClient
+              v                                   |
+      +---------------+                           |
+      | workflows/    |<--------------------------+
+      | resolver/run  |
+      +-------+-------+
+              |
+              | known task
+              v
+      +---------------+
+      |   routing/    |
+      | deterministic |
+      +-------+-------+
+              |
+              v
+      +---------------+
+      |    agents/    |
+      | task workflows|
+      +-------+-------+
+              |
+              v
+      +---------------+
+      | evaluation/   |
+      | deterministic |
+      | + optional    |
+      | judge         |
+      +-------+-------+
+              |
+              v
+      +---------------+
+      | persisted run |
+      | artifacts     |
+      +-------+-------+
+              |
+              v
+      +---------------+
+      | reporting/    |
+      | read-only     |
+      +---------------+
+```
+
+核心原则：
+
+```text
+Data decides how source records become samples.
+Resolver decides what task a draft represents.
+Router decides which Agent handles a known task.
+Agent executes one task workflow.
+Workflow coordinates execution and persistence.
+Evaluation evaluates persisted/returned results.
+Reporting reads persisted results; it does not execute them.
+Application wires everything together.
+main.py only exposes the public command surface.
+```
+
+---
+
+# 4. 当前项目结构
+
+主要生产结构：
+
+```text
+M3/
+├── main.py
+├── application/
+│   ├── settings.py
+│   ├── prompts.py
+│   ├── bootstrap.py
+│   ├── runtime.py
+│   └── commands/
+├── data/
+│   ├── schema.py
+│   ├── registry.py
+│   ├── selection.py
+│   ├── validation.py
+│   ├── downloader.py
+│   ├── loader.py
+│   └── adapters/
+├── models/
+│   ├── base.py
+│   ├── cache.py
+│   ├── images.py
+│   ├── settings.py
+│   ├── entry.py
+│   ├── qwen_transformers.py
+│   ├── segformer_transformers.py
+│   ├── qwen3_vl/
+│   ├── qwen3_5/
+│   ├── segformer_mitb2_isaid/
+│   ├── segformer_mitb2_oem/
+│   └── yolo_obb/
+├── agents/
+│   ├── schema.py
+│   ├── base.py
+│   ├── registry.py
+│   ├── errors.py
+│   ├── visual_base.py
+│   ├── general_vqa/
+│   ├── caption/
+│   ├── grounding/
+│   ├── counting/
+│   ├── spatial/
+│   └── change/
+├── routing/
+│   ├── schema.py
+│   ├── policies.py
+│   └── router.py
+├── workflows/
+│   ├── schema.py
+│   ├── call_budget.py
+│   ├── events.py
+│   ├── run_store.py
+│   ├── artifact_writer.py
+│   ├── task_resolver.py
+│   ├── judge_service.py
+│   ├── sample_runner.py
+│   └── dataset_runner.py
+├── evaluation/
+│   ├── records.py
+│   ├── metrics/
+│   ├── judges/
+│   ├── standard/
+│   └── datasets/
+├── reporting/
+│   ├── schema.py
+│   ├── adapters.py
+│   ├── builder.py
+│   ├── html.py
+│   ├── exporters.py
+│   └── visualization.py
+├── prompts/
+├── configs/
+├── architecture/
+├── docs/
+├── scripts/
+└── tests/
+```
+
+完整 Python 路径不要复制维护在本文档中；以：
+
+```text
+architecture/allowed_python_files.txt
+```
+
+为唯一白名单来源。
+
+---
+
+# 5. Import DAG
+
+机器权威：
+
+```text
+architecture/import_rules.json
+tests/architecture/test_import_boundaries.py
+```
+
+简化视图：
+
+| 包 | 主要允许的内部依赖 | 关键禁止 |
 |---|---|---|
-| `models/base.py` | `ModelCacheIdentity`、`CacheIdentifiedClient`、`MissingModelCacheIdentityError`、`require_model_cache_identity`、`VisionLanguageClient`、`RequestMeta`、`build_request_hash`、`sanitize_messages` | 模型客户端协议、缓存身份校验（全仓唯一权威）与请求哈希/脱敏 |
-| `models/cache.py` | `CacheEntry`、`JsonResponseCache`、`ModelCacheError`、`CorruptCacheEntryError` | 原子文件缓存；损坏条目稳定错误 |
-| `models/images.py` | `read_normalized_image`、`guess_image_mime`、`image_to_data_url`、`image_sha256` | 模型输入图像工具 |
-| `models/settings.py` | `QwenSettings`、`DeepSeekSettings`、`ModelSettings` | 配置声明；默认离线（allow_download=False） |
-| `models/entry.py` | `create_model`、`register`、`list_models` | 统一惰性模型工厂 |
-| `models/qwen_transformers.py` | `QwenTransformersClient`、`QWEN_CLIENT_VERSION` | 本地 Transformers Qwen 客户端（一次加载/结构化 JSON/修复/缓存/产物/并发锁） |
-| `models/qwen3_vl/baseline.py` | `Qwen3VLBaseline`、`Qwen3VLSettings` | Qwen3-VL 多模态文本基线封装 |
-| `agents/schema.py` | `AgentName`、`VisualEvidence`、`AgentResult` | 通用 Agent 输出契约 |
-| `agents/base.py` | `AgentContext`、`AgentExecution`、`Agent`、`CallBudget` | 执行上下文（含 data_root）与严格执行校验 |
-| `agents/registry.py` | `AgentRegistry` | 纯注册/查询/supports/coverage |
-| `agents/errors.py` | 9 个稳定错误类型 | 重复/未注册/任务不匹配/执行失败/检测器/可选依赖 |
-| `agents/visual_base.py` | `VisualAgentBase`、`PromptBinding` | 数据集无关视觉 Agent 基类（返回 AgentExecution） |
-| `agents/general_vqa/agent.py` | `GeneralVQAAgent` | 通用/场景分类/多选题 VQA；postprocess 强制 MCQ 输出符合 choices 约束 |
-| `agents/caption/agent.py` | `CaptionAgent` | 仅 caption；trace 含稳定 agent class/route |
-| `agents/grounding/agent.py` | `GroundingAgent` | 仅 grounding；completed 必须携带合法定位证据（0..999） |
-| `agents/counting/schema.py` | 计数域全部契约 | PixelRect/TileSpec/观测/目标/结果；final_count 强绑定 accepted points |
-| `agents/counting/settings.py` | `CountingSettings`、`AgentCountingSettings`、`YoloDetectorSettings`、`YoloCountingSettings` | 计数确定性默认；YOLO 声明纯结构校验（含 require_cuda/allow_cpu_fallback） |
-| `agents/counting/geometry.py` | 切片/坐标换算/owner 规则/`cores_are_neighbours` | 纯确定性；crop_for_tile 接收已打开图片 |
-| `agents/counting/evidence.py` | box→点/去重/边界残片/数量解析 | 通用标签归一化，无数据集分支 |
-| `agents/counting/point_pipeline.py` | `PointCountingOrchestrator`、`find_boundary_conflicts`、`decide_seam_pairs`、`finalize_representatives` | tile 回调协议、递归分割、seam 最终化接入主流程 |
-| `agents/counting/target_parser.py` | `CountTargetParser`、`InvalidCountTargetHintError` | 目标解析优先级：normalization hint → legacy metadata → Qwen |
-| `agents/counting/agent.py` | `CountingAgent` | task gate / target parse / plan / request / 调用 executor / 打包 AgentExecution 与公共 trace；主 payload 恒为 CountingResult；AgentResult 仅附加 |
-| `agents/counting/executor.py` | `CountingPlanExecutor`、`CountingExecutionResult`、`CountingExecutionPolicy` | BackendPlan 运行时执行：primary 调用、unavailable/runtime 回退、zero review；结构化执行状态，无 8 元 tuple |
-| `agents/counting/backends/base.py` | 协议与类型 | CountingRequest/BackendPlan/Outcome；is_enabled/is_available 分离；稳定错误；`require_model_cache_identity`/`MissingModelCacheIdentityError` 重导出 models.base 同一对象 |
-| `agents/counting/backends/registry.py` | `BackendRegistry` | 稳定注册顺序、重复检测、数据集中性命名 |
-| `agents/counting/backends/selector.py` | `BackendSelector` | 仅按 mode/task/target/hints 计划；计划期不隐藏不可用检测器 |
-| `agents/counting/backends/qwen_point.py` | `QwenPointCountingBackend` | tile 点计数；完整 cache identity；response schema 入 hash |
-| `agents/counting/backends/quantity_proposal.py` | `QuantityProposalBackend` | 提议+定位；无可靠 hint 拒绝 supports；恢复仅限当前请求 hash 目录 |
-| `agents/counting/backends/yolo_model_store.py` | `YoloModelStore` | per-key 并发加载一次；hash/task/class map 校验 |
-| `agents/counting/backends/yolo_obb.py` | `YoloOBBCountingBackend` | OBB 计数；alias/composite；边界去重；provider 审计 |
-| `agents/counting/backends/yolov5_obb_onnx.py` | `YoloV5ObbOnnxModel` | 惰性 ONNX；require_cuda/allow_cpu_fallback；device 校验 |
-| `agents/counting/backends/yolo_adapter.py` | `OBBDetection`、`UltralyticsOBBModelAdapter` | 统一 OBB 输出 |
-| `routing/schema.py` | `SampleCapabilities`、`RoutePolicy`、`RoutingDecision`、`TaskResolutionRequest`、`TaskResolution`、`ResolutionSource` | 路由契约 + 样本前任务解析契约；Router 不读 question、不调用模型；TaskResolution* 仅供 TaskResolver 使用 |
-| `routing/policies.py` | `POLICIES`、`policy_for` | 固定 task→policy 表；未知 task 显式失败 |
-| `routing/router.py` | `TaskRouter` | 同步确定性路由；requires_tiling 为策略字段 |
-| `workflows/task_resolver.py` | `TaskResolver`、`TaskResolutionError`、`materialize_sample`、`SampleMaterializationError` | 样本前任务解析：explicit/rule/model 三路径；显式 task 不调用模型；空问题仅两条窄规则；低置信度只返回结构化候选，不执行 Agent；`materialize_sample` 将 draft 物化为 UnifiedSample（角色重建、normalization=None、稳定不兼容错误） |
-| `data/schema.py` | `ImageRef` | 不可变图像引用；path 统一 posix 序列化；sha256 严格 64 位 hex |
-| `data/schema.py` | `GroundTruth` | answers/count/boxes(4|8)/points(2)/labels/raw/coordinate_frame |
-| `data/schema.py` | `TaskNormalization` | 一等规范化字段（结构化 spatial_query/answer_constraints/count_target_hint） |
-| `data/schema.py` | `UnifiedSample` | 主样本契约；时相角色、question、normalization 一致性校验 |
-| `data/schema.py` | `ValidationIssue` | 只读审计问题记录 |
-| `data/schema.py` | `stable_sample_id` | 多图稳定样本 ID；source ID 目录名安全检查 |
-| `data/__init__.py` | 重导出 | 仅导出上述稳定类型 |
-| `data/schema.py` | `SampleDraft` | pre-sample 契约（无 task 角色校验）；task 保持必填于 UnifiedSample |
-| `evaluation/judges/base.py` | `DeepSeekJudgeResult`、`VQAAnswerJudgeResult`、`JudgeClient`、`CountEvidence`/`CountTarget`（结构子集协议）、`build_*_judge_payload`、`build_*_judge_request_hash`、`stable_error_label` | judge Schema/协议/纯载荷与稳定哈希；载荷绝不包含图像数据或路径；judges 层不导入 `agents.counting.schema`（结构协议消费计数证据） |
-| `evaluation/judges/deepseek.py` | `DeepSeekJudgeClient`、`DeepSeekJudgeError`、`JudgeTransportError`、`urllib_judge_transport` | 标准库 HTTP 仅文本客户端：缓存/修复一次/退避重试/产物；api_key 注入不读 env；公共错误只含固定 code |
-| `workflows/judge_service.py` | `JudgeService` | 策略（none/errors-only/all）+ 预算（真正发起时才 `reserve_deepseek`）+ 合并（judge 永不覆盖确定性指标）；`judge_vqa_resume` 已成功不重复、缺失/损坏/failed 可补 |
-| `workflows/sample_runner.py` | `SampleRunner`、`sample_state_from_payload`、`failed_sample_status`、`build_deterministic_evaluation`、`evaluation_filename_for_task` | 单样本执行内核 + 共享确定性评估分派（fresh/resume 同源）：attempt plan（低置信度候选 ≤3、AgentName 稳定去重）、routing fallback、partial 策略、共享逐样本预算（可外部注入）、确定性评估（VQA/counting/grounding/caption 四类产物，fail-closed 不伪造；grounding 强制坐标系契约）、可选 VQA judge（`asyncio.to_thread` 不阻塞 loop）、trace（`resolved_task`/`execution_task`）、`result_path` 为 sample-relative basename、失败只记录稳定 code |
-| `data/downloader.py` | `OFFICIAL_DOWNLOAD_TARGETS`、`dataset_download_target`、`download_dataset`、`extract_archives` | 显式数据集下载：官方 HF 目标映射（vrsbench/mme_realworld/xlrs_caption/xlrs_grounding/xlrs_lite/levir_cc）；惰性 huggingface_hub（缺失稳定错误，模块导入零副作用零联网）；zip 安全提取（拒绝 ..、绝对、drive、UNC、保留名成员，zip-slip 杜绝）；唯一自动下载路径 |
-| `data/loader.py` | `load_dataset_samples`、`load_dataset_drafts` | 便捷加载：Registry → probe → iter_samples → 确定性 task 过滤 → limit；无网络回退；返回 UnifiedSample（draft 经独立类型化 SampleDraft 迭代器，绝不冒充）；无 data/loaders.py 旧别名 |
-| `application/commands/download_data.py` | `run_download_data` | `download-data --root --datasets ...`：downloader 薄适配；公共错误只输出稳定类型名 |
-| `data/adapters/manifest.py` | `ManifestDraftAdapter`、`iter_manifest_drafts`、`load_manifest_mapping` | manifest 驱动 draft 适配器（`spacers_adapter.json` 显式字段映射、JSON/JSONL、task 列可选、不猜字段、不调模型、不 import workflows/models、绝不写 run artifacts）；`samples_file` 经 `resolve_dataset_relative_path` 限制在 dataset root 内；失败均为稳定 DatasetProbeError |
-| `workflows/dataset_runner.py` | `DatasetRunner`、`select_samples`、`storage_key`、`ResumeSupplementError` | 数据集编排：probe 经 `ArtifactWriter.write_dataset_probe` 按 task 目录独立写 `tasks/<task>/dataset_probe.json`（sample_file dataset-relative，manifest.json 绝不触碰）、固定 selection 顺序（SHA256 分片）、resume 只跳过 succeeded 并按 `status.task`（执行任务）经共享 dispatch 补判（异常→skipped 稳定 code）、单进程 asyncio 并发、fail-fast 取消不遗留 running（`FAIL_FAST_CANCELLED`/`FAIL_FAST_NOT_STARTED` 全记账）、`DatasetRunSummary` 计数强制闭合（含持久化 `judge_sample_rate`）；确定性 judge 抽样 `_judge_policy_for`（SHA256(run_id:sample_id) 模 10000 与率比较，rate≤0 全禁 / ≥1 全开，resume 无显式 rate 时恢复 summary 持久化值使策略一致）；`task=None` 为内部显式 auto-task mode；predictions 为 append-only 执行索引（run_task/sample_id 键、run-relative result_path）；目录 `tasks/<task>/samples/<sha256[:24]>` |
-| `reporting/schema.py` | `Report`、`ReportSample`、`TaskSummary` | 报告类型契约（逐样本行/任务汇总/运行报告）；judge 只旁路、指标来自已持久化 EvaluationRecord |
-| `reporting/adapters.py` | `iter_current_predictions`、`load_*`（status/sample/trace/evaluation/payload）、`evaluation_filename_for_task` | 执行索引 last-wins 收敛 + 尽力而为产物读取（损坏→None，绝不抛）；本地维护评估文件名映射（架构禁止 import workflows.sample_runner） |
-| `reporting/builder.py` | `build_report` | 执行索引 + 产物增强 → `Report`；每 task 汇总（状态/fallback 率/agent 使用/judge 状态/离线指标聚合；caption 只计记录数，语料级留给可选 pycocoevalcap） |
-| `reporting/html.py` | `build_html` | 完全离线单页 HTML：全部文本转义、无 CDN/Base64、只输出稳定 code 与 run 相对路径、确定性 |
-| `reporting/exporters.py` | `write_json`、`write_csv`、`write_samples_jsonl`、`write_deepseek_audit`、`write_metadata_json`、`write_external_standard_report`、`write_mme_official_export`、`persist_report_bundle` | 稳定布局 JSON；utf-8-sig CSV（稳定字段 + run 相对路径）；基准/审计导出——逐样本确定性 samples.jsonl；deepseek_audit.jsonl（request_id/hash/prompt_version 来自实际持久化 RequestMeta，缺失为 null 绝不从判决合成；绝无 auth/原始 secret）；run 元数据 JSON（run_id/dataset/split/model_ids/计数/已持久化 manifest 时间戳/schema 版本，无主机绝对路径）；外部标准指标命名空间 external_standard（绝不并入确定性指标名）；MME 官方提交 mme_real_rs.official.json（源记录只读、未关联字段原样保留、缺失预测空 Output、源缺失稳定失败、源文件绝不修改）；统一报告 bundle `persist_report_bundle`（report.html/report.json/samples.csv/samples.jsonl/metadata.json/deepseek_audit.jsonl/external_standard.json 到 `runs/<run_id>/report/`，构建器只读零模型） |
-| `reporting/visualization.py` | `render_counting_overlay` | 源图 + CountingResult → 标注图（接受绿/拒绝红）；尺寸不匹配稳定失败；不 import CountingAgent/YOLO |
-| `application/settings.py` | `AppSettings`、`load_settings` | YAML + 环境变量覆盖（环境优先）；密钥值绝不进入 snapshot/repr（只声明 api_key_env 名）；`to_config_payload`/`safe_snapshot` JSON 安全 POSIX 路径 |
-| `application/prompts.py` | `PromptCatalog`、`PromptAsset`、`PromptNotFoundError` | 17 逻辑键现役绑定、构造时一次性加载（不逐 sample 重读）、缺失明确报错、快照路径去重（general/grounding 共享 general_vqa_v2） |
-| `application/bootstrap.py` | `assemble_runtime`、`RuntimeComponents` | 唯一 composition root：Qwen 一次组装一次创建（可注入）、DeepSeek 仅注入 api_key 时创建（无 key judge 禁用）、BackendRegistry/AgentRegistry（6 Agent + 路由覆盖校验）/TaskResolver/JudgeService/SampleRunner/DatasetRunner factory/Reporting/RunStore 全组装 |
-| `application/runtime.py` | `Runtime`、`build_dataset_run_options`、`PublicAnswer`、`Runtime.ask`、`Runtime.health_payload`、`Runtime.render_error_overlays`、`collect_images`/`build_image_refs`/`validate_image_count`/`to_public_answer` | 高层用例：`run_dataset(options)`（创建 manifest → 逐 task 委托 DatasetRunner；任务选择——auto_task→task=None、tasks=None→sorted(adapter.supported_tasks)（不调 resolver）、显式 tasks；`render_errors` 时执行后渲染失败样本 overlay）、`render_error_overlays`（执行后为 failed counting 样本渲染 `error_overlay.png`，不支持/缺失产物转稳定 note 写 `render_errors_notes.json`，无模型调用）、`build_report(run_id)`、`health_payload`（就绪元数据，不加载模型/不调端点）、手动 `ask`（单主 Agent、无 Judge/评测/fallback；显式任务零 resolver，auto 经 TaskResolver 规则/模型路径；`ImageRef.path` 相对手动图片目录；请求产物只含 `manual://input` + 相对路径；`artifact_dir` run-root 相对）、选项薄构造（main 的架构规则要求）；不做 serve/CLI |
-| `main.py` | `build_parser`、`main` | 唯一公开入口 `run-dataset` + 手动 `ask` + `serve`（无子命令隐式 serve）+ 运维命令（run-init/health/list-datasets/smoke-qwen/resume-run/inspect-data）：极薄接线（解析→配置→Runtime.create（Qwen 一次）→选项→run_dataset→汇总 JSON/run_dir→退出码 0/1/2/130；其余命令委托 `application.commands.*`）；只 import application + stdlib；公共错误只输出稳定类型名 |
-| `application/commands/__init__.py` | 导出 12 个 `run_*` 命令函数（ask/serve/run_init/health/list_datasets/smoke_qwen/resume_run/inspect_data/run_dataset/count_image/render_count/summarize_evaluations） | 公开 CLI 命令包；仅导出 |
-| `application/commands/ask.py` | `run_ask` | `ask` CLI 薄接线：配置 → Runtime.create（Qwen 一次，无 DeepSeek）→ `Runtime.ask` → PublicAnswer JSON 输出与可选 `--output` 文件 → 退出码 0/1/130 |
-| `application/commands/serve.py` | `run_serve`、`RuntimeRequestHandler`、`MAX_HTTP_BODY_BYTES` | 串行本地 HTTP 服务：仅 `GET /health` 与 `POST /ask`，未知路径 404 JSON；1 MiB 请求体上限（超限 413 + 排空，Windows 干净关闭）；坏 JSON/非对象/缺 image_dir→400；非法请求→400 固定稳定错误；内部异常→500 稳定类型名（绝不回显原始异常）；端口校验 1..65535；服务进程一次 `Runtime.create()`（Qwen 一次、无 DeepSeek），handler 绝不构造模型客户端；`asyncio.run` 委托 `Runtime.ask(source="http_service")` |
-| `application/commands/run_init.py` | `run_run_init` | `run-init`：仅创建 run 目录（不运行模型）——RunStore.create_run，快照配方与 fresh Runtime 一致（config payload/model ids/Prompt 副本）；重复显式 run id 稳定失败（FileExistsError） |
-| `application/commands/health.py` | `run_health` | `health qwen\|deepseek [--live]`：正常模式只输出元数据（deepseek 只输出 api_key_env 名，绝不输出密钥值）；`--live` 注入 fake 客户端（测试）或经 composition root 构造真实客户端后恰好一次探测（qwen 走 `complete_json`，deepseek 走同步 `judge_json`） |
-| `application/commands/list_datasets.py` | `run_list_datasets` | `list-datasets`：`build_default_registry().names()` 排序输出；无旧 ADAPTERS |
-| `application/commands/smoke_qwen.py` | `run_smoke_qwen` | `smoke-qwen --image --question`：直接 VisionLanguageClient 冒烟（不经 Agent 路由）；真实 ModelCacheIdentity + 完整 hash；恰好一次请求；fake 客户端注入 |
-| `application/commands/resume_run.py` | `run_resume_run`、`_read_manifest`/`_read_dataset_root`/`_run_tasks`/`_parse_sample_filter` | `resume-run --run-id`：读 RunManifest + config 快照（dataset_root）+ run 目录 task 命名空间，重建 DatasetRunOptions 委托 Runtime（resume=True）；绝不复制 DatasetRunner 循环；缺失/损坏/缺 dataset/split/无 task 目录/run_id 不匹配稳定失败 |
-| `application/commands/inspect_data.py` | `run_inspect_data` | `inspect-data --root --output [--scan-mode quick\|full]`：委托 `data.validation.audit_dataset_root`（只读，绝不修改源目录/标注）；可选 --output 写 JSON |
-| `application/commands/run_dataset.py` | `run_run_dataset`、`_read_sample_ids` | `run-dataset` 薄接线（自 main.py 迁移）：任务选择模式——`--task` 显式 / `--auto-task` 逐样本 resolver / 两者都不给 → `adapter.supported_tasks`（tasks=None，绝不调用 TaskResolver）/ 两者都给 → 参数错误；`--sample-ids` 文件（空白分隔 ID，喂既有 selection 管线，先于执行与 limit）；`--num-shards` 与 `--shard-count` 同 destination；`--render-errors` 执行后渲染；`--judge-sample-rate` 确定性抽样；公共错误只输出稳定类型名 |
-| `application/commands/count_image.py` | `run_count_image`、`_build_budget`、`_read_status`/`_read_final_count` | `count-image --image --question [--target-spec] [--run-id] [--evaluate] [--render] [--resume] [--force] [--no-seam-verify] [--max-qwen-calls] [--max-deepseek-calls]`：当前 CountingAgent/SampleRunner + 当前 run/sample 存储（`tasks/counting/samples/<sha256[:24]>`，绝不旧布局）；产物 sample/status/routing/counting_result/agent_trace + 可选 overlay；resume 遇 succeeded 当前结果零 Qwen 调用、force 重跑、旧版绝对 result_path status 校验失败视为无效重跑；budget 覆盖仅请求局部；seam_verify 覆盖仅请求局部；target-spec 经 CountTargetSpec 校验（有 spec 时零 target 模型调用）；summary 只含 run-relative result_path |
-| `application/commands/render_count.py` | `run_render_count`、`_tile_geometry_available` | `render-count --image --result --output`：当前 Reporting overlay（无模型调用）；tile 级调试只在持久化 CountingResult 有足够几何时渲染（当前 schema 无 tile 矩形 → 恒 not_available，绝不猜测）；尺寸不匹配/损坏结果稳定失败 |
-| `application/commands/summarize_evaluations.py` | `run_summarize_evaluations`、`_collect_evaluation_records` | `summarize-evaluations --run-id`：解析 run 内全部当前 EvaluationRecord（含 legacy VQAEvaluationRecord 兼容）；损坏记录稳定失败；按 task 同构分组经 evaluation.metrics.aggregate 确定性聚合；无模型调用 |
-| `application/commands/evaluate_run.py` | `run_evaluate_run`、`_evaluate_run`、`_judge_one`/`_force_judge` | `evaluate-run --run-id [--deepseek] [--only-missing] [--force-judge]`：离线确定性评估（**零 Qwen 构造/调用**）——与 fresh/resume 共用 `build_deterministic_evaluation` 共享分派，按执行任务（status.task）定键（候选兜底后绝不按 resolved sample.task）；覆盖 VQA 族/counting 族/兼容 grounding/caption；不支持任务与不兼容几何记录 not_applicable（绝不伪造指标）；`--only-missing` 只补缺失；`--deepseek` 仅启用 Judge（key 来自声明的 env，绝不回显），judge skip 判定基于重算前的记录、`--force-judge` 强制重判（从持久化 agent answer）、失败保留确定性记录并记录稳定 judge_error；输出刷新后的统一报告摘要 |
-| `evaluation/standard/adapter.py` | `default_standard_report_path`、`run_standard_evaluation` | 显式外部标准评估器 seam：canonical result → `<tool-dir>/evaluate.py` → `*.standard.json` → 校验 JSON 对象；`subprocess.run(..., shell=False)`；结果/入口缺失、退出码非零、未产出报告、非对象 JSON 均稳定失败（绝不静默替代旧版指标）；绝不复活旧 eval.audit_report |
-| `evaluation/standard/__init__.py` | 导出两个函数 | 仅导出 |
-| `evaluation/datasets/vrsbench.py` | `VRSBENCH_CLOSED_VOCABULARY`、`normalize_answer`、`to_official_evaluator_input`、`export_official_input` | VRSBench 数据集专属官方评估 seam：仅答案归一化（封闭词汇精确匹配，未匹配原样绝不猜测）、当前记录 → 官方评估器输入映射、封闭词汇元数据；绝不选择 Agent/调用模型/修改任务/重复通用指标；任务语义保留在数据层 task_normalizer（本模块不 import 数据层，自声明评估侧元数据） |
-| `evaluation/datasets/__init__.py` | 导出 4 个符号 | 仅导出 |
-| `application/commands/standard_evaluate.py` | `run_standard_evaluate`、`_associated_run_id` | `standard-evaluate --result [--tool-dir] [--output] [--python]`：输出校验后的报告 JSON；仅当结果文件位于 runs.root 下（关联当前 run）时刷新统一报告；无模型调用 |
-| `application/commands/judge_vqa_run.py` | `run_judge_vqa_run`、`_judge_run`、`_force_judge` | `judge-vqa-run --run-id [--force]`：**零 Qwen**；仅执行任务 general_vqa 的 succeeded 样本；当前 JudgeService/hash/产物（vqa_evaluation.json + deepseek_vqa_judge/）；succeeded judge 默认跳过、`--force` 强制重判；失败保留确定性记录；输出刷新后的统一报告摘要 |
+| `data` | `data` | agents/workflows/application |
+| `models` | `models` | data |
+| `agents` | agents, `data.schema`, `models.base`, `models.images` | application/workflows/concrete models |
+| `routing` | routing, `data.schema`, `agents.schema` | models/data.adapters/workflows/application |
+| `workflows` | workflows, data, agents, routing, evaluation, `models.base` | application/concrete model implementation |
+| `evaluation.metrics` | evaluation/data schema/agent schema/count schema | models |
+| `evaluation.judges` | approved model contracts/cache/settings | concrete main model |
+| `reporting` | schema/result layers | Agent implementation/model implementation/SampleRunner |
+| `application` | 全部新顶层包 | — |
+| `main.py` | application | 其他内部包 |
 
-## 关键约定
+两个特别重要的边界：
 
-- 所有自由字段（`metadata`、`raw`、normalization 结构化字段）仅允许 JSON-safe
-  值（含有限数值）；拒绝 Path、PIL 对象、set、bytes、callable。
-- 所有模型 `extra="forbid"`；`ImageRef` 为 `frozen=True`。
-- 变化任务（change_caption/change_qa）：images 必须 [t1, t2, context*]；
-  非变化任务：首图 image，其后只允许 context。
-- `question` 语义：caption/change_caption 可为空，其余任务必须非空。
-- `UnifiedSample.normalization.normalized_task` 必须等于 `sample.task`。
-- 依赖方向：`data` 不依赖任何其他业务包；新代码不得 import `spacers_agent`/`eval`。
+```text
+routing never imports models
+```
 
-## 依赖方向
+以及：
 
-- `data` 不依赖任何其他业务包；`models` 不依赖 data/agents。
-- `agents` 只依赖 `models.base`/`models.images`（模型协议与纯工具），
-  禁止 `models.entry`/`models.qwen_transformers`/`models.qwen3_*`——
-  Agent 不得自己创建具体模型。
-- `routing` 不依赖 models（可依赖 `data.schema` 与 `agents.schema`）；
-  `TaskResolver` 在 workflows，不需要放宽 routing。
-- `workflows` 只依赖模型协议（`models.base`），禁止具体 Qwen 实现；
-  具体模型创建属于 composition root（`application/bootstrap.py`、
-  `application/runtime.py`）。
-- `evaluation.metrics`（path rule）无模型依赖；`evaluation.judges`（path
-  rule）可依赖批准的 `models.base`/`models.cache`/`models.settings`；
-  path rule 优先于 package 规则，无匹配时回退。
-- `reporting` 只依赖 schema/result 层，不执行 Agent。
-- `application` 是 composition root，可继续拥有宽 import 权限（settings、
-  model factory、registry/workflow assembly、command wiring）。
-- `VisualAgentBase` 返回 `AgentExecution`（payload 为 `AgentResult`）。
-- 新代码不得 import `spacers_agent`/`eval`。
+```text
+only application may select concrete main-flow models
+```
 
-## 关键运行契约
+---
 
-- **Judge 层（Task 03）**：`DeepSeekJudgeClient` 为同步客户端（标准库
-  urllib，阻塞式——可选评测层，默认并发 1 可接受）；api_key 由
-  composition root 注入，客户端与 JudgeService 绝不读取环境变量；
-  `judge_json(..., system_prompt=...)` 按调用显式传 prompt（VQA 判卷使用
-  vqa judge prompt，修复旧实现误用计数 prompt 的问题）；只有 `judge_vqa`
-  参与逐样本预算（`reserve_deepseek` 仅在真正发起 Judge 时），
-  `judge_counting` 为事后路径不设预算；预算耗尽/任何 judge 异常一律转
-  稳定 `judge_error`（仅类名），返回 judge_status=failed 记录，绝不抛出、
-  绝不覆盖确定性指标、绝不保存原始异常文本；`judge_vqa_resume` 对
-  `vqa_evaluation.json`（统一或 legacy 形状）succeeded 原样返回，其余
-  （缺失/损坏/failed/not_requested）读取 `agent_result.json` 的持久化
-  answer 重判，受 judge_policy 约束。
-- **SampleRunner（Task 04）**：`run_one(sample, sample_dir, *, resolution=None, judge_policy="none")`
-  只执行单样本（不迭代数据集）；attempt plan 规则——resolution 缺省或高置信度
-  只跑 top task，低置信度按 `candidate_tasks`（≤3）路由后按 AgentName 稳定去重，
-  候选与 base task 不同时经 model_copy 重建（task 替换、normalization 清空、
-  图像角色重建：变化任务 t1/t2/context，其余 image/context），不兼容候选稳定
-  跳过（`INCOMPATIBLE_SAMPLE`/`UNROUTABLE_TASK`/`AGENTS_DEDUPLICATED`），绝不
-  原地修改 UnifiedSample；routing fallback（决策声明 fallback_agents 时 primary
-  异常触发）与 `fallback_on_partial` 策略只在本 task 内生效，候选兜底在上一
-  候选完全失败后进入下一候选；共享逐样本 `CallBudget`（attempts + judge）；
-  确定性评估：general_vqa 写 `vqa_evaluation.json`（可选 judge 旁路，judge 失败
-  绝不让样本失败），counting 写 `counting_evaluation.json`（新增产物名）；
-  失败只记录稳定 code（显式 code 或错误类名），status/trace 绝不包含原始异常
-  文本、绝对路径或密钥；产物顺序：sample.json → status=running →
-  routing_decision.json → result → evaluation → agent_trace.json → status=final；
-  trace 字段含 resolution_source（dataset_task/explicit/rule/model）、
-  low_confidence、candidate_tasks、attempt_agents、skipped_candidates、failure_code。
-- **DatasetRunner（Task 05）**：`run(*, root, split, task, resume, limit, shard_index,
-  shard_count, start_index, sample_ids, fail_fast, sample_concurrency)` 只编排一个
-  task；selection 固定顺序（adapter 稳定顺序 → start_index → shard → sample_ids →
-  limit），shard 用 `sha256(sample_id) % shard_count`（非 Python hash，跨进程稳定）；
-  目录布局 `runs/<run_id>/tasks/<task>/samples/<sha256(sample_id)[:24]>`（不直接使用
-  sample_id，Windows 危险名与多 task 同 id 不冲突），`predictions.jsonl` 在 run 根、
-  `dataset_summary.json` 在 task 目录；每次运行前 `adapter.probe` 经
-  `ArtifactWriter.write_dataset_probe` 独立写 `dataset_probe.json`（数据层绝不
-  触碰 manifest.json——manifest 始终可被 RunManifest schema 重新解析、绝不
-  动态扩 schema）；resume：succeeded
-  默认不重新推理，只补缺失的 vqa/counting 确定性评估与缺失/失败的 VQA judge
-  （补判异常 → state=skipped + 稳定 code，重判失败保留 succeeded；补判类型按
-  `status.task` 执行任务决定，绝不按 sample.json 的解析任务），
-  partial/failed/running/pending/缺失/损坏状态一律重跑 SampleRunner；并发只承诺
-  单进程 asyncio（Semaphore 限流 + FIRST_COMPLETED 批次）；fail-fast 后不再提交
-  新任务、cancel/await 已启动任务、被取消样本写 skipped（FAIL_FAST_CANCELLED）、
-  未启动样本写 skipped（FAIL_FAST_NOT_STARTED）并全部计入 predictions 与终态，
-  绝不遗留永久 running；`DatasetRunSummary` 强制
-  total == succeeded + partial + failed + skipped；补判 judge 不设逐样本预算
-  （call_budget=None）且经 `asyncio.to_thread` 不阻塞事件循环。
-- **无 task 数据集 seam（Task 06）**：`SampleDraft` 是 pre-sample 契约（无角色
-  校验）；draft 路径固定为 SampleDraft → TaskResolver → `materialize_sample` →
-  SampleRunner，`UnifiedSample.task` 保持必填；`DraftDatasetAdapter`（iter_drafts）
-  由 `ManifestDraftAdapter`（`spacers_adapter.json` 显式字段映射）实现——task 列
-  可选、JSON/JSONL、不猜字段、不调模型、不 import workflows/models、samples_file
-  经 `resolve_dataset_relative_path` 限制在 dataset root 内；DatasetRunner
-  `run(task=None)` 是**内部显式 auto-task mode**（未来外部入口经
-  `DatasetRunOptions.auto_task=True` 选择，auto_task=True 要求 tasks 为空、
-  False 要求非空），目录 `tasks/auto/samples/<sha256[:24]>`，resume
-  查找无需重新解析：共享默认 CallBudget 贯穿 resolver 与 agent attempts
-  （`SampleRunner.run_one(budget=...)` 注入），显式 task 零 resolver 调用，空问题
-  只走两条确定性规则；未知 task 绝不冒充 general_vqa——预 task 失败以稳定 code +
-  诚实 `unknown` 任务标签（`RunTaskName` 类型）记录 failed 状态；单样本意外异常
-  收敛为稳定 failed 状态、绝不终止整个数据集运行；低置信度候选（≤3、top first、
-  general_vqa 槽位）由 SampleRunner 既有 attempt plan 执行。
-- **06.5 收口契约**：`data` 层绝不写 run artifacts（probe 由
-  `ArtifactWriter.write_dataset_probe` 写 `dataset_probe.json`，manifest.json
-  始终可被 RunManifest schema 重新解析、绝不动态扩 schema）；judge canonical
-  hash 覆盖 model/prompt 文本与版本/sample_id/完整 payload/response schema；
-  async 边界的 judge 调用一律 `asyncio.to_thread`；resume 补判按
-  `status.task`（执行任务）而非 sample.json 的解析任务；`fallback_used` 涵盖
-  candidate index > 0；fail-fast 后所有 selected 样本必有终态（
-  succeeded/partial/failed/skipped）且 summary 计数闭合；`auto_task` 是显式
-  运行选项（DatasetRunOptions 校验 tasks 空/非空），`task=None` 仅为内部
-  auto-task mode。
-- **06.6 收口契约**：grounding deterministic 仅在 prediction 与 GT 同为
-  `normalized_0_999_top_left` 且均为 4-value xyxy 时生成（`_GROUNDING_PREDICTION_FRAME`
-  显式常量）；`source_pixels_top_left` 与 8-point polygon fail-closed，等待 official
-  evaluator / 显式坐标转换；fresh run 与 resume 经同一
-  `build_deterministic_evaluation` 共享 dispatch（resume 从持久化结果恢复载荷：
-  counting 族读 counting_result.json，其余读 agent_result.json，缺失以
-  PERSISTED_RESULT_MISSING/INVALID 稳定失败）；`dataset_probe.json` 按 task 目录
-  独立持久化且 sample_file dataset-relative（root 外稳定失败）；`status.result_path`
-  为 sample-relative basename，predictions 行 result_path 为 run-relative（由实际
-  sample 目录推导）；predictions.jsonl 是 append-only execution index，
-  `(run_task, sample_id)` 最后一行是当前状态，行含
-  sample_id/run_task/task/status/result_path/updated_at。
-- **06.6.1 收口契约**：`build_deterministic_evaluation(..., execution_task=None)`
-  ——fresh 路径不传（sample 已为执行任务重建），resume 路径显式传
-  `status.task`（execution task），候选兜底后绝不因 canonical resolved
-  sample.task 生成错误指标族（文件名与 EvaluationRecord.task 恒语义一致）；
-  `SampleRunStatus.result_path` schema 级强制 plain basename（含 `/`、`\`、
-  drive 前缀、`.`/`..`、控制字符即拒绝），旧版绝对路径 status 无法解析，
-  resume 视为无效状态并重新执行样本。
-- **09.5 收口契约**：Reporting 样本目录一律由冻结身份 (run_task, sample_id)
-  推导（sha256 storage key，run_task 需为安全纯目录名），绝不信任
-  predictions.result_path；result_path 仅作展示且 fail-closed（run 相对 +
-  canonical 在 run 内，否则 None）；result_path=None 的 failed/skipped 终态
-  样本仍经身份目录读出 status/sample/trace 与稳定 error_code；run identity
-  契约——fresh 无 run_id 恒创建唯一 run（RunStore 自动 id），fresh 显式
-  run_id 已存在稳定失败，resume 必须显式 run_id 且校验 manifest
-  run_id/dataset/split 一致；settings snapshot 声明为 JSON-safe/
-  secret-free/separator-normalized/**host-path-preserving**（复现/调试
-  导向，不再声称 machine-portable）。
-- `TaskRouter.route` 为同步方法，绝不读取 question 或调用模型；
-  `TaskResolver`（workflows）与 `TaskRouter`（routing）职责严格分离：
-  Resolver 回答“这是什么任务”，Router 回答“这个已知任务交给哪个 Agent”。
-- `TaskResolver` 三路径：显式 task（不调用模型、不消费 budget，非法显式
-  task 以 `UNKNOWN_EXPLICIT_TASK` 稳定失败）；空问题仅两条确定性规则
-  （1 图→`caption`、2 图→`change_caption`，其余图像数以
-  `EMPTY_UNRESOLVABLE_REQUEST` 失败，绝不猜 general_vqa）；缺失 task 且
-  有 question 才调用模型（完整 `ModelCacheIdentity` + response schema 入
-  hash，`MODEL_IDENTITY_REQUIRED`/`MODEL_RESOLUTION_FAILED` 稳定错误）。
-- `TaskResolver` 低置信度只返回结构化候选（`needs_candidate_fallback` +
-  含 `general_vqa` 的最多 3 个候选），多 Agent 兜底执行留给 Task 34 的
-  SampleRunner，Resolver 自身绝不执行任何业务 Agent。
-- `CountingAgent` 主 payload 恒为 `CountingResult`，主文件名恒为
-  `counting_result.json`；`AgentResult`（来自后端或 `answer_as_agent_result`
-  开关）只写入 `additional_results["agent_result.json"]`（JSON-safe dict）。
-- 计数后端使用显式 `BackendKind`（`qwen_point`/`quantity_proposal`/`yolo_obb`）；
-  绝不通过 name/类名/模块路径推断类型。只有 `yolo_obb` 进入 detector plan、
-  zero-review 与 detector fallback；`quantity_proposal` 不是 detector。
-- `CountingBackendUnavailableError` 全仓唯一权威类位于 `agents.errors.py`；
-  `agents` 顶层导出与 `agents.counting.backends.base` 导入为同一对象。
-- 计数目标解析优先级：`sample.normalization.count_target_hint` →
-  `metadata["count_target_hint"]`（兼容）→ Qwen target parser；无效 hint
-  抛出 `InvalidCountTargetHintError`，绝不静默吞掉。
-- Counting 公共入口只抛稳定错误（`AgentTaskMismatchError`、
-  `CountingBackendUnavailableError`、`AgentExecutionError` + 稳定 cause code
-  `DATA_ROOT_REQUIRED`/`IMAGE_PATH_ESCAPE`/`IMAGE_NOT_FOUND`/`IMAGE_READ_FAILED`/
-  `TARGET_PARSE_FAILED`/`PRIMARY_BACKEND_FAILED`/`FALLBACK_BACKEND_FAILED`/
-  `INVALID_BACKEND_KIND`）；trace/warnings 不含原始异常文本、绝对路径、密钥
-  或 Base64（`fallback_reason_code` + `fallback_error_type`）。
-- Backend plan 与 runtime fallback 职责分离：`BackendSelector.plan` 只基于
-  配置/支持性规划；运行时权重/依赖就绪由 count 时验证，不可用经
-  `CountingPlanExecutor` 显式回退（fallback 只能由 Executor 执行，
-  Backend 不自行切换）。
-- seam finalization（`find_boundary_conflicts` → `decide_seam_pairs` →
-  `finalize_representatives`）由 `PointCountingOrchestrator.count_image` 执行，
-  `CountingSettings.seam_verify` 控制开关。
-- YOLO 模型按 (path, sha256) per-key 并发加载一次；ONNX provider 可配置：
-  `require_cuda=True` 要求非负整数 `device`（映射到 CUDA `device_id`），
-  `require_cuda=False` 要求 `device="cpu"` 且 Session 只请求 CPU；trace 记录
-  requested/resolved provider 与 device。
-- 所有 Counting 模型调用使用真实 `ModelCacheIdentity`
-  （`require_model_cache_identity` helper 权威定义于 `models/base.py`，鸭子
-  类型身份明确失败）并把 response schema 纳入 request hash。
-- YOLO tile 失败只写稳定 warning（code/tile_id/exception type，无原始异常文本）；
-  全部 tile 失败时 backend 抛 `DetectorInferenceError("ALL_YOLO_TILES_FAILED")`，由
-  CountingPlanExecutor 决定显式 fallback；部分 tile 成功返回 partial 并保留证据。
-- ONNX 显式 CPU-only（`require_cuda=False, device="cpu"`）与 CUDA fallback 语义分离：
-  predict 校验与初始化 device 一致，CPU-only 不受 allow_cpu_fallback 门控。
-- 未知 backend kind 以固定公共错误失败（`INVALID_BACKEND_KIND`），绝不回显原始
-  name/kind 值。
+# 6. 数据层
 
-## Task 26–33 运行时完整性（33.5）契约
+## 6.1 `ImageRef`
 
-- **Change 可选依赖**：`agents.change` 基础导入不加载 cv2/numpy（惰性
-  `_require_cv2`/`_require_numpy`，缺失抛 `OptionalDependencyMissingError`）；
-  `[change]` extra 声明 `numpy>=1.26` + `opencv-python-headless>=4.10`；
-  `PairValidator` 导入不要求 cv2。
-- **Spatial MIME**：candidate review 从真实内容 `detect_image_mime` 检测 MIME，
-  绝不按后缀猜测；损坏/未知图像导致 review 失败时保留初次结果、
-  `status=partial`、只记录稳定 error type；缺失 `ModelCacheIdentity` 仍直接失败。
-- **Spatial canonical label**：`canonical_answer` 只做归一化，不做英语单复数
-  猜测（`bus`→`bus`、`glass`→`glass`、`trucks`→`trucks`）。
-- **Change invalid pair**：`preprocess.validation.valid == False` 时
-  `ChangeAgent` 在构建证据/消费 budget/调用模型前抛
-  `AgentExecutionError(cause="INVALID_CHANGE_PAIR")`；单图/乱序/错误角色已在
-  `data.schema` 层拒绝。
-- **Workflow 文件名安全**：`write_evaluation` 复用 `agents.base` 的 POSIX+Windows
-  basename 契约并额外拒绝控制字符，路径类文件名在 I/O 前拒绝；`additional_results`
-  文件名由 `AgentExecution` 构造时同规则校验。
-- **JSONL 并发**：`events.jsonl` / `predictions.jsonl` 的
-  read-compose-write-replace 在按路径进程内锁内执行——单进程并发 writer 安全；
-  **跨进程并发追加不受当前工作流层支持**（文档契约，不声称通用原子追加）。
-- **递归敏感扫描**：`workflows/events._reject_secrets` 是唯一实现（`RunStore`
-  复用），递归拒绝 10 个敏感键（含 `image_data_url`）与 4 个值前缀
-  （`sk-`/`Bearer `/`data:image/`/`-----BEGIN PRIVATE KEY-----`），错误消息不回显
-  违规值。
-- **统一 EvaluationRecord**：`EvaluationTask = counting|general_vqa|grounding|caption`；
-  typed deterministic metrics（`Count`/`VQA`/`Grounding`/`Caption`）；`VQAEvaluationRecord`
-  保留为兼容包装（归入 `general_vqa`）；`aggregate()` 覆盖四个已实现任务且
-  mixed-task 显式失败；judge 只能旁路记录，永不覆盖 deterministic 指标。
-- **CI/打包**：compileall 覆盖 workflows/evaluation；CI 安装 `[dev,migration,change]`
-  并运行 `tests/workflows`、`tests/evaluation`；clean wheel smoke 在源码树外验证
-  `agents.spatial`/`agents.change`（无 cv2）/`workflows`/`evaluation` 导入。
+`data.schema.ImageRef` 表示一个不可变图像引用。
 
-## Task 33.6 运行时不变式
+核心字段：
 
-- **run_id 路径安全**：`RunStore.create_run` 在 `_validate_run_id` 中校验用户
-  提供的 run_id 为跨平台 plain identifier（字符集 `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`，
-  拒绝 `.`/`..`/绝对路径/drive/UNC/NUL/CR/LF），任何 mkdir/write 前失败；
-  `_new_run_id()` 生成值同样满足该校验；错误消息固定且不回显原始输入。
-- **密钥扫描泛化**：`workflows/events._reject_secrets` 递归处理任意
-  `Mapping`/`Sequence`（str/bytes/bytearray 不作为 generic sequence），tuple
-  嵌套不再绕过；`EventWriter` 与 `RunStore` 共用同一实现。
-- **EvaluationRecord task/metrics 不变式**：构造时强制
-  `deterministic_metrics` 类型与 `task` 匹配（`EXPECTED_METRICS` 映射），
-  `metrics=None` 仍合法；错误消息不 dump 指标载荷；counting/VQA/grounding/
-  caption 聚合器全部 fail-closed，不再用 `getattr(..., default)` 静默降级。
-- **VQA canonical merge 收敛**：`merge_vqa_evaluation` 返回统一
-  `EvaluationRecord(task="general_vqa", deterministic_metrics=VQADeterministicMetrics(...))`；
-  `VQAEvaluationRecord` 仅作 legacy 兼容（读取旧产物/显式 `to_evaluation_record`
-  转换），`aggregate_vqa` 显式兼容两者；judge 仍只旁路记录。
-- **Grounding 阈值单次判定**：`grounding_deterministic_metrics` 存储未舍入的
-  原始 IoU，`iou_at_0_5` 为唯一阈值权威；`aggregate_grounding` 的 accuracy
-  直接复用存储标志，绝不二次比较；0.5 邻域边界（0.4999994/0.4999996/0.5/
-  0.5000004）测试保证 record 与 aggregate 自洽。
-- **JSONL 锁路径身份**：per-path 锁键使用 `resolve(strict=False)` 的规范化
-  路径身份，词法别名（`a/../events.jsonl` 与 `events.jsonl`）共享同一把锁；
-  解析仅用于锁身份，不改变实际存储位置；并发范围仍为 single Python
-  process only；原子替换对 Windows 瞬态文件锁做有限重试。
+```text
+image_id: str
+path: Path
+role: image | t1 | t2 | context
+width: int | None
+height: int | None
+sha256: str | None
+```
 
-## Task 33.7 安全收敛
+路径契约：
 
-- **Windows 保留 run id**：`_validate_run_id` 显式拒绝 Windows 保留设备名
-  （`_WINDOWS_RESERVED_STEMS`：CON/PRN/AUX/NUL/COM1-9/LPT1-9，含
-  `CON.txt`/`COM1.json`/`LPT9.log` 等带扩展名形式，按 stem 匹配、大小写
-  不敏感）与尾点/尾空格形式；所有平台确定性拒绝（纯 Python 单测验证，
-  不依赖 CI 平台）；pre-I/O 失败顺序不变，错误消息固定且不回显输入。
-- **set/frozenset 密钥扫描**：`_reject_secrets` 增加 `Set` 分支（set 与
-  frozenset 均覆盖），set→tuple→string 完整递归；EventWriter 与 RunStore
-  同一实现；含密钥的 set 在任何 JSON 序列化错误之前以 `sensitive value`
-  失败（不依赖序列化报错作为防线）。
-- **指标注册表不可变**：`EXPECTED_METRICS` 改为 `MappingProxyType` 且不再
-  从 `evaluation` 顶层导出（`__all__` 移除）；`EvaluationRecord` validator
-  行为不变。
-- **Wheel 公共 API 契约**：clean wheel smoke 验证 Task 33.6 新公共 API
-  （`VQADeterministicMetrics`/`GroundingDeterministicMetrics`/
-  `merge_vqa_evaluation`），并断言 canonical VQA merge 返回统一
-  `EvaluationRecord`（task="general_vqa"、类型化 deterministic metrics）。
+- 相对 dataset root；
+- 不得绝对；
+- 不得包含 `.` / `..` 逃逸段；
+- 序列化为 POSIX `/`;
+- schema 本身不负责检查文件存在。
 
-## 尚未实现
+---
 
-后续为验收任务：Task 11 剩余部分（HTTP 服务/运维 CLI/离线评测等，见任务包
-11B 起）；Task 11（Spark 真机验收）在本地 Qwen3-VL checkpoint 就位后执行；
-`serve`/运维 CLI 不实现（核心运行时稳定后可加薄壳）。
+## 6.2 `GroundTruth`
+
+核心字段：
+
+```text
+answers
+count
+boxes
+points
+labels
+raw
+coordinate_frame
+label_binding
+```
+
+几何：
+
+```text
+box:
+  4 values -> axis-aligned xyxy
+  8 values -> polygon
+
+point:
+  exactly 2 values
+```
+
+所有坐标必须 finite。
+
+`labels` 与 geometry 的绑定通过：
+
+```text
+boxes
+points
+all_geometry
+unbound
+```
+
+或仅在无歧义情况下自动确定。
+
+源标注不得为适配内部 metric 而改写。
+
+---
+
+## 6.3 `TaskNormalization`
+
+adapter 对源任务做规范化后的结构化信息：
+
+```text
+source_task
+normalized_task
+semantic_subtype
+confidence
+normalizer
+version
+reason_codes
+spatial_query
+answer_constraints
+count_target_hint
+```
+
+这是 `UnifiedSample` 的一等字段，不应把重要 task-normalization 信息重新塞回不透明 metadata。
+
+---
+
+# 7. `UnifiedSample`
+
+内部 canonical sample：
+
+```python
+class UnifiedSample:
+    sample_id
+    dataset
+    split
+    task
+    images
+    question
+    ground_truth
+    metadata
+    normalization
+```
+
+公开任务集合：
+
+```text
+counting
+fine_grained_counting
+change_caption
+change_qa
+grounding
+spatial_relation
+scene_classification
+general_vqa
+caption
+multiple_choice_vqa
+```
+
+## 7.1 图像角色
+
+变化任务：
+
+```text
+change_caption
+change_qa
+```
+
+要求：
+
+```text
+images[0].role == "t1"
+images[1].role == "t2"
+remaining roles == "context"
+```
+
+其他任务：
+
+```text
+images[0].role == "image"
+remaining roles == "context"
+```
+
+## 7.2 Question
+
+允许空问题：
+
+```text
+caption
+change_caption
+```
+
+其他 UnifiedSample task 要求非空问题。
+
+注意：这和 pre-sample TaskResolver 的空问题规则不是同一个层次。
+
+## 7.3 Normalization 一致性
+
+如果：
+
+```text
+sample.normalization != None
+```
+
+则：
+
+```text
+sample.normalization.normalized_task == sample.task
+```
+
+必须成立。
+
+---
+
+# 8. `SampleDraft`
+
+`SampleDraft` 用于尚未确定 task 的样本前阶段。
+
+字段类似 UnifiedSample，但没有 mandatory `task`，而是：
+
+```text
+explicit_task: TaskName | None
+```
+
+图像角色暂时可以使用普通占位角色。
+
+正确流程：
+
+```text
+SampleDraft
+  -> TaskResolutionRequest
+  -> TaskResolver
+  -> materialize_sample(draft, task)
+  -> UnifiedSample
+```
+
+物化时重新建立：
+
+```text
+change task:
+  t1 / t2 / context
+
+other task:
+  image / context
+```
+
+`UnifiedSample.task` 始终保持必填。
+
+---
+
+# 9. Sample ID
+
+`stable_sample_id(...)` 的目标是跨平台稳定且目录安全。
+
+如果 source id 本身安全，可以保留。
+
+否则使用输入的稳定 SHA-256 摘要前 20 hex。
+
+hash 输入包括：
+
+```text
+dataset
+split
+source_id
+ordered relative image paths
+question
+source_index
+```
+
+绝对路径不允许进入 sample id，因此同一个逻辑样本不应因为运行机器目录不同得到不同 ID。
+
+---
+
+# 10. Dataset Adapter
+
+基础协议：
+
+```python
+class DatasetAdapter(Protocol):
+    name
+    supported_tasks
+
+    def probe(root, task=None) -> AdapterProbe
+    def iter_samples(root, split, task) -> Iterator[UnifiedSample]
+```
+
+无逐样本明确 task 的 adapter 可以实现：
+
+```python
+class DraftDatasetAdapter(Protocol):
+    name
+    supported_tasks
+
+    def probe(root, task=None) -> AdapterProbe
+    def iter_drafts(root, split) -> Iterator[SampleDraft]
+```
+
+关键原则：
+
+```text
+read-only
+no model call
+no run artifact writes
+no implicit network
+no dataset-root escape
+```
+
+`AdapterProbe` 在真正运行前给出数据布局证据。
+
+---
+
+# 11. Dataset Registry
+
+`data.registry.DatasetRegistry` 使用显式注册，不扫描模块、不使用 entry point 自动发现。
+
+当前内建 registry：
+
+| Canonical name | Alias |
+|---|---|
+| `VRSBench` | — |
+| `LEVIR-CC` | `LEVIR` |
+| `MME-RealWorld` | `MME` |
+| `XLRS-Bench` | `XLRS` |
+| `XLRS-Bench-lite` | `XLRS-lite` |
+
+`XLRS-Bench-lite` 当前 registry 配置的 supported task 为：
+
+```text
+multiple_choice_vqa
+```
+
+未知数据集显式失败。
+
+---
+
+# 12. Manifest Draft Adapter
+
+`data/adapters/manifest.py` 提供显式 manifest 驱动的 draft 适配能力。
+
+原则：
+
+- 使用版本化 `spacers_adapter.json`;
+- `samples_file` 明确指定；
+- fields 显式映射；
+- JSON / JSONL；
+- task 列可选；
+- 不猜字段名；
+- 不调用模型；
+- `samples_file` 必须被限制在 dataset root 内。
+
+它的职责是把没有标准内建 adapter 的显式 manifest 转成 `SampleDraft`，不是变成万能自动猜数据格式工具。
+
+---
+
+# 13. 数据下载与便利加载
+
+## 13.1 下载
+
+显式下载实现：
+
+```text
+data/downloader.py
+application/commands/download_data.py
+```
+
+公共命令：
+
+```text
+python main.py download-data --root ... --datasets ...
+```
+
+这是受支持的自动下载路径。
+
+普通 adapter / loader 不会因为文件不存在而隐式联网下载。
+
+## 13.2 便利加载
+
+```text
+data/loader.py
+```
+
+提供 registry → probe → iterator 的便利封装。
+
+样本路径与 draft 路径保持类型分离，draft 不伪装成 UnifiedSample。
+
+---
+
+# 14. 模型层
+
+## 14.1 模型协议
+
+`models/base.py` 定义主流程模型客户端协议、RequestMeta、cache identity、request hash 与消息脱敏基础。
+
+领域 Agent/Workflow 依赖：
+
+```text
+VisionLanguageClient
+```
+
+而不是具体 Qwen class。
+
+## 14.2 当前主流程模型入口
+
+`models.entry.ModelName`：
+
+```text
+qwen_transformers
+qwen3_vl_baseline
+qwen3_5_transformers
+```
+
+统一构造：
+
+```python
+create_model(name, **kwargs)
+```
+
+### `qwen_transformers`
+
+共享本地 Transformers Qwen 客户端。
+
+### `qwen3_vl_baseline`
+
+Qwen3-VL baseline wrapper。
+
+### `qwen3_5_transformers`
+
+通过 `models/qwen3_5/model.py` 暴露，同样复用共享 Qwen Transformers 客户端能力。
+
+## 14.3 专家模型运行层
+
+`models/segformer_transformers.py` 提供两份本地 fine-tuned SegFormer 的共享
+运行层：资产完整性校验、惰性单次加载、processor、device/dtype、预处理、
+推理、logits 上采样、argmax 和明确的 `SegmentationResult`。默认纯本地，
+不会自动下载。
+
+iSAID 的 `classes.json` 是 checkpoint 权威类别映射；`config.json` 中的
+`LABEL_0..15` 只是占位。OEM 旧资产没有额外 classes metadata，因此保留其
+config 中的 `LABEL_0..8`，不猜测人类可读顺序。
+
+YOLO 的新版 Counting 实现已经是旧版的加强版，仍保持唯一实现：
+`YoloModelStore` 负责惰性单次加载和完整性校验，ONNX adapter 负责 provider、
+预处理与解码，Counting backend 负责目标语义、切片、去重和 fallback。
+通用 `models.base.validate_local_model_asset` 在模型 runtime 之前统一拦截 LFS
+pointer；没有新增第二套 YOLO loader。
+
+---
+
+# 15. Qwen Settings
+
+关键字段：
+
+```text
+model
+cache_model_id
+max_tokens
+spatial_review_max_tokens
+dtype
+device_map
+use_kernels
+allow_download
+min_pixels
+max_pixels
+revision
+```
+
+默认：
+
+```text
+allow_download = False
+```
+
+如果 `model` 是本地 checkpoint 路径，则：
+
+```text
+cache_model_id
+```
+
+必须显式提供。
+
+原因：缓存 hash、trace 与 RequestMeta 使用逻辑模型身份，不应泄露机器本地路径。
+
+SegFormer 专家配置包含：
+
+```text
+model_path
+logical_model_id
+weights_filename
+weights_sha256
+classes_filename
+processor_path
+device
+dtype
+allow_download
+revision
+```
+
+`model_path` 是物理路径；`logical_model_id` 是机器无关身份，两者不得混用。
+
+---
+
+# 16. DeepSeek Settings
+
+声明字段：
+
+```text
+base_url
+model
+api_key_env
+timeout_seconds
+max_retries
+```
+
+settings 中不保存 API key value。
+
+默认只声明：
+
+```text
+api_key_env = "DEEPSEEK_API_KEY"
+```
+
+实际值由 application composition root 获取后直接注入客户端。
+
+---
+
+# 17. Application Settings
+
+`application.settings.AppSettings`：
+
+```text
+models
+counting
+runs
+router
+paths
+backend
+agents
+```
+
+主要分组：
+
+### `RunSettings`
+
+```text
+root
+save_tiles
+save_annotated_images
+save_raw_responses
+```
+
+默认 run root：
+
+```text
+outputs/runs
+```
+
+### `RouterSettings`
+
+```text
+confidence_threshold
+default_qwen_calls
+default_deepseek_calls
+fallback_on_partial
+```
+
+### `PathSettings`
+
+```text
+dataset_root
+```
+
+### `BackendSettings`
+
+计数 backend 配置。
+
+### `AgentsSettings`
+
+领域 Agent 配置。
+
+---
+
+# 18. 配置加载
+
+`load_settings(...)` 顺序：
+
+```text
+built-in defaults
+  -> optional YAML
+  -> supported environment overrides
+```
+
+环境变量优先。
+
+当前普通 override 包括：
+
+```text
+QWEN_MODEL
+SEGFORMER_ISAID_MODEL
+SEGFORMER_OEM_MODEL
+DEEPSEEK_BASE_URL
+DEEPSEEK_MODEL
+DATASET_ROOT
+OUTPUT_ROOT
+```
+
+Secret value 不通过这个普通 config merge 进入 AppSettings。
+
+配置 snapshot：
+
+```text
+settings.safe_snapshot()
+settings.to_config_payload()
+```
+
+保证 JSON-safe 与 secret-free。
+
+注意：snapshot 保留主机路径语义用于复现/调试，不宣称可以无条件在另一台机器直接复用物理路径。
+
+---
+
+# 19. Prompt
+
+`application.prompts.PromptCatalog` 在 runtime assembly 时加载版本化 prompt。
+
+Prompt 是可复现输入的一部分。
+
+run 创建时：
+
+```text
+prompts.snapshot/
+```
+
+保存 Prompt 副本，并在 `manifest.json` 保存 hash。
+
+涉及模型输出行为的 Prompt 修改必须被视为行为变化，而不只是文案修改。
+
+---
+
+# 20. Agent 公共契约
+
+## 20.1 `Agent`
+
+```python
+class Agent(Protocol):
+    name: AgentName
+    supported_tasks: frozenset[str]
+
+    async def run(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+    ) -> AgentExecution:
+        ...
+```
+
+## 20.2 `AgentContext`
+
+字段：
+
+```text
+artifact_dir
+qwen_client
+call_budget
+data_root
+judge_client
+request_context
+```
+
+它是单样本轻量上下文。
+
+不保存：
+
+```text
+API keys
+Base64 image data
+weights
+full AppSettings
+full PromptCatalog
+```
+
+## 20.3 `AgentExecution`
+
+字段：
+
+```text
+agent_name
+payload
+result_filename
+trace
+additional_results
+```
+
+安全约束：
+
+- result filename 是纯 basename；
+- additional result filename 是纯 basename；
+- JSON-safe；
+- 无 sensitive key/value；
+- payload agent_name 与 execution agent_name 一致。
+
+---
+
+# 21. 当前 Agent
+
+## 21.1 GeneralVQAAgent
+
+覆盖：
+
+```text
+general_vqa
+scene_classification
+multiple_choice_vqa
+```
+
+多选题 postprocess 会约束最终答案落在 choices 合法范围。
+
+## 21.2 CaptionAgent
+
+覆盖：
+
+```text
+caption
+```
+
+## 21.3 GroundingAgent
+
+覆盖：
+
+```text
+grounding
+```
+
+completed 结果需要合法定位证据。
+
+## 21.4 CountingAgent
+
+覆盖：
+
+```text
+counting
+fine_grained_counting
+```
+
+是当前最复杂的领域 Agent，内部包含独立 backend planning/execution 与 tile/seam 处理。
+
+## 21.5 SpatialAgent
+
+覆盖：
+
+```text
+spatial_relation
+```
+
+使用空间查询规范、几何规则、候选 review 与 evidence merge。
+
+## 21.6 ChangeAgent
+
+覆盖：
+
+```text
+change_caption
+change_qa
+```
+
+处理有序时相图对，包含 pair validation、harmonization、difference proposal、preprocess、review 等能力。
+
+---
+
+# 22. Task → Route Policy
+
+当前 `routing/policies.py`：
+
+| Task | Primary Agent | Fallback | `requires_tiling` |
+|---|---|---|---:|
+| `counting` | `counting_agent` | — | yes |
+| `fine_grained_counting` | `counting_agent` | — | yes |
+| `change_caption` | `change_agent` | — | yes |
+| `change_qa` | `change_agent` | `general_vqa_agent` | yes |
+| `grounding` | `grounding_agent` | — | yes |
+| `spatial_relation` | `spatial_agent` | — | no |
+| `scene_classification` | `general_vqa_agent` | — | no |
+| `general_vqa` | `general_vqa_agent` | — | no |
+| `caption` | `caption_agent` | — | no |
+| `multiple_choice_vqa` | `general_vqa_agent` | — | no |
+
+Router 未知 task：
+
+```text
+explicit failure
+```
+
+而不是：
+
+```text
+guess general_vqa
+```
+
+---
+
+# 23. TaskResolver
+
+`TaskResolver` 是 workflow 服务，不是业务 Agent。
+
+它回答：
+
+```text
+What task is this request/sample?
+```
+
+而 Router 回答：
+
+```text
+Which Agent handles this known task?
+```
+
+## 23.1 Resolver 三路径
+
+```text
+explicit
+rule
+model
+```
+
+### Explicit
+
+合法 explicit task：
+
+```text
+confidence=1.0
+source=explicit
+zero model call
+```
+
+非法 explicit task：
+
+```text
+UNKNOWN_EXPLICIT_TASK
+```
+
+### Rule
+
+空 question：
+
+```text
+1 image -> caption
+2 images -> change_caption
+otherwise -> EMPTY_UNRESOLVABLE_REQUEST
+```
+
+### Model
+
+只有：
+
+```text
+no explicit task
+AND question non-empty
+```
+
+时进入模型解析。
+
+模型返回：
+
+```text
+task
+confidence
+candidate_tasks <= 3
+reason_codes
+```
+
+必须通过合法 `TaskName` Schema。
+
+模型解析需要完整 model cache identity 和 request hash。
+
+---
+
+# 24. Low-confidence candidate fallback
+
+当模型 task resolution 低于阈值：
+
+- task 本身保持第一候选；
+- 最多 3 个候选；
+- 如果 top task 不是 `general_vqa`，候选表为 `general_vqa` 保留 fallback 槽；
+- Resolver 只返回结构化候选；
+- 真正执行由 SampleRunner 完成。
+
+候选 fallback 不等于“多 Agent 全跑”。
+
+SampleRunner 会按 AgentName 稳定去重，避免多个 candidate task 实际映射同一 Agent 时重复执行。
+
+---
+
+# 25. Counting 子系统
+
+目录：
+
+```text
+agents/counting/
+```
+
+主要分层：
+
+```text
+schema
+settings
+geometry
+evidence
+point_pipeline
+target_parser
+agent
+executor
+backends/
+```
+
+## 25.1 `CountingResult`
+
+CountingAgent 的主结果契约。
+
+最终计数必须与 accepted evidence 一致。
+
+主文件：
+
+```text
+counting_result.json
+```
+
+## 25.2 Backend
+
+当前显式 backend kind：
+
+```text
+qwen_point
+quantity_proposal
+yolo_obb
+```
+
+### `qwen_point`
+
+基于 Qwen 的 tile pointing/counting。
+
+### `quantity_proposal`
+
+提供数量/定位 proposal 的路径，不等同 detector。
+
+### `yolo_obb`
+
+面向 OBB detector 的计数路径。
+
+## 25.3 Backend selector 与 executor
+
+职责分离：
+
+```text
+BackendSelector
+    plan
+
+CountingPlanExecutor
+    execute
+    unavailable/runtime fallback
+    zero review
+```
+
+Selector 不负责吞掉实际 runtime error。
+
+## 25.4 Target parser
+
+目标优先级：
+
+```text
+normalization.count_target_hint
+  -> legacy metadata count_target_hint
+  -> Qwen target parsing
+```
+
+invalid hint：
+
+```text
+InvalidCountTargetHintError
+```
+
+不得静默忽略。
+
+## 25.5 YOLO
+
+YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
+
+启用 detector 时才注册相关 backend。
+
+硬件策略由 settings 决定，例如：
+
+```text
+require_cuda
+allow_cpu_fallback
+```
+
+不能仅因为 import 包就要求本地一定安装全部 YOLO runtime。
+
+---
+
+# 26. Spatial 子系统
+
+目录：
+
+```text
+agents/spatial/
+```
+
+主要职责：
+
+```text
+SpatialQuerySpec / schema
+deterministic geometry
+candidate review
+evidence merge
+SpatialAgent
+```
+
+空间 Agent 不应把具体 VRSBench 字段解析重新写入 Agent。
+
+数据集源字段应在 adapter normalization 阶段变成结构化 spatial query / constraints。
+
+---
+
+# 27. Change 子系统
+
+目录：
+
+```text
+agents/change/
+```
+
+主要组件：
+
+```text
+pair_validator
+harmonizer
+difference_proposal
+preprocess
+reviewer
+agent
+```
+
+变化任务输入必须是合法时相对：
+
+```text
+t1
+t2
+[context...]
+```
+
+无效 pair 应尽可能在模型调用前稳定失败。
+
+cv2/numpy 等视觉依赖保持可选边界，不应使基础 import 强制依赖所有变化检测扩展环境。
+
+---
+
+# 28. Composition Root
+
+`application/bootstrap.py` 是具体 runtime assembly 的唯一位置。
+
+一次 assemble：
+
+```text
+PromptCatalog
+Qwen client
+AgentRegistry
+TaskRouter
+TaskResolver
+DeepSeekJudgeClient (optional)
+JudgeService
+ArtifactWriter
+CallBudgetFactory
+RunStore
+SampleRunner factory
+DatasetRunner factory
+Reporting functions
+```
+
+## 28.1 Qwen
+
+如果没有测试注入 client：
+
+```python
+create_model("qwen_transformers", ...)
+```
+
+在这里创建一次。
+
+Agent 和 Workflow 共享这个实例。
+
+## 28.2 DeepSeek
+
+只有提供 `api_key` 时创建 Judge client。
+
+无 key：
+
+```text
+judge_client = None
+```
+
+系统仍可以执行 deterministic-only 评测。
+
+## 28.3 Agent Registry
+
+当前稳定注册顺序包含：
+
+```text
+CountingAgent
+ChangeAgent
+GroundingAgent
+SpatialAgent
+GeneralVQAAgent
+CaptionAgent
+```
+
+组装后会校验全部 routable task 是否被覆盖。
+
+---
+
+# 29. Call Budget
+
+单样本调用预算通过 `CallBudget` 协议传入 Agent。
+
+至少区分：
+
+```text
+reserve_qwen()
+reserve_deepseek()
+```
+
+TaskResolver 如果真的调用模型，会消费 Qwen budget。
+
+显式 task 或 deterministic rule 不消费 resolver 模型调用。
+
+SampleRunner 的多个 attempt 与逐样本 judge 共享样本预算语义，不能让 fallback 无限放大模型调用数。
+
+---
+
+# 30. RunStore
+
+默认 run root：
+
+```text
+outputs/runs
+```
+
+创建 run 时不构造模型，也不调用模型。
+
+run 创建产物：
+
+```text
+manifest.json
+config.snapshot.json
+prompts.snapshot/
+events.jsonl
+```
+
+随后具体运行写：
+
+```text
+run_request.json
+```
+
+## 30.1 `manifest.json`
+
+`RunManifest`：
+
+```text
+run_id
+created_at
+git_commit
+git_dirty
+config_hash
+prompt_hashes
+model_ids
+dataset
+split
+sample_filter
+```
+
+其中 `git_dirty` 是环境/执行 provenance，不应被误认为稳定 functional parity 字段。
+
+## 30.2 Run ID
+
+显式 run id 需要跨平台安全：
+
+- 非空；
+- 无 `/` / `\`;
+- 非绝对路径；
+- 非 `.` / `..`;
+- 无控制字符；
+- 不是 Windows reserved device name；
+- 长度与字符集受限。
+
+fresh run 指定已存在 id：
+
+```text
+fail
+```
+
+而不是覆盖。
+
+---
+
+# 31. `RunRequest`
+
+`workflows.schema.RunRequest` 表示一次运行的**具体调用身份**。
+
+Dataset run 关键字段：
+
+```text
+dataset
+dataset_root
+split
+task_mode
+tasks
+auto_task
+sample_ids
+limit
+start_index
+shard_index
+shard_count
+sample_concurrency
+evaluate
+judge_policy
+judge_sample_rate
+render_errors
+fail_fast
+```
+
+task mode：
+
+```text
+explicit
+adapter_default
+auto
+```
+
+Count-image 还会保存与该调用相关的冻结身份/行为参数。
+
+`run_request.json` 与 `manifest.json` 职责不同：
+
+```text
+manifest.json
+    reproducibility / identity metadata
+
+config.snapshot.json
+    application config snapshot
+
+run_request.json
+    actual user/runtime invocation
+```
+
+resume 重建实际调用时以 `run_request.json` 为准。
+
+---
+
+# 32. DatasetRunOptions
+
+运行时定型对象：
+
+```text
+dataset
+root
+split
+tasks
+run_id
+resume
+limit
+start_index
+shard_index
+shard_count
+sample_concurrency
+sample_ids
+evaluate
+judge_policy
+judge_sample_rate
+render_errors
+fail_fast
+auto_task
+```
+
+三种任务模式：
+
+### Adapter default
+
+```text
+tasks = None
+auto_task = False
+```
+
+运行 adapter.supported_tasks。
+
+不调用 TaskResolver。
+
+### Explicit
+
+```text
+tasks = ("...", ...)
+auto_task = False
+```
+
+### Auto
+
+```text
+tasks = ()
+auto_task = True
+```
+
+走 SampleDraft → TaskResolver。
+
+---
+
+# 33. SampleRunStatus
+
+字段：
+
+```text
+sample_id
+task
+state
+error_code
+error_message
+result_path
+updated_at
+```
+
+状态：
+
+```text
+pending
+running
+succeeded
+partial
+failed
+skipped
+```
+
+`task` 可以是公开 task，或 pre-task draft 失败时的诚实：
+
+```text
+unknown
+```
+
+不得为失败样本虚构一个已知 task。
+
+---
+
+# 34. Sample 状态中的 task 含义
+
+三个 task 概念必须区分。
+
+### Resolved task
+
+TaskResolver / canonical sample 决定的任务。
+
+保存在：
+
+```text
+sample.json.task
+agent_trace.resolved_task
+```
+
+### Execution task
+
+最终真正成功/失败执行的 attempt task。
+
+保存在：
+
+```text
+status.json.task
+agent_trace.execution_task
+routing_decision
+evaluation task semantics
+```
+
+### Run task
+
+DatasetRunner 的 task namespace：
+
+```text
+predictions.jsonl.run_task
+tasks/<run_task>/
+```
+
+auto-task run 的 run namespace 可以是：
+
+```text
+auto
+```
+
+这三者不能混为一谈。
+
+---
+
+# 35. SampleRunner
+
+单样本执行内核。
+
+概念流程：
+
+```text
+persist sample
+persist running status
+resolve/use task
+build routing/attempt plan
+run Agent
+persist result
+build deterministic evaluation
+optional Judge
+persist trace
+persist final status
+append execution index
+```
+
+职责：
+
+- 单样本；
+- attempt plan；
+- task candidate fallback；
+- routing fallback；
+- partial fallback policy；
+- 调用预算；
+- deterministic evaluation dispatch；
+- optional VQA judge；
+- trace；
+- durable status。
+
+不负责遍历整个数据集。
+
+---
+
+# 36. DatasetRunner
+
+数据集编排层。
+
+职责：
+
+```text
+adapter probe
+task-mode handling
+selection
+start index
+sharding
+sample-id filtering
+limit
+resume
+sample concurrency
+fail-fast
+SampleRunner orchestration
+predictions index
+dataset summary
+```
+
+## 36.1 Selection
+
+稳定选择语义按现有实现保持：
+
+```text
+adapter stable order
+-> start_index
+-> shard
+-> sample_ids
+-> limit
+```
+
+shard 使用稳定 SHA-256 逻辑，不能替换为 Python `hash()`。
+
+## 36.2 并发
+
+当前明确支持：
+
+```text
+single-process asyncio concurrency
+```
+
+JSONL writer 当前只承诺同一 Python 进程内的并发写入安全。
+
+不宣称多进程同时追加同一 run 文件安全。
+
+## 36.3 Fail-fast
+
+fail-fast 后：
+
+- 不再提交新的样本；
+- 已启动任务被正确 cancel/await；
+- 已选择样本最终仍需要有终态记录；
+- summary 计数闭合。
+
+---
+
+# 37. ArtifactWriter
+
+`workflows/artifact_writer.py` 集中拥有数据集执行产物文件名。
+
+当前固定名：
+
+```text
+sample.json
+status.json
+routing_decision.json
+agent_result.json
+counting_result.json
+agent_trace.json
+predictions.jsonl
+dataset_summary.json
+dataset_probe.json
+```
+
+Evaluation filename 由 evaluation dispatch 按任务声明，但同样必须是安全纯 basename。
+
+所有结构化 JSON 写入走原子写入。
+
+---
+
+# 38. Run 目录布局
+
+典型 dataset run：
+
+```text
+outputs/runs/<run_id>/
+├── manifest.json
+├── config.snapshot.json
+├── run_request.json
+├── prompts.snapshot/
+├── events.jsonl
+├── predictions.jsonl
+├── report/
+│   ├── report.html
+│   ├── report.json
+│   ├── samples.csv
+│   ├── samples.jsonl
+│   ├── metadata.json
+│   ├── deepseek_audit.jsonl
+│   └── external_standard.json      # when provided
+└── tasks/
+    └── <run_task>/
+        ├── dataset_probe.json
+        ├── dataset_summary.json
+        └── samples/
+            └── <storage_key>/
+                ├── sample.json
+                ├── status.json
+                ├── routing_decision.json
+                ├── agent_result.json
+                │   or counting_result.json
+                ├── <task>_evaluation.json
+                ├── agent_trace.json
+                └── optional model/judge artifacts
+```
+
+实际 evaluation filename 由共享 dispatch 决定，当前主要包括：
+
+```text
+vqa_evaluation.json
+counting_evaluation.json
+grounding_evaluation.json
+caption_evaluation.json
+```
+
+不是所有 task 都一定有逐样本 deterministic evaluation。
+
+---
+
+# 39. Sample storage key
+
+sample 目录不直接使用未经处理的 sample id。
+
+当前 DatasetRunner/reporting 使用冻结身份推导安全 storage key，从而避免：
+
+- Windows reserved path；
+- 非法字符；
+- 多 task 同 sample id 冲突；
+- 任意 result path 注入。
+
+Reporting 应重新由：
+
+```text
+(run_task, sample_id)
+```
+
+推导 sample 目录，而不是相信 `predictions.result_path` 去读任意位置。
+
+---
+
+# 40. `status.result_path`
+
+`SampleRunStatus.result_path` 是：
+
+```text
+sample-relative plain basename
+```
+
+例：
+
+```text
+agent_result.json
+counting_result.json
+```
+
+禁止：
+
+```text
+C:\...
+/home/...
+../...
+a/b.json
+\\server\...
+```
+
+旧绝对路径 status 无法通过当前 schema 时，resume 应把状态视为无效并按契约处理，而不是继续信任。
+
+---
+
+# 41. `predictions.jsonl`
+
+每行：
+
+```text
+sample_id
+run_task
+task
+status
+result_path
+updated_at
+```
+
+它是 append-only execution index。
+
+当前状态的定义：
+
+```text
+last row for (run_task, sample_id)
+```
+
+它不是完整 SampleResult 数据库，也不是唯一 artifact 真相。
+
+报告会用它确定当前行，再读取安全 sample directory 中的持久化 artifact。
+
+---
+
+# 42. Resume
+
+resume 是持久化契约的重要组成。
+
+原则：
+
+### Succeeded
+
+默认不重复推理。
+
+如果缺确定性评测或允许补 Judge，可按共享逻辑补充。
+
+### Partial / Failed / Running / Pending
+
+按现有 DatasetRunner 规则重新进入 SampleRunner。
+
+### Missing / Corrupt status
+
+不信任旧状态，重新执行或稳定失败。
+
+### Evaluation dispatch
+
+resume 判断 metric family 使用：
+
+```text
+status.task
+```
+
+即实际 execution task。
+
+不能只看：
+
+```text
+sample.json.task
+```
+
+否则 candidate fallback 后会写错指标族。
+
+### Invocation
+
+resume 具体原始参数以：
+
+```text
+run_request.json
+```
+
+为权威。
+
+新的 CLI 默认值或 config 漂移不得静默改变原 run 行为。
+
+---
+
+# 43. EvaluationRecord
+
+统一评测记录：
+
+```python
+EvaluationRecord(
+    sample_id,
+    task,
+    deterministic_metrics,
+    judge_status,
+    judge_raw,
+    judge_parsed,
+    judge_inconsistency,
+    judge_error,
+)
+```
+
+`task` canonical metric family：
+
+```text
+counting
+general_vqa
+grounding
+caption
+```
+
+Runtime task 决定执行什么；evaluation family 决定如何评分。唯一生产映射
+位于 `evaluation.records.RUNTIME_TASK_TO_EVALUATION_TASK`：
+
+| Runtime task | Evaluation family | Artifact |
+|---|---|---|
+| `counting` | `counting` | `counting_evaluation.json` |
+| `fine_grained_counting` | `counting` | `counting_evaluation.json` |
+| `general_vqa` | `general_vqa` | `vqa_evaluation.json` |
+| `multiple_choice_vqa` | `general_vqa` | `vqa_evaluation.json` |
+| `scene_classification` | `general_vqa` | `vqa_evaluation.json` |
+| `spatial_relation` | `general_vqa` | `vqa_evaluation.json` |
+| `change_qa` | `general_vqa` | `vqa_evaluation.json` |
+| `grounding` | `grounding` | `grounding_evaluation.json` |
+| `caption` | `caption` | `caption_evaluation.json` |
+| `change_caption` | `caption` | `caption_evaluation.json` |
+
+generic metric 不维护 dataset-specific runtime task 分支。fresh、resume 和
+`evaluate-run` 都调用 `build_deterministic_evaluation(...)`；resume/offline
+以持久化的 `status.task` 选择 family，成功推理不会因此重复调用 Qwen。
+
+Judge 与 deterministic metrics 并列。
+
+---
+
+# 44. Counting deterministic metrics
+
+`CountDeterministicMetrics`：
+
+```text
+predicted_count
+gold_count
+exact_match
+absolute_error
+relative_error
+smooth_error_score
+```
+
+只有 Ground Truth count 可用时才能形成有意义的 deterministic count comparison。
+
+不得为缺 GT 样本伪造 gold。
+
+---
+
+# 45. VQA deterministic metrics
+
+`VQADeterministicMetrics`：
+
+```text
+exact_match: bool
+```
+
+当前 task family 映射包括：
+
+```text
+general_vqa
+multiple_choice_vqa
+scene_classification
+spatial_relation
+change_qa
+```
+
+落盘使用 VQA evaluation record。
+
+这些 runtime task 共享严格 exact-match，并在 judge policy/budget 允许时共享
+DeepSeek 纯文本 semantic-equivalence Judge。Judge 只处理 deterministic
+mismatch；即使语义判定等价，`exact_match=false` 仍原样保留。
+
+semantic aggregate 单独报告 coverage/completeness。存在未 Judge 或 Judge
+失败的 mismatch 时，只报告 confirmed lower bound，不伪造完整 semantic
+accuracy。
+
+---
+
+# 46. Grounding deterministic metrics
+
+`GroundingDeterministicMetrics`：
+
+```text
+iou
+iou_at_0_5
+```
+
+当前内建 deterministic grounding 是严格的轴对齐 IoU 路径。
+
+只有 prediction 和 GT 坐标契约受支持时计算。
+
+当前长期约束强调：
+
+```text
+normalized_0_999_top_left
+4-value xyxy
+```
+
+兼容时才能生成当前内部 grounding deterministic record。
+
+以下情况应 fail-closed 或交给显式 official evaluator / coordinate conversion：
+
+```text
+source_pixels_top_left without conversion
+8-point polygon
+unknown coordinate frame
+```
+
+---
+
+# 47. Caption evaluation
+
+`CaptionDeterministicMetrics` 实际保存逐样本：
+
+```text
+candidate
+references
+```
+
+它是后续 corpus-level metric 的输入契约。
+
+语料级指标例如：
+
+```text
+BLEU_1..4
+METEOR
+ROUGE_L
+CIDEr
+```
+
+`caption` 与 `change_caption` 共用同一个 caption family 和 corpus aggregate。
+Reporting 从持久化的 caption records 调用 `aggregate_caption()`：
+
+```text
+pycocoevalcap available -> metric_status=ok + corpus metrics
+pycocoevalcap missing   -> metric_status=dependency_missing + record_count
+```
+
+可选依赖保持惰性导入；无 caption record 时不导入，缺失时也不阻断 report。
+这些本地 corpus 指标不等同于 benchmark official score。
+
+---
+
+# 48. Specialized runtime task 的 family 复用
+
+以下 specialized runtime task 不创建平行 metric 实现，而是复用 canonical
+family：
+
+```text
+fine_grained_counting -> counting
+multiple_choice_vqa   -> general_vqa
+scene_classification  -> general_vqa
+spatial_relation      -> general_vqa
+change_qa             -> general_vqa
+change_caption        -> caption
+```
+
+其中 caption family 的逐样本 record 是 corpus metric 输入；grounding 只在
+兼容 geometry 下产生 record。不支持的 runtime task 或不兼容输入返回
+not applicable，不伪造分数。
+
+如果以后新增指标，应明确：
+
+- Ground Truth 来源；
+- metric 定义；
+- coordinate/label 解释；
+- aggregation；
+- 与历史结果可比性。
+
+---
+
+# 49. Judge
+
+## 49.1 DeepSeekJudgeClient
+
+是纯文本结构化 Judge 客户端。
+
+它不是 Agent，不处理图像。
+
+DeepSeek key value 只从 composition-root 边界读取本机环境变量；settings、
+snapshot、manifest、RequestMeta、cache metadata、report、audit 和公共错误只
+能保存环境变量名或稳定非敏感元数据，不能保存 key value。
+
+实现特性：
+
+- 标准库 HTTP；
+- cache；
+- schema validated structured result；
+- retry；
+- request artifacts；
+- secret 不进入公共错误。
+
+## 49.2 JudgeService
+
+负责：
+
+```text
+judge policy
+budget
+deterministic + judge merge
+resume supplement
+```
+
+Judge policy：
+
+```text
+none
+errors-only
+all
+```
+
+Dataset run 还可以使用：
+
+```text
+judge_sample_rate
+```
+
+进行确定性抽样。
+
+## 49.3 Judge 不覆盖 deterministic
+
+必须始终保持：
+
+```text
+EvaluationRecord.deterministic_metrics
+```
+
+独立存在。
+
+Judge 可以记录：
+
+```text
+judge_status
+judge_parsed
+judge_inconsistency
+judge_error
+```
+
+但不能改掉 deterministic exact_match/IoU/count error。
+
+---
+
+# 50. Judge sample rate
+
+`judge_sample_rate` 范围：
+
+```text
+0.0 .. 1.0
+```
+
+DatasetRunner 使用 run/sample identity 进行确定性抽样，而不是 `random.random()`。
+
+该值持久化，以保证 resume 仍选择相同样本集合。
+
+---
+
+# 51. Offline evaluation commands
+
+当前应用包含执行后评测命令。
+
+### `evaluate-run`
+
+对已有 run 做离线确定性评测补全/刷新，并可选择 DeepSeek pass。
+
+关键设计：
+
+```text
+no Qwen inference reconstruction
+use persisted results
+shared deterministic dispatch
+```
+
+三条评测路径保持同一 deterministic helper：
+
+```text
+fresh   -> SampleRunner -> deterministic -> optional JudgeService
+resume  -> status.task -> missing deterministic/judge supplement
+offline -> evaluate-run -> persisted result -> deterministic -> optional DeepSeek
+```
+
+offline 路径零 Qwen；Judge 失败保留 deterministic record。
+
+### `judge-vqa-run`
+
+对已有 VQA run 做 Judge pass。
+
+应使用已有 prediction，而不是重新调用 Qwen 获得另一个答案。
+
+### `standard-evaluate`
+
+调用外部标准 evaluator seam。
+
+外部 evaluator 输出与内部 deterministic metric namespace 分离。
+
+---
+
+# 52. Standard / dataset evaluator seam
+
+目录：
+
+```text
+evaluation/standard/
+evaluation/datasets/
+```
+
+当前：
+
+```text
+evaluation/standard/adapter.py
+evaluation/datasets/vrsbench.py
+```
+
+用于把统一结果适配到团队/数据集官方评测。
+
+原则：
+
+- source prediction 只读；
+- 外部工具失败明确报告；
+- 结果进入独立 external namespace；
+- 不为了“统一”而偷偷修改官方 metric 定义。
+
+---
+
+# 53. Reporting
+
+Reporting 纯结果层。
+
+主要流程：
+
+```text
+predictions.jsonl
+  -> current rows (last-wins)
+  -> safe sample dir resolution
+  -> load persisted artifacts
+  -> ReportSample
+  -> TaskSummary
+  -> Report
+```
+
+它不会：
+
+- 调 Qwen；
+- 调 Agent；
+- 调 TaskResolver；
+- 修改状态；
+- 重新跑 deterministic evaluation；
+- 自动纠正模型答案。
+
+---
+
+# 54. Report Schema
+
+## `ReportSample`
+
+主要字段：
+
+```text
+sample_id
+run_task
+task
+state
+error_code
+result_path
+updated_at
+question
+prediction
+resolved_task
+execution_agent
+fallback_used
+judge_status
+inference_seconds
+evaluation
+```
+
+`task` 表示 execution task。
+
+## `TaskSummary`
+
+```text
+run_task
+total
+succeeded
+partial
+failed
+skipped
+fallback_count
+fallback_rate
+agent_usage
+judge_status_counts
+metrics
+judge_metrics
+```
+
+`metrics` 保存 local deterministic/corpus aggregate；`judge_metrics` 保存
+独立的 semantic Judge aggregate。官方外部结果不进入这两个字段。
+
+## `Report`
+
+```text
+run_id
+dataset
+total
+succeeded
+partial
+failed
+skipped
+samples
+tasks
+```
+
+---
+
+# 55. Report Bundle
+
+`reporting.exporters.persist_report_bundle(...)` 写：
+
+```text
+runs/<run_id>/report/
+├── report.html
+├── report.json
+├── samples.csv
+├── samples.jsonl
+├── metadata.json
+├── deepseek_audit.jsonl
+└── external_standard.json   # optional
+```
+
+报告严格区分三类来源：
+
+```text
+metrics           -> deterministic/local（含 caption corpus aggregate）
+judge_metrics     -> optional Judge quality/coverage
+external_standard -> official/external evaluator
+```
+
+Reporting 只读取持久化产物并聚合，不发网络、不调用模型，也不回写 sample、
+status 或 evaluation。
+
+### JSON
+
+UTF-8，稳定字段布局。
+
+### CSV
+
+`utf-8-sig`，方便 Windows Excel。
+
+### HTML
+
+离线，无需 CDN。
+
+用户/模型文本需要转义，不能因模型输出注入 HTML。
+
+### DeepSeek audit
+
+只记录稳定 request identity / status / parsed metadata。
+
+不输出：
+
+```text
+auth
+api key
+raw secret
+```
+
+---
+
+# 56. External standard namespace
+
+外部评估输出包装为：
+
+```json
+{
+  "schema_version": "report-v1",
+  "external_standard": {
+    "...": "..."
+  }
+}
+```
+
+这样不会把外部官方 metric 和内部 deterministic metric 混成同一个无来源的数字。
+
+---
+
+# 57. MME official export
+
+Reporting exporter 还支持 MME-RealWorld 官方提交转换。
+
+原则：
+
+- 原始官方记录只读；
+- 按 question id 写预测到官方 `Output`；
+- 其他无关字段保持；
+- 不修改 source file。
+
+---
+
+# 58. Counting visualization
+
+`reporting.visualization` 根据：
+
+```text
+source image
+CountingResult
+```
+
+生成 overlay。
+
+这是展示能力，不参与 metric。
+
+如果图像尺寸/结果契约不一致，应失败，不应为了画图改变计数结果。
+
+---
+
+# 59. Public CLI
+
+唯一公共入口：
+
+```text
+python main.py
+```
+
+无子命令：
+
+```text
+serve
+```
+
+默认：
+
+```text
+host=127.0.0.1
+port=8000
+```
+
+当前公开命令：
+
+```text
+serve
+ask
+run-init
+health
+list-datasets
+smoke-qwen
+resume-run
+inspect-data
+count-image
+download-data
+evaluate-run
+judge-vqa-run
+standard-evaluate
+render-count
+summarize-evaluations
+run-dataset
+```
+
+具体参数以：
+
+```text
+python main.py <command> --help
+```
+
+为准。
+
+---
+
+# 60. `serve`
+
+本地 HTTP 服务。
+
+受支持：
+
+```text
+GET /health
+POST /ask
+```
+
+设计：
+
+- stdlib HTTP；
+- process runtime 创建一次；
+- handler 不创建模型；
+- `/health` 不调用模型；
+- `/ask` 委托 Runtime；
+- 请求输入有大小与格式检查；
+- 错误响应只暴露稳定信息。
+
+它不是 dataset evaluation service。
+
+---
+
+# 61. `ask`
+
+对一个本地图像目录执行一次手动请求。
+
+概念参数：
+
+```text
+--images-dir
+--question
+--task
+--output
+```
+
+`--task auto` 时：
+
+- 空问题走 deterministic rule；
+- 有问题可以进入 TaskResolver；
+- 一次手动请求只执行一个主业务路径；
+- 不自动做完整 DatasetRunner Judge/Report workflow。
+
+手动图像路径在 artifact 中保持相对/安全表示，不应把本机绝对输入目录写进结果 payload。
+
+---
+
+# 62. `run-dataset`
+
+核心数据集批量运行入口。
+
+关键参数：
+
+```text
+--dataset
+--root
+--split
+--task
+--auto-task
+--sample-ids
+--run-id
+--resume
+--evaluate / --no-evaluate
+--judge-policy
+--judge-sample-rate
+--render-errors
+--max-samples / --limit
+--start-index
+--shard-index
+--shard-count / --num-shards
+--sample-concurrency
+--fail-fast
+```
+
+默认：
+
+```text
+evaluate = True
+judge_policy = none
+```
+
+这是默认离线的重要表现：运行数据集不会默认调用 DeepSeek。
+
+---
+
+# 63. `run-init`
+
+只创建 run identity 和 snapshot。
+
+不执行 Qwen。
+
+适用于：
+
+- 检查 run store；
+- 提前建立可复现目录；
+- 运维测试。
+
+---
+
+# 64. `health`
+
+组件：
+
+```text
+qwen
+deepseek
+```
+
+普通 health 只查看元数据/配置可用性，不应泄露 secret。
+
+`--live` 才允许执行真实 probe。
+
+---
+
+# 65. `smoke-qwen`
+
+直接进行一次 VisionLanguageClient smoke request。
+
+用途是验证模型端，不经过完整 Agent / DatasetRunner。
+
+不要把它的结果误认为完整任务评测。
+
+---
+
+# 66. `count-image`
+
+单图计数维护/验证入口。
+
+支持：
+
+```text
+--image
+--question
+--target-spec
+--run-id
+--evaluate
+--render
+--resume
+--force
+--no-seam-verify
+--max-qwen-calls
+--max-deepseek-calls
+```
+
+为保证 resume/force 行为一致，行为相关调用参数会进入 `run_request.json` 的 count-image fidelity 字段。
+
+---
+
+# 67. `inspect-data`
+
+对数据集根做只读审计。
+
+不调用模型。
+
+用于检查：
+
+- layout；
+- adapter probe；
+- 文件/字段问题；
+- 快速或完整扫描。
+
+---
+
+# 68. `download-data`
+
+显式数据集联网下载入口。
+
+它是“用户明确要求下载”的行为，而不是普通加载的 fallback。
+
+---
+
+# 69. `render-count`
+
+读取：
+
+```text
+image
+persisted counting result
+```
+
+生成 overlay。
+
+不运行模型。
+
+---
+
+# 70. `summarize-evaluations`
+
+聚合已存在 EvaluationRecord / run evaluation。
+
+不重新推理。
+
+---
+
+# 71. Application Runtime
+
+`application/runtime.py` 暴露高层 use case。
+
+核心思想：
+
+```text
+runtime owns use cases
+bootstrap owns dependency assembly
+commands own CLI adaptation
+```
+
+不要把三层重新合并成一个“大 application.py”。
+
+---
+
+# 72. Offline 原则
+
+默认本地/离线能力：
+
+- import packages；
+- parse config；
+- dataset adapter/probe；
+- deterministic routing；
+- run store；
+- report；
+- deterministic metrics；
+- tests。
+
+可能联网的能力必须是显式路径，例如：
+
+```text
+download-data
+DeepSeek judge
+health --live
+显式允许模型下载
+```
+
+缺少网络不应让普通模块 import 崩溃。
+
+---
+
+# 73. Secret 原则
+
+Secret value 不进入：
+
+```text
+AppSettings
+config.snapshot.json
+manifest.json
+run_request.json
+AgentContext.request_context
+agent_trace.json
+public error
+report metadata
+DeepSeek audit
+```
+
+settings 只存 API key 的环境变量名称。
+
+---
+
+# 74. Path portability 与 path safety
+
+新架构特别强调 Windows/POSIX 一致性。
+
+应区分三类路径。
+
+### Dataset image path
+
+```text
+dataset-root relative
+```
+
+### Status result path
+
+```text
+sample-relative basename
+```
+
+### Prediction result path
+
+```text
+run-relative display/index path
+```
+
+机器本地物理路径可以存在于运行时 `Path` 对象和 host-oriented config snapshot 中，但不应进入逻辑 ID、sample id、可移植 result identity 或模型 cache logical identity。
+
+---
+
+# 75. Error 语义
+
+公共持久化状态尽量使用稳定：
+
+```text
+error_code
+exception class name
+stable domain code
+```
+
+避免写完整内部异常。
+
+理由：
+
+- 防 secret；
+- 防 host absolute path；
+- 防依赖版本差异；
+- 提高 parity；
+- 方便报告聚合。
+
+---
+
+# 76. Tests
+
+测试分层大致包括：
+
+```text
+tests/architecture/
+tests/contracts/
+tests/data/
+tests/models/
+tests/agents/
+tests/routing/
+tests/workflows/
+tests/evaluation/
+tests/reporting/
+tests/application/
+tests/integration/
+tests/parity/
+```
+
+## Architecture
+
+保证：
+
+```text
+allowlist
+implementation status
+import DAG
+__init__ no side effects
+package discovery
+no legacy import
+```
+
+## Contracts
+
+保证核心 Schema 与 artifact 不变量。
+
+## Unit
+
+按 package 验证具体实现。
+
+## Integration
+
+验证纵向：
+
+```text
+sample
+dataset
+auto-task
+resume
+run-dataset
+```
+
+## Parity
+
+与锁定 `try_yolo` 行为基线比较可观察行为，而不是源码结构。
+
+---
+
+# 77. Golden migration fixtures
+
+位置：
+
+```text
+tests/fixtures/migration/
+```
+
+作用：
+
+- 冻结旧行为的可观察事实；
+- 验证迁移功能没有无意丢失；
+- 避免两个无共同祖先分支只能靠普通 diff 对比。
+
+Golden fixture 不属于“修实现时可以跟着一起改”的普通测试数据。
+
+有意差异必须单独说明。
+
+---
+
+# 78. Architecture allowlist
+
+`architecture/allowed_python_files.txt`：
+
+```text
+final approved paths
+```
+
+`architecture/implementation_status.json`：
+
+```text
+what is actually implemented now
+```
+
+当前：
+
+```text
+pending_files = []
+```
+
+以后新增 Python 路径必须遵循独立架构批准流程。
+
+---
+
+# 79. 当前已知限制与边界
+
+以下不是 bug，而是当前明确边界，除非后续任务改变设计。
+
+### 79.1 Grounding coordinate coverage
+
+内建 deterministic IoU 不是万能坐标转换器。
+
+source pixel / polygon 等需要 official evaluator 或显式转换。
+
+### 79.2 Spatial/change sample-level metric
+
+当前没有为所有 spatial/change 任务强行定义通用逐样本 deterministic score。
+
+### 79.3 Cross-process append
+
+当前工作流 JSONL 并发安全承诺局限于同一 Python 进程。
+
+### 79.4 Live validation
+
+离线测试通过不代表：
+
+- 本地 Qwen 权重已存在；
+- DeepSeek key 可用；
+- 真实 VRSBench/XLRS/MME/LEVIR 数据集存在；
+- Spark 目标机可运行；
+- GPU/ONNX/CUDA detector 实际可用。
+
+必须分别验证。
+
+### 79.5 Optional vision/deployment dependencies
+
+变化检测、YOLO/ONNX 等扩展能力依赖环境配置，基础 import 不等于所有 backend 都 available。
+
+### 79.6 OEM class labels
+
+迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`，没有经训练
+语义验证的 `classes.json`。当前 runtime 保留该事实，不用网络资料猜测类别顺序。
+
+---
+
+# 80. 修改哪个模块时先看什么
+
+### 修改数据集
+
+先看：
+
+```text
+data/schema.py
+data/adapters/base.py
+对应 adapter
+data/registry.py
+tests/data/
+tests/contracts/test_data_schema_contract.py
+```
+
+### 修改 task routing
+
+先看：
+
+```text
+data/schema.py
+routing/schema.py
+routing/policies.py
+routing/router.py
+workflows/task_resolver.py
+tests/routing/
+tests/workflows/test_task_resolver.py
+```
+
+### 修改 Agent
+
+先看：
+
+```text
+agents/base.py
+agents/schema.py
+agents/registry.py
+对应领域目录
+tests/agents/
+tests/contracts/test_agent_result_contract.py
+```
+
+### 修改 counting
+
+先看：
+
+```text
+agents/counting/schema.py
+agents/counting/settings.py
+agents/counting/agent.py
+agents/counting/executor.py
+agents/counting/backends/
+tests/agents/counting/
+tests/contracts/test_counting_result_contract.py
+```
+
+### 修改模型
+
+先看：
+
+```text
+models/base.py
+models/settings.py
+models/entry.py
+application/bootstrap.py
+tests/models/
+tests/application/test_bootstrap.py
+```
+
+### 修改运行产物/resume
+
+先看：
+
+```text
+workflows/schema.py
+workflows/run_store.py
+workflows/artifact_writer.py
+workflows/sample_runner.py
+workflows/dataset_runner.py
+reporting/adapters.py
+tests/workflows/
+tests/integration/
+tests/contracts/test_artifact_contract.py
+```
+
+### 修改评测
+
+先看：
+
+```text
+evaluation/records.py
+evaluation/metrics/
+workflows/sample_runner.py
+workflows/judge_service.py
+evaluation/standard/
+evaluation/datasets/
+tests/evaluation/
+tests/parity/
+```
+
+### 修改报告
+
+先看：
+
+```text
+reporting/schema.py
+reporting/adapters.py
+reporting/builder.py
+reporting/exporters.py
+reporting/html.py
+tests/reporting/
+```
+
+### 修改 CLI
+
+先看：
+
+```text
+main.py
+application/commands/
+application/runtime.py
+application/bootstrap.py
+tests/test_main.py
+tests/application/
+tests/integration/
+```
+
+---
+
+# 81. 新功能应该落在哪里
+
+可以使用这个判断表。
+
+| 新需求 | 首选位置 |
+|---|---|
+| 新数据集解析 | `data/adapters/` |
+| 新统一样本字段 | `data/schema.py`（高风险） |
+| 新模型 wrapper | `models/` + `models/entry.py` |
+| 新业务 task workflow | `agents/<domain>/` |
+| 已知 task → Agent 映射 | `routing/` |
+| 无 task 样本的任务判定 | `workflows/task_resolver.py` |
+| 单样本 orchestration | `workflows/sample_runner.py` |
+| 数据集 orchestration | `workflows/dataset_runner.py` |
+| deterministic metric | `evaluation/metrics/` |
+| Judge | `evaluation/judges/` + `workflows/judge_service.py` |
+| external official evaluator | `evaluation/standard/` 或 `evaluation/datasets/` |
+| 报表 | `reporting/` |
+| CLI use case | `application/commands/` |
+| dependency assembly | `application/bootstrap.py` |
+| 顶层命令参数 | `main.py` |
+
+如果目标文件不在 allowlist，先做架构批准，不直接新建。
+
+---
+
+# 82. 不应该再恢复的旧架构模式
+
+新架构不再使用：
+
+```text
+spacers_agent/
+eval/
+第二套内部公开 CLI
+dataset-specific logic in Agent
+Router model call
+model construction inside workflows
+report-time inference
+legacy-path resume trust
+```
+
+旧 `try_yolo` 中相应实现只作为迁移行为参考。
+
+---
+
+# 83. Evaluation 与 Reporting 对齐 `try_yolo` 时的原则
+
+后续对齐旧评测和报告时，应区分三种情况。
+
+## 83.1 行为必须保持
+
+例如：
+
+- metric 公式；
+- GT 读取；
+- official submission format；
+- sample inclusion；
+- failure accounting。
+
+这类应通过 parity/fixture 证明。
+
+## 83.2 架构实现可以不同
+
+例如旧代码可能：
+
+```text
+eval/metrics.py
+spacers_agent/reporting.py
+```
+
+新架构可以拆成：
+
+```text
+evaluation/metrics/
+evaluation/records.py
+reporting/
+```
+
+只要求外部可观察行为与明确的新契约一致。
+
+## 83.3 有意变化
+
+例如新架构强化：
+
+- path safety；
+- secret handling；
+- append-only execution index；
+- deterministic/Judge 分离；
+- unknown task fail-closed；
+- report read-only。
+
+这类不应为了“源码相似”退回旧行为，应在 migration docs 中明确差异和理由。
+
+---
+
+# 84. 当前架构一句话总结
+
+当前 M3 新架构的主链路是：
+
+```text
+Dataset source
+  -> explicit Adapter
+  -> UnifiedSample / SampleDraft
+  -> optional TaskResolver
+  -> deterministic TaskRouter
+  -> task Agent
+  -> SampleRunner
+  -> persisted result
+  -> deterministic EvaluationRecord
+  -> optional Judge
+  -> DatasetRunner execution index
+  -> read-only Reporting
+  -> application use cases
+  -> main.py public surface
+```
+
+其中：
+
+```text
+application
+```
+
+是唯一 composition root，
+
+```text
+UnifiedSample
+```
+
+是统一内部样本契约，
+
+```text
+run_request.json + persisted artifacts
+```
+
+是 resume 与报告的事实基础，
+
+```text
+EvaluationRecord
+```
+
+是统一评测记录，
+
+```text
+reporting
+```
+
+只读取结果，不重新执行结果。
+
+这几个边界应被视为后续开发最重要的长期契约。

@@ -29,6 +29,7 @@ from agents.errors import (
     DetectorTaskMismatchError,
     DetectorWeightsHashMismatchError,
     DetectorWeightsMissingError,
+    DetectorWeightsPointerError,
 )
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 
@@ -138,6 +139,18 @@ def test_store_raises_when_weights_missing(tmp_path: Path) -> None:
 def test_store_raises_on_hash_mismatch(tmp_path: Path) -> None:
     detector = _detector(tmp_path, sha256="b" * 64)
     with pytest.raises(DetectorWeightsHashMismatchError, match="digest mismatch"):
+        YoloModelStore(loader=lambda path: _FakeRuntimeModel()).get(detector)
+
+
+def test_store_rejects_git_lfs_pointer_before_runtime_load(tmp_path: Path) -> None:
+    pointer = (
+        b"version https://git-lfs.github.com/spec/v1\n"
+        b"oid sha256:" + b"a" * 64 + b"\nsize 123\n"
+    )
+    detector = _detector(tmp_path)
+    detector.weights.write_bytes(pointer)
+    detector.sha256 = hashlib.sha256(pointer).hexdigest()
+    with pytest.raises(DetectorWeightsPointerError, match="actual binary"):
         YoloModelStore(loader=lambda path: _FakeRuntimeModel()).get(detector)
 
 

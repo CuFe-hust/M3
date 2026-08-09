@@ -1,0 +1,8 @@
+-r requirements.txt
+transformers>=5.7.0
+torch>=2.2
+safetensors>=0.4
+peft
+torchvision
+einops
+timm

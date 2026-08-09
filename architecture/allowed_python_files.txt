@@ -48,6 +48,7 @@ models/qwen3_5/__init__.py
 models/qwen3_5/model.py
 models/qwen3_vl/__init__.py
 models/qwen3_vl/baseline.py
+models/segformer_transformers.py
 
 # === agents ===
 agents/__init__.py
@@ -253,6 +254,7 @@ tests/models/test_model_entry.py
 tests/models/test_qwen_client_offline.py
 tests/models/test_request_sanitization.py
 tests/models/test_response_cache.py
+tests/models/test_segformer_runtime.py
 
 # === Migration tooling ===
 scripts/generate_migration_fixtures.py

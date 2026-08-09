@@ -166,6 +166,7 @@
     "models/qwen3_vl/__init__.py",
     "models/qwen3_vl/baseline.py",
     "models/qwen_transformers.py",
+    "models/segformer_transformers.py",
     "models/settings.py",
     "reporting/__init__.py",
     "reporting/adapters.py",

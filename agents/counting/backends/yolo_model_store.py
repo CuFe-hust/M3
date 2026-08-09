@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import threading
 from pathlib import Path
 from typing import Any, Callable
@@ -17,7 +16,14 @@ from agents.errors import (
     DetectorTaskMismatchError,
     DetectorWeightsHashMismatchError,
     DetectorWeightsMissingError,
+    DetectorWeightsPointerError,
     OptionalDependencyMissingError,
+)
+from models.base import (
+    ModelAssetHashMismatchError,
+    ModelAssetMissingError,
+    ModelAssetPointerError,
+    validate_local_model_asset,
 )
 
 
@@ -47,14 +53,19 @@ class YoloModelStore:
             cached = self._models.get(key)
             if cached is not None:
                 return cached
-            if not path.is_file():
-                raise DetectorWeightsMissingError(detector.name, path.name)
-            actual = _sha256(path)
-            if actual != detector.sha256:
+            try:
+                validate_local_model_asset(path, expected_sha256=detector.sha256)
+            except ModelAssetMissingError as error:
+                raise DetectorWeightsMissingError(detector.name, path.name) from error
+            except ModelAssetPointerError as error:
+                raise DetectorWeightsPointerError(
+                    "Detector weight is a Git LFS pointer; actual binary has not "
+                    f"been downloaded: {path.name}"
+                ) from error
+            except ModelAssetHashMismatchError as error:
                 raise DetectorWeightsHashMismatchError(
-                    f"Detector {detector.name!r} digest mismatch for {path.name}: "
-                    f"expected {detector.sha256}, got {actual}"
-                )
+                    f"Detector {detector.name!r} digest mismatch for {path.name}"
+                ) from error
             model = self._load(path, detector)
             actual_task = str(getattr(model, "task", ""))
             if actual_task != detector.task:
@@ -100,16 +111,6 @@ class YoloModelStore:
                 "yolo", dependency="ultralytics", install_hint="pip install ultralytics"
             ) from exc
         return YOLO(str(path))
-
-
-def _sha256(path: Path) -> str:
-    """Hash a local weight file incrementally to avoid large-file buffering.
-    增量计算本地权重文件摘要，避免缓冲整个大文件。"""
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for block in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def _normalized_names(value: object) -> list[str]:

@@ -26,6 +26,13 @@ def test_default_settings() -> None:
     assert settings.paths.dataset_root == Path("dataset")
     assert settings.router.confidence_threshold == 0.7
     assert settings.models.qwen.allow_download is False
+    assert settings.models.segformer_isaid.allow_download is False
+    assert settings.models.segformer_isaid.model_path == Path(
+        "models/segformer_mitb2_isaid"
+    )
+    assert settings.models.segformer_oem.model_path == Path(
+        "models/segformer_mitb2_oem"
+    )
     assert settings.backend.yolo.enabled is False
     assert settings.agents.counting.default_backend == "auto"
 
@@ -56,12 +63,16 @@ def test_load_settings_env_overrides(tmp_path: Path) -> None:
         "DATASET_ROOT": r"C:\data\remote-sensing",
         "OUTPUT_ROOT": r"D:\runs\m3",
         "DEEPSEEK_MODEL": "deepseek-env",
+        "SEGFORMER_ISAID_MODEL": r"D:\models\isaid",
+        "SEGFORMER_OEM_MODEL": r"D:\models\oem",
     }
     settings = load_settings(path, environ=environ)
     assert settings.models.qwen.model == "from-env"  # env wins / 环境优先
     assert settings.paths.dataset_root == Path(r"C:\data\remote-sensing")
     assert settings.runs.root == Path(r"D:\runs\m3")
     assert settings.models.deepseek.model == "deepseek-env"
+    assert settings.models.segformer_isaid.model_path == Path(r"D:\models\isaid")
+    assert settings.models.segformer_oem.model_path == Path(r"D:\models\oem")
 
 
 def test_windows_paths_are_coerced() -> None:
