@@ -61,6 +61,7 @@
     "agents/change/__init__.py",
     "agents/change/agent.py",
     "agents/change/difference_proposal.py",
+    "agents/change/feature_residual.py",
     "agents/change/harmonizer.py",
     "agents/change/pair_validator.py",
     "agents/change/preprocess.py",
@@ -193,11 +194,9 @@
     "workflows/task_resolver.py"
   ],
   "pending_files": [
-    "agents/change/feature_residual.py",
     "agents/change/semantic_difference.py",
     "agents/change/proposal_fusion.py",
     "agents/change/perception.py",
-    "tests/agents/change/test_feature_residual.py",
     "tests/agents/change/test_semantic_difference.py",
     "tests/agents/change/test_proposal_fusion.py",
     "tests/agents/change/test_perception.py",
