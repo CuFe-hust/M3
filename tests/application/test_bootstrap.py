@@ -228,7 +228,7 @@ def test_multiple_segformer_backends_register_stably_and_reuse_client(
     document["experts"].append(duplicate)
     path = tmp_path / "catalog.json"
     path.write_text(json.dumps(document), encoding="utf-8")
-    catalog = ExpertCatalog.load(path)
+    catalog = ExpertCatalog.load(path, asset_root=REPO_ROOT)
     clients_created: list[str] = []
 
     def fake_create_model(name: str, **kwargs: Any) -> object:
@@ -264,7 +264,7 @@ def test_duplicate_catalog_backend_name_fails_before_registration(tmp_path: Path
         ExpertCatalog.load(path)
 
 
-def test_segformer_class_map_mismatch_fails_without_absolute_path(
+def test_segformer_catalog_label_mismatch_fails_without_absolute_path(
     tmp_path: Path,
 ) -> None:
     document = json.loads(CATALOG_PATH.read_text(encoding="utf-8"))
@@ -277,12 +277,8 @@ def test_segformer_class_map_mismatch_fails_without_absolute_path(
     path = tmp_path / "catalog.json"
     path.write_text(json.dumps(document), encoding="utf-8")
 
-    with pytest.raises(RuntimeCompositionError) as raised:
-        _build_segformer_clients(
-            _settings(tmp_path),
-            ExpertCatalog.load(path),
-            project_root=REPO_ROOT,
-        )
+    with pytest.raises(ExpertCatalogError) as raised:
+        ExpertCatalog.load(path, asset_root=REPO_ROOT)
     assert str(REPO_ROOT) not in str(raised.value)
 
 

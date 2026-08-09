@@ -1886,7 +1886,8 @@ def test_count_image_target_spec_skips_target_model_call(
     assert client.calls == [
         "_CountProposalResult",
         "TileCountResponse",
-    ]  # no target parser call; vehicle specialist chain remains active
+    ]  # No target parser call; vehicle specialist chain remains active.
+    # 不调用 target parser；vehicle 专家链仍然生效。
 
 
 # ── render-count / 渲染计数 ─────────────────────────────────────────────────

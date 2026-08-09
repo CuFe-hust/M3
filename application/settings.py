@@ -91,7 +91,8 @@ class AppSettings(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def migrate_legacy_counting_execution_policy(cls, data: Any) -> Any:
-        """Move legacy YOLO-scoped execution policy at the settings boundary."""
+        """Move legacy YOLO policy only at the settings boundary.
+        仅在 settings 边界迁移旧 YOLO 执行策略。"""
 
         if not isinstance(data, Mapping):
             return data

@@ -31,7 +31,19 @@ def _payload() -> dict[str, object]:
 def _load_payload(tmp_path: Path, payload: dict[str, object]) -> ExpertCatalog:
     path = tmp_path / "catalog.json"
     path.write_text(json.dumps(payload), encoding="utf-8")
-    return ExpertCatalog.load(path)
+    return ExpertCatalog.load(path, asset_root=REPO_ROOT)
+
+
+def test_semantic_label_absent_from_verified_class_map_fails_closed(
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    payload["experts"][1]["supports"]["vehicle"]["model_labels"] = [
+        "not_a_verified_label"
+    ]
+
+    with pytest.raises(ExpertCatalogError, match="validation failed"):
+        _load_payload(tmp_path, payload)
 
 
 def test_valid_catalog_loads_and_exposes_capability_specs() -> None:

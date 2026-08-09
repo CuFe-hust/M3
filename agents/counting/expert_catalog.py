@@ -248,7 +248,12 @@ class ExpertCatalog:
         )
 
     @classmethod
-    def load(cls, path: Path) -> "ExpertCatalog":
+    def load(
+        cls,
+        path: Path,
+        *,
+        asset_root: Path | None = None,
+    ) -> "ExpertCatalog":
         """Load a catalog without exposing the host path in public errors."""
 
         try:
@@ -260,6 +265,13 @@ class ExpertCatalog:
         try:
             document = _CatalogDocument.model_validate(payload)
         except ValidationError:
+            raise ExpertCatalogError("expert catalog validation failed") from None
+        try:
+            _validate_verified_semantic_labels(
+                document,
+                _catalog_asset_root(path, document, asset_root),
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
             raise ExpertCatalogError("expert catalog validation failed") from None
         return cls(document)
 
@@ -317,7 +329,8 @@ class ExpertCatalog:
         kinds: frozenset[str] | None = None,
         enabled_only: bool = True,
     ) -> tuple[ExpertSpec, ...]:
-        """Enumerate immutable expert declarations in stable routing order."""
+        """Enumerate immutable declarations in stable routing order.
+        按稳定路由顺序枚举不可变专家声明。"""
 
         if kinds is not None:
             unknown_kinds = kinds - frozenset(_EXPERT_KIND_ORDER)
@@ -357,6 +370,55 @@ def _normalize_label(value: str) -> str:
 
     folded = value.strip().casefold()
     return re.sub(r"-+", "-", re.sub(r"[_\s]+", "-", folded)).strip("-")
+
+
+def _catalog_asset_root(
+    path: Path,
+    document: _CatalogDocument,
+    explicit: Path | None,
+) -> Path:
+    """Resolve the portable catalog asset root without leaking its path.
+    解析可移植 catalog 资产根，且不在错误中泄漏路径。"""
+
+    references = tuple(
+        expert.asset.class_map
+        for expert in document.experts
+        if expert.enabled and expert.kind == "semantic_segmentation"
+    )
+    if explicit is not None:
+        return explicit
+    for candidate in (path.parent, *path.parents):
+        if all(reference and (candidate / reference).is_file() for reference in references):
+            return candidate
+    raise ValueError("verified class-map assets are unavailable")
+
+
+def _validate_verified_semantic_labels(
+    document: _CatalogDocument,
+    asset_root: Path,
+) -> None:
+    """Reject semantic capabilities outside their verified class map.
+    拒绝超出 verified class map 的语义能力声明。"""
+
+    for expert in document.experts:
+        if not expert.enabled or expert.kind != "semantic_segmentation":
+            continue
+        if expert.asset.class_map is None:
+            raise ValueError("verified semantic class map is missing")
+        payload = json.loads(
+            (asset_root / expert.asset.class_map).read_text(encoding="utf-8")
+        )
+        raw_labels = payload["id2name"]
+        if not isinstance(raw_labels, dict) or not raw_labels:
+            raise ValueError("verified semantic class map is invalid")
+        labels = set(raw_labels.values())
+        declared = {
+            label
+            for support in expert.supports.values()
+            for label in support.model_labels
+        }
+        if not declared.issubset(labels):
+            raise ValueError("semantic capability label is not verified")
 
 
 __all__ = [

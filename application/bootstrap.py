@@ -363,7 +363,8 @@ def _build_backend_registry(
 
 def _load_expert_catalog(project_root: Path) -> ExpertCatalog:
     return ExpertCatalog.load(
-        project_root / "agents" / "counting" / "expert_catalog.json"
+        project_root / "agents" / "counting" / "expert_catalog.json",
+        asset_root=project_root,
     )
 
 
@@ -375,7 +376,8 @@ def _enabled_semantic_specs(catalog: ExpertCatalog) -> tuple[ExpertSpec, ...]:
 
 
 def _expert_asset_root(project_root: Path) -> Path:
-    """Prefer the declared project root; installed wheels use package resources."""
+    """Prefer the project root; installed wheels use package resources.
+    优先使用项目根；安装后的 wheel 使用包资源。"""
 
     marker = Path("agents") / "counting" / "expert_catalog.json"
     if (project_root / marker).is_file():
@@ -454,7 +456,8 @@ def _segformer_runtime_settings(
 
 
 def _resolve_runtime_model_dir(project_root: Path, configured: Path) -> Path:
-    """Resolve a deploy-time model directory without treating it as identity."""
+    """Resolve a deploy-time path without treating it as model identity.
+    解析部署时路径，但不把它当作模型身份。"""
 
     return configured if configured.is_absolute() else (project_root / configured).resolve()
 
