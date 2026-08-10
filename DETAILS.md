@@ -1304,10 +1304,13 @@ hints 匹配；VLM 不返回 backend/checkpoint 决策。
 
 YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
 
-默认配置启用 `detector_obb_csl_001`（`models/yolo_obb/yolov5m_obb_csl_dotav20.onnx`），
-Counting backend 默认注册 `yolo_obb` 路径；权重与 ONNX Runtime 仍由本地
-环境准备，不自动下载。缺少权重/依赖时按 `fallback_on_backend_*` 策略进入
-有序回退链，而不是使运行失败。可通过 `backend.yolo.enabled=false` 显式关闭。
+Python `YoloCountingSettings` 只保留 schema 与通用默认值：默认 `enabled=false`、
+`detectors=[]`，不包含具体 checkpoint、labels 或 backend id。`ExpertCatalog` 是 capability、
+logical identity、SHA、labels 与 priority 的事实源；`configs/local.yaml` 等部署配置是 enabled、
+物理权重路径、provider/device 与阈值的事实源。只有显式部署 inventory 才注册 YOLO。
+相对权重路径在 composition root 按 `project_root` canonicalize，绝对外部挂载路径保持不变；
+物理路径不参与 catalog identity。权重与 ONNX Runtime 不自动下载，缺失时仍按通用 fallback
+策略进入下一专家。
 
 硬件策略由 settings 决定，例如：
 
@@ -1355,6 +1358,10 @@ target、候选/尝试/final backend、fallback history、counting mode 与 acce
 
 wheel 通过 package-data 携带 expert catalog、verified SegFormer 小型 metadata 与 prompts，
 不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
+Prompt root 的顺序是 explicit override → `project_root/prompts` → installed package
+`prompts`；显式错误配置 fail closed，公开 composition error 不包含绝对路径。CI 使用真实
+wheel 在源码树外组装 runtime，验证 catalog/prompt metadata、QuantityProposal、lazy
+SegFormer 与不加载权重的 YOLO 注册。
 
 ---
 

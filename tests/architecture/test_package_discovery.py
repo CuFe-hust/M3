@@ -58,7 +58,10 @@ def test_every_implemented_package_is_discovered() -> None:
 
 def test_ci_compileall_covers_routing() -> None:
     workflow = _workflow()
-    assert "python -m compileall data models agents routing workflows evaluation tests" in workflow
+    assert (
+        "python -m compileall data models agents routing workflows evaluation "
+        "reporting application tests" in workflow
+    )
 
 
 def test_wheel_smoke_script_imports_routing() -> None:
@@ -73,6 +76,17 @@ def test_wheel_smoke_runs_outside_source_tree() -> None:
     workflow = _workflow()
     assert "cd /tmp" in workflow
     assert "wheel-import-contract: PASS" in workflow
+    assert "counting-wheel-runtime: PASS" in workflow
+    assert "counting-wheel-assets: PASS" in workflow
+
+
+def test_ci_declares_build_dependency_without_stale_migration_extra() -> None:
+    dev = _pyproject()["project"]["optional-dependencies"]["dev"]
+    workflow = _workflow()
+
+    assert any(item.startswith("build>=") for item in dev)
+    assert ".[dev,change]" in workflow
+    assert ".[dev,migration,change]" not in workflow
 
 
 def test_required_counting_metadata_is_packaged_without_large_weights() -> None:

@@ -156,3 +156,29 @@ it contained no `.safetensors`, `.onnx`, or `.pt` checkpoint. Installation into 
 `--system-site-packages` venv and model-free runtime assembly passed. The preferred
 `python -m build` command was not available because the local `build` package is absent; no
 network install was attempted.
+
+## C8.2 release/deployment hardening
+
+C8.2 separates the final deployment contracts without changing expert priority, target routing,
+connected-components behavior, QuantityProposal, executor fallback semantics, or registry naming
+guards:
+
+- `build>=1.2` is a declared dev dependency and CI no longer requests the nonexistent
+  `migration` extra;
+- prompts resolve in the order explicit override, project assets, installed-package assets, then
+  stable failure; an invalid explicit override never silently falls back;
+- Python settings contain schema/generic defaults only (`enabled=false`, `detectors=[]`);
+  `configs/local.yaml` owns the concrete YOLO deployment inventory while `ExpertCatalog` remains
+  the capability/identity source;
+- relative YOLO weights resolve against `project_root`; external absolute deployment paths are
+  preserved and do not affect logical identity checks;
+- the CI wheel gate inspects real archive contents and assembles an installed runtime from an
+  arbitrary working directory with a fake Qwen client. It verifies packaged catalog/prompts/class
+  metadata, QuantityProposal registration, lazy SegFormer state, lazy YOLO registration, and the
+  absence of checkpoint binaries.
+
+Local release evidence uses `python -m build`, a clean venv installation of the generated
+`spacers_agent` wheel, and a source-tree-external composition smoke. This is packaging/offline
+composition evidence only; it does not claim YOLO CUDA inference, SegFormer live inference, Qwen
+live inference, Spark deployment, accuracy, or latency. The GitHub Actions run id and latest-head
+conclusion are recorded only after the pushed branch run completes; until then C8.2 remains open.

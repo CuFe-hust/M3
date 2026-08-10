@@ -20,6 +20,8 @@ from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
     _build_segformer_clients,
+    _catalog_validated_yolo_detector,
+    _resolve_yolo_detector,
     assemble_runtime,
 )
 from application.prompts import PromptCatalog
@@ -94,6 +96,49 @@ def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
     )
 
 
+def test_runtime_uses_project_prompt_root_when_present(tmp_path: Path) -> None:
+    components = assemble_runtime(
+        _settings(tmp_path),
+        project_root=REPO_ROOT,
+        qwen_client=_FakeQwenClient(),
+    )
+
+    assert components.prompt_catalog.asset("count_tile").path.parent == (
+        REPO_ROOT / "prompts"
+    )
+
+
+def test_runtime_uses_packaged_prompt_root_when_project_prompts_missing(
+    tmp_path: Path,
+) -> None:
+    components = assemble_runtime(
+        _settings(tmp_path),
+        project_root=tmp_path / "arbitrary-cwd",
+        qwen_client=_FakeQwenClient(),
+    )
+
+    assert components.prompt_catalog.asset("count_tile").path.parent == (
+        REPO_ROOT / "prompts"
+    )
+
+
+def test_explicit_invalid_prompt_root_fails_closed(tmp_path: Path) -> None:
+    invalid = tmp_path / "private" / "missing-prompts"
+
+    with pytest.raises(
+        RuntimeCompositionError,
+        match="explicit prompt metadata is unavailable",
+    ) as raised:
+        assemble_runtime(
+            _settings(tmp_path),
+            project_root=REPO_ROOT,
+            prompts_root=invalid,
+            qwen_client=_FakeQwenClient(),
+        )
+
+    assert str(invalid) not in str(raised.value)
+
+
 def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:
     registry = _build_backend_registry(
         _settings(tmp_path),
@@ -103,7 +148,6 @@ def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:
     assert registry.all_names() == [
         "qwen_point",
         "quantity_proposal",
-        "detector_obb_csl_001",
     ]
     assert registry.get("quantity_proposal").kind == "quantity_proposal"
 
@@ -121,7 +165,6 @@ def test_enabled_segformer_is_registered_lazily_and_oem_is_not(tmp_path: Path) -
     assert registry.all_names() == [
         "qwen_point",
         "quantity_proposal",
-        "detector_obb_csl_001",
         "segmenter_mitb2_001",
     ]
     backend = registry.get("segmenter_mitb2_001")
@@ -345,6 +388,51 @@ def test_yolo_catalog_identity_mismatch_fails_fast(
         )
 
 
+def test_relative_yolo_weights_resolve_against_project_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    detector = settings.backend.yolo.detectors[0]
+    project_root = tmp_path / "repo"
+    elsewhere = tmp_path / "elsewhere"
+    project_root.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+
+    resolved = _resolve_yolo_detector(detector, project_root)
+
+    assert resolved.weights == (
+        project_root / "models" / "yolo_obb" / "yolov5m_obb_csl_dotav20.onnx"
+    ).resolve()
+    assert elsewhere not in resolved.weights.parents
+
+
+def test_absolute_yolo_weights_are_preserved(tmp_path: Path) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    external = tmp_path / "mounted-models" / "detector.onnx"
+    detector = settings.backend.yolo.detectors[0].model_copy(
+        update={"weights": external}
+    )
+
+    resolved = _resolve_yolo_detector(detector, tmp_path / "repo")
+
+    assert resolved.weights == external
+
+
+def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    detector = settings.backend.yolo.detectors[0].model_copy(
+        update={"weights": tmp_path / "external" / "detector.onnx"}
+    )
+    catalog = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
+
+    validated = _catalog_validated_yolo_detector(detector, catalog)
+
+    assert validated.weights == detector.weights
+    assert validated.name == "detector_obb_csl_001"
+
+
 def test_route_coverage_after_assembly(tmp_path: Path) -> None:
     """Every routable task must resolve to a registered agent after assembly.
     组装后每个可路由任务都必须解析到已注册 Agent。"""
@@ -421,7 +509,7 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     )
 
 
-def test_composed_default_plan_uses_yolo_then_segformer_qwen_or_qwen_only(
+def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
     tmp_path: Path,
 ) -> None:
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
@@ -440,11 +528,8 @@ def test_composed_default_plan_uses_yolo_then_segformer_qwen_or_qwen_only(
     }
     pool_plan = selector.plan(swimming_pool, task="counting", hints=pool_hints)
     assert pool_plan is not None
-    assert pool_plan.primary_backend_name == "detector_obb_csl_001"
-    assert pool_plan.fallback_backend_names == (
-        "segmenter_mitb2_001",
-        "qwen_point",
-    )
+    assert pool_plan.primary_backend_name == "segmenter_mitb2_001"
+    assert pool_plan.fallback_backend_names == ("qwen_point",)
 
     crane = swimming_pool.model_copy(update={"canonical_label": "crane"})
     crane_hints = {"quantity_estimation": True, **catalog.target_hints(crane)}

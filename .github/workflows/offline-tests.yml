@@ -19,10 +19,10 @@ jobs:
           python-version: "3.11"
 
       - name: Install foundation dependencies
-        run: python -m pip install -e ".[dev,migration,change]"
+        run: python -m pip install -e ".[dev,change]"
 
       - name: Compile implemented code
-        run: python -m compileall data models agents routing workflows evaluation tests scripts/generate_migration_fixtures.py
+        run: python -m compileall data models agents routing workflows evaluation reporting application tests scripts/generate_migration_fixtures.py
 
       - name: Architecture guards
         run: python -m pytest -q tests/architecture
@@ -43,17 +43,36 @@ jobs:
 
       - name: Build and verify wheel
         run: |
+          rm -rf dist
           python -m build
+          python - <<'PY'
+          from pathlib import Path
+          from zipfile import ZipFile
+
+          wheel = next(Path("dist").glob("*.whl"))
+          with ZipFile(wheel) as archive:
+              names = archive.namelist()
+
+          assert any(name.endswith("agents/counting/expert_catalog.json") for name in names)
+          assert any(name.endswith("models/segformer_mitb2_isaid/classes.json") for name in names)
+          assert any(name.endswith("prompts/count_tile_v4.md") for name in names)
+          forbidden = (".onnx", ".pt", ".pth", ".safetensors", ".bin")
+          assert not any(name.endswith(forbidden) for name in names)
+          print("counting-wheel-assets: PASS")
+          PY
           python -m venv /tmp/m3-wheel-test
           /tmp/m3-wheel-test/bin/python -m pip install --upgrade pip
           /tmp/m3-wheel-test/bin/python -m pip install dist/*.whl
           cd /tmp
           /tmp/m3-wheel-test/bin/python - <<'PY'
+          import os
           import sys
+          from pathlib import Path
 
           import data
           import models
           import agents
+          import application
           import routing
           import workflows
           import evaluation
@@ -66,6 +85,12 @@ jobs:
           from models.entry import list_models
           from agents.registry import AgentRegistry
           from agents.counting import CountingAgent, CountingResult
+          from agents.counting.expert_catalog import ExpertCatalog
+          from agents.counting.settings import YoloCountingSettings, YoloDetectorSettings
+          from application.bootstrap import assemble_runtime
+          from application.prompts import PromptCatalog
+          from application.settings import AppSettings, BackendSettings
+          from models.base import ModelCacheIdentity
           from agents import CountingBackendUnavailableError as PublicError
           from agents.errors import CountingBackendUnavailableError as CoreError
           from agents.counting.backends.base import (
@@ -129,7 +154,61 @@ jobs:
           grounding = GroundingDeterministicMetrics(iou=0.5, iou_at_0_5=True)
           assert grounding.iou_at_0_5 is True
 
+          class FakeQwen:
+              @property
+              def cache_identity(self):
+                  return ModelCacheIdentity(
+                      model="wheel-smoke-fake",
+                      generation={"temperature": 0.0},
+                      client_version="1",
+                  )
+
+              async def complete_json(self, **kwargs):
+                  raise AssertionError("wheel composition smoke must not call Qwen")
+
+          detector = YoloDetectorSettings(
+              name="detector_obb_csl_001",
+              enabled=True,
+              weights=Path("models/yolo_obb/yolov5m_obb_csl_dotav20.onnx"),
+              runtime="onnx_yolov5_obb",
+              model_id="YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m",
+              sha256="c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a",
+              source_dataset="DOTAv2.0",
+              priority=100,
+              classes=["plane", "baseball diamond", "bridge", "ground track field", "small vehicle", "large vehicle", "ship", "tennis court", "basketball court", "storage tank", "soccer ball field", "roundabout", "harbor", "swimming pool", "helicopter", "container crane", "airport", "helipad"],
+              aliases={"airplane": "plane", "aeroplane": "plane", "vessel": "ship", "boat": "ship", "storage-tank": "storage tank", "oil tank": "storage tank", "large-vehicle": "large vehicle", "small-vehicle": "small vehicle", "football field": "soccer ball field", "soccer field": "soccer ball field", "swimming-pool": "swimming pool"},
+              composite_targets={"vehicle": ["small vehicle", "large vehicle"], "aircraft": ["plane", "helicopter"]},
+          )
+          settings = AppSettings(
+              backend=BackendSettings(
+                  yolo=YoloCountingSettings(enabled=True, detectors=[detector])
+              )
+          )
+          components = assemble_runtime(
+              settings,
+              project_root=Path.cwd(),
+              qwen_client=FakeQwen(),
+          )
+          assert isinstance(components.prompt_catalog, PromptCatalog)
+          counting_agent = components.agent_registry.get("counting_agent")
+          assert isinstance(counting_agent, CountingAgent)
+          backend_registry = counting_agent._selector._registry
+          assert backend_registry.all_names() == [
+              "qwen_point",
+              "quantity_proposal",
+              "detector_obb_csl_001",
+              "segmenter_mitb2_001",
+          ]
+          assert backend_registry.get("segmenter_mitb2_001")._client.loaded is False
+          yolo_backend = backend_registry.get("detector_obb_csl_001")
+          assert yolo_backend._detector.weights.is_absolute()
+          assert yolo_backend._store._models == {}
+          assert ExpertCatalog is not None
+          source_root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
+          assert source_root not in Path(application.__file__).resolve().parents
+
           print("wheel-import-contract: PASS")
+          print("counting-wheel-runtime: PASS")
           print("task33-wheel-import-contract: PASS")
           print("task33.7-wheel-contract: PASS")
           PY
