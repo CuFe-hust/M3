@@ -273,6 +273,9 @@ tests/models/test_segformer_transformers.py
 scripts/generate_migration_fixtures.py
 scripts/evaluate_levir_harmonization.py
 
+# === Analysis tooling ===
+scripts/classify_tasks.py
+
 # === Reporting tests ===
 tests/reporting/__init__.py
 tests/reporting/test_builder.py
