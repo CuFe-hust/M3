@@ -180,5 +180,17 @@ guards:
 Local release evidence uses `python -m build`, a clean venv installation of the generated
 `spacers_agent` wheel, and a source-tree-external composition smoke. This is packaging/offline
 composition evidence only; it does not claim YOLO CUDA inference, SegFormer live inference, Qwen
-live inference, Spark deployment, accuracy, or latency. The GitHub Actions run id and latest-head
-conclusion are recorded only after the pushed branch run completes; until then C8.2 remains open.
+live inference, Spark deployment, accuracy, or latency.
+
+The pushed implementation gate completed successfully:
+
+```text
+workflow: Foundation tests
+run_id: 31372069868
+head_sha: 0e9bb0c094b51b2d24346f086b40b81a10205585
+status: completed
+conclusion: success
+```
+
+This run is the implementation evidence recorded by the following documentation-only commit;
+the documentation commit's own latest-head run must also remain green before C8.2 is complete.
