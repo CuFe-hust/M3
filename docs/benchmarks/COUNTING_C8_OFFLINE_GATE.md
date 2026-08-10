@@ -156,3 +156,41 @@ it contained no `.safetensors`, `.onnx`, or `.pt` checkpoint. Installation into 
 `--system-site-packages` venv and model-free runtime assembly passed. The preferred
 `python -m build` command was not available because the local `build` package is absent; no
 network install was attempted.
+
+## C8.2 release/deployment hardening
+
+C8.2 separates the final deployment contracts without changing expert priority, target routing,
+connected-components behavior, QuantityProposal, executor fallback semantics, or registry naming
+guards:
+
+- `build>=1.2` is a declared dev dependency and CI no longer requests the nonexistent
+  `migration` extra;
+- prompts resolve in the order explicit override, project assets, installed-package assets, then
+  stable failure; an invalid explicit override never silently falls back;
+- Python settings contain schema/generic defaults only (`enabled=false`, `detectors=[]`);
+  `configs/local.yaml` owns the concrete YOLO deployment inventory while `ExpertCatalog` remains
+  the capability/identity source;
+- relative YOLO weights resolve against `project_root`; external absolute deployment paths are
+  preserved and do not affect logical identity checks;
+- the CI wheel gate inspects real archive contents and assembles an installed runtime from an
+  arbitrary working directory with a fake Qwen client. It verifies packaged catalog/prompts/class
+  metadata, QuantityProposal registration, lazy SegFormer state, lazy YOLO registration, and the
+  absence of checkpoint binaries.
+
+Local release evidence uses `python -m build`, a clean venv installation of the generated
+`spacers_agent` wheel, and a source-tree-external composition smoke. This is packaging/offline
+composition evidence only; it does not claim YOLO CUDA inference, SegFormer live inference, Qwen
+live inference, Spark deployment, accuracy, or latency.
+
+The pushed implementation gate completed successfully:
+
+```text
+workflow: Foundation tests
+run_id: 31372069868
+head_sha: 0e9bb0c094b51b2d24346f086b40b81a10205585
+status: completed
+conclusion: success
+```
+
+This run is the implementation evidence recorded by the following documentation-only commit;
+the documentation commit's own latest-head run must also remain green before C8.2 is complete.

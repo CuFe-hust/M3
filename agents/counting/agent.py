@@ -26,7 +26,11 @@ from agents.counting.executor import (
     CountingExecutionResult,
     CountingPlanExecutor,
 )
-from agents.counting.schema import CountTargetSpec, CountingResult
+from agents.counting.schema import (
+    CountTargetSpec,
+    CountingExecutionAudit,
+    CountingResult,
+)
 from agents.counting.target_parser import CountTargetParser
 from agents.errors import (
     AgentExecutionError,
@@ -143,6 +147,11 @@ class CountingAgent:
             additional_results["agent_result.json"] = _agent_result(
                 execution_state.outcome.counting, sample.images[0].image_id
             ).model_dump(mode="json")
+        additional_results["counting_attempts.json"] = CountingExecutionAudit(
+            sample_id=sample.sample_id,
+            target=target.canonical_label,
+            attempts=list(execution_state.attempt_audits),
+        ).model_dump(mode="json")
         return AgentExecution(
             agent_name=self.name,
             payload=execution_state.outcome.counting,

@@ -9,6 +9,7 @@ contracts are terminal. Zero is always valid and only enters explicit review.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from agents.base import AgentContext
 from agents.counting.backends.base import (
@@ -19,7 +20,10 @@ from agents.counting.backends.base import (
     CountingRequest,
 )
 from agents.counting.backends.selector import BackendSelector
-from agents.counting.schema import IssueRecord
+from agents.counting.schema import (
+    CountingBackendAttemptAudit,
+    IssueRecord,
+)
 from agents.errors import (
     AgentExecutionError,
     CountingBackendUnavailableError,
@@ -91,6 +95,7 @@ class CountingExecutionResult:
     fallback_reason_code: str | None
     fallback_error_type: str | None
     yolo_trace: dict[str, object] | None
+    attempt_audits: tuple[CountingBackendAttemptAudit, ...]
 
 
 class CountingPlanExecutor:
@@ -136,6 +141,7 @@ class CountingPlanExecutor:
         yolo_trace = _yolo_profile(primary, primary_kind)
         attempted: list[str] = []
         history: list[BackendFailureRecord] = []
+        attempt_audits: list[CountingBackendAttemptAudit] = []
         outcome: CountingBackendOutcome | None = None
         final_backend = plan.primary_backend_name
         final_kind = primary_kind
@@ -173,6 +179,7 @@ class CountingPlanExecutor:
                     candidate_count=len(candidates),
                     request=request,
                     agent_name=agent_name,
+                    attempt_audits=attempt_audits,
                 ):
                     continue
                 raise AssertionError("unreachable")
@@ -193,6 +200,7 @@ class CountingPlanExecutor:
                     candidate_count=len(candidates),
                     request=request,
                     agent_name=agent_name,
+                    attempt_audits=attempt_audits,
                 ):
                     continue
                 raise AssertionError("unreachable")
@@ -215,6 +223,7 @@ class CountingPlanExecutor:
                     candidate_count=len(candidates),
                     request=request,
                     agent_name=agent_name,
+                    attempt_audits=attempt_audits,
                 ):
                     continue
                 raise AssertionError("unreachable")
@@ -229,6 +238,14 @@ class CountingPlanExecutor:
             final_backend = name
             final_kind = kind
             succeeded_index = index
+            attempt_audits.append(
+                _success_attempt_audit(
+                    backend=name,
+                    kind=kind,
+                    phase="primary" if index == 0 else "fallback",
+                    outcome=outcome,
+                )
+            )
             if kind == "yolo_obb":
                 yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
             break
@@ -296,6 +313,14 @@ class CountingPlanExecutor:
                     final_backend = review_backend
                     final_kind = review_kind
                     zero_overridden = True
+                attempt_audits.append(
+                    _success_attempt_audit(
+                        backend=review_backend,
+                        kind=review_kind,
+                        phase="zero_review",
+                        outcome=review,
+                    )
+                )
             except InvalidBackendContract as error:
                 raise AgentExecutionError(
                     agent_name,
@@ -304,6 +329,21 @@ class CountingPlanExecutor:
                 ) from error
             except Exception as error:
                 review_error_type = type(error).__name__
+                unavailable = isinstance(error, (BackendUnavailable, *_UNAVAILABLE_ERRORS))
+                attempt_audits.append(
+                    CountingBackendAttemptAudit(
+                        backend_name=review_backend,
+                        backend_kind=review_kind,
+                        phase="zero_review",
+                        status="unavailable" if unavailable else "failed",
+                        reason_code=(
+                            "BACKEND_UNAVAILABLE"
+                            if unavailable
+                            else "BACKEND_RUNTIME_ERROR"
+                        ),
+                        error_type=type(error).__name__,
+                    )
+                )
                 outcome = _with_review_warning(original_outcome, source_kind=final_kind)
                 if yolo_trace is not None and final_kind == "yolo_obb":
                     yolo_trace.update(
@@ -355,6 +395,7 @@ class CountingPlanExecutor:
             fallback_reason_code=fallback_reason_code,
             fallback_error_type=fallback_error_type,
             yolo_trace=yolo_trace,
+            attempt_audits=tuple(attempt_audits),
         )
 
     def _record_or_raise(
@@ -369,7 +410,19 @@ class CountingPlanExecutor:
         candidate_count: int,
         request: CountingRequest,
         agent_name: AgentName,
+        attempt_audits: list[CountingBackendAttemptAudit],
     ) -> bool:
+        unavailable = reason_code == "BACKEND_UNAVAILABLE"
+        attempt_audits.append(
+            CountingBackendAttemptAudit(
+                backend_name=backend,
+                backend_kind=kind,
+                phase="primary" if index == 0 else "fallback",
+                status="unavailable" if unavailable else "failed",
+                reason_code=reason_code,
+                error_type=type(error).__name__,
+            )
+        )
         history.append(
             BackendFailureRecord(
                 backend=backend,
@@ -378,7 +431,6 @@ class CountingPlanExecutor:
                 error_type=type(error).__name__,
             )
         )
-        unavailable = reason_code == "BACKEND_UNAVAILABLE"
         policy_allows = (
             self._policy.fallback_on_backend_unavailable
             if unavailable
@@ -467,6 +519,34 @@ class BackendUnavailable(RuntimeError):
 
 class InvalidBackendContract(RuntimeError):
     """Internal path-free contract marker. / 内部无路径契约标记。"""
+
+
+def _success_attempt_audit(
+    *,
+    backend: str,
+    kind: BackendKind,
+    phase: Literal["primary", "fallback", "zero_review"],
+    outcome: CountingBackendOutcome,
+) -> CountingBackendAttemptAudit:
+    counting_status = outcome.counting.status
+    status = (
+        "succeeded"
+        if counting_status in {"completed", "completed_with_warnings"}
+        else counting_status
+    )
+    return CountingBackendAttemptAudit(
+        backend_name=backend,
+        backend_kind=kind,
+        phase=phase,
+        status=status,
+        counting=outcome.counting,
+        agent_result=(
+            outcome.agent_result.model_dump(mode="json")
+            if outcome.agent_result is not None
+            else None
+        ),
+        backend_trace=dict(outcome.trace or {}),
+    )
 
 
 def _backend_kind(backend: object, *, agent_name: str, sample_id: str) -> BackendKind:

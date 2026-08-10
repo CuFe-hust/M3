@@ -372,6 +372,11 @@ def test_unavailable_detector_falls_back_to_qwen(tmp_path: Path) -> None:
     assert execution.trace["fallback_error_type"] == "DetectorWeightsMissingError"
     assert execution.trace["yolo"]["attempted"] is True
     assert execution.trace["yolo"]["used_for_final"] is False
+    audit = execution.additional_results["counting_attempts.json"]
+    assert [item["backend_name"] for item in audit["attempts"]] == ["det-a", "qwen_point"]
+    assert audit["attempts"][0]["status"] == "unavailable"
+    assert audit["attempts"][0]["counting"] is None
+    assert audit["attempts"][1]["status"] == "succeeded"
 
 
 def test_runtime_error_on_detector_falls_back_to_qwen(tmp_path: Path) -> None:
@@ -431,6 +436,12 @@ def test_zero_review_overrides_detector_zero(tmp_path: Path) -> None:
     assert execution.trace["fallback_kind"] == "zero_review"
     assert execution.trace["executed_backend"] == "qwen_point"
     assert execution.payload.final_count == 1
+    audit = execution.additional_results["counting_attempts.json"]
+    assert [item["phase"] for item in audit["attempts"]] == [
+        "primary",
+        "zero_review",
+    ]
+    assert [item["counting"]["final_count"] for item in audit["attempts"]] == [0, 1]
 
 
 def test_zero_review_confirms_zero_without_override(tmp_path: Path) -> None:

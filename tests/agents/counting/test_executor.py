@@ -414,6 +414,8 @@ def test_yolo_primary_executes_normally(tmp_path: Path) -> None:
     # outcome trace merges into the yolo namespace. / outcome trace 合入 yolo 命名空间。
     assert result.yolo_trace["detector_note"] == "fake"
     assert result.outcome.counting.final_count == 1
+    assert [item.backend_name for item in result.attempt_audits] == ["det-a"]
+    assert result.attempt_audits[0].status == "succeeded"
 
 
 # ── 回退 / fallback ────────────────────────────────────────────────────────
@@ -454,6 +456,9 @@ def test_detector_runtime_error_falls_back_to_qwen(tmp_path: Path) -> None:
     assert result.fallback_error_type == "RuntimeError"
     assert result.final_backend == "qwen_point"
     assert result.outcome.counting.final_count == 0
+    assert [item.status for item in result.attempt_audits] == ["failed", "succeeded"]
+    assert result.attempt_audits[0].counting is None
+    assert result.attempt_audits[0].reason_code == "BACKEND_RUNTIME_ERROR"
 
 
 def test_unavailable_fallback_disabled_raises_stable_error(tmp_path: Path) -> None:
@@ -508,6 +513,10 @@ def test_yolo_unavailable_advances_to_semantic(tmp_path: Path) -> None:
             "reason_code": "BACKEND_UNAVAILABLE",
             "error_type": "BackendUnavailable",
         }
+    ]
+    assert [item.status for item in result.attempt_audits] == [
+        "unavailable",
+        "succeeded",
     ]
 
 
@@ -578,6 +587,32 @@ def test_all_specialists_fail_before_qwen(tmp_path: Path) -> None:
         "segmenter-a",
         "quantity_proposal",
     ]
+
+
+def test_runtime_failures_then_quantity_success_are_fully_audited(tmp_path: Path) -> None:
+    result = _run(
+        _executor(
+            _qwen_backend(_FakeClient()),
+            _FakeYoloBackend(error=RuntimeError("yolo")),
+            _FakeSemanticBackend(error=RuntimeError("semantic")),
+            _FakeQuantityProposalBackend(final_count=3),
+        ),
+        BackendPlan("det-a", ("segmenter-a", "quantity_proposal", "qwen_point")),
+        tmp_path,
+    )
+    assert result.final_backend == "quantity_proposal"
+    assert [item.backend_name for item in result.attempt_audits] == [
+        "det-a",
+        "segmenter-a",
+        "quantity_proposal",
+    ]
+    assert [item.status for item in result.attempt_audits] == [
+        "failed",
+        "failed",
+        "succeeded",
+    ]
+    assert all(item.counting is None for item in result.attempt_audits[:2])
+    assert result.attempt_audits[2].counting.final_count == 3
 
 
 @pytest.mark.parametrize(
@@ -685,6 +720,8 @@ def test_yolo_zero_uses_next_semantic_expert_for_review(tmp_path: Path) -> None:
     assert result.final_backend == "segmenter-a"
     assert result.outcome.counting.final_count == 2
     assert result.fallback_kind == "zero_review"
+    assert [item.phase for item in result.attempt_audits] == ["primary", "zero_review"]
+    assert [item.counting.final_count for item in result.attempt_audits] == [0, 2]
 
 
 def test_semantic_zero_review_requires_explicit_policy(tmp_path: Path) -> None:

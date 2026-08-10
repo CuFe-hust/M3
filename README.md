@@ -980,23 +980,28 @@ normalization.count_target_hint
 
 ## 21. YOLO OBB Counting
 
-YOLO 后端默认启用：内置配置注册 `detector_obb_csl_001`
-（`models/yolo_obb/yolov5m_obb_csl_dotav20.onnx`），Counting backend 的
-`yolo_obb` 路径默认进入候选链。权重与 ONNX Runtime 仍由本地环境准备，不
-自动下载；模型加载保持惰性，缺少权重/运行时依赖时按有序回退链降级
-（SegFormer → quantity proposal → Qwen point），不会使运行失败。
+Python settings 只定义通用 schema，默认 `enabled=false`、`detectors=[]`，不内置具体
+checkpoint inventory。`ExpertCatalog` 声明专家能力与逻辑身份；部署配置（当前本地样例为
+`configs/local.yaml`）声明是否启用、物理权重路径、provider/device 与阈值。加载该配置后会
+注册 `detector_obb_csl_001`；不加载部署配置时不注册 YOLO。权重与 ONNX Runtime 仍由本地
+环境准备且不自动下载，模型加载保持惰性。
 
-显式关闭方式：
+部署启用方式：
 
 ```yaml
 backend:
   yolo:
-    enabled: false
+    enabled: true
+    detectors:
+      - name: detector_obb_csl_001
+        weights: models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+        # 其余 identity/runtime 字段见 configs/local.yaml
 ```
 
 设计边界：
 
 - detector 权重由本地环境准备；
+- 相对权重路径在 composition root 按 `project_root` 解析；外部绝对部署路径原样保留；
 - 不自动下载权重；
 - detector profile/权重 hash/task/class map 需要一致；
 - CUDA/CPU fallback 行为由 detector settings 声明；
@@ -1008,6 +1013,8 @@ backend:
 SegFormer 的 catalog entry 冻结 logical model id、SHA 与 verified labels；部署配置可通过
 `models.segformer_experts.<backend>.model_path` 指向外部挂载目录。普通 wheel 只包含
 catalog、class/config/preprocessor metadata 和 prompts，不包含大模型权重。
+installed-wheel runtime 在任意工作目录会依次尝试显式 prompt root、项目 prompt root，
+最后使用 wheel 内 packaged prompts；无效显式 override 会稳定失败而不会静默 fallback。
 
 当前 `pyproject.toml` 声明了 `yolo` / `yolo-onnx` extras。二者按目标 runtime
 择一安装；不要同时无条件安装 CPU 与 GPU ONNX Runtime。CUDA provider、驱动
@@ -1109,6 +1116,28 @@ outputs/runs/<run_id>/report/
 HTML 完全离线，不依赖 CDN。
 
 CSV 使用 `utf-8-sig`，方便 Windows Excel。
+
+### Report V2 audit dashboard
+
+`reporting.builder` projects persisted artifacts into typed, stable view
+models. The report exposes run metadata, deterministic result quality,
+latency percentiles, task summaries, Counting expert candidate/attempt/
+fallback history, stable failure codes, and bounded task-specific details.
+It never embeds a raw trace or re-runs inference/evaluation.
+
+`persist_report_bundle(..., max_visual_samples=200)` materializes the most
+useful visual samples first (failed, partial, deterministic incorrect,
+fallback, then warnings). Original previews are bounded WEBP files and
+overlays are PNG files under `report/assets/`. Prediction, rejected, ground
+truth, unresolved, and reviewer geometry use stable semantic colors and
+1–2 px outline-only rendering. Missing, unsafe, unbound, or dimension-mismatched
+geometry is reported explicitly and is never guessed.
+
+The HTML has Overview, Tasks, Expert Routing, Samples, Failures, and Runtime
+sections plus local search/filter controls. It uses no network resources,
+external scripts/styles/fonts, or inline image payloads. Host paths, dataset
+roots, raw exception messages, and credentials are excluded from every text
+artifact in the bundle.
 
 ---
 
