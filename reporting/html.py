@@ -521,7 +521,8 @@ def _point_table(title: str, points: list[Any]) -> str:
 
 def _usage_table(title: str, usage: dict[str, int]) -> str:
     rows = "".join(f'<tr>{_cells(name, count)}</tr>' for name, count in sorted(usage.items()))
-    return f'<div><h4>{_esc(title)}</h4><div class="table-scroll"><table><thead><tr><th>Key</th><th>Count</th></tr></thead><tbody>{rows or "<tr><td colspan=\"2\">none</td></tr>"}</tbody></table></div></div>'
+    body = rows or '<tr><td colspan="2">none</td></tr>'
+    return f'<div><h4>{_esc(title)}</h4><div class="table-scroll"><table><thead><tr><th>Key</th><th>Count</th></tr></thead><tbody>{body}</tbody></table></div></div>'
 
 
 def _usage_bars(title: str, usage: dict[str, int]) -> str:
