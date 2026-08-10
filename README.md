@@ -1108,6 +1108,28 @@ HTML 完全离线，不依赖 CDN。
 
 CSV 使用 `utf-8-sig`，方便 Windows Excel。
 
+### Report V2 audit dashboard
+
+`reporting.builder` projects persisted artifacts into typed, stable view
+models. The report exposes run metadata, deterministic result quality,
+latency percentiles, task summaries, Counting expert candidate/attempt/
+fallback history, stable failure codes, and bounded task-specific details.
+It never embeds a raw trace or re-runs inference/evaluation.
+
+`persist_report_bundle(..., max_visual_samples=200)` materializes the most
+useful visual samples first (failed, partial, deterministic incorrect,
+fallback, then warnings). Original previews are bounded WEBP files and
+overlays are PNG files under `report/assets/`. Prediction, rejected, ground
+truth, unresolved, and reviewer geometry use stable semantic colors and
+1–2 px outline-only rendering. Missing, unsafe, unbound, or dimension-mismatched
+geometry is reported explicitly and is never guessed.
+
+The HTML has Overview, Tasks, Expert Routing, Samples, Failures, and Runtime
+sections plus local search/filter controls. It uses no network resources,
+external scripts/styles/fonts, or inline image payloads. Host paths, dataset
+roots, raw exception messages, and credentials are excluded from every text
+artifact in the bundle.
+
 ---
 
 ## 24. 运行产物

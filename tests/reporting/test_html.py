@@ -17,7 +17,16 @@ from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.records import EvaluationRecord, VQADeterministicMetrics
 from reporting.builder import build_report
 from reporting.html import build_html
-from reporting.schema import Report, ReportSample, TaskSummary
+from reporting.schema import (
+    CountingReportDetail,
+    FallbackTransitionView,
+    Report,
+    ReportSample,
+    RoutingAttemptView,
+    RoutingView,
+    TaskSummary,
+    VisualAssetView,
+)
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
@@ -283,3 +292,104 @@ def test_html_displays_caption_dependency_status() -> None:
     assert "dependency_missing" in document
     assert "pycocoevalcap" in document
     assert "record_count" in document
+
+
+def test_report_v2_dashboard_routing_filters_counting_and_relative_asset() -> None:
+    sample = ReportSample(
+        sample_id="count-a",
+        run_task="counting",
+        task="counting",
+        state="partial",
+        result_quality="incorrect",
+        fallback_used=True,
+        warnings=["SEMANTIC_TILE_INFERENCE_FAILED"],
+        routing=RoutingView(
+            resolved_task="counting",
+            execution_agent="counting_agent",
+            candidate_backends=["detector_obb_csl_001", "segmenter_mitb2_001"],
+            attempted_backends=[
+                RoutingAttemptView(
+                    backend_name="detector_obb_csl_001",
+                    backend_kind="yolo_obb",
+                    status="unavailable",
+                    reason_code="BACKEND_UNAVAILABLE",
+                ),
+                RoutingAttemptView(
+                    backend_name="segmenter_mitb2_001",
+                    backend_kind="semantic_segmentation",
+                    status="partial",
+                ),
+            ],
+            primary_backend="detector_obb_csl_001",
+            primary_backend_kind="yolo_obb",
+            final_backend="segmenter_mitb2_001",
+            final_backend_kind="semantic_segmentation",
+            fallback_used=True,
+            fallback_history=[FallbackTransitionView(
+                from_backend="detector_obb_csl_001",
+                to_backend="segmenter_mitb2_001",
+                reason_code="BACKEND_UNAVAILABLE",
+            )],
+        ),
+        task_detail=CountingReportDetail(
+            target="small-vehicle",
+            predicted_count=12,
+            gold_count=13,
+            absolute_error=1,
+            exact_match=False,
+            accepted_point_count=12,
+            rejected_point_count=2,
+            merged_group_count=1,
+            unresolved_conflict_count=1,
+        ),
+        visuals=[VisualAssetView(
+            image_id="i0",
+            role="image",
+            original_asset="assets/abc-original.webp",
+            overlay_asset="assets/abc-overlay.png",
+            status="available",
+        )],
+    )
+    report = Report(
+        run_id="v2-run", total=1, succeeded=0, partial=1, failed=0, skipped=0,
+        samples=[sample],
+    )
+    document = build_html(report)
+    for section in ("Overview", "Tasks", "Expert Routing", "Samples", "Failures", "Runtime"):
+        assert section in document
+    for attribute in (
+        "data-task=", "data-state=", "data-quality=", "data-backend=",
+        "data-fallback=", "data-warning=",
+    ):
+        assert attribute in document
+    for text in (
+        "Candidate Chain", "detector_obb_csl_001", "segmenter_mitb2_001",
+        "BACKEND_UNAVAILABLE", "Target", "Gold", "Prediction", "Absolute Error",
+        "Accepted", "Rejected", "Merged", "Unresolved",
+    ):
+        assert text in document
+    assert 'src="assets/abc-overlay.png"' in document
+    assert "data:image" not in document
+
+
+def test_report_v2_bundle_contains_offline_outputs_and_assets_directory(
+    tmp_path: Path,
+) -> None:
+    from reporting.exporters import REPORT_SCHEMA_VERSION, persist_report_bundle
+
+    run_dir = _build_escaping_run(tmp_path)
+    report_dir = persist_report_bundle(run_dir, build_report(run_dir))
+    for name in (
+        "report.html", "report.json", "samples.csv", "samples.jsonl", "metadata.json",
+    ):
+        assert (report_dir / name).is_file()
+    assert (report_dir / "assets").is_dir()
+    metadata = json.loads((report_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == REPORT_SCHEMA_VERSION == "report-v2"
+    text = "\n".join(
+        (report_dir / name).read_text(encoding="utf-8-sig")
+        for name in ("report.html", "report.json", "samples.csv", "samples.jsonl", "metadata.json")
+    )
+    assert str(tmp_path) not in text
+    assert "dataset_root" not in text
+    assert "data:image" not in text

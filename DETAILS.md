@@ -2560,7 +2560,7 @@ raw secret
 
 ```json
 {
-  "schema_version": "report-v1",
+  "schema_version": "report-v2",
   "external_standard": {
     "...": "..."
   }
@@ -2598,6 +2598,57 @@ CountingResult
 这是展示能力，不参与 metric。
 
 如果图像尺寸/结果契约不一致，应失败，不应为了画图改变计数结果。
+
+### Report V2 presentation and asset boundary
+
+Report V2 is a typed presentation layer over persisted artifacts. Its stable
+models include `RunMetadata`, `LatencySummary`, `RoutingView`, typed task
+details, `VisualAssetView`, routing/failure/target aggregates, and bounded
+Counting point previews. Missing optional artifacts remain missing; they are
+not converted to zero/false or reconstructed from names.
+
+The export lifecycle is:
+
+```text
+build read-only Report
+  -> select visual samples by audit priority
+  -> materialize report-relative WEBP/PNG assets
+  -> write report-v2 JSON/CSV/JSONL/metadata
+  -> render the pure offline HTML dashboard
+```
+
+Visual materialization is the only reporting stage allowed to consume the
+private `run_request.dataset_root`, and that value never enters a Report view
+model or text export. It does not call an Agent, router, model, backend, judge,
+or evaluator. Evidence with an explicit `image_id` is bound strictly; missing
+IDs bind only for a single-image sample. Ambiguous multi-image evidence and
+unsafe ground-truth coordinate frames are not guessed.
+
+The dashboard contains Overview, Tasks, Expert Routing, Samples, Failures,
+and Runtime views. Counting audit cards show candidate order, attempt state,
+primary/final backend identity and kind, structured fallback transitions,
+point provenance, warnings, and accepted/rejected previews. Deterministic
+quality and optional Judge quality remain separate, including the existing
+incomplete semantic-Judge lower-bound behavior.
+
+Asset policy:
+
+- default visual-sample budget: 200;
+- priority: failed, partial, deterministic incorrect, fallback, warning,
+  then stable run-task/sample order;
+- original preview: WEBP, maximum side 1400, quality 85;
+- overlay: PNG, outline/ring only, 1–2 px;
+- accepted/prediction green, rejected red, ground truth cyan, unresolved
+  amber, reviewer purple;
+- real OBB polygons are drawn as polygons, never downgraded to enclosing
+  rectangles;
+- dimension mismatch preserves an original preview but suppresses the
+  invalid overlay.
+
+All report text exports remove host paths, dataset roots, unsafe raw exception
+messages, credentials, authorization values, and network URLs. HTML consumes
+only the structured `Report`; it performs no I/O and contains no external
+resource or Base64 dependency.
 
 ---
 

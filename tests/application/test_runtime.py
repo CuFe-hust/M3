@@ -5890,6 +5890,9 @@ _PARITY_DROP_KEYS = {
     "updated_at", "created_at", "result_path", "run_dir", "root",
     "code_version", "algorithm_version", "id", "config_hash",
     "inference_seconds", "git_commit", "prompt_hashes", "input",
+    # Report V2 latency summaries intentionally reflect measured wall-clock
+    # inference and therefore cannot be frozen into a functional parity file.
+    "latency",
     # git_dirty records the local workspace state (dirty/clean checkout),
     # which is execution/environment provenance, not stable functional
     # parity behavior; it must never be frozen into a golden contract.

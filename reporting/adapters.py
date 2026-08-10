@@ -24,7 +24,36 @@ from evaluation.records import (
     evaluation_filename_for_runtime_task,
     evaluation_task_for_runtime_task,
 )
-from workflows.schema import SampleRunStatus
+from reporting.schema import RunMetadata
+from workflows.schema import RunRequest, SampleRunStatus
+
+
+def load_run_manifest(run_dir: Path) -> RunMetadata | None:
+    """Load the typed, allowlisted reproducibility manifest only."""
+
+    raw = read_json(run_dir / "manifest.json")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return RunMetadata.model_validate(raw)
+    except ValueError:
+        return None
+
+
+def load_run_request(run_dir: Path) -> RunRequest | None:
+    """Load the private materialization context.
+
+    The returned dataset root is intentionally never copied into a report
+    model; it may only be consumed internally by visualization materializers.
+    """
+
+    raw = read_json(run_dir / "run_request.json")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return RunRequest.model_validate(raw)
+    except ValueError:
+        return None
 
 
 def read_json(path: Path) -> Any | None:

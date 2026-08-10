@@ -15,6 +15,8 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import re
+import shutil
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -23,7 +25,7 @@ from evaluation.records import evaluation_task_for_runtime_task
 from reporting.schema import Report, ReportSample
 
 # Stable schema version for the metadata export. / 元数据导出的稳定 schema 版本。
-REPORT_SCHEMA_VERSION = "report-v1"
+REPORT_SCHEMA_VERSION = "report-v2"
 
 _CSV_COLUMNS = (
     "run_task",
@@ -38,6 +40,13 @@ _CSV_COLUMNS = (
     "prediction",
     "result_path",
     "updated_at",
+    "resolved_task",
+    "result_quality",
+    "primary_backend_name",
+    "primary_backend_kind",
+    "final_backend_name",
+    "final_backend_kind",
+    "warning_count",
 )
 
 _MME_CONTAINER_KEYS = ("samples", "data", "annotations", "items", "images")
@@ -48,7 +57,7 @@ def write_json(report: Report, path: Path) -> Path:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(report.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True)
+        json.dumps(_public_value(report.model_dump(mode="json")), ensure_ascii=False, indent=2, sort_keys=True)
         + "\n",
         encoding="utf-8",
     )
@@ -67,18 +76,25 @@ def write_csv(report: Report, path: Path) -> Path:
         for sample in report.samples:
             writer.writerow(
                 [
-                    sample.run_task,
-                    sample.sample_id,
-                    sample.task,
-                    sample.state,
-                    sample.error_code or "",
+                    _public_text(sample.run_task),
+                    _public_text(sample.sample_id),
+                    _public_text(sample.task),
+                    _public_text(sample.state),
+                    _public_text(sample.error_code or ""),
                     "yes" if sample.fallback_used else "no",
-                    sample.judge_status,
-                    sample.execution_agent or "",
+                    _public_text(sample.judge_status),
+                    _public_text(sample.execution_agent or ""),
                     sample.inference_seconds if sample.inference_seconds is not None else "",
-                    sample.prediction or "",
-                    sample.result_path or "",
-                    sample.updated_at or "",
+                    _public_text(sample.prediction or ""),
+                    _public_text(sample.result_path or ""),
+                    _public_text(sample.updated_at or ""),
+                    _public_text(sample.resolved_task or ""),
+                    sample.result_quality,
+                    _public_text(sample.routing.primary_backend or ""),
+                    _public_text(sample.routing.primary_backend_kind or ""),
+                    _public_text(sample.routing.final_backend or ""),
+                    _public_text(sample.routing.final_backend_kind or ""),
+                    len(sample.warnings),
                 ]
             )
     return path
@@ -96,7 +112,7 @@ def write_samples_jsonl(report: Report, path: Path) -> Path:
         for sample in report.samples:
             handle.write(
                 json.dumps(
-                    sample.model_dump(mode="json"), ensure_ascii=False, sort_keys=True
+                    _public_value(sample.model_dump(mode="json")), ensure_ascii=False, sort_keys=True
                 )
                 + "\n"
             )
@@ -163,7 +179,7 @@ def _deepseek_audit_row(
         ),
         "judge_status": evaluation.judge_status,
         "judge_error": evaluation.judge_error,
-        "judge_parsed": _json_value(evaluation.judge_parsed),
+        "judge_parsed": _public_value(_json_value(evaluation.judge_parsed)),
     }
 
 
@@ -215,12 +231,17 @@ def write_metadata_json(
 
     path.parent.mkdir(parents=True, exist_ok=True)
     manifest = _read_run_manifest(run_dir) if run_dir is not None else None
+    view = report.metadata
     metadata: dict[str, Any] = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "run_id": report.run_id,
         "dataset": report.dataset,
-        "split": (manifest or {}).get("split"),
-        "model_ids": (manifest or {}).get("model_ids"),
+        "split": view.split if view is not None else (manifest or {}).get("split"),
+        "model_ids": view.model_ids if view is not None else (manifest or {}).get("model_ids"),
+        "git_commit": view.git_commit if view is not None else (manifest or {}).get("git_commit"),
+        "git_dirty": view.git_dirty if view is not None else (manifest or {}).get("git_dirty"),
+        "config_hash": view.config_hash if view is not None else (manifest or {}).get("config_hash"),
+        "prompt_hashes": view.prompt_hashes if view is not None else (manifest or {}).get("prompt_hashes", {}),
         "counts": {
             "total": report.total,
             "succeeded": report.succeeded,
@@ -228,11 +249,11 @@ def write_metadata_json(
             "failed": report.failed,
             "skipped": report.skipped,
         },
-        "created_at": (manifest or {}).get("created_at"),
+        "created_at": view.created_at if view is not None else (manifest or {}).get("created_at"),
         "sample_count": len(report.samples),
     }
     path.write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(_public_value(metadata), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path
@@ -268,7 +289,7 @@ def write_external_standard_report(
         "external_standard": dict(standard_report),
     }
     path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        json.dumps(_public_value(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     return path
@@ -279,6 +300,7 @@ def persist_report_bundle(
     report: Report,
     *,
     external_standard: Mapping[str, Any] | None = None,
+    max_visual_samples: int = 200,
 ) -> Path:
     """Persist the unified current-generation report bundle under
     ``runs/<run_id>/report/``: report.html, report.json, samples.csv,
@@ -292,19 +314,32 @@ def persist_report_bundle(
     只写报告输出目录。"""
 
     from reporting.html import build_html
+    from reporting.visualization import materialize_report_assets
 
     report_dir = run_dir / "report"
     report_dir.mkdir(parents=True, exist_ok=True)
-    write_json(report, report_dir / "report.json")
+    assets_dir = report_dir / "assets"
+    if assets_dir.exists():
+        shutil.rmtree(assets_dir)
+    assets_dir.mkdir()
+    materialized = materialize_report_assets(
+        run_dir, report, report_dir, max_visual_samples=max_visual_samples
+    )
+    write_json(materialized, report_dir / "report.json")
     (report_dir / "report.html").write_text(
-        build_html(report) + "\n", encoding="utf-8"
+        build_html(materialized) + "\n", encoding="utf-8"
     )
-    write_csv(report, report_dir / "samples.csv")
-    write_samples_jsonl(report, report_dir / "samples.jsonl")
-    write_metadata_json(report, report_dir / "metadata.json", run_dir=run_dir)
-    write_deepseek_audit(
-        report, report_dir / "deepseek_audit.jsonl", run_dir=run_dir
-    )
+    write_csv(materialized, report_dir / "samples.csv")
+    write_samples_jsonl(materialized, report_dir / "samples.jsonl")
+    write_metadata_json(materialized, report_dir / "metadata.json", run_dir=run_dir)
+    if any(
+        sample.evaluation is not None
+        and sample.evaluation.judge_status != "not_requested"
+        for sample in materialized.samples
+    ):
+        write_deepseek_audit(
+            materialized, report_dir / "deepseek_audit.jsonl", run_dir=run_dir
+        )
     if external_standard is not None:
         write_external_standard_report(
             external_standard, report_dir / "external_standard.json"
@@ -385,4 +420,36 @@ def _json_value(value: Any) -> Any:
 
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
+    return value
+
+
+_UNSAFE_KEYS = {
+    "dataset_root", "api_key", "authorization", "auth_header", "checkpoint_path",
+    "cache_path", "cache_dir", "home", "hostname", "username",
+}
+_SECRET_RE = re.compile(r"(?i)(?:sk-[a-z0-9_-]{6,}|bearer\s+[a-z0-9._~+/-]{6,})")
+_WIN_PATH_RE = re.compile(r"(?i)[a-z]:[\\/][^\s\"'<>]+")
+_POSIX_PATH_RE = re.compile(r"(?:(?:/tmp|/home|/users)/[^\s\"'<>]+)", re.IGNORECASE)
+_URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
+
+def _public_text(value: Any) -> str:
+    text = str(value)
+    text = _SECRET_RE.sub("[redacted-secret]", text)
+    text = _WIN_PATH_RE.sub("[redacted-path]", text)
+    text = _POSIX_PATH_RE.sub("[redacted-path]", text)
+    return _URL_RE.sub("[redacted-url]", text)
+
+
+def _public_value(value: Any) -> Any:
+    if isinstance(value, str):
+        return _public_text(value)
+    if isinstance(value, list):
+        return [_public_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _public_value(item)
+            for key, item in value.items()
+            if str(key).casefold() not in _UNSAFE_KEYS
+        }
     return value

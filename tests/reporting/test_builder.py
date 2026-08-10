@@ -12,7 +12,12 @@ import json
 from pathlib import Path
 
 from agents.base import AgentExecution
-from agents.counting.schema import CountingResult
+from agents.counting.schema import (
+    CountingResult,
+    GlobalPointObservation,
+    IssueRecord,
+    PointProvenance,
+)
 from agents.schema import AgentResult
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.records import (
@@ -28,6 +33,32 @@ from reporting.exporters import write_csv, write_json
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
+
+
+def _v2_point(
+    point_id: str, x: int, *, accepted: bool, source: str
+) -> GlobalPointObservation:
+    return GlobalPointObservation(
+        global_id=point_id,
+        target="small-vehicle",
+        source_tile_id="tile-0",
+        local_id=point_id,
+        local_x_norm=x,
+        local_y_norm=x,
+        local_radius_norm=2,
+        global_x_px=x,
+        global_y_px=x,
+        global_x_norm=x,
+        global_y_norm=x,
+        radius_px=3,
+        confidence=0.9,
+        ownership_valid=True,
+        near_core_boundary=False,
+        accepted=accepted,
+        rejection_reason=None if accepted else "LOW_CONFIDENCE",
+        short_evidence="persisted point",
+        provenance=PointProvenance(source=source),  # type: ignore[arg-type]
+    )
 
 
 def test_load_payload_uses_canonical_fine_grained_counting_family(
@@ -1011,6 +1042,157 @@ def test_exporters_mme_official_export_read_only(tmp_path: Path) -> None:
     rows2 = json.loads(output2.read_text(encoding="utf-8"))
     assert rows2[0]["Output"] == "A"
     assert rows2[1]["Output"] == ""
+
+
+def test_report_v2_projects_manifest_counting_routing_and_aggregates(
+    tmp_path: Path,
+) -> None:
+    run_dir = _create_run(tmp_path)
+    manifest_path = run_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.update({
+        "dataset": "audit-set",
+        "split": "test",
+        "git_commit": "abc123",
+        "git_dirty": True,
+        "config_hash": "cfg123",
+        "model_ids": {"counter": "logical-counter"},
+        "prompt_hashes": {"count": "prompt123"},
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    sample = UnifiedSample(
+        sample_id="count-v2",
+        dataset="audit-set",
+        split="test",
+        task="counting",
+        images=[ImageRef(image_id="image-0", path="image.png", role="image")],
+        question="How many small vehicles?",
+        ground_truth=GroundTruth(count=3),
+    )
+    evaluation = EvaluationRecord(
+        sample_id="count-v2",
+        task="counting",
+        deterministic_metrics=CountDeterministicMetrics(
+            predicted_count=2,
+            gold_count=3,
+            exact_match=0,
+            absolute_error=1,
+            relative_error=1 / 3,
+            smooth_error_score=0.5,
+        ),
+        judge_status="not_requested",
+    )
+    sample_dir = _write_sample(
+        run_dir,
+        run_task="counting",
+        sample=sample,
+        status=_status("count-v2", "counting", "partial", result_path="counting_result.json"),
+        trace={
+            "resolved_task": "counting",
+            "execution_agent": "counting_agent",
+            "inference_seconds": 1.25,
+            "candidate_backends": ["detector_obb_csl_001", "segmenter_mitb2_001", "quantity_proposal", "qwen_point"],
+            "attempted_backends": ["detector_obb_csl_001", "segmenter_mitb2_001"],
+            "primary_backend": "detector_obb_csl_001",
+            "primary_backend_kind": "yolo_obb",
+            "final_backend": "segmenter_mitb2_001",
+            "final_backend_kind": "semantic_segmentation",
+            "fallback_triggered": True,
+            "fallback_history": [{
+                "backend": "detector_obb_csl_001",
+                "kind": "yolo_obb",
+                "reason_code": "BACKEND_UNAVAILABLE",
+                "error_type": "DetectorWeightsMissingError",
+            }],
+            "selection_reason": ["fixed_kind_rank_then_priority_then_name"],
+            "backend_trace": {"counting_mode": "connected_components"},
+            "status": "partial",
+        },
+        evaluation=evaluation,
+    )
+    result = CountingResult(
+        sample_id="count-v2",
+        target="small-vehicle",
+        question=sample.question,
+        source_width=100,
+        source_height=100,
+        tile_count=2,
+        initial_tile_count=1,
+        leaf_tile_count=2,
+        succeeded_tiles=["tile-0"],
+        failed_tiles=["tile-1"],
+        global_points=[
+            _v2_point("p1", 10, accepted=True, source="yolo_obb_center"),
+            _v2_point("p2", 20, accepted=True, source="semantic_component_centroid"),
+            _v2_point("p3", 30, accepted=False, source="qwen_point"),
+        ],
+        merged_groups=[["p1", "p2"]],
+        unresolved_conflicts=["p3"],
+        warnings=[IssueRecord(code="SEMANTIC_TILE_INFERENCE_FAILED", message="safe")],
+        final_count=2,
+        status="partial",
+    )
+    (sample_dir / "counting_result.json").write_text(result.model_dump_json(), encoding="utf-8")
+
+    report = build_report(run_dir)
+    row = report.samples[0]
+    assert report.metadata is not None
+    assert report.metadata.model_dump(mode="json") == {
+        "run_id": "report-run", "dataset": "audit-set", "split": "test",
+        "git_commit": "abc123", "git_dirty": True, "config_hash": "cfg123",
+        "model_ids": {"counter": "logical-counter"},
+        "prompt_hashes": {"count": "prompt123"},
+        "created_at": manifest["created_at"], "sample_filter": None,
+    }
+    assert row.routing.primary_backend == "detector_obb_csl_001"
+    assert row.routing.final_backend == "segmenter_mitb2_001"
+    assert row.routing.fallback_used is True
+    assert row.routing.fallback_history[0].reason_code == "BACKEND_UNAVAILABLE"
+    assert row.task_detail is not None and row.task_detail.kind == "counting"
+    detail = row.task_detail
+    assert detail.predicted_count == 2 and detail.gold_count == 3
+    assert detail.absolute_error == 1 and detail.exact_match is False
+    assert detail.accepted_point_count == 2 and detail.rejected_point_count == 1
+    assert detail.provenance_usage == {
+        "qwen_point": 1,
+        "semantic_component_centroid": 1,
+        "yolo_obb_center": 1,
+    }
+    assert report.routing_summary.primary_backend_usage == {"detector_obb_csl_001": 1}
+    assert report.routing_summary.final_backend_usage == {"segmenter_mitb2_001": 1}
+    assert report.failure_summary.warning_codes == {"SEMANTIC_TILE_INFERENCE_FAILED": 1}
+    assert report.counting_target_summary[0].evaluated_count == 1
+    assert report.counting_target_summary[0].mae == 1
+
+
+def test_report_v2_missing_trace_and_private_run_request_stay_safe(tmp_path: Path) -> None:
+    run_dir = _create_run(tmp_path)
+    (run_dir / "run_request.json").write_text(json.dumps({
+        "dataset": "private", "dataset_root": "C:/private/dataset", "split": "test",
+        "task_mode": "explicit", "tasks": ["general_vqa"], "auto_task": False,
+        "sample_ids": None, "limit": None, "start_index": 0, "shard_index": 0,
+        "shard_count": 1, "sample_concurrency": 1, "evaluate": False,
+        "judge_policy": "none", "judge_sample_rate": None, "render_errors": False,
+        "fail_fast": False,
+    }), encoding="utf-8")
+    _write_sample(
+        run_dir,
+        run_task="general_vqa",
+        sample=_sample("safe-v2"),
+        status=_status("safe-v2", "general_vqa", "succeeded"),
+        trace={
+            "raw_exception": "/home/user/model.safetensors sk-test-secret",
+            "selection_reason": ["C:/private/checkpoint.bin"],
+        },
+        payload=AgentResult(agent_name="general_vqa_agent", answer="yes"),
+    )
+    report = build_report(run_dir)
+    serialized = json.dumps(report.model_dump(mode="json"), ensure_ascii=False)
+    assert "dataset_root" not in serialized
+    assert "C:/private" not in serialized
+    assert "/home/user" not in serialized
+    assert "sk-test-secret" not in serialized
+    assert report.samples[0].routing.selection_reason is None
 
 
 def test_exporters_mme_missing_source_fails_stably(tmp_path: Path) -> None:
