@@ -1,0 +1,4 @@
+{"case": "success", "failure": null, "expected": {"dataset": "VRSBench", "task": "general_vqa", "split": "validation", "question": "How many buildings are there?", "sample_id": "vq_1", "image_roles": ["image"], "image_paths": ["img_1.png"], "ground_truth": {"answers": ["3"], "count": null, "boxes": [], "points": [], "labels": [], "raw": {"adapter_version": "official-eval-v1", "image_id": "img_1.png", "question_id": "vq_1", "question_type": "quantity", "source_dataset": null}}, "metadata": {"source": "VRSBench", "source_index": 0, "question_type": "quantity", "source_dataset": null}}}
+{"case": "missing_image", "failure": "DatasetProbeError", "behavior": null, "expected": null}
+{"case": "missing_field", "failure": "DatasetProbeError", "behavior": null, "expected": null}
+{"case": "duplicate_candidates", "failure": "DatasetProbeError", "behavior": null, "expected": null}

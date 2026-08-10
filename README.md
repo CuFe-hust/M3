@@ -1,300 +1,1503 @@
 # M3
 
-## Qwen3-VL-4B Zero-Shot Baseline
+面向太空智算的多模态遥感大模型应用探索。
 
-This repository provides a Colab-ready, zero-shot evaluation baseline built on
-`Qwen/Qwen3-VL-4B-Instruct`. It does not fine-tune the model or change its
-weights. The baseline evaluates each release independently and writes canonical
-JSONL predictions plus separate metadata.
+M3 当前采用分层的多模态遥感 Agent 架构，围绕 **统一样本契约、任务解析与确定性路由、领域 Agent、可恢复运行、确定性评测、可选 Judge 和只读报告** 组织代码。主流程默认面向本地 Qwen 多模态模型，支持数据集批量评测、手动问答、计数、变化理解、空间关系、Grounding、Caption、VQA，以及运行后的评测与报告导出。
 
-Evaluation scope:
+当前分支 `new_structure` 是新的长期架构。旧 `try_yolo` 分支仅作为迁移和行为对齐参考，不再作为运行时依赖。
 
-- VRSBench: captioning, VQA, and visual grounding on the official `validation` split.
-- MME Real RS: only the Remote Sensing subdomain of MME-RealWorld.
-- XLRS-Bench: full English captioning and visual grounding releases; the VQA result uses
-  the official Lite release and must be reported separately.
-- LEVIR-CC: bi-temporal change captioning on the official test split.
+---
 
-The source releases are [VRSBench](https://huggingface.co/datasets/xiang709/VRSBench),
-[MME-RealWorld](https://huggingface.co/datasets/yifanzhang114/MME-RealWorld),
-[XLRS-Bench](https://huggingface.co/collections/initiacms/xlrs-bench), and
-[LEVIR-CC](https://huggingface.co/datasets/lcybuaa/LEVIR-CC).
+## 1. 主要能力
 
-### Run in Colab
+当前公开任务包括：
 
-Enable a GPU runtime, then clone or upload this repository. Run the following cells from
-the repository root:
+| Task | 说明 | 主要 Agent |
+|---|---|---|
+| `counting` | 通用目标计数 | CountingAgent |
+| `fine_grained_counting` | 细粒度目标计数 | CountingAgent |
+| `change_caption` | 双时相变化描述 | ChangeAgent |
+| `change_qa` | 双时相变化问答 | ChangeAgent |
+| `grounding` | 文本目标定位 | GroundingAgent |
+| `spatial_relation` | 空间关系理解 | SpatialAgent |
+| `scene_classification` | 遥感场景分类 | GeneralVQAAgent |
+| `general_vqa` | 通用遥感 VQA | GeneralVQAAgent |
+| `caption` | 遥感图像描述 | CaptionAgent |
+| `multiple_choice_vqa` | 多选 VQA | GeneralVQAAgent |
+
+内建数据集适配器：
+
+- **VRSBench**
+- **LEVIR-CC**
+- **MME-RealWorld**
+- **XLRS-Bench**
+- **XLRS-Bench-lite**
+
+另外支持显式 manifest 驱动的 `SampleDraft` 读取路径，用于没有标准逐样本 task 字段的数据。
+
+---
+
+## 2. 当前架构
+
+主链路：
+
+```text
+Dataset / Local Images
+        |
+        v
+data/
+  Adapter -> UnifiedSample
+          -> SampleDraft
+                |
+                v
+        TaskResolver (only when task is unknown)
+                |
+                v
+routing/
+  deterministic TaskRouter
+                |
+                v
+agents/
+  Counting / Change / Spatial / Grounding / Caption / General VQA
+                |
+                v
+workflows/
+  SampleRunner -> DatasetRunner
+                |
+                v
+evaluation/
+  deterministic metrics + optional DeepSeek Judge
+                |
+                v
+persisted run artifacts
+                |
+                v
+reporting/
+  read-only report / audit / export
+                |
+                v
+application/
+  composition root and use cases
+                |
+                v
+main.py
+  sole public CLI surface
+```
+
+几个最重要的边界：
+
+- `data.schema.UnifiedSample` 是内部统一样本契约。
+- `TaskResolver` 回答“这是什么任务”，`TaskRouter` 回答“已知任务交给哪个 Agent”。
+- Router 是同步、确定性、无模型调用的。
+- Agent 依赖模型协议，不自行创建具体 Qwen 客户端。
+- `application/` 是唯一 composition root。
+- `reporting/` 只读取持久化结果，不重新推理。
+- `evaluation` 中的 Judge 永远不能覆盖确定性指标。
+- 新架构不依赖旧 `spacers_agent/` 和 `eval/`。
+
+更完整的内部说明见 [`DETAILS.md`](DETAILS.md)，编码规则见 [`AGENTS.md`](AGENTS.md)。
+
+---
+
+## 3. 环境要求
+
+当前项目配置以 `pyproject.toml` 为准。
+
+最低要求：
+
+```text
+Python >= 3.11
+```
+
+基础依赖：
+
+- Pydantic 2
+- Pillow
+- PyYAML
+- typing-extensions
+
+推荐先建立独立 Python 环境，再安装项目：
 
 ```bash
-pip install -r requirements.txt
-cp config/baseline.example.json config/local.baseline.json
+python -m pip install -U pip
+python -m pip install -e .
 ```
 
-Edit `config/local.baseline.json` only to choose storage paths or supported model runtime settings.
-The default paths keep downloaded data in `datasets/` and outputs in `outputs/`, both ignored by Git.
-Do not put API keys in this file.
-
-The default `report` settings generate a visual audit report for up to 200 samples per result.
-Increase `report.max_samples` only when the additional image and HTML size is acceptable, or set
-`report.enabled` to `false` to disable report artifacts for a particular local run.
-
-For a checkpoint that is already present on a local server, set `model.id` to that external
-directory and set `model.local_files_only` to `true`. This prevents accidental Hugging Face
-network fallback while preserving the original Qwen3-VL loading and prediction interfaces.
-Keep the server-specific absolute path only in the ignored `config/local.baseline.json` file.
-
-Download the official data releases:
+开发和测试：
 
 ```bash
-python main.py --config config/local.baseline.json download
+python -m pip install -e ".[dev]"
 ```
 
-Inspect each release before a full run. This prints the canonical sample derived from its
-released fields and fails visibly if a source release changes its format:
+变化检测相关可选依赖：
 
 ```bash
-python main.py --config config/local.baseline.json inspect --dataset vrsbench_vqa
-python main.py --config config/local.baseline.json inspect --dataset mme_real_rs
-python main.py --config config/local.baseline.json inspect --dataset xlrs_vqa_lite
-python main.py --config config/local.baseline.json inspect --dataset levir_cc
+python -m pip install -e ".[change]"
 ```
 
-Run a smoke test before the full evaluation. The `--limit` flag is only for smoke tests and
-must be omitted from final results.
+Change V2 的 SegFormer auxiliary path 使用独立重依赖 extra；默认 V1、纯数学
+测试和 core import 不需要它：
 
 ```bash
-python main.py --config config/local.baseline.json infer --dataset all --limit 2
-python main.py --config config/local.baseline.json infer --dataset all --overwrite
+python -m pip install -e ".[dev,change]"          # offline/core tests
+python -m pip install -e ".[change-semantic]"    # explicit SegFormer runtime
 ```
 
-Each inference command prints the absolute path of its default HTML report. For a result named
-`outputs/baseline/vrsbench_vqa.jsonl`, the report is saved at
-`outputs/baseline/vrsbench_vqa.report/report.html`. It includes the captured source images,
-questions/prompts, Qwen raw and final answers, references, exact-match comparison, and per-sample
-inference duration. Each sample also records the actual Agent class, call entrypoint, route name,
-task type, and whether a Router was used. The direct baseline is reported truthfully as
-`models.qwen3vl.Qwen3VLBaseline` with `route=direct_baseline` and `router_used=false`; a future
-workflow may provide `prediction.meta.agent_trace` to replace that fallback with its actual trace.
-Images are content-addressed so repeated source images are stored only once.
-
-Compute deterministic metrics for one saved result file:
+迁移/部分离线工具需要 NumPy 时：
 
 ```bash
-python main.py --config config/local.baseline.json evaluate \
-  --result outputs/baseline/mme_real_rs.jsonl
+python -m pip install -e ".[migration]"
 ```
 
-For VRSBench open-ended VQA, the optional DeepSeek semantic proxy requires the user to set
-the key in the Colab session, never in a repository file:
+> CUDA、PyTorch、Transformers、ONNX Runtime、YOLO detector runtime 等与具体模型/硬件相关的依赖需要根据部署环境单独准备。仓库不会在普通 import 或离线测试时强制加载全部模型和 detector 运行时。
 
-```bash
-export DEEPSEEK_API_KEY='set-this-in-the-Colab-session'
-python main.py --config config/local.baseline.json evaluate \
-  --result outputs/baseline/vrsbench_vqa.jsonl --deepseek-proxy
+---
+
+## 4. 本地 Qwen 模型
+
+主流程模型通过：
+
+```python
+models.entry.create_model(name, ...)
 ```
 
-The resulting `deepseek_semantic_match_proxy` is not the official GPT-based VRSBench score;
-report it as a separate proxy metric. For official oriented-box grounding metrics, run the
-upstream VRSBench or XLRS-Bench evaluator on the canonical prediction file after converting
-its documented output fields.
+统一构造。
 
-When `--deepseek-proxy` is used, the same report is regenerated with per-sample DeepSeek scores,
-raw API responses, parsed results, duration, attempts, and token usage. The key is read only from
-`DEEPSEEK_API_KEY` and is never written to the report. DeepSeek receives text and reference
-answers only; it does not inspect the source image.
+当前模型入口：
 
-### Output Format
-
-Each `outputs/*.jsonl` line contains:
-
-```json
-{
-  "sample": {"id": "...", "task_type": "vqa", "prompt": "...", "answers": ["..."]},
-  "prediction": {"id": "...", "task_type": "vqa", "text": "...", "answer": "..."}
-}
+```text
+qwen_transformers
+qwen3_vl_baseline
+qwen3_5_transformers
 ```
 
-`*.metadata.json` records the model settings, timestamp, completed sample count, and any
-dataset-scope qualification needed for a report. It also records model-load and inference timing.
-The sibling `*.report/` directory contains `report.html`, `samples.csv`, a bounded `samples.jsonl`
-visual subset, deduplicated images, and optional `deepseek_audit.jsonl`. These report artifacts do
-not change the canonical prediction JSONL or the metric JSON format.
+Agent/Workflow 不直接 import 具体 Qwen 实现；具体模型只在 `application` composition root 选择和创建。
 
-For MME Real RS, inference also writes `mme_real_rs.official.json`, preserving each official
-record and replacing only its `Output` field. It can be passed directly to the upstream
-MME-RealWorld evaluator.
+### 本地 checkpoint
 
-## Local Multi-Agent Foundation (Phase 1)
+默认 Qwen 配置使用逻辑模型名。实际部署时可以通过 YAML 或环境变量指定本地 checkpoint。
 
-The existing baseline remains unchanged. The additive local foundation creates reproducible
-run artifacts without contacting Qwen or DeepSeek:
-
-```bash
-python -m spacers_agent.cli --help
-python -m spacers_agent.cli health qwen
-python -m spacers_agent.cli run-init --run-id local-foundation-smoke
-```
-
-Copy `.env.example` to the ignored `.env` file only when local endpoint metadata needs an
-override. API keys are never included in run manifests, configuration snapshots, or events.
-The `health` command in this phase only displays configured metadata; it does not make a
-network request.
-
-## Structured Client Development (Phase 2)
-
-The project now includes an async OpenAI-compatible Qwen client and an offline Mock client.
-The default test suite injects local fake completions; it does not contact an endpoint. A live
-Qwen call remains a separately authorized action and requires `QWEN_API_KEY` only in the
-process environment or ignored `.env` file.
-
-## Read-Only Dataset Audit (Phase 3)
-
-Inspect a local dataset layout before implementing an Adapter. The command never changes source
-dataset files and writes its result to a separate report path:
-
-```bash
-C:\Users\TZDEZACR\miniconda3\envs\m3\python.exe -m spacers_agent.cli inspect-data \
-  --root ./dataset \
-  --output outputs/dataset_audit.json
-```
-
-## Point Counting Orchestration (Phase 4)
-
-`spacers_agent.counting.PointCountingOrchestrator` is an additive, async workflow for one
-normalized image and a caller-supplied `CountTargetSpec`. It sends one crop at a time through
-an injected structured client, uses non-overlapping owner cores with halo context, converts only
-validated `0..999` local points to global pixels, and derives `final_count` solely from accepted
-global points. It writes each tile's geometry, parsed response, conversion report, and checkpoint
-below the selected run directory; a matching successful request hash is reused on resume.
-
-The active counting prompt is versioned in `prompts/count_tile_v4.md`; superseded prompts remain
-available for experiment reproducibility. The v4 contract requires a systematic overview scan,
-explicit uncertainty for small candidates, and an independent versioned empty-tile review. An
-unconfirmed zero triggers finer crops with depth-reduced halo. Point-counting tests use local Mock
-clients only. No Qwen, DeepSeek, SSH tunnel,
-server, or cloud request is made by this module unless a caller explicitly constructs and invokes
-a live client after authorization.
-
-## Sparse Multi-Agent Routing (Phase 5)
-
-`spacers_agent.routing.TaskRouter` uses fixed rule routes for declared tasks and does not make a
-model call in that case. Only `route_unknown` uses an injected, text-only client; it requires and
-consumes a `CallBudget` entry before the call. `CountingExpert` is a thin display wrapper around
-the existing point pipeline: complete answers are derived from accepted global points, while partial
-results explicitly report completed tiles and remain non-final.
-
-Every prompt is an independent versioned file in `prompts/` and `run-init` snapshots all of them.
-The included Phase 5 tests use Mock clients only; no live routing, visual critic, or DeepSeek judge
-call is part of the default path.
-
-## DeepSeek Structured Judge (Phase 6)
-
-`spacers_agent.evaluation` calculates deterministic counting metrics first, then builds a compact
-text-and-structured-evidence payload for `spacers_agent.clients.DeepSeekJudgeClient`. The judge
-never receives imagery, Base64, file paths, or complete point lists. It explicitly declares that it
-cannot verify visual truth. A Judge verdict of `correct` that conflicts with a known count mismatch
-is preserved as raw output and flagged as `judge_inconsistency`; it never overrides the deterministic
-metric.
-
-When you are ready for an explicitly authorized live smoke test, create the ignored `.env` from the
-template and replace only this placeholder with your key:
-
-```dotenv
-DEEPSEEK_API_KEY=replace-with-deepseek-key
-```
-
-Use [`.env.example`](C:\Users\TZDEZACR\Desktop\spacers-agent\code\.env.example) as the template; do not place the key in `configs/default.yaml`, source code, tests, run manifests, or documentation. No live DeepSeek call is performed by default.
-
-## Offline Acceptance Tools (Phase 7)
-
-Two local-only CLI commands help make point counting auditable after a result exists:
-
-```powershell
-python -m spacers_agent.cli render-count --image .\image.png --result .\counting_result.json --output .\counting_overlay.png
-python -m spacers_agent.cli summarize-evaluations --input .\evaluation_records.jsonl --output .\evaluation_summary.json
-```
-
-The overlay renders owner cores, accepted points, and rejected points; the summary keeps deterministic benchmark metrics separate from optional DeepSeek quality metrics. See [the local runbook](C:\Users\TZDEZACR\Desktop\spacers-agent\code\docs\runbook.md) for required interpreter paths, safeguards, and commands.
-
-## Runnable Qwen Agent and Dataset Commands
-
-The baseline `main.py` remains unchanged. New operations use `python -m spacers_agent.cli` and make network calls only for commands explicitly marked `--live` or requiring inference:
-
-```powershell
-python -m spacers_agent.cli health qwen --live
-python -m spacers_agent.cli list-datasets
-python -m spacers_agent.cli smoke-qwen --image tests/fixtures/smoke.png --question "Describe this image"
-python -m spacers_agent.cli count-image --image .\demo.png --question "How many buildings?" --run-id demo-count --evaluate --render
-python -m spacers_agent.cli run-dataset --dataset XLRS-Bench-lite --root D:\data\XLRS-Bench-lite --split test --task counting --run-id xlrs-count-v1 --resume
-python -m spacers_agent.cli resume-run --run-id xlrs-count-v1
-python -m spacers_agent.cli evaluate-run --run-id xlrs-count-v1 --deepseek
-python -m spacers_agent.cli judge-vqa-run --run-id vrsbench-qwen3vl-router-20
-```
-
-The four dataset adapters are deliberately read-only. LEVIR-CC, MME-RealWorld, and XLRS-Bench-lite require a versioned `spacers_adapter.json`. VRSBench general VQA directly validates the official `VRSBench_EVAL_vqa.json` fields, including its `type`, and the image paths without modifying the dataset. The runner probes the selected layout before reading a sample and reports observed fields on mismatch.
-
-To run the real VRSBench multi-Agent path with an already downloaded Qwen3-VL checkpoint, create an ignored `configs/local.spark.yaml` from `configs/default.yaml` and set only local runtime values such as:
+例如：
 
 ```yaml
 models:
   qwen:
-    backend: transformers
-    model: /path/to/Qwen3_vl_4b_instruct
-    dtype: bfloat16
+    model: /path/to/Qwen3-VL-4B-Instruct
+    cache_model_id: qwen3-vl-4b-instruct-local
+    allow_download: false
     device_map: auto
-    local_files_only: true
-    max_tokens: 512
+    dtype: auto
 ```
 
-Then run sequentially; this path does not require or contact vLLM:
+如果 `model` 是本地绝对路径，必须同时提供与机器路径无关的：
 
-If an existing ignored `configs/local.spark.yaml` copied older counting keys, set
-`counting.prompt_version: count-point-v4` and `counting.vrsbench_min_scan_depth: 0` before creating
-a new run. This prevents a v4 prompt from being mislabeled as an older inference configuration.
+```text
+cache_model_id
+```
+
+它用于 request hash、cache identity 和 trace，避免把本机 checkpoint 绝对路径变成逻辑模型身份。
+
+也可以使用：
 
 ```bash
-set -a
-source .env
-set +a
-
-python -m spacers_agent.cli --config configs/local.spark.yaml run-dataset \
-  --dataset VRSBench --root /path/to/vrsbench --split validation \
-  --task general_vqa --run-id vrsbench-qwen3vl-router-20 \
-  --max-samples 20 --sample-concurrency 1 \
-  --evaluate --judge-policy all
+export QWEN_MODEL=/path/to/Qwen3-VL-4B-Instruct
 ```
 
-For VQA, `--evaluate` now defaults to `--judge-policy all`. If `DEEPSEEK_API_KEY` is not present
-in the process environment, the command fails visibly instead of silently marking Judge as
-`not_requested`; use `--judge-policy none` only when DeepSeek evaluation is intentionally disabled.
-To add or retry DeepSeek results for an existing run without loading or calling Qwen, export the
-same environment key and run `judge-vqa-run --run-id <run-id>`. Successful existing Judge records
-are reused unless `--force` is supplied, and the HTML report is rebuilt from persisted Qwen results.
+覆盖模型路径。
 
-VRSBench routing is conservative and question-driven. The official `type` is retained for audit but
-does not force an Agent or answer vocabulary. Explicit numerical questions use accepted-point
-counting; direct single-target grid location, vehicle extreme-category, orientation, and arrangement
-questions use the spatial expert; open categories, scenes, existence/relation questions, and unknown
-types fall back to general VQA. A closed vocabulary is included only when the question text itself
-entails it. The canonical evaluation task and reference answers remain unchanged. The HTML report
-records the actual Agent route and prompt version, overlays labeled boxes or accepted points on a
-report-only image copy, and includes the deterministic geometry audit.
+默认：
 
-VRSBench quantity routing uses a fixed vehicle ontology instead of an answer-aware target parse.
-The default configuration scans a fitting image as one overview, enlarges small transmitted crops
-to a maximum side of 768 pixels, and independently rechecks empty results. A review that reports
-`zero_unconfirmed` triggers finer owner-core crops with a smaller halo; a zero answer remains solely
-point-derived. Spatial extreme and arrangement questions receive an independent
-candidate-enumeration pass that is not shown first-pass evidence. Grid-position questions instead
-localize the singular physical target before the program derives its three-by-three label from the
-box centre. Their visual localization call does not receive the grid-label vocabulary, and an
-independent review is used only for missing, ambiguous, or corner-region placeholder evidence. A
-review may attach the explicit small/large vehicle class to model-provided top-level boxes; otherwise
-it uses a neutral target label while preserving the returned coordinates. It never fabricates
-coordinates. Question semantics remain separate from the coarse official type. Program geometry
-requires at least two candidates before claiming an extreme comparison, workflow status tokens are
-never retained as semantic answers, and every local decision remains in the geometry audit.
+```text
+allow_download = false
+```
 
-Qwen runs locally through Transformers. DeepSeek is used only after Qwen returns and receives the question, official reference answers, candidate answer, and exact-match flag—not the image, boxes, or points. Its key is read only from `DEEPSEEK_API_KEY`. The default report is saved as `outputs/runs/<run-id>/vrsbench_vqa.report/report.html`; each card also includes Qwen raw/final answers, the standard answer, and DeepSeek validation.
+因此普通运行不会把“本地模型缺失”自动转换为 Hugging Face 下载。
 
-The local Transformers client normalizes Qwen's common two-corner box representation before strict validation. It orders reversed corners but never expands a zero-area line or point into a fabricated box. Labeled degenerate observations are retained as points, unlabeled legacy boxes are dropped, and a valid box/point conflict retains the box. The geometry audit records normalization names, evidence quality, and repair severity. A malformed JSON response receives at most one versioned text-only format-repair call; the repair call does not receive the source image, and both attempts remain in the sample artifacts. A response truncated only at its final JSON member may be closed locally or have only that incomplete tail member removed; this recovery is explicitly recorded and never invents missing visual evidence.
+### 本地专家模型
+
+仓库声明三份本地专家模型资产：
+
+```text
+models/segformer_mitb2_isaid/model.safetensors
+models/segformer_mitb2_oem/model.safetensors
+models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+```
+
+大权重通过 Git LFS 或本地外部存储管理；Git 对象不得直接包含大 binary。工作树中的
+LFS 文件可以是已 hydrated binary，部署也可以提供 catalog 指向的本地资产。代码会在
+加载前区分文件缺失、Git LFS pointer 和 SHA256 不匹配。小型 `config.json`、`classes.json`、
+`metrics.json` 可以版本化。资产摘要和逻辑 ID 见
+[`models/MODELS.md`](models/MODELS.md)。
+
+SegFormer 可选依赖：
+
+```bash
+python -m pip install -e ".[segformer]"
+```
+
+Change V2 消融配置位于 `configs/change_ablations/`。这些文件是可直接传给
+`--config` 的 partial YAML，覆盖 legacy、low+semantic、low+feature、三路融合、
+PIF robust 和 local-match radius 对照；它们不扩展 evaluation public contract。
+
+调用层：
+
+```python
+from models.segformer_transformers import SegFormerRuntime
+
+runtime = SegFormerRuntime(settings.models.segformer_isaid)
+result = runtime.predict(image)
+```
+
+该 runtime 封装本地加载、processor、device/dtype、预处理、logits 上采样、
+argmax 和类别映射。iSAID 必须读取经训练 mask 验证的 `classes.json`；OEM
+源资产只有 `LABEL_0..8` 占位标签，代码不会猜测另一套类别顺序。
+
+---
+
+## 5. 配置
+
+应用配置由 `application.settings.AppSettings` 管理。
+
+主要配置组：
+
+```text
+models
+counting
+runs
+router
+paths
+backend
+agents
+```
+
+运行时加载顺序：
+
+```text
+built-in defaults
+    -> optional YAML
+    -> supported environment overrides
+```
+
+公共入口支持：
+
+```bash
+python main.py --config /path/to/local.yaml <command> ...
+```
+
+不传 `--config` 时使用代码中的默认设置。
+
+当前支持的普通环境变量覆盖包括：
+
+```text
+QWEN_MODEL
+SEGFORMER_ISAID_MODEL
+SEGFORMER_OEM_MODEL
+DEEPSEEK_BASE_URL
+DEEPSEEK_MODEL
+DATASET_ROOT
+OUTPUT_ROOT
+```
+
+DeepSeek API key 的**值**不进入 AppSettings；配置只声明环境变量名，实际 secret 由 composition root 在需要 Judge 时读取并注入。
+
+---
+
+## 6. 数据准备
+
+### 6.1 查看内建数据集
+
+```bash
+python main.py list-datasets
+```
+
+### 6.2 显式下载官方数据
+
+项目默认不允许 loader/adapter 隐式联网。
+
+需要下载数据时使用明确命令：
+
+```bash
+python main.py download-data \
+  --root /data/m3 \
+  --datasets vrsbench
+```
+
+可以一次指定多个 dataset key：
+
+```bash
+python main.py download-data \
+  --root /data/m3 \
+  --datasets vrsbench levir_cc
+```
+
+下载逻辑位于：
+
+```text
+data/downloader.py
+```
+
+下载是显式行为，普通 `run-dataset` 不会因为数据不存在而偷偷联网。
+
+### 6.3 数据集只读审计
+
+在正式运行之前可以检查数据根目录：
+
+```bash
+python main.py inspect-data \
+  --root /data/m3/VRSBench \
+  --scan-mode quick
+```
+
+完整扫描：
+
+```bash
+python main.py inspect-data \
+  --root /data/m3/VRSBench \
+  --scan-mode full \
+  --output outputs/vrsbench-audit.json
+```
+
+Adapter 对源数据保持只读。
+
+---
+
+## 7. 统一样本契约
+
+跨 Adapter、Workflow、Router、Agent 和 Evaluation 的内部样本使用：
+
+```text
+data.schema.UnifiedSample
+```
+
+核心字段：
+
+```text
+sample_id
+dataset
+split
+task
+images
+question
+ground_truth
+metadata
+normalization
+```
+
+图片路径使用 dataset-root-relative 表示，不把机器绝对路径作为样本身份。
+
+双时相任务：
+
+```text
+change_caption
+change_qa
+```
+
+使用有序角色：
+
+```text
+t1 -> t2 -> context...
+```
+
+其他任务使用：
+
+```text
+image -> context...
+```
+
+对于没有明确逐样本 task 的数据，先生成：
+
+```text
+SampleDraft
+```
+
+再通过：
+
+```text
+TaskResolver -> materialize_sample -> UnifiedSample
+```
+
+---
+
+## 8. TaskResolver 与 Router
+
+任务未知时：
+
+```text
+explicit task
+    -> deterministic rule
+    -> model resolution
+```
+
+空问题当前有两条窄规则：
+
+```text
+1 image -> caption
+2 images -> change_caption
+```
+
+其他空问题不猜 `general_vqa`。
+
+模型解析只在：
+
+```text
+task unknown AND question non-empty
+```
+
+时发生。
+
+低置信度 TaskResolver 最多返回有限候选任务，并保留 `general_vqa` 兜底槽位；真正候选执行由 SampleRunner 完成。
+
+TaskRouter 本身：
+
+```text
+no question reading
+no model call
+no unknown-task guessing
+```
+
+---
+
+## 9. 快速开始
+
+### 9.1 查看所有命令
+
+```bash
+python main.py --help
+```
+
+查看某个命令：
+
+```bash
+python main.py run-dataset --help
+python main.py ask --help
+python main.py count-image --help
+```
+
+### 9.2 本地 HTTP 服务
+
+无子命令时默认启动：
+
+```bash
+python main.py
+```
+
+等价于：
+
+```bash
+python main.py serve --host 127.0.0.1 --port 8000
+```
+
+如果使用自定义配置：
+
+```bash
+python main.py --config /path/to/local.yaml serve
+```
+
+当前 HTTP surface：
+
+```text
+GET  /health
+POST /ask
+```
+
+服务进程只组装一次 Runtime；请求 handler 不重复加载 Qwen。
+
+默认监听 `127.0.0.1`。不要在没有额外安全措施时暴露到不受信任网络。
+
+---
+
+## 10. 手动 Ask
+
+对本地图片目录执行一次任务：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-001 \
+  --question "图中有多少架飞机？" \
+  --task counting
+```
+
+自动判断任务：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-002 \
+  --question "图中主要是什么场景？" \
+  --task auto
+```
+
+Caption 可以使用空问题：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-003 \
+  --task caption
+```
+
+输出到文件：
+
+```bash
+python main.py --config /path/to/local.yaml ask \
+  --images-dir /data/question-003 \
+  --task caption \
+  --output outputs/manual-answer.json
+```
+
+手动 `ask` 是单请求路径，不等同于完整 DatasetRunner benchmark：它不会自动生成完整数据集评测和报告流程。
+
+---
+
+## 11. 数据集运行
+
+基本形式：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation
+```
+
+如果没有 `--task`，默认使用 Adapter 声明的支持任务集合。
+
+只运行某个任务：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa
+```
+
+多个任务使用逗号分隔：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa,caption,grounding
+```
+
+限制样本数做 smoke test：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --limit 20
+```
+
+指定 run id：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset LEVIR-CC \
+  --root /data/LEVIR-CC \
+  --split test \
+  --task change_caption \
+  --run-id levir-change-caption-v1
+```
+
+---
+
+## 12. Auto-task Dataset Mode
+
+对于显式使用 `SampleDraft` 的数据路径：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset <dataset-name> \
+  --root /data/<dataset> \
+  --split test \
+  --auto-task
+```
+
+三种模式语义不同：
+
+```text
+no --task
+    -> adapter default tasks
+
+--task task1,task2
+    -> explicit tasks
+
+--auto-task
+    -> per-sample TaskResolver
+```
+
+不要把“未传 `--task`”理解成自动任务识别。
+
+---
+
+## 13. Sharding 与并发
+
+分片：
+
+```bash
+python main.py run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --shard-index 0 \
+  --shard-count 4
+```
+
+`--num-shards` 是 `--shard-count` 的别名。
+
+当前分片使用稳定 SHA-256 逻辑，不使用 Python 随机 hash。
+
+单进程 asyncio 并发：
+
+```bash
+python main.py run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --sample-concurrency 4
+```
+
+当前 artifact JSONL 层只承诺**同一 Python 进程内**并发写入安全，不宣称多个独立进程可以同时追加同一个 run。
+
+---
+
+## 14. Resume
+
+首次运行：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --run-id vrsbench-vqa-v1
+```
+
+恢复：
+
+```bash
+python main.py --config /path/to/local.yaml resume-run \
+  --run-id vrsbench-vqa-v1
+```
+
+也可以通过 `run-dataset --resume` 进入同一恢复语义。
+
+Resume 的具体原始调用由：
+
+```text
+runs/<run_id>/run_request.json
+```
+
+持久化。
+
+系统不会因为当前 YAML、CLI 默认值发生变化就静默改变原运行的 task mode、dataset root、judge policy、sample selection 等关键行为。
+
+---
+
+## 15. 确定性评测
+
+`run-dataset` 默认：
+
+```text
+evaluate = true
+judge_policy = none
+```
+
+即默认做支持的确定性评测，但**不会默认调用 DeepSeek**。
+
+当前主要 deterministic metric family：
+
+### Counting
+
+```text
+predicted_count
+gold_count
+exact_match
+absolute_error
+relative_error
+smooth_error_score
+```
+
+### General VQA
+
+```text
+exact_match
+```
+
+### Grounding
+
+```text
+IoU
+IoU@0.5
+```
+
+当前内建 Grounding deterministic path 对坐标契约严格 fail-closed；不能把未知坐标系、source-pixel 坐标或 polygon 静默当成统一 xyxy。
+
+### Caption
+
+逐样本保存：
+
+```text
+candidate
+references
+```
+
+语料级 BLEU / METEOR / ROUGE / CIDEr 由 aggregate/标准 evaluator 路径负责，不把逐样本记录伪装成完整 corpus metric。
+
+---
+
+## 16. DeepSeek Judge
+
+Judge 是可选审计层，不取代 deterministic metrics。
+
+启用 Judge 前在运行环境设置：
+
+```bash
+export DEEPSEEK_API_KEY=...
+```
+
+数据集运行：
+
+```bash
+python main.py --config /path/to/local.yaml run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --judge-policy all
+```
+
+策略：
+
+```text
+none
+errors-only
+all
+```
+
+可以设置确定性 Judge 抽样率：
+
+```bash
+python main.py run-dataset \
+  --dataset VRSBench \
+  --root /data/VRSBench \
+  --split validation \
+  --task general_vqa \
+  --judge-policy all \
+  --judge-sample-rate 0.1
+```
+
+Judge 结果与 deterministic metrics 并列记录：
+
+```text
+deterministic metrics
++
+judge_status / judge_parsed / judge_inconsistency
+```
+
+Judge 不能覆盖 deterministic exact-match、IoU 或 counting error。
+
+---
+
+## 17. 运行后评测
+
+对已有 run 做离线评测补全：
+
+```bash
+python main.py --config /path/to/local.yaml evaluate-run \
+  --run-id vrsbench-vqa-v1
+```
+
+仅补缺失项：
+
+```bash
+python main.py --config /path/to/local.yaml evaluate-run \
+  --run-id vrsbench-vqa-v1 \
+  --only-missing
+```
+
+在已有 run 上显式增加 DeepSeek Judge：
+
+```bash
+python main.py --config /path/to/local.yaml evaluate-run \
+  --run-id vrsbench-vqa-v1 \
+  --deepseek
+```
+
+VQA 专用 Judge pass：
+
+```bash
+python main.py --config /path/to/local.yaml judge-vqa-run \
+  --run-id vrsbench-vqa-v1
+```
+
+这些命令基于已经持久化的 prediction/result 工作，不通过重新调用 Qwen 生成第二份预测来“补评测”。
+
+---
+
+## 18. 外部标准评测
+
+团队或官方 evaluator 使用独立 seam：
+
+```bash
+python main.py standard-evaluate \
+  --result /path/to/canonical-result.jsonl \
+  --tool-dir /path/to/eval_standard
+```
+
+可指定 evaluator Python：
+
+```bash
+python main.py standard-evaluate \
+  --result /path/to/canonical-result.jsonl \
+  --tool-dir /path/to/eval_standard \
+  --python /path/to/python
+```
+
+外部标准指标存放在独立：
+
+```text
+external_standard
+```
+
+命名空间，不与内部 deterministic metric 名称混写。
+
+VRSBench 数据集特定 official seam 位于：
+
+```text
+evaluation/datasets/vrsbench.py
+```
+
+---
+
+## 19. 单图计数
+
+运行：
+
+```bash
+python main.py --config /path/to/local.yaml count-image \
+  --image /data/demo.png \
+  --question "How many buildings are visible?"
+```
+
+评测并渲染：
+
+```bash
+python main.py --config /path/to/local.yaml count-image \
+  --image /data/demo.png \
+  --question "How many buildings are visible?" \
+  --run-id demo-count \
+  --evaluate \
+  --render
+```
+
+可选：
+
+```text
+--target-spec
+--resume
+--force
+--no-seam-verify
+--max-qwen-calls
+--max-deepseek-calls
+```
+
+Count-image 会冻结影响行为的调用参数，使 resume/force 不被新的 CLI 默认值或 config 漂移悄悄改变。
+
+---
+
+## 20. Counting Pipeline
+
+CountingAgent 当前包含独立的：
+
+```text
+target parsing
+backend planning
+tile / point pipeline
+geometry
+evidence normalization
+seam handling
+backend execution
+runtime fallback
+```
+
+主结果：
+
+```text
+counting_result.json
+```
+
+`final_count` 与 accepted evidence 保持一致。
+
+当前显式 backend kind：
+
+```text
+qwen_point
+quantity_proposal
+semantic_segmentation
+yolo_obb
+```
+
+`auto` 模式只按显式 capability 采用固定顺序：
+
+```text
+Detection > Semantic Segmentation > QuantityProposal > QwenPoint
+```
+
+同类 expert 才按 catalog priority 排序。模型暂时不可用或运行失败时，executor 按计划的
+完整 fallback chain 继续；QwenPoint 失败是 terminal，不会伪造结果。合法零计数不会自动
+触发 fallback，只有显式 zero-review policy 可以复核。
+
+SegFormer 只在 verified class map 和 target-specific `connected_components` policy 同时
+成立时成为候选。它输出 semantic region 而不是 instance mask，相接对象可能合并成一个
+component 并造成 undercount。OEM 当前没有 verified class map，因此默认不注册。
+
+Catalog 已明确声明 composite capability：`vehicle` 的链是 Detection → SegFormer →
+QuantityProposal → QwenPoint，`aircraft` 是 Detection → SegFormer → QwenPoint。Semantic
+backend 对每个 model label 分别做 connected components，不会先合并不同类别 mask。
+
+小目标 minimum scan depth、empty-tile review、optional upscale 和 ambiguous seam visual
+review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset 名。新增同类 expert
+主要修改 catalog、资产和 composition settings，不要求修改 `CountingAgent`。
+
+目标解析优先级：
+
+```text
+normalization.count_target_hint
+    -> legacy metadata count_target_hint
+    -> Qwen target parser
+```
+
+无效 hint 显式失败，不静默吞掉。
+
+---
+
+## 21. YOLO OBB Counting
+
+YOLO 后端默认启用：内置配置注册 `detector_obb_csl_001`
+（`models/yolo_obb/yolov5m_obb_csl_dotav20.onnx`），Counting backend 的
+`yolo_obb` 路径默认进入候选链。权重与 ONNX Runtime 仍由本地环境准备，不
+自动下载；模型加载保持惰性，缺少权重/运行时依赖时按有序回退链降级
+（SegFormer → quantity proposal → Qwen point），不会使运行失败。
+
+显式关闭方式：
+
+```yaml
+backend:
+  yolo:
+    enabled: false
+```
+
+设计边界：
+
+- detector 权重由本地环境准备；
+- 不自动下载权重；
+- detector profile/权重 hash/task/class map 需要一致；
+- CUDA/CPU fallback 行为由 detector settings 声明；
+- detector unavailable/runtime error 由 `counting.fallback_on_backend_*` 通用策略控制；
+- zero detection 可由 `counting.verify_empty_detection` 触发 ordered chain 的下一位专家复核；
+- `quantity_proposal` 不被当作 YOLO detector；
+- YOLO 输出最终仍转换进统一 CountingResult/evidence 契约。
+
+SegFormer 的 catalog entry 冻结 logical model id、SHA 与 verified labels；部署配置可通过
+`models.segformer_experts.<backend>.model_path` 指向外部挂载目录。普通 wheel 只包含
+catalog、class/config/preprocessor metadata 和 prompts，不包含大模型权重。
+
+当前 `pyproject.toml` 声明了 `yolo` / `yolo-onnx` extras。二者按目标 runtime
+择一安装；不要同时无条件安装 CPU 与 GPU ONNX Runtime。CUDA provider、驱动
+和 ONNX Runtime 版本仍应以目标部署机器的已验证环境为准。
+
+---
+
+## 22. ChangeAgent
+
+变化任务：
+
+```text
+change_caption
+change_qa
+```
+
+输入是有序 T1/T2 图对。
+
+主要模块包括：
+
+```text
+pair validation
+harmonization
+difference proposal
+preprocess
+review
+```
+
+无效时相图对会尽可能在模型调用前失败。
+
+NumPy/OpenCV 相关能力属于：
+
+```bash
+python -m pip install -e ".[change]"
+```
+
+可选依赖。
+
+另有离线 LEVIR harmonization 评测脚本：
+
+```text
+scripts/evaluate_levir_harmonization.py
+```
+
+用于独立评估图像协调/校准表现，不调用 Qwen/DeepSeek 主推理链路。
+
+另有 VRSBench-counting 全流程 Counting Agent 评测脚本：
+
+```text
+scripts/evaluate_vrsbench_counting.py
+```
+
+在远端 GPU 上以真实 Qwen + 完整后端注册表 + 回退逐样本运行 CountingAgent，
+并把每个最终答案的来源（YOLO / qwen_point 回退等）写入结果 JSONL。
+
+---
+
+## 23. 报告
+
+Reporting 是只读层。
+
+它从：
+
+```text
+predictions.jsonl
++
+sample/status/trace/result/evaluation artifacts
+```
+
+构建当前 run 的：
+
+```text
+Report
+ReportSample
+TaskSummary
+```
+
+不会：
+
+- 调 Qwen；
+- 调 Agent；
+- 重跑 TaskResolver；
+- 修改 prediction；
+- 为了报告重新计算另一套 prediction。
+
+标准报告 bundle：
+
+```text
+outputs/runs/<run_id>/report/
+├── report.html
+├── report.json
+├── samples.csv
+├── samples.jsonl
+├── metadata.json
+├── deepseek_audit.jsonl
+└── external_standard.json   # optional
+```
+
+HTML 完全离线，不依赖 CDN。
+
+CSV 使用 `utf-8-sig`，方便 Windows Excel。
+
+---
+
+## 24. 运行产物
+
+典型 run：
+
+```text
+outputs/runs/<run_id>/
+├── manifest.json
+├── config.snapshot.json
+├── run_request.json
+├── prompts.snapshot/
+├── events.jsonl
+├── predictions.jsonl
+├── report/
+└── tasks/
+    └── <run_task>/
+        ├── dataset_probe.json
+        ├── dataset_summary.json
+        └── samples/
+            └── <storage_key>/
+                ├── sample.json
+                ├── status.json
+                ├── routing_decision.json
+                ├── agent_result.json
+                │   or counting_result.json
+                ├── vqa_evaluation.json
+                │   or counting_evaluation.json
+                │   or grounding_evaluation.json
+                │   or caption_evaluation.json
+                └── agent_trace.json
+```
+
+不同 task 不一定都有逐样本 deterministic evaluation；系统不会为缺少定义的任务伪造指标。
+
+---
+
+## 25. 三种 Task 身份
+
+运行产物中需要区分：
+
+### Resolved task
+
+TaskResolver/UnifiedSample 的 canonical task：
+
+```text
+sample.json.task
+agent_trace.resolved_task
+```
+
+### Execution task
+
+实际 attempt 执行 task：
+
+```text
+status.json.task
+agent_trace.execution_task
+evaluation semantics
+```
+
+### Run task
+
+DatasetRunner namespace：
+
+```text
+predictions.jsonl.run_task
+tasks/<run_task>/
+```
+
+当低置信度 candidate fallback 成功时，这三个值可能不完全相同。
+
+Resume 和 Evaluation 不能把 resolved task 与 execution task 混为一谈。
+
+---
+
+## 26. Report / Artifact Path Safety
+
+`status.json.result_path` 是 sample-relative 的纯文件名，例如：
+
+```text
+agent_result.json
+counting_result.json
+```
+
+不会持久化为：
+
+```text
+C:\...
+/home/...
+../...
+```
+
+`predictions.jsonl.result_path` 是 run-relative 索引/展示路径。
+
+Reporting 使用冻结的 `(run_task, sample_id)` 推导真实 sample directory，不把任意 result path 当作文件读取权限。
+
+---
+
+## 27. 运维命令
+
+### 创建 run
+
+```bash
+python main.py run-init --run-id local-smoke
+```
+
+创建 run 本身不调用模型。
+
+### Qwen readiness
+
+```bash
+python main.py health qwen
+```
+
+显式 live probe：
+
+```bash
+python main.py --config /path/to/local.yaml health qwen --live
+```
+
+### DeepSeek readiness
+
+```bash
+python main.py health deepseek
+```
+
+显式 live probe：
+
+```bash
+python main.py health deepseek --live
+```
+
+### Direct Qwen smoke
+
+```bash
+python main.py --config /path/to/local.yaml smoke-qwen \
+  --image /data/test.png \
+  --question "Describe this image."
+```
+
+---
+
+## 28. Counting 可视化与评测汇总
+
+已经存在 CountingResult 时：
+
+```bash
+python main.py render-count \
+  --image /data/demo.png \
+  --result /path/to/counting_result.json \
+  --output outputs/counting-overlay.png
+```
+
+汇总一个 run：
+
+```bash
+python main.py summarize-evaluations \
+  --run-id <run-id>
+```
+
+或汇总显式 EvaluationRecord JSONL：
+
+```bash
+python main.py summarize-evaluations \
+  --input /path/to/evaluations.jsonl \
+  --output outputs/evaluation-summary.json
+```
+
+以上命令不重新运行主模型。
+
+---
+
+## 29. MME-RealWorld 官方提交
+
+Reporting exporter 支持基于原始 MME 记录构造官方提交：
+
+- 原始记录只读；
+- 按 question id 写入 prediction；
+- 只替换官方 `Output`；
+- 其他字段保持。
+
+相关逻辑位于：
+
+```text
+reporting/exporters.py
+```
+
+---
+
+## 30. 默认离线与安全约束
+
+默认行为：
+
+```text
+no model auto-download
+no dataset auto-download
+no DeepSeek call
+no cloud API
+```
+
+只有显式能力可能联网，例如：
+
+```text
+download-data
+health --live
+DeepSeek Judge
+显式允许 Qwen download
+```
+
+Secret value 不应进入：
+
+```text
+config snapshot
+manifest
+run request
+trace
+public error
+report metadata
+DeepSeek audit
+```
+
+不要把 DeepSeek key、Authorization header、本机 credential 或 Base64 image 写入配置、日志、测试 fixture 或文档。
+
+---
+
+## 31. 开发与测试
+
+运行全部测试：
+
+```bash
+python -m pytest
+```
+
+架构测试：
+
+```bash
+python -m pytest tests/architecture
+```
+
+领域测试按目录运行，例如：
+
+```bash
+python -m pytest tests/agents/counting
+python -m pytest tests/workflows
+python -m pytest tests/evaluation
+python -m pytest tests/reporting
+```
+
+迁移 parity：
+
+```bash
+python -m pytest tests/parity
+```
+
+Live tests 使用 pytest marker 单独区分：
+
+```text
+live_qwen
+live_deepseek
+live_dataset
+```
+
+默认开发验证不应因为缺少真实模型、API key 或真实数据集而偷偷联网。
+
+---
+
+## 32. 架构保护
+
+项目有机器可检查的架构控制文件：
+
+```text
+architecture/allowed_python_files.txt
+architecture/implementation_status.json
+architecture/import_rules.json
+architecture/ALLOWLIST_CHANGE_POLICY.md
+```
+
+重要规则：
+
+- Python 文件路径需要在 allowlist 中；
+- 普通任务不直接扩白名单；
+- `spacers_agent/**` 和 `eval/**` 永久禁止重新出现；
+- `main.py` 只 import `application`；
+- Router 不 import models；
+- Agent/Workflow 只依赖模型协议；
+- 具体模型实现只由 `application` 选择；
+- `__init__.py` 不承担业务副作用。
+
+---
+
+## 33. 迁移与行为基线
+
+新架构与旧 `try_yolo` 不是通过普通源码 diff 维护一致性。
+
+迁移参考：
+
+```text
+try_yolo@ec962eb87c3ad0b8c1502efcbd08db0daec48868
+```
+
+基线材料：
+
+```text
+docs/migration/
+tests/fixtures/migration/
+tests/parity/
+```
+
+迁移目标是保持需要保持的**可观察行为**，而不是复制旧包结构。
+
+例如旧：
+
+```text
+spacers_agent/
+eval/
+```
+
+已经被新的：
+
+```text
+agents/
+routing/
+workflows/
+evaluation/
+reporting/
+application/
+```
+
+取代。
+
+---
+
+## 34. 文档
+
+### 普通使用者
+
+当前文件：
+
+```text
+README.md
+```
+
+### 编码代理
+
+必须先读：
+
+```text
+AGENTS.md
+DETAILS.md
+```
+
+### 架构设计
+
+```text
+docs/architecture/
+```
+
+### 迁移与 parity
+
+```text
+docs/migration/
+```
+
+README 只维护用户需要的当前用法，不再记录 Task 00/11A/11G.5 等迁移流水账。
+
+---
+
+## 35. 当前边界
+
+当前架构已经完成主要离线实现与迁移收口，但实际运行能力仍取决于本地环境：
+
+- Qwen checkpoint 是否存在；
+- PyTorch/CUDA 是否与机器匹配；
+- VRSBench / MME / XLRS / LEVIR 数据是否已准备；
+- DeepSeek API key 是否在明确需要 Judge 时提供；
+- YOLO/ONNX detector runtime 与权重是否按目标设备准备；
+- Spark/4090/其他部署机器上的真实资源是否完成 live 验证。
+
+因此：
+
+```text
+offline tests passed
+```
+
+不等于：
+
+```text
+every live model / dataset / GPU / deployment gate passed
+```
+
+真实实验结果应结合对应运行配置、run artifacts 和报告记录。

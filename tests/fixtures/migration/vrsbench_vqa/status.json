@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/vrsbench_vqa/agent_result.json",
+  "sample_id": "vrsbench_vqa",
+  "state": "succeeded",
+  "task": "general_vqa"
+}

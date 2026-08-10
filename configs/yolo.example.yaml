@@ -1,0 +1,37 @@
+# YOLO Counting Example — DO NOT COMMIT REAL WEIGHTS
+# YOLO 计数示例 — 不得提交真实权重
+agents:
+  counting:
+    default_backend: auto
+backend:
+  yolo:
+    enabled: true
+    detectors:
+      - name: detector_obb_csl_001
+        enabled: true
+        weights: models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+        runtime: onnx_yolov5_obb
+        task: obb
+        model_id: YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m
+        sha256: c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a
+        source_dataset: DOTAv2.0
+        priority: 100
+        classes: [plane, baseball diamond, bridge, ground track field, small vehicle, large vehicle, ship, tennis court, basketball court, storage tank, soccer ball field, roundabout, harbor, swimming pool, helicopter, container crane, airport, helipad]
+        aliases: {airplane: plane, aeroplane: plane, vessel: ship, boat: ship, storage-tank: storage tank, oil tank: storage tank, large-vehicle: large vehicle, small-vehicle: small vehicle, football field: soccer ball field, soccer field: soccer ball field, swimming-pool: swimming pool}
+        composite_targets: {vehicle: [small vehicle, large vehicle], aircraft: [plane, helicopter]}
+        confidence: 0.20
+        iou: 0.50
+        image_size: 1024
+        device: "0"
+        max_detections: 1000
+        require_cuda: true
+        allow_cpu_fallback: false
+        boundary_duplicate_iou: 0.50
+        boundary_duplicate_center_px: 16.0
+
+counting:
+  fallback_on_backend_unavailable: true
+  fallback_on_backend_error: true
+  verify_empty_detection: true
+  verify_empty_semantic: false
+  trust_empty_detection: false

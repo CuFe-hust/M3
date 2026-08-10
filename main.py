@@ -1,242 +1,244 @@
-"""Colab-ready commands for the Qwen3-VL-4B remote-sensing baseline.
-Qwen3-VL-4B 遥感基线的 Colab 可运行命令。
+"""Minimal public entry point: `python main.py run-dataset ...`, the manual
+`ask` command, and the local HTTP `serve` service (implicit default command).
+
+最小公开入口：`python main.py run-dataset ...`、手动 `ask` 命令与本地 HTTP
+`serve` 服务（无子命令时的隐式默认）。本模块保持极薄：解析参数 → 加载配置 →
+组装运行时 → 构造选项 → 委托 application 用例（serve / ask / run_dataset）→
+输出与退出码。绝不包含 Agent fallback、数据集循环、TaskResolver 逻辑、模型
+业务逻辑或报告聚合。架构规则要求 main.py 只能 import application（含
+stdlib）。
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import platform
 import sys
-import time
-from contextlib import nullcontext
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
 
-PROJECT_ROOT = Path(__file__).resolve().parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from application.commands.ask import run_ask
+from application.commands.count_image import run_count_image
+from application.commands.download_data import run_download_data
+from application.commands.evaluate_run import run_evaluate_run
+from application.commands.health import run_health
+from application.commands.inspect_data import run_inspect_data
+from application.commands.judge_vqa_run import run_judge_vqa_run
+from application.commands.list_datasets import run_list_datasets
+from application.commands.render_count import run_render_count
+from application.commands.resume_run import run_resume_run
+from application.commands.run_dataset import run_run_dataset
+from application.commands.run_init import run_run_init
+from application.commands.serve import run_serve
+from application.commands.smoke_qwen import run_smoke_qwen
+from application.commands.standard_evaluate import run_standard_evaluate
+from application.commands.summarize_evaluations import run_summarize_evaluations
 
-from data.loaders import DATASET_REPOS, download_datasets, load_samples
-from data.schema import CanonicalPrediction, CanonicalSample
-from eval.audit_report import AuditReportWriter, build_audit_report, report_dir_for_result, write_deepseek_audit
-from eval.metrics import evaluate_records
-from models.qwen3vl import Qwen3VLBaseline, Qwen3VLSettings
+EXIT_ARGUMENT = 2
 
-
-EVALUATION_TARGETS = (
-    "vrsbench_caption",
-    "vrsbench_vqa",
-    "vrsbench_grounding",
-    "mme_real_rs",
-    "xlrs_caption_en",
-    "xlrs_grounding_en",
-    "xlrs_vqa_lite",
-    "levir_cc",
+# Public task names accepted by the ask command. / ask 命令接受的公开任务名。
+_TASK_CHOICES = (
+    "auto",
+    "counting",
+    "fine_grained_counting",
+    "change_caption",
+    "change_qa",
+    "grounding",
+    "spatial_relation",
+    "scene_classification",
+    "general_vqa",
+    "caption",
+    "multiple_choice_vqa",
 )
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Qwen3-VL-4B remote-sensing baseline")
-    parser.add_argument("--config", type=Path, required=True, help="Path to a JSON experiment configuration.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+def build_parser() -> argparse.ArgumentParser:
+    """The only supported public surface. 唯一受支持的公开面。"""
 
-    download = subparsers.add_parser("download", help="Download official dataset releases.")
-    download.add_argument("--datasets", nargs="+", choices=sorted(DATASET_REPOS), default=sorted(DATASET_REPOS))
-
-    inspect = subparsers.add_parser("inspect", help="Print canonical samples without loading the model.")
-    inspect.add_argument("--dataset", choices=EVALUATION_TARGETS, required=True)
-    inspect.add_argument("--limit", type=int, default=3)
-
-    infer = subparsers.add_parser("infer", help="Run Qwen3-VL inference and save canonical JSONL records.")
-    infer.add_argument("--dataset", choices=(*EVALUATION_TARGETS, "all"), required=True)
-    infer.add_argument("--limit", type=int, default=None, help="Optional smoke-test sample limit.")
-    infer.add_argument("--overwrite", action="store_true")
-
-    evaluate = subparsers.add_parser("evaluate", help="Evaluate a saved JSONL result file.")
-    evaluate.add_argument("--result", type=Path, required=True)
-    evaluate.add_argument("--deepseek-proxy", action="store_true", help="Use the optional non-official DeepSeek VQA proxy.")
-    return parser.parse_args()
-
-
-def load_config(path: Path) -> dict[str, Any]:
-    with path.open(encoding="utf-8") as file:
-        config = json.load(file)
-    required_paths = {"data_root", "output_root"}
-    missing = required_paths - set(config.get("paths", {}))
-    if missing:
-        raise ValueError(f"Missing config paths: {', '.join(sorted(missing))}")
-    return config
-
-
-def main() -> None:
-    args = parse_args()
-    config = load_config(args.config)
-    data_root = Path(config["paths"]["data_root"]).expanduser()
-    output_root = Path(config["paths"]["output_root"]).expanduser()
-    if args.command == "download":
-        downloaded = download_datasets(args.datasets, data_root)
-        print(json.dumps({name: str(path) for name, path in downloaded.items()}, indent=2))
-        return
-    if args.command == "inspect":
-        _inspect(args.dataset, data_root, args.limit)
-        return
-    if args.command == "infer":
-        targets = EVALUATION_TARGETS if args.dataset == "all" else (args.dataset,)
-        model_load_started = time.perf_counter()
-        model = _load_model(config)
-        model_load_seconds = time.perf_counter() - model_load_started
-        for target in targets:
-            _infer_target(
-                target,
-                data_root,
-                output_root,
-                model,
-                args.limit,
-                args.overwrite,
-                config,
-                model_load_seconds,
-            )
-        return
-    records = _read_jsonl(args.result)
-    deepseek_audit: list[dict[str, Any]] | None = [] if args.deepseek_proxy else None
-    metrics = evaluate_records(
-        records,
-        use_deepseek=args.deepseek_proxy,
-        deepseek_config=config.get("deepseek", {}),
-        deepseek_audit=deepseek_audit,
+    parser = argparse.ArgumentParser(prog="main.py")
+    parser.add_argument("--config", default=None, help="settings YAML path")
+    # Defaults for the implicit serve path: without a subcommand the root
+    # parser still exposes host/port so run_serve never sees missing
+    # attributes. ``set_defaults`` covers host/port; the subparsers action's
+    # own ``default`` is required for command because argparse overwrites a
+    # parser default with None when no subcommand is given.
+    # 无子命令默认 serve 时，根解析器仍提供 host/port，使 run_serve 不会遇到
+    # 缺失属性。host/port 用 set_defaults；command 必须设置 subparsers action
+    # 自身的 default，因为未给子命令时 argparse 会把 parser 默认值覆盖为 None。
+    parser.set_defaults(host="127.0.0.1", port=8000)
+    subparsers = parser.add_subparsers(dest="command")
+    subparsers.default = "serve"
+    serve = subparsers.add_parser("serve", help="start the local HTTP service")
+    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--port", type=int, default=8000)
+    ask = subparsers.add_parser("ask", help="run one request against local images")
+    ask.add_argument("--images-dir", required=True, help="manual image directory")
+    ask.add_argument("--question", default="", help="question text (may be empty)")
+    ask.add_argument("--task", choices=_TASK_CHOICES, default="auto")
+    ask.add_argument("--output", default=None, help="write PublicAnswer JSON here")
+    run_init = subparsers.add_parser("run-init", help="create one run directory")
+    run_init.add_argument("--run-id", default=None)
+    run_init.add_argument("--dataset", default=None)
+    run_init.add_argument("--split", default=None)
+    run_init.add_argument("--sample-filter", default=None)
+    health = subparsers.add_parser("health", help="show model/service readiness")
+    health.add_argument("component", choices=("qwen", "deepseek"))
+    health.add_argument("--live", action="store_true", help="probe once")
+    subparsers.add_parser("list-datasets", help="list built-in datasets")
+    smoke_qwen = subparsers.add_parser("smoke-qwen", help="one direct Qwen request")
+    smoke_qwen.add_argument("--image", required=True)
+    smoke_qwen.add_argument("--question", required=True)
+    resume_run = subparsers.add_parser("resume-run", help="resume one run")
+    resume_run.add_argument("--run-id", required=True)
+    inspect_data = subparsers.add_parser("inspect-data", help="audit a dataset root")
+    inspect_data.add_argument("--root", required=True)
+    inspect_data.add_argument("--output", default=None)
+    inspect_data.add_argument("--scan-mode", choices=("quick", "full"), default="quick")
+    count_image = subparsers.add_parser(
+        "count-image", help="run one-image point-derived counting"
     )
-    metric_path = args.result.with_suffix(".metrics.json")
-    metric_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    audit_path = None
-    if deepseek_audit is not None:
-        audit_path = report_dir_for_result(args.result) / "deepseek_audit.jsonl"
-        write_deepseek_audit(audit_path, deepseek_audit)
-    report_path = build_audit_report(args.result, metric_path, audit_path)
-    print(json.dumps(metrics, ensure_ascii=False, indent=2))
-    print(f"Saved evaluation metrics to {metric_path.resolve()}")
-    if report_path is not None:
-        print(f"Saved default audit report to {report_path}")
-    else:
-        print("Default audit report unavailable; run inference again with report.enabled=true.")
-
-
-def _load_model(config: dict[str, Any]) -> Qwen3VLBaseline:
-    model_config = config.get("model", {})
-    settings = Qwen3VLSettings(
-        model_id=model_config.get("id", "Qwen/Qwen3-VL-4B-Instruct"),
-        dtype=model_config.get("dtype", "auto"),
-        device_map=model_config.get("device_map", "auto"),
-        max_new_tokens=int(model_config.get("max_new_tokens", 256)),
-        min_pixels=model_config.get("min_pixels"),
-        max_pixels=model_config.get("max_pixels"),
-        local_files_only=bool(model_config.get("local_files_only", False)),
+    count_image.add_argument("--image", required=True)
+    count_image.add_argument("--question", required=True)
+    count_image.add_argument("--target-spec", default=None)
+    count_image.add_argument("--run-id", default=None)
+    count_image.add_argument("--evaluate", action="store_true")
+    count_image.add_argument("--render", action="store_true")
+    count_image.add_argument("--resume", action="store_true")
+    count_image.add_argument("--force", action="store_true")
+    count_image.add_argument("--no-seam-verify", action="store_true")
+    count_image.add_argument("--max-qwen-calls", type=int, default=None)
+    count_image.add_argument("--max-deepseek-calls", type=int, default=None)
+    download_data = subparsers.add_parser(
+        "download-data", help="download official datasets explicitly"
     )
-    return Qwen3VLBaseline(settings)
+    download_data.add_argument("--root", required=True)
+    download_data.add_argument(
+        "--datasets", nargs="+", required=True, help="dataset keys to download"
+    )
+    evaluate_run = subparsers.add_parser(
+        "evaluate-run", help="offline deterministic evaluation of one run"
+    )
+    evaluate_run.add_argument("--run-id", required=True)
+    evaluate_run.add_argument("--deepseek", action="store_true", help="enable the DeepSeek judge pass")
+    evaluate_run.add_argument("--only-missing", action="store_true", help="fill only missing evaluations")
+    evaluate_run.add_argument("--force-judge", action="store_true", help="re-judge even succeeded judges")
+    judge_vqa_run = subparsers.add_parser(
+        "judge-vqa-run", help="DeepSeek judge pass for one run"
+    )
+    judge_vqa_run.add_argument("--run-id", required=True)
+    judge_vqa_run.add_argument("--force", action="store_true", help="re-judge succeeded judges")
+    render_count = subparsers.add_parser(
+        "render-count", help="render a counting overlay for a persisted result"
+    )
+    render_count.add_argument("--image", required=True)
+    render_count.add_argument("--result", required=True)
+    render_count.add_argument("--output", required=True)
+    summarize_evaluations = subparsers.add_parser(
+        "summarize-evaluations", help="aggregate evaluation records of one run or file"
+    )
+    summarize_evaluations.add_argument("--run-id", default=None, help="scan one run")
+    summarize_evaluations.add_argument("--input", default=None, help="EvaluationRecord JSONL file")
+    summarize_evaluations.add_argument("--output", default=None, help="write the summary here")
+    standard_evaluate = subparsers.add_parser(
+        "standard-evaluate", help="run the external team standard evaluator"
+    )
+    standard_evaluate.add_argument("--result", required=True, help="canonical result JSONL")
+    standard_evaluate.add_argument("--tool-dir", default=None, help="directory containing evaluate.py")
+    standard_evaluate.add_argument("--output", default=None, help="report path (default beside the result)")
+    standard_evaluate.add_argument("--python", default=None, help="python executable for the tool")
+    run_dataset = subparsers.add_parser("run-dataset", help="run one dataset")
+    run_dataset.add_argument("--dataset", required=True)
+    run_dataset.add_argument("--root", required=True)
+    run_dataset.add_argument("--split", required=True)
+    run_dataset.add_argument(
+        "--task", default=None, help="comma-separated tasks (default: adapter-supported)"
+    )
+    run_dataset.add_argument("--auto-task", action="store_true", help="resolve tasks per sample")
+    run_dataset.add_argument("--sample-ids", default=None, help="file of whitespace sample ids")
+    run_dataset.add_argument("--run-id", default=None)
+    run_dataset.add_argument("--resume", action="store_true")
+    run_dataset.add_argument(
+        "--evaluate",
+        dest="evaluate",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="deterministic evaluation on by default",
+    )
+    run_dataset.add_argument(
+        "--judge-policy",
+        choices=("none", "errors-only", "all"),
+        default="none",
+        help="offline by default: no external DeepSeek unless requested",
+    )
+    run_dataset.add_argument(
+        "--judge-sample-rate",
+        type=float,
+        default=None,
+        help="deterministic judge sampling rate within [0.0, 1.0]",
+    )
+    run_dataset.add_argument(
+        "--render-errors",
+        action="store_true",
+        help="render counting overlays for failed samples after execution",
+    )
+    run_dataset.add_argument("--max-samples", "--limit", dest="limit", type=int, default=None)
+    run_dataset.add_argument("--start-index", type=int, default=0)
+    run_dataset.add_argument("--shard-index", type=int, default=0)
+    run_dataset.add_argument(
+        "--shard-count",
+        "--num-shards",
+        dest="shard_count",
+        type=int,
+        default=1,
+        help="shard count (--num-shards is an alias)",
+    )
+    run_dataset.add_argument("--sample-concurrency", type=int, default=1)
+    run_dataset.add_argument("--fail-fast", action="store_true")
+    return parser
 
 
-def _inspect(dataset_name: str, data_root: Path, limit: int) -> None:
-    count = 0
-    for sample in load_samples(dataset_name, data_root):
-        sample.validate()
-        print(json.dumps(sample.serializable(), ensure_ascii=False, indent=2))
-        count += 1
-        if count >= limit:
-            break
-    if not count:
-        raise RuntimeError(f"No samples loaded for {dataset_name}.")
+def main(argv: list[str] | None = None) -> int:
+    """Run the requested command and return the process exit code.
+    运行请求的命令并返回进程退出码。"""
+
+    args = build_parser().parse_args(argv)
+    if args.command == "serve":
+        return run_serve(args)
+    if args.command == "ask":
+        return run_ask(args)
+    if args.command == "run-init":
+        return run_run_init(args)
+    if args.command == "health":
+        return run_health(args)
+    if args.command == "list-datasets":
+        return run_list_datasets(args)
+    if args.command == "smoke-qwen":
+        return run_smoke_qwen(args)
+    if args.command == "resume-run":
+        return run_resume_run(args)
+    if args.command == "inspect-data":
+        return run_inspect_data(args)
+    if args.command == "count-image":
+        return run_count_image(args)
+    if args.command == "download-data":
+        return run_download_data(args)
+    if args.command == "evaluate-run":
+        return run_evaluate_run(args)
+    if args.command == "judge-vqa-run":
+        return run_judge_vqa_run(args)
+    if args.command == "standard-evaluate":
+        return run_standard_evaluate(args)
+    if args.command == "render-count":
+        return run_render_count(args)
+    if args.command == "summarize-evaluations":
+        return run_summarize_evaluations(args)
+    if args.command == "run-dataset":
+        return run_run_dataset(args)
+    _print_error("unsupported command")
+    return EXIT_ARGUMENT
 
 
-def _infer_target(
-    dataset_name: str,
-    data_root: Path,
-    output_root: Path,
-    model: Qwen3VLBaseline,
-    limit: int | None,
-    overwrite: bool,
-    config: dict[str, Any],
-    model_load_seconds: float = 0.0,
-) -> None:
-    output_root.mkdir(parents=True, exist_ok=True)
-    result_path = output_root / f"{dataset_name}.jsonl"
-    if result_path.exists() and not overwrite:
-        raise FileExistsError(f"{result_path} already exists. Use --overwrite to replace it.")
-    metadata_path = output_root / f"{dataset_name}.metadata.json"
-    metadata = {
-        "dataset": dataset_name,
-        "model": config.get("model", {}),
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "python": platform.python_version(),
-        "scope_note": _scope_note(dataset_name),
-        "model_load_seconds": round(model_load_seconds, 6),
-    }
-    report_config = config.get("report", {})
-    report_enabled = bool(report_config.get("enabled", True))
-    report_max_samples = int(report_config.get("max_samples", 200))
-    report_context = AuditReportWriter(result_path, report_max_samples) if report_enabled else nullcontext(None)
-    completed = 0
-    official_mme_records = []
-    inference_started = time.perf_counter()
-    with result_path.open("w", encoding="utf-8") as result_file, report_context as report_writer:
-        for sample in load_samples(dataset_name, data_root):
-            sample_started = time.perf_counter()
-            prediction = model.predict(sample)
-            sample_seconds = time.perf_counter() - sample_started
-            prediction.validate()
-            record = {"sample": sample.serializable(), "prediction": prediction.serializable()}
-            result_file.write(json.dumps(record, ensure_ascii=False) + "\n")
-            if report_writer is not None:
-                default_agent_trace = {
-                    "agent_class": f"{model.__class__.__module__}.{model.__class__.__name__}",
-                    "entrypoint": "predict",
-                    "route": "direct_baseline",
-                    "router_used": False,
-                    "task_type": sample.task_type,
-                }
-                agent_trace = prediction.meta.get("agent_trace", default_agent_trace)
-                report_writer.capture(sample, prediction, sample_seconds, agent_trace)
-            if dataset_name == "mme_real_rs":
-                official_record = dict(sample.meta["record"])
-                official_record["Output"] = prediction.answer
-                official_mme_records.append(official_record)
-            completed += 1
-            if completed % 10 == 0:
-                print(f"{dataset_name}: completed {completed} samples")
-            if limit is not None and completed >= limit:
-                break
-    metadata["completed_samples"] = completed
-    metadata["inference_seconds"] = round(time.perf_counter() - inference_started, 6)
-    metadata["report_enabled"] = report_enabled
-    metadata["report_max_samples"] = report_max_samples if report_enabled else 0
-    metadata_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    if official_mme_records:
-        official_path = output_root / "mme_real_rs.official.json"
-        official_path.write_text(json.dumps(official_mme_records, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"Saved {completed} predictions to {result_path}")
-    if report_enabled:
-        report_path = build_audit_report(result_path)
-        if report_path is not None:
-            print(f"Saved default audit report to {report_path}")
-
-
-def _scope_note(dataset_name: str) -> str:
-    if dataset_name == "xlrs_vqa_lite":
-        return "Official XLRS-Bench Lite VQA release; report separately from full caption and grounding releases."
-    if dataset_name == "xlrs_caption_en":
-        return "Official full English caption release exposes only a train-named split; this is an evaluation-only baseline run."
-    if dataset_name == "mme_real_rs":
-        return "MME-RealWorld Remote Sensing subdomain only."
-    return "Official released evaluation scope."
-
-
-def _read_jsonl(path: Path) -> list[dict[str, Any]]:
-    with path.open(encoding="utf-8") as file:
-        records = [json.loads(line) for line in file if line.strip()]
-    if not records:
-        raise ValueError(f"No prediction records found in {path}")
-    return records
+def _print_error(message: str) -> None:
+    print(json.dumps({"status": "failed", "error": message}), file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

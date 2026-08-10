@@ -1,0 +1,13 @@
+{
+  "auto": {
+    "dataset": "auto-demo",
+    "failed": 0,
+    "judge_sample_rate": null,
+    "partial": 0,
+    "skipped": 0,
+    "split": "test",
+    "succeeded": 1,
+    "task": "auto",
+    "total": 1
+  }
+}

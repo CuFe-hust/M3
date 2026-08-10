@@ -1,0 +1,4 @@
+{"case": "success", "failure": null, "expected": {"dataset": "LEVIR-CC", "task": "change_caption", "split": "test", "question": "Describe the change.", "sample_id": "levir_1", "image_roles": ["t1", "t2"], "image_paths": ["01_t1.png", "02_t2.png"], "ground_truth": {"answers": ["a building appeared"], "count": null, "boxes": [], "points": [], "labels": [], "raw": {"adapter_version": "1"}}, "metadata": {}}}
+{"case": "missing_image", "failure": "DatasetProbeError", "behavior": null, "expected": null}
+{"case": "missing_field", "failure": "DatasetProbeError", "behavior": null, "expected": null}
+{"case": "duplicate_candidates", "failure": null, "behavior": "decoy samples file is ignored by the reference manifest adapter", "expected": null}

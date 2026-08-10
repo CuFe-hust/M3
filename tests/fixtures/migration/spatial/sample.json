@@ -1,0 +1,28 @@
+{
+  "dataset": "parity",
+  "ground_truth": {
+    "answers": [
+      "yes"
+    ],
+    "boxes": [],
+    "count": null,
+    "labels": [],
+    "points": [],
+    "raw": {}
+  },
+  "images": [
+    {
+      "height": 4,
+      "image_id": "image-image",
+      "path": "image.png",
+      "role": "image",
+      "sha256": null,
+      "width": 4
+    }
+  ],
+  "metadata": {},
+  "question": "Where is the target located?",
+  "sample_id": "spatial",
+  "split": "validation",
+  "task": "spatial_relation"
+}

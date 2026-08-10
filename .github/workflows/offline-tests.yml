@@ -1,0 +1,144 @@
+name: Foundation tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install foundation dependencies
+        run: python -m pip install -e ".[dev,migration,change]"
+
+      - name: Compile implemented code
+        run: python -m compileall data models agents routing workflows evaluation tests scripts/generate_migration_fixtures.py
+
+      - name: Architecture guards
+        run: python -m pytest -q tests/architecture
+
+      - name: Data contracts
+        run: python -m pytest -q tests/contracts/test_data_schema_contract.py
+
+      - name: Model and agent contracts
+        run: |
+          python -m pytest -q tests/models
+          python -m pytest -q tests/agents
+          python -m pytest -q tests/contracts/test_agent_result_contract.py
+
+      - name: Workflow and evaluation contracts
+        run: |
+          python -m pytest -q tests/workflows
+          python -m pytest -q tests/evaluation
+
+      - name: Build and verify wheel
+        run: |
+          python -m build
+          python -m venv /tmp/m3-wheel-test
+          /tmp/m3-wheel-test/bin/python -m pip install --upgrade pip
+          /tmp/m3-wheel-test/bin/python -m pip install dist/*.whl
+          cd /tmp
+          /tmp/m3-wheel-test/bin/python - <<'PY'
+          import sys
+
+          import data
+          import models
+          import agents
+          import routing
+          import workflows
+          import evaluation
+
+          import models.qwen3_vl
+          import models.qwen3_5
+          import agents.spatial
+          import agents.change
+
+          from models.entry import list_models
+          from agents.registry import AgentRegistry
+          from agents.counting import CountingAgent, CountingResult
+          from agents import CountingBackendUnavailableError as PublicError
+          from agents.errors import CountingBackendUnavailableError as CoreError
+          from agents.counting.backends.base import (
+              BackendKind,
+              CountingBackendUnavailableError as BackendError,
+              MissingModelCacheIdentityError,
+          )
+          from routing import POLICIES, RoutePolicy, RoutingDecision, SampleCapabilities, TaskRouter
+          from agents.spatial import SpatialAgent
+          from agents.change import AgentChangeSettings
+          from workflows import CallBudget, RunStore
+          from workflows.artifact_writer import ArtifactWriter
+          from evaluation import (
+              EvaluationRecord,
+              GroundingDeterministicMetrics,
+              VQADeterministicMetrics,
+              aggregate,
+              merge_vqa_evaluation,
+          )
+
+          names = list_models()
+          assert "qwen_transformers" in names
+          assert "qwen3_vl_baseline" in names
+          assert "qwen3_5_transformers" in names
+          assert AgentRegistry is not None
+          assert TaskRouter().route("counting").primary_agent == "counting_agent"
+          assert "counting" in POLICIES
+          assert CountingAgent is not None
+          assert CountingResult is not None
+          assert PublicError is CoreError
+          assert BackendError is CoreError
+          assert BackendKind is not None
+          assert MissingModelCacheIdentityError is not None
+          # Task 26-33 runtime integrity: the base wheel must not require
+          # OpenCV, and every new package must import from outside the tree.
+          # 基础 wheel 不得要求 OpenCV，且所有新包必须在源码树外可导入。
+          assert "cv2" not in sys.modules
+          assert SpatialAgent is not None
+          assert AgentChangeSettings is not None
+          assert CallBudget is not None
+          assert RunStore is not None
+          assert ArtifactWriter is not None
+          assert EvaluationRecord is not None
+          assert aggregate is not None
+
+          # Task 33.6/33.7 public API contract: canonical VQA merge returns
+          # the unified EvaluationRecord with typed deterministic metrics.
+          # Task 33.6/33.7 公共 API 契约：canonical VQA merge 返回带类型化
+          # 确定性指标的统一 EvaluationRecord。
+          vqa_record = merge_vqa_evaluation(
+              sample_id="wheel-vqa",
+              question="Is there a road?",
+              reference_answers=["yes"],
+              candidate_answer="yes",
+          )
+          assert isinstance(vqa_record, EvaluationRecord)
+          assert vqa_record.task == "general_vqa"
+          assert isinstance(vqa_record.deterministic_metrics, VQADeterministicMetrics)
+          assert vqa_record.deterministic_metrics.exact_match is True
+
+          grounding = GroundingDeterministicMetrics(iou=0.5, iou_at_0_5=True)
+          assert grounding.iou_at_0_5 is True
+
+          print("wheel-import-contract: PASS")
+          print("task33-wheel-import-contract: PASS")
+          print("task33.7-wheel-contract: PASS")
+          PY
+
+      - name: Golden fixtures
+        run: python -m pytest -q tests/parity/test_baseline_golden_fixtures.py
+
+      - name: Verify migration generator imports
+        run: python scripts/generate_migration_fixtures.py --help
+
+      - name: Full offline test suite
+        run: python -m pytest -q

@@ -1,0 +1,28 @@
+[
+  {
+    "Question_id": "rs_1",
+    "Subtask": "Remote Sensing",
+    "Text": "How many ships are visible?",
+    "Answer choices": [
+      "0",
+      "1",
+      "2",
+      "3"
+    ],
+    "Ground truth": "B",
+    "image": "img_1.png"
+  },
+  {
+    "Question_id": "oc_1",
+    "Subtask": "Optical Character Recognition",
+    "Text": "What does the sign say?",
+    "Answer choices": [
+      "A",
+      "B",
+      "C",
+      "D"
+    ],
+    "Ground truth": "A",
+    "image": "img_1.png"
+  }
+]

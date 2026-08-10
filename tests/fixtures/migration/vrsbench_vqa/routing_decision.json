@@ -1,0 +1,13 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "general_vqa_agent",
+  "reason_codes": [
+    "task_general_vqa",
+    "vrsbench_type_unspecified",
+    "vrsbench_semantic_general_vqa"
+  ],
+  "requires_tiling": false,
+  "router_source": "vrsbench_semantic_rule",
+  "task": "general_vqa"
+}

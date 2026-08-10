@@ -1,0 +1,16 @@
+{
+  "images": [
+    {
+      "filename": "00001.png",
+      "filepath": "test",
+      "sentences": [
+        {
+          "raw": "A building was constructed."
+        },
+        {
+          "raw": "A new building appeared."
+        }
+      ]
+    }
+  ]
+}

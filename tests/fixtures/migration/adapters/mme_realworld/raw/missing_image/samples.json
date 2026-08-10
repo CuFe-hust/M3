@@ -1,0 +1,17 @@
+[
+  {
+    "id": "mme_1",
+    "split": "test",
+    "task": "general_vqa",
+    "question": "Is there a ship?",
+    "images": [
+      "missing.png"
+    ],
+    "image_roles": [
+      "image"
+    ],
+    "answers": [
+      "yes"
+    ]
+  }
+]

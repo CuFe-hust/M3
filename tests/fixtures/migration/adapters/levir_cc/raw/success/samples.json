@@ -1,0 +1,19 @@
+[
+  {
+    "id": "levir_1",
+    "split": "test",
+    "task": "change_caption",
+    "question": "Describe the change.",
+    "images": [
+      "A/01_t1.png",
+      "B/02_t2.png"
+    ],
+    "image_roles": [
+      "t1",
+      "t2"
+    ],
+    "answers": [
+      "a building appeared"
+    ]
+  }
+]

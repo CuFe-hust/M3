@@ -1,0 +1,17 @@
+{
+  "sample_id": "primary_qwen_failure",
+  "task": "general_vqa",
+  "dataset": "parity",
+  "split": "validation",
+  "state": "failed",
+  "route": "general_vqa_agent",
+  "agent": null,
+  "result_file": null,
+  "result": null,
+  "trace": null,
+  "evaluation": null,
+  "errors": {
+    "error_code": "RuntimeError",
+    "error_message": "deterministic primary Qwen failure"
+  }
+}

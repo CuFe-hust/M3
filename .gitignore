@@ -1,17 +1,46 @@
 .DS_Store
 
 # Downloaded datasets and Hugging Face artifacts
-datasets/
+/dataset/
+/datasets/
 model_cache/
 hf_cache/
+.cache/
 
-# Baseline outputs and local experiment settings
+# Local editor artifacts
+.vscode/
+
+# Python build and test artifacts
+build/
+dist/
+.pytest_cache/
+tmp/
+
+# Runtime outputs and run artifacts (never commit)
 outputs/
-config/local*.json
+runs/
+
+# Local environment and secret files
 .env
-configs/local*.yaml
-.firecrawl/
+.env.local
+/secrets.txt
+
+# Model weights are local by default. Explicit exceptions below are Git LFS assets.
+weights/
+*.pt
+*.pth
+*.safetensors
+!models/segformer_mitb2_isaid/model.safetensors
+!models/segformer_mitb2_oem/model.safetensors
+*.ckpt
+*.bin
+*.onnx
+*.om
+*.engine
+models/*/weights/
+models/*.tgz
 
 # Python bytecode
 __pycache__/
 *.py[cod]
+*.egg-info/

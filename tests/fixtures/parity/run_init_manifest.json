@@ -1,0 +1,9 @@
+{
+  "dataset": "d",
+  "model_ids": {
+    "deepseek": "deepseek-v4-flash",
+    "qwen": "qwen3-vl-4b-instruct"
+  },
+  "sample_filter": null,
+  "split": "s"
+}

@@ -1,0 +1,8 @@
+agents:
+  change:
+    semantic:
+      enabled: true
+    proposals:
+      fusion_low_level_weight: 0.3333333333
+      fusion_feature_weight: 0.6666666667
+      fusion_semantic_weight: 0.00

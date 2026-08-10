@@ -1,0 +1,28 @@
+{
+  "dataset": "VRSBench",
+  "ground_truth": {
+    "answers": [
+      "yes"
+    ],
+    "boxes": [],
+    "count": null,
+    "labels": [],
+    "points": [],
+    "raw": {}
+  },
+  "images": [
+    {
+      "height": 4,
+      "image_id": "image-image",
+      "path": "image.png",
+      "role": "image",
+      "sha256": null,
+      "width": 4
+    }
+  ],
+  "metadata": {},
+  "question": "Is the statement correct?",
+  "sample_id": "vrsbench_vqa",
+  "split": "validation",
+  "task": "general_vqa"
+}

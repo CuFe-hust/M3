@@ -1,0 +1,44 @@
+{
+  "agent_class": "spacers_agent.agents.change.agent.ChangeAgent",
+  "execution_mode": "single",
+  "execution_task": "change_caption",
+  "fallback_agents": [],
+  "fallback_used": false,
+  "harmonization_reason_codes": [
+    "CALIBRATION_NOT_AVAILABLE",
+    "APPLIED_OK"
+  ],
+  "harmonization_status": "applied",
+  "harmonization_version": "pif_lab_midpoint_v1",
+  "image_roles": [
+    "t1",
+    "t2"
+  ],
+  "input_mode": "dual_path",
+  "judge_status": "not_requested",
+  "mad_pif_after": 56.44827651977539,
+  "mad_pif_before": 56.60098648071289,
+  "pif_ratio": 0.396484375,
+  "preprocess_artifacts": {
+    "difference_map": "change_preprocess/difference_map.png",
+    "harmonization_report": "change_preprocess/harmonization_report.json",
+    "harmonized_t1": "change_preprocess/harmonized_t1.png",
+    "harmonized_t2": "change_preprocess/harmonized_t2.png",
+    "pif_mask": "change_preprocess/pif_mask.png",
+    "proposal_overlay": "change_preprocess/proposal_overlay.png",
+    "proposals": "change_preprocess/proposals.json",
+    "validation_report": "change_preprocess/validation_report.json"
+  },
+  "prompt_version": "change-dual-path-v1",
+  "proposal_count": 1,
+  "proposal_source": "difference_map_v1",
+  "qwen_backend": "transformers",
+  "raw_fallback_used": false,
+  "review_used": true,
+  "review_warnings": [],
+  "route": "ChangeAgent.run -> preprocess_pair -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "routing_source": "dataset_task",
+  "sharpness_adjustment_used": false,
+  "task_type": "change_caption"
+}

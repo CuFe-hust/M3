@@ -1,0 +1,15 @@
+{
+  "agent_class": "spacers_agent.agents.spatial.agent.SpatialAgent",
+  "candidate_review_used": false,
+  "execution_mode": "single",
+  "execution_task": "spatial_relation",
+  "fallback_agents": [],
+  "fallback_used": false,
+  "judge_status": "not_requested",
+  "prompt_version": "spatial-v5",
+  "qwen_backend": "transformers",
+  "route": "SpatialAgent.run -> VisualAgentBase.run -> RecordingFakeQwen.complete_json",
+  "router_used": true,
+  "routing_source": "dataset_task",
+  "task_type": "spatial_relation"
+}

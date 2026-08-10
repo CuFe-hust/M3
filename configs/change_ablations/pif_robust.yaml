@@ -1,0 +1,11 @@
+agents:
+  change:
+    semantic:
+      enabled: true
+      min_pif_feature_cells: 32
+      feature_scale_epsilon: 0.001
+    proposals:
+      threshold_mode: pif_robust
+      pif_threshold_k: 4.0
+      threshold_floor: 0.10
+      pif_fallback_quantile: 0.90

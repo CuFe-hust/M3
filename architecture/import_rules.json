@@ -1,0 +1,129 @@
+{
+  "description": "Import dependency rules for the new top-level packages. 新顶层包导入依赖规则。Domain layers depend on model contracts, never on concrete model implementations; only the composition root (application) may select concrete implementations.",
+  "internal_packages": [
+    "application",
+    "data",
+    "models",
+    "agents",
+    "routing",
+    "workflows",
+    "evaluation",
+    "reporting"
+  ],
+  "packages": {
+    "data": {
+      "allow": ["data"]
+    },
+    "models": {
+      "allow": ["models"]
+    },
+    "agents": {
+      "allow": ["agents", "data.schema", "models.base", "models.images"]
+    },
+    "routing": {
+      "allow": ["routing", "data.schema", "agents.schema"]
+    },
+    "evaluation": {
+      "allow": [
+        "evaluation",
+        "data.schema",
+        "agents.schema",
+        "agents.counting.schema"
+      ]
+    },
+    "reporting": {
+      "allow": [
+        "reporting",
+        "data.schema",
+        "agents.schema",
+        "agents.counting.schema",
+        "agents.change.schema",
+        "routing.schema",
+        "workflows.schema",
+        "evaluation"
+      ]
+    },
+    "workflows": {
+      "allow": [
+        "workflows",
+        "data",
+        "agents",
+        "routing",
+        "evaluation",
+        "models.base"
+      ]
+    },
+    "application": {
+      "allow": [
+        "application",
+        "data",
+        "models",
+        "agents",
+        "routing",
+        "workflows",
+        "evaluation",
+        "reporting"
+      ]
+    },
+    "main": {
+      "allow": ["application"]
+    }
+  },
+  "path_rules": {
+    "evaluation/metrics/**": {
+      "allow": [
+        "evaluation",
+        "data.schema",
+        "agents.schema",
+        "agents.counting.schema"
+      ]
+    },
+    "evaluation/judges/**": {
+      "allow": [
+        "evaluation",
+        "data.schema",
+        "agents.schema",
+        "models.base",
+        "models.cache",
+        "models.settings"
+      ]
+    }
+  },
+  "forbidden_patterns": {
+    "reporting": [
+      "agents.*.agent",
+      "models.qwen_transformers",
+      "workflows.sample_runner"
+    ],
+    "evaluation": [
+      "application**",
+      "models.entry",
+      "models.qwen_transformers",
+      "models.qwen3_vl**",
+      "models.qwen3_5**"
+    ],
+    "agents": [
+      "application**",
+      "workflows**",
+      "models.entry",
+      "models.qwen_transformers",
+      "models.segformer_transformers",
+      "models.qwen3_vl**",
+      "models.qwen3_5**"
+    ],
+    "models": ["data**"],
+    "routing": [
+      "models**",
+      "data.adapters**",
+      "workflows**",
+      "application**"
+    ],
+    "workflows": [
+      "application**",
+      "models.entry",
+      "models.qwen_transformers",
+      "models.qwen3_vl**",
+      "models.qwen3_5**"
+    ]
+  }
+}

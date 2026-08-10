@@ -12,10 +12,47 @@ dependencies = [
   "pydantic>=2.8",
   "pydantic-settings>=2.4",
   "PyYAML>=6.0",
+  "Pillow>=10.0.0",
+  "numpy>=1.26",
+  "opencv-python>=4.8",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0.0", "pytest-asyncio>=0.23"]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.23",
+  "numpy>=1.26",
+  "huggingface_hub>=0.28.0",
+  "transformers>=4.57.0",
+]
+change = ["numpy>=1.26", "opencv-python>=4.8", "Pillow>=10.0.0"]
+yolo = ["ultralytics==8.4.102"]
+yolo-onnx = ["onnxruntime-gpu>=1.23", "numpy>=1.26", "opencv-python>=4.8"]
+segformer = ["torch>=2.2", "transformers>=5.14.1,<5.15", "safetensors>=0.4"]
+change-semantic = ["torch>=2.2", "transformers>=5.14.1,<5.15", "safetensors>=0.4"]
+qwen35-gb10 = ["huggingface-hub>=1.0.0", "kernels>=0.15.2,<0.16.0"]
+
+[tool.setuptools.packages.find]
+include = [
+  "data*",
+  "models*",
+  "agents*",
+  "routing*",
+  "workflows*",
+  "evaluation*",
+  "reporting*",
+  "application*",
+  "prompts*",
+]
+
+[tool.setuptools.package-data]
+agents = ["counting/expert_catalog.json"]
+models = [
+  "segformer_mitb2_isaid/classes.json",
+  "segformer_mitb2_isaid/config.json",
+  "segformer_mitb2_isaid/preprocessor_config.json",
+]
+prompts = ["*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

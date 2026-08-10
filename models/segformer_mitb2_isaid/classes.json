@@ -1,0 +1,45 @@
+{
+  "model": "segformer_mitb2_isaid",
+  "num_classes": 16,
+  "id2name": {
+    "0": "background",
+    "1": "storage_tank",
+    "2": "Large_Vehicle",
+    "3": "Small_Vehicle",
+    "4": "plane",
+    "5": "ship",
+    "6": "Swimming_pool",
+    "7": "Harbor",
+    "8": "tennis_court",
+    "9": "Ground_Track_Field",
+    "10": "Soccer_ball_field",
+    "11": "baseball_diamond",
+    "12": "Bridge",
+    "13": "basketball_court",
+    "14": "Roundabout",
+    "15": "Helicopter"
+  },
+  "name2id": {
+    "background": 0,
+    "storage_tank": 1,
+    "Large_Vehicle": 2,
+    "Small_Vehicle": 3,
+    "plane": 4,
+    "ship": 5,
+    "Swimming_pool": 6,
+    "Harbor": 7,
+    "tennis_court": 8,
+    "Ground_Track_Field": 9,
+    "Soccer_ball_field": 10,
+    "baseball_diamond": 11,
+    "Bridge": 12,
+    "basketball_court": 13,
+    "Roundabout": 14,
+    "Helicopter": 15
+  },
+  "verification": {
+    "method": "confusion matrix of the fine-tuned model against the local iSAID semantic masks (train split, images P0000/P0025/P0111); diagonal mapping idx <-> gt pixel value confirmed for classes 1,2,3,4,6,7,8,9,10,11,13; remaining classes follow the same mask pixel-value scheme",
+    "verified_date": "2026-08-06",
+    "note": "This order matches the local iSAID_coco category ids and the train semantic masks. It differs from the iSAID official instance category order (1=ship etc.). The official val JSON category ids also differ from train and need re-mapping, see metrics.json note."
+  }
+}

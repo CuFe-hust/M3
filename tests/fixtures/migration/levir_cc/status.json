@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/levir_cc/agent_result.json",
+  "sample_id": "levir_cc",
+  "state": "succeeded",
+  "task": "change_caption"
+}

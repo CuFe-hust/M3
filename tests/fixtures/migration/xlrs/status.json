@@ -1,0 +1,8 @@
+{
+  "error_code": null,
+  "error_message": null,
+  "result_path": "<RUN_ROOT>/samples/xlrs/agent_result.json",
+  "sample_id": "xlrs",
+  "state": "succeeded",
+  "task": "general_vqa"
+}

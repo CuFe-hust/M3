@@ -1,0 +1,11 @@
+{
+  "execution_mode": "single",
+  "fallback_agents": [],
+  "primary_agent": "counting_agent",
+  "reason_codes": [
+    "task_counting"
+  ],
+  "requires_tiling": true,
+  "router_source": "dataset_task",
+  "task": "counting"
+}

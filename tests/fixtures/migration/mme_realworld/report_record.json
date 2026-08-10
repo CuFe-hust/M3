@@ -1,0 +1,55 @@
+{
+  "sample_id": "mme_realworld",
+  "task": "general_vqa",
+  "dataset": "MME-RealWorld",
+  "split": "validation",
+  "state": "succeeded",
+  "route": "general_vqa_agent",
+  "agent": "general_vqa_agent",
+  "result_file": "agent_result.json",
+  "result": {
+    "agent_name": "general_vqa_agent",
+    "answer": "yes",
+    "boxes": [],
+    "evidence": [],
+    "evidence_items": [],
+    "geometry": {},
+    "status": "completed"
+  },
+  "trace": {
+    "agent_class": "spacers_agent.agents.general_vqa.agent.GeneralVQAAgent",
+    "execution_mode": "single",
+    "execution_task": "general_vqa",
+    "fallback_agents": [],
+    "fallback_used": false,
+    "judge_status": "succeeded",
+    "prompt_version": "general-vqa-v2",
+    "qwen_backend": "transformers",
+    "route": "GeneralVQAAgent.run -> VisualAgentBase.run -> RecordingFakeQwen.complete_json",
+    "router_used": true,
+    "routing_source": "dataset_task",
+    "task_type": "general_vqa"
+  },
+  "evaluation": {
+    "candidate_answer": "yes",
+    "exact_match": true,
+    "judge_error": null,
+    "judge_parsed": {
+      "can_verify_visual_truth": false,
+      "concise_rationale": "Deterministic text-only match.",
+      "judge_scope": "text_and_structured_evidence_only",
+      "score": 1
+    },
+    "judge_score": 1,
+    "judge_status": "succeeded",
+    "question": "Is the statement correct?",
+    "reference_answers": [
+      "yes"
+    ],
+    "sample_id": "mme_realworld"
+  },
+  "errors": {
+    "error_code": null,
+    "error_message": null
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "dataset": "auto-demo",
+  "failed": 0,
+  "partial": 0,
+  "samples": [
+    {
+      "error_code": null,
+      "evaluation": {
+        "deterministic_metrics": {
+          "exact_match": false
+        },
+        "judge_error": null,
+        "judge_inconsistency": false,
+        "judge_parsed": {
+          "can_verify_visual_truth": false,
+          "concise_rationale": "ok",
+          "judge_scope": "text_and_structured_evidence_only",
+          "score": 1
+        },
+        "judge_raw": null,
+        "judge_status": "succeeded",
+        "task": "general_vqa"
+      },
+      "execution_agent": "general_vqa_agent",
+      "fallback_used": false,
+      "judge_status": "succeeded",
+      "prediction": "yes",
+      "question": "Is there a road?",
+      "resolved_task": "general_vqa",
+      "run_task": "auto",
+      "state": "succeeded",
+      "task": "general_vqa"
+    }
+  ],
+  "skipped": 0,
+  "succeeded": 1,
+  "tasks": [
+    {
+      "agent_usage": {
+        "general_vqa_agent": 1
+      },
+      "failed": 0,
+      "fallback_count": 0,
+      "fallback_rate": 0.0,
+      "judge_status_counts": {
+        "succeeded": 1
+      },
+      "metrics": {
+        "general_vqa": {
+          "correct": 0,
+          "metric": "exact_match_accuracy",
+          "score": 0.0,
+          "total": 1
+        }
+      },
+      "partial": 0,
+      "run_task": "auto",
+      "skipped": 0,
+      "succeeded": 1,
+      "total": 1
+    }
+  ],
+  "total": 1
+}
