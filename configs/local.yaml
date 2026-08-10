@@ -1,0 +1,7 @@
+# Local Qwen model configuration: Qwen3-VL-8B with merged merger-LoRA.
+# 本地 Qwen 模型配置：已合并 merger-LoRA 的 Qwen3-VL-8B。
+models:
+  qwen:
+    model: models/qwen3_vl_8b/merged
+    cache_model_id: qwen3-vl-8b-merger-lora-merged
+    allow_download: false
