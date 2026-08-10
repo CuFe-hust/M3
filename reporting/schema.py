@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from data.schema import JsonScalar, JsonValue
 from evaluation.records import EvaluationRecord
 
 
@@ -65,6 +68,79 @@ class RoutingView(_ViewModel):
     fallback_history: list[FallbackTransitionView] = Field(default_factory=list)
     review_backend: str | None = None
     selection_reason: str | None = None
+
+
+_UNSAFE_SUMMARY_RE = re.compile(
+    r"(?i)(?:data:image/[^;]+;base64,|https?://|(?:^|[^a-z0-9])(?:[a-z]:[\\/]|/(?:home|tmp|users|private|var)/))"
+)
+
+
+def _safe_summary_scalar(value: JsonScalar) -> bool:
+    if isinstance(value, float) and not math.isfinite(value):
+        return False
+    if not isinstance(value, str):
+        return True
+    return _UNSAFE_SUMMARY_RE.search(value) is None
+
+
+class GroundTruthView(_ViewModel):
+    """Task-neutral, read-only ground truth projection for sample audits."""
+
+    answers: list[str] = Field(default_factory=list)
+    count: int | None = None
+    boxes: list[list[float]] = Field(default_factory=list)
+    points: list[list[float]] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    coordinate_frame: str | None = None
+
+
+class BackendStageView(_ViewModel):
+    """One persisted counting backend attempt in execution order."""
+
+    order: int = Field(ge=1)
+    backend_name: str
+    backend_kind: str
+    phase: str
+    status: str
+    reason_code: str | None = None
+    predicted_count: int | None = None
+    counting_status: str | None = None
+    accepted_count: int | None = None
+    rejected_count: int | None = None
+    warning_codes: list[str] = Field(default_factory=list)
+    summary_fields: dict[str, JsonScalar | list[JsonScalar]] = Field(default_factory=dict)
+    overlay_asset: str | None = None
+
+    @field_validator("summary_fields")
+    @classmethod
+    def validate_summary_fields(cls, value: dict[str, JsonScalar | list[JsonScalar]]):
+        for key, item in value.items():
+            if isinstance(item, list):
+                if len(item) > 50 or any(not _safe_summary_scalar(entry) for entry in item):
+                    raise ValueError(f"summary_fields[{key!r}] must contain only small scalar lists")
+            elif not _safe_summary_scalar(item):
+                raise ValueError(f"summary_fields[{key!r}] contains an unsafe value")
+        return value
+
+
+class ModelCallAuditView(_ViewModel):
+    """Sanitized view of one persisted structured-model call."""
+
+    request_id: str
+    prompt_version: str
+    request_hash: str | None = None
+    sample_id: str | None = None
+    tile_id: str | None = None
+    image_sha256: str | None = None
+    cache_hit: bool | None = None
+    valid: bool | None = None
+    repair_used: bool | None = None
+    latency_seconds: float | None = None
+    token_usage: dict[str, int] | None = None
+    raw_response: str | None = None
+    raw_response_truncated: bool = False
+    parsed_response: str | None = None
+    request_summary: str | None = None
 
 
 VisualStatus = Literal[
@@ -191,6 +267,7 @@ class ReportSample(_ViewModel):
     updated_at: str | None = None
     question: str | None = None
     reference_answers: list[str] = Field(default_factory=list)
+    ground_truth: GroundTruthView | None = None
     prediction: str | None = None
     resolved_task: str | None = None
     execution_agent: str | None = None
@@ -200,6 +277,9 @@ class ReportSample(_ViewModel):
     evaluation: EvaluationRecord | None = None
     result_quality: Literal["correct", "incorrect", "unknown", "not_applicable"] = "unknown"
     routing: RoutingView = Field(default_factory=RoutingView)
+    routing_decision: dict[str, JsonValue] | None = None
+    backend_stages: list[BackendStageView] = Field(default_factory=list)
+    model_calls: list[ModelCallAuditView] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     visuals: list[VisualAssetView] = Field(default_factory=list)
     task_detail: TaskDetail | None = None

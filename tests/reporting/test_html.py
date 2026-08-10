@@ -20,6 +20,8 @@ from reporting.html import build_html
 from reporting.schema import (
     CountingReportDetail,
     FallbackTransitionView,
+    GroundTruthView,
+    ModelCallAuditView,
     Report,
     ReportSample,
     RoutingAttemptView,
@@ -301,6 +303,10 @@ def test_report_v2_dashboard_routing_filters_counting_and_relative_asset() -> No
         task="counting",
         state="partial",
         result_quality="incorrect",
+        question="How many small vehicles?",
+        prediction="12",
+        ground_truth=GroundTruthView(count=13),
+        inference_seconds=0.48,
         fallback_used=True,
         warnings=["SEMANTIC_TILE_INFERENCE_FAILED"],
         routing=RoutingView(
@@ -369,7 +375,62 @@ def test_report_v2_dashboard_routing_filters_counting_and_relative_asset() -> No
     ):
         assert text in document
     assert 'src="assets/abc-overlay.png"' in document
+    assert document.count('src="assets/abc-original.webp"') >= 2
+    assert document.count('src="assets/abc-overlay.png"') >= 2
+    assert 'class="sample result-incorrect"' in document
+    assert "✕ 错误 / Incorrect" in document
+    assert ".sample summary.sample-preview{display:grid;grid-template-columns:236px minmax(0,1fr)" in document
+    assert "@media(max-width:560px)" in document
+    for class_name in ("run-meta", "sample-preview", "sample-hero", "table-scroll"):
+        assert class_name in document
+    for text in ("Question", "Prediction", "Ground Truth", "Final backend", "Latency"):
+        assert text in document
+    assert document.index('id="samples"') < document.index('id="overview"')
     assert "data:image" not in document
+
+
+def test_legacy_unknown_quality_uses_persisted_exact_match() -> None:
+    sample = ReportSample(
+        sample_id="legacy-correct",
+        run_task="counting",
+        task="counting",
+        state="succeeded",
+        result_quality="unknown",
+        prediction="2",
+        ground_truth=GroundTruthView(count=2),
+        task_detail=CountingReportDetail(
+            predicted_count=2,
+            gold_count=2,
+            exact_match=True,
+        ),
+    )
+    document = build_html(Report(
+        run_id="legacy", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[sample],
+    ))
+    assert 'data-quality="correct"' in document
+    assert 'class="sample result-correct"' in document
+    assert "✓ 正确 / Correct" in document
+    assert "? 未知 / Unknown" not in document
+
+
+def test_v21_model_call_raw_and_parsed_text_are_escaped() -> None:
+    report = Report(
+        run_id="model-call", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[ReportSample(
+            sample_id="call-1", run_task="general_vqa", task="general_vqa",
+            state="succeeded", model_calls=[ModelCallAuditView(
+                request_id="qwen-1", prompt_version="v1",
+                raw_response="<script>alert(1)</script>",
+                parsed_response='{"answer":"<b>yes</b>"}',
+            )],
+        )],
+    )
+    document = build_html(report)
+    assert "<script>alert(1)</script>" not in document
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in document
+    assert "<b>yes</b>" not in document
+    assert "&lt;b&gt;yes&lt;/b&gt;" in document
 
 
 def test_report_v2_bundle_contains_offline_outputs_and_assets_directory(

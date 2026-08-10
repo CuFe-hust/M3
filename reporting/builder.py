@@ -8,7 +8,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from agents.counting.schema import CountingResult, GlobalPointObservation
+from agents.counting.schema import (
+    CountingExecutionAudit,
+    CountingResult,
+    GlobalPointObservation,
+)
 from agents.schema import AgentResult
 from evaluation.metrics.aggregate import aggregate_counting, aggregate_grounding, aggregate_vqa
 from evaluation.metrics.caption import CaptionMetricDependencyError, aggregate_caption
@@ -22,8 +26,11 @@ from evaluation.records import (
 )
 from reporting.adapters import (
     iter_current_predictions,
+    load_counting_attempts,
     load_evaluation,
+    load_model_calls,
     load_payload,
+    load_routing_decision,
     load_run_manifest,
     load_sample,
     load_status,
@@ -35,6 +42,7 @@ from reporting.adapters import (
 )
 from reporting.schema import (
     CaptionReportDetail,
+    BackendStageView,
     ChangeReportDetail,
     CountingReportDetail,
     CountingTargetSummary,
@@ -42,6 +50,7 @@ from reporting.schema import (
     FallbackTransitionSummary,
     FallbackTransitionView,
     GeneralVQAReportDetail,
+    GroundTruthView,
     GroundingReportDetail,
     LatencySummary,
     PointPreview,
@@ -112,6 +121,11 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
     task = str(row.get("task", ""))
     evaluation = load_evaluation(sample_dir, task) if sample_dir is not None else None
     payload = load_payload(sample_dir, task) if sample_dir is not None else None
+    counting_audit = load_counting_attempts(sample_dir) if sample_dir is not None else None
+    if counting_audit is not None and counting_audit.sample_id != str(row.get("sample_id", "")):
+        counting_audit = None
+    routing_decision = load_routing_decision(sample_dir) if sample_dir is not None else None
+    model_calls = load_model_calls(sample_dir) if sample_dir is not None else []
     evaluation = _safe_evaluation(evaluation)
     routing = _routing(trace)
     judge_status = _judge_status(evaluation, trace)
@@ -121,7 +135,9 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         if sample is not None and sample.ground_truth is not None
         else []
     )
+    ground_truth = _ground_truth_view(sample)
     warnings = _warning_codes(payload, trace)
+    task_detail = _task_detail(task, sample, payload, evaluation, trace, judge_status)
     return ReportSample(
         sample_id=str(row.get("sample_id", "")),
         run_task=str(row.get("run_task", "")),
@@ -132,6 +148,7 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         updated_at=row.get("updated_at") if isinstance(row.get("updated_at"), str) else None,
         question=sample.question if sample is not None else None,
         reference_answers=references,
+        ground_truth=ground_truth,
         prediction=prediction,
         resolved_task=routing.resolved_task,
         execution_agent=routing.execution_agent,
@@ -139,8 +156,11 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         judge_status=judge_status,
         inference_seconds=_trace_float(trace, "inference_seconds"),
         evaluation=evaluation,
-        result_quality=_result_quality(evaluation),
+        result_quality=_result_quality(evaluation, task_detail),
         routing=routing,
+        routing_decision=routing_decision,
+        backend_stages=_backend_stages(counting_audit),
+        model_calls=model_calls,
         warnings=warnings,
         visuals=[
             VisualAssetView(
@@ -151,7 +171,7 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
             )
             for image in (sample.images if sample is not None else [])
         ],
-        task_detail=_task_detail(task, sample, payload, evaluation, trace, judge_status),
+        task_detail=task_detail,
     )
 
 
@@ -163,6 +183,95 @@ def _safe_evaluation(record: EvaluationRecord | None) -> EvaluationRecord | None
     data["judge_error"] = None
     data["judge_parsed"] = _safe_view_value(data.get("judge_parsed"))
     return EvaluationRecord.model_validate(data)
+
+
+def _ground_truth_view(sample: Any) -> GroundTruthView | None:
+    ground_truth = getattr(sample, "ground_truth", None)
+    if ground_truth is None:
+        return None
+    return GroundTruthView(
+        answers=list(ground_truth.answers),
+        count=ground_truth.count,
+        boxes=[list(box) for box in ground_truth.boxes],
+        points=[list(point) for point in ground_truth.points],
+        labels=list(ground_truth.labels),
+        coordinate_frame=ground_truth.coordinate_frame,
+    )
+
+
+def _backend_stages(audit: CountingExecutionAudit | None) -> list[BackendStageView]:
+    if audit is None:
+        return []
+    stages: list[BackendStageView] = []
+    for order, attempt in enumerate(audit.attempts, start=1):
+        counting = attempt.counting
+        points = list(counting.global_points) if counting is not None else []
+        summary = _stage_summary(attempt.backend_trace, attempt.agent_result)
+        stages.append(BackendStageView(
+            order=order,
+            backend_name=attempt.backend_name,
+            backend_kind=attempt.backend_kind,
+            phase=attempt.phase,
+            status=attempt.status,
+            reason_code=attempt.reason_code,
+            predicted_count=counting.final_count if counting is not None else None,
+            counting_status=counting.status if counting is not None else None,
+            accepted_count=(sum(point.accepted for point in points) if counting is not None else None),
+            rejected_count=(sum(not point.accepted for point in points) if counting is not None else None),
+            warning_codes=(sorted({warning.code for warning in counting.warnings}) if counting is not None else []),
+            summary_fields=summary,
+            overlay_asset=_safe_overlay_asset(attempt.backend_trace.get("overlay_asset")),
+        ))
+    return stages
+
+
+def _stage_summary(
+    backend_trace: dict[str, Any],
+    agent_result: dict[str, Any] | None,
+) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    sources: list[dict[str, Any]] = [backend_trace]
+    if isinstance(agent_result, dict):
+        sources.append(agent_result)
+        geometry = agent_result.get("geometry")
+        if isinstance(geometry, dict):
+            sources.append(geometry)
+    for source in sources:
+        for key, value in source.items():
+            normalized_key = str(key)
+            if normalized_key.casefold() in _UNSAFE_VIEW_KEYS or normalized_key == "overlay_asset":
+                continue
+            safe = _summary_value(value)
+            if safe is not None or value is None:
+                summary.setdefault(normalized_key, safe)
+    return summary
+
+
+def _summary_value(value: Any) -> Any:
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return value if math.isfinite(float(value)) else None
+    if isinstance(value, str):
+        return _value_str(value)
+    if isinstance(value, list) and len(value) <= 50:
+        if any(isinstance(item, (list, dict)) for item in value):
+            return None
+        items = [_summary_value(item) for item in value]
+        if all(item is not None or original is None for item, original in zip(items, value)):
+            return items
+    return None
+
+
+def _safe_overlay_asset(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    normalized = value.replace("\\", "/")
+    if normalized.startswith("/") or ".." in normalized.split("/"):
+        return None
+    if len(normalized) >= 2 and normalized[0].isalpha() and normalized[1] == ":":
+        return None
+    return _value_str(normalized)
 
 
 def _routing(trace: dict[str, Any] | None) -> RoutingView:
@@ -393,10 +502,16 @@ def _warning_codes(payload: object | None, trace: dict[str, Any] | None) -> list
     return sorted(codes)
 
 
-def _result_quality(evaluation: EvaluationRecord | None) -> str:
-    if evaluation is None or evaluation.deterministic_metrics is None:
+def _result_quality(evaluation: EvaluationRecord | None, task_detail: object | None = None) -> str:
+    metrics = evaluation.deterministic_metrics if evaluation is not None else None
+    exact = getattr(task_detail, "exact_match", None)
+    if exact is not None:
+        return "correct" if exact else "incorrect"
+    iou_match = getattr(task_detail, "iou_at_0_5", None)
+    if iou_match is not None:
+        return "correct" if iou_match else "incorrect"
+    if metrics is None:
         return "unknown"
-    metrics = evaluation.deterministic_metrics
     if isinstance(metrics, CountDeterministicMetrics):
         return "correct" if metrics.exact_match else "incorrect"
     if isinstance(metrics, VQADeterministicMetrics):
@@ -621,10 +736,11 @@ def _number(value: Any) -> float | None:
 
 
 _UNSAFE_PUBLIC_RE = re.compile(
-    r"(?i)(?:sk-[a-z0-9_-]{6,}|bearer\s+|https?://|[a-z]:[\\/]|(?:^|\s)/(?:tmp|home|users)/)"
+    r"(?i)(?:sk-[a-z0-9_-]{6,}|bearer\s+|https?://|[a-z]:[\\/]|(?:^|[^a-z0-9])/(?:tmp|home|users)/)"
 )
 _UNSAFE_VIEW_KEYS = {
     "dataset_root", "api_key", "authorization", "auth_header", "checkpoint_path",
+    "checkpoint", "weights", "weights_path", "artifact_dir", "source_path",
     "cache_path", "cache_dir", "hostname", "username",
 }
 

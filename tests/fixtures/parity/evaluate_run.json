@@ -27,6 +27,7 @@
   },
   "samples": [
     {
+      "backend_stages": [],
       "error_code": null,
       "evaluation": {
         "deterministic_metrics": {
@@ -46,7 +47,9 @@
       },
       "execution_agent": "general_vqa_agent",
       "fallback_used": false,
+      "ground_truth": null,
       "judge_status": "succeeded",
+      "model_calls": [],
       "prediction": "yes",
       "question": "Is there a road?",
       "reference_answers": [],
@@ -65,6 +68,14 @@
         "resolved_task": "general_vqa",
         "review_backend": null,
         "selection_reason": null
+      },
+      "routing_decision": {
+        "execution_mode": "single",
+        "fallback_agents": [],
+        "primary_agent": "general_vqa_agent",
+        "reason_codes": ["task_general_vqa"],
+        "requires_tiling": false,
+        "task": "general_vqa"
       },
       "run_task": "auto",
       "state": "succeeded",

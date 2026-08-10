@@ -25,21 +25,26 @@ def build_html(report: Report) -> str:
 
     return "\n".join([
         "<!DOCTYPE html>",
-        '<html lang="en"><head><meta charset="utf-8">',
+        '<html lang="zh-CN"><head><meta charset="utf-8">',
         '<meta name="viewport" content="width=device-width,initial-scale=1">',
-        f"<title>Report V2 · {_esc(report.run_id)}</title>",
+        f"<title>M3 Sample Audit Report · {_esc(report.run_id)}</title>",
         f"<style>{_CSS}</style></head><body><main>",
         _header(report),
-        '<nav><a href="#overview">Overview</a><a href="#tasks">Tasks</a>'
-        '<a href="#routing">Expert Routing</a><a href="#samples">Samples</a>'
-        '<a href="#failures">Failures</a><a href="#runtime">Runtime</a></nav>',
-        _overview(report),
-        _counting_target_table(report),
-        '<section id="tasks"><h2>Tasks</h2>' + _task_overview_table(report.tasks) + "".join(_task_section(task) for task in report.tasks) + "</section>",
-        _routing_section(report),
+        '<nav><a href="#samples">样本审计</a><a href="#overview">总体统计</a>'
+        '<a href="#routing">Expert Routing</a><a href="#failures">Failures</a>'
+        '<a href="#runtime">Runtime</a></nav>',
         _samples_section(report),
-        _failures_section(report),
-        _runtime_section(report),
+        _overview(report),
+        '<details class="aggregate-panel"><summary>总体 Task / Target 统计</summary>'
+        + _counting_target_table(report)
+        + '<section id="tasks"><h2>Tasks</h2>' + _task_overview_table(report.tasks)
+        + "".join(_task_section(task) for task in report.tasks) + "</section></details>",
+        '<details class="aggregate-panel"><summary>Expert Routing</summary>'
+        + _routing_section(report) + "</details>",
+        '<details class="aggregate-panel"><summary>Failures</summary>'
+        + _failures_section(report) + "</details>",
+        '<details class="aggregate-panel"><summary>Runtime</summary>'
+        + _runtime_section(report) + "</details>",
         '<section><h2>Visual legend</h2><div class="legend">'
         '<span class="green">● Prediction / accepted</span><span class="red">● Rejected</span>'
         '<span class="cyan">● GT / ground truth</span><span class="amber">● Unresolved</span>'
@@ -50,28 +55,28 @@ def build_html(report: Report) -> str:
 
 
 def _header(report: Report) -> str:
+    meta = report.metadata
     return (
-        '<header><div><p class="eyebrow">M3 MULTI-AGENT AUDIT</p>'
-        f'<h1>Run {_esc(report.run_id)}</h1><p>{_esc(report.dataset or "unknown dataset")}</p></div>'
-        '<div class="schema">REPORT V2 · OFFLINE</div></header>'
+        '<header><div><p class="eyebrow">M3 SAMPLE-CENTRIC AUDIT</p>'
+        '<h1>M3 Sample Audit Report</h1><div class="run-meta">'
+        + _meta_item("Dataset", report.dataset or "—")
+        + _meta_item("Split", meta.split if meta else "—")
+        + _meta_item("Run", report.run_id, mono=True)
+        + _meta_item("Commit", meta.git_commit if meta else "—", mono=True)
+        + '</div></div><div class="schema">REPORT V2.1 · OFFLINE</div></header>'
     )
 
 
 def _overview(report: Report) -> str:
     latency = report.latency
-    meta = report.metadata
+    accuracy = _overall_accuracy(report)
     cards = [
-        ("Dataset", report.dataset or "—"), ("Split", meta.split if meta else "—"),
-        ("Run ID", report.run_id), ("Git commit", meta.git_commit if meta else "—"),
         ("Samples", report.total), ("Succeeded", report.succeeded),
-        ("Partial", report.partial), ("Failed", report.failed),
-        ("Skipped", report.skipped),
-        ("Fallback", f"{report.routing_summary.fallback_rate:.1%}"),
+        ("Failed", report.failed), ("Fallback", report.routing_summary.fallback_count),
         ("Mean latency", _seconds(latency.mean_seconds)),
-        ("p50 latency", _seconds(latency.p50_seconds)),
-        ("p95 latency", _seconds(latency.p95_seconds)),
-        ("Visuals", f"{report.visual_materialized_count}/{report.visual_total}"),
     ]
+    if accuracy is not None:
+        cards.append(("Accuracy", f"{accuracy:.1%}"))
     return '<section id="overview"><h2>Overview</h2><div class="cards">' + "".join(
         f'<article class="card"><span>{_esc(label)}</span><strong>{_esc(value)}</strong></article>'
         for label, value in cards
@@ -83,7 +88,7 @@ def _task_overview_table(tasks: list[TaskSummary]) -> str:
         f'<tr>{_cells(task.run_task, task.total, task.succeeded, task.partial, task.failed, task.correct, task.incorrect, task.fallback_count, _seconds(task.latency.mean_seconds))}</tr>'
         for task in tasks
     )
-    return '<table><thead><tr><th>Task</th><th>Samples</th><th>Succeeded</th><th>Partial</th><th>Failed</th><th>Correct</th><th>Incorrect</th><th>Fallback</th><th>Mean latency</th></tr></thead><tbody>' + (rows or '<tr><td colspan="9">No task rows</td></tr>') + '</tbody></table>'
+    return '<div class="table-scroll"><table><thead><tr><th>Task</th><th>Samples</th><th>Succeeded</th><th>Partial</th><th>Failed</th><th>Correct</th><th>Incorrect</th><th>Fallback</th><th>Mean latency</th></tr></thead><tbody>' + (rows or '<tr><td colspan="9">No task rows</td></tr>') + '</tbody></table></div>'
 
 
 def _counting_target_table(report: Report) -> str:
@@ -93,7 +98,7 @@ def _counting_target_table(report: Report) -> str:
         f'<tr>{_cells(item.target, item.sample_count, item.evaluated_count, item.exact_count, _format_number(item.accuracy), _format_number(item.mae), item.fallback_count, f"{item.fallback_rate:.2%}")}</tr>'
         for item in report.counting_target_summary
     )
-    return '<section id="counting-targets"><h2>Counting targets</h2><table><thead><tr><th>Target</th><th>Samples</th><th>With gold</th><th>Exact</th><th>Accuracy</th><th>MAE</th><th>Fallback</th><th>Fallback rate</th></tr></thead><tbody>' + rows + '</tbody></table></section>'
+    return '<section id="counting-targets"><h2>Counting targets</h2><div class="table-scroll"><table><thead><tr><th>Target</th><th>Samples</th><th>With gold</th><th>Exact</th><th>Accuracy</th><th>MAE</th><th>Fallback</th><th>Fallback rate</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>'
 
 
 def _task_section(task: TaskSummary) -> str:
@@ -122,8 +127,8 @@ def _routing_section(report: Report) -> str:
         '<section id="routing"><h2>Expert Routing</h2><div class="two-col">'
         + _usage_bars("Primary backend usage", routing.primary_backend_usage)
         + _usage_bars("Final backend usage", routing.final_backend_usage)
-        + '</div><h3>Fallback transitions</h3><table><thead><tr><th>From</th><th>Reason</th><th>To</th><th>Count</th>'
-        f'</tr></thead><tbody>{transitions}</tbody></table></section>'
+        + '</div><h3>Fallback transitions</h3><div class="table-scroll"><table><thead><tr><th>From</th><th>Reason</th><th>To</th><th>Count</th>'
+        f'</tr></thead><tbody>{transitions}</tbody></table></div></section>'
     )
 
 
@@ -148,13 +153,16 @@ def _samples_section(report: Report) -> str:
 
 
 def _sample_card(sample: ReportSample) -> str:
+    quality = _effective_quality(sample)
     target = sample.task_detail.target if isinstance(sample.task_detail, CountingReportDetail) else None
-    search = " ".join(
-        filter(None, [sample.sample_id, sample.question, target, sample.prediction])
-    ).casefold()
+    ground_truth = _ground_truth_text(sample)
+    search = " ".join(filter(None, [
+        sample.sample_id, sample.question, target, sample.prediction,
+        ground_truth, sample.routing.final_backend,
+    ])).casefold()
     attrs = (
         f'data-search="{_attr(search)}" data-task="{_attr(sample.task)}" '
-        f'data-state="{_attr(sample.state)}" data-quality="{_attr(sample.result_quality)}" '
+        f'data-state="{_attr(sample.state)}" data-quality="{_attr(quality)}" '
         f'data-backend="{_attr(sample.routing.final_backend or "")}" '
         f'data-error="{_attr(sample.error_code or "")}" '
         f'data-fallback="{"yes" if sample.fallback_used else "no"}" '
@@ -162,30 +170,179 @@ def _sample_card(sample: ReportSample) -> str:
     )
     badges = (
         f'<span class="badge {_attr(sample.state)}">{_esc(sample.state)}</span>'
-        f'<span class="badge quality-{_attr(sample.result_quality)}">{_esc(sample.result_quality)}</span>'
+        f'<span class="badge quality-{_attr(quality)}">{_esc(_quality_label(quality))}</span>'
         + ('<span class="badge fallback">fallback</span>' if sample.fallback_used else "")
     )
     return (
-        f'<article class="sample" {attrs}><details><summary><span class="sample-id">{_esc(sample.sample_id)}</span>'
-        f'<span>{_esc(sample.task)}</span>{badges}<span class="backend">{_esc(sample.routing.final_backend or "—")}</span></summary>'
-        '<div class="sample-body">'
-        + _common_detail(sample) + _routing_detail(sample) + _task_detail(sample) + _visuals(sample)
-        + "</div></details></article>"
+        f'<article class="sample result-{_attr(quality)}" {attrs}><details><summary class="sample-preview">'
+        + _summary_visuals(sample)
+        + '<span class="sample-summary-main"><span class="sample-summary-top">'
+        + f'<span class="sample-id">{_esc(sample.sample_id)}</span><span>{_esc(sample.task)}</span>{badges}'
+        + '</span><span class="sample-question">'
+        + _esc(sample.question or "—") + '</span><span class="answer-grid">'
+        + _answer_cell("模型答案 / Prediction", sample.prediction)
+        + _answer_cell("标准答案 / Ground Truth", ground_truth)
+        + '</span><span class="sample-result-row">'
+        + f'<strong>{_esc(_quality_label(quality))}</strong>'
+        + f'<span>Final backend: {_esc(sample.routing.final_backend or "—")}</span>'
+        + f'<span>Fallback: {"Yes" if sample.fallback_used else "No"}</span>'
+        + f'<span>Latency: {_esc(_seconds(sample.inference_seconds))}</span>'
+        + '</span></span></summary><div class="sample-body">'
+        + _sample_hero(sample) + _execution_process(sample) + _model_calls(sample)
+        + _technical_details(sample) + "</div></details></article>"
     )
 
 
 def _common_detail(sample: ReportSample) -> str:
+    quality = _effective_quality(sample)
     return (
-        '<div class="detail-block"><h4>Common</h4><dl>'
+        '<div class="detail-block answer-panel"><h4>样本信息 / Sample</h4><dl>'
+        + _dl("题目 / Question", sample.question)
+        + _dl("模型答案 / Prediction", sample.prediction)
+        + _dl("标准答案 / Ground Truth", _ground_truth_text(sample))
+        + _dl("结果 / Result", _quality_label(quality))
+        + _dl("Agent", sample.execution_agent)
+        + _dl("Final backend", sample.routing.final_backend)
+        + _dl("Latency", _seconds(sample.inference_seconds))
         + _dl("Run task", sample.run_task) + _dl("Resolved task", sample.resolved_task)
-        + _dl("Agent", sample.execution_agent) + _dl("Question", sample.question)
-        + _dl("References", "; ".join(sample.reference_answers))
-        + _dl("Prediction", sample.prediction) + _dl("Judge", sample.judge_status)
+        + _dl("Judge", sample.judge_status)
         + _dl("Persisted metric", _sample_metric_text(sample))
-        + _dl("Inference time", _seconds(sample.inference_seconds))
         + _dl("Error code", sample.error_code) + _dl("Warnings", ", ".join(sample.warnings))
         + "</dl></div>"
     )
+
+
+def _meta_item(label: str, value: Any, *, mono: bool = False) -> str:
+    class_name = "run-meta-value mono" if mono else "run-meta-value"
+    return f'<div class="run-meta-item"><span>{_esc(label)}</span><strong class="{class_name}">{_esc(value)}</strong></div>'
+
+
+def _overall_accuracy(report: Report) -> float | None:
+    qualities = [_effective_quality(sample) for sample in report.samples]
+    correct = sum(value == "correct" for value in qualities)
+    eligible = sum(value in {"correct", "incorrect"} for value in qualities)
+    return correct / eligible if eligible else None
+
+
+def _quality_label(value: str) -> str:
+    return {
+        "correct": "✓ 正确 / Correct",
+        "incorrect": "✕ 错误 / Incorrect",
+        "unknown": "? 未知 / Unknown",
+        "not_applicable": "N/A",
+    }.get(value, value)
+
+
+def _ground_truth_text(sample: ReportSample) -> str:
+    gt = sample.ground_truth
+    if gt is None:
+        return "; ".join(sample.reference_answers) or "—"
+    if gt.count is not None:
+        return str(gt.count)
+    if gt.answers:
+        return "; ".join(gt.answers)
+    if gt.boxes:
+        return f"{len(gt.boxes)} boxes"
+    if gt.points:
+        return f"{len(gt.points)} points"
+    return "—"
+
+
+def _sample_thumbnail(sample: ReportSample) -> str:
+    visual = sample.visuals[0] if sample.visuals else None
+    asset = _safe_asset(visual.original_asset if visual else None)
+    if asset:
+        return f'<img class="sample-thumb" loading="lazy" src="{_attr(asset)}" alt="sample {_attr(sample.sample_id)}">'
+    return '<span class="sample-thumb sample-thumb-empty" aria-label="image unavailable">No image</span>'
+
+
+def _summary_visuals(sample: ReportSample) -> str:
+    """Show the original and rendered views before the sample is expanded."""
+    visual = sample.visuals[0] if sample.visuals else None
+    if visual is None:
+        return _sample_thumbnail(sample)
+    items: list[str] = []
+    for label, asset in (("Original", visual.original_asset), ("Rendered", visual.overlay_asset)):
+        safe = _safe_asset(asset)
+        if safe:
+            items.append(
+                f'<span class="summary-visual"><img class="sample-thumb" loading="lazy" '
+                f'src="{_attr(safe)}" alt="{label.lower()} {_attr(sample.sample_id)}">'
+                f'<small>{label}</small></span>'
+            )
+    return '<span class="sample-thumbnails">' + "".join(items) + '</span>' if items else _sample_thumbnail(sample)
+
+
+def _effective_quality(sample: ReportSample) -> str:
+    """Recover quality from persisted metrics in legacy report bundles."""
+    if sample.result_quality != "unknown":
+        return sample.result_quality
+    detail = sample.task_detail
+    exact = getattr(detail, "exact_match", None)
+    if exact is not None:
+        return "correct" if exact else "incorrect"
+    iou_match = getattr(detail, "iou_at_0_5", None)
+    if iou_match is not None:
+        return "correct" if iou_match else "incorrect"
+    metrics = getattr(sample.evaluation, "deterministic_metrics", None)
+    exact = getattr(metrics, "exact_match", None)
+    if exact is not None:
+        return "correct" if exact else "incorrect"
+    return sample.result_quality
+
+
+def _answer_cell(label: str, value: Any) -> str:
+    shown = "—" if value is None or value == "" else value
+    return f'<span class="answer-cell"><small>{_esc(label)}</small><strong>{_esc(shown)}</strong></span>'
+
+
+def _sample_hero(sample: ReportSample) -> str:
+    return '<section class="sample-hero"><div class="hero-visual">' + _visuals(sample) + '</div><div class="hero-answer">' + _common_detail(sample) + '</div></section>'
+
+
+def _execution_process(sample: ReportSample) -> str:
+    if not sample.backend_stages:
+        return '<section class="detail-block execution-process"><h4>Execution Process / 执行过程</h4><p>Detailed per-backend outputs were not persisted for this run.</p></section>'
+    stages = []
+    for stage in sample.backend_stages:
+        fields = "".join(_dl(key, value) for key, value in sorted(stage.summary_fields.items()))
+        stages.append(
+            f'<article class="stage"><h4>{stage.order}. {_esc(stage.backend_name)} · {_esc(stage.backend_kind)}</h4>'
+            '<dl>' + _dl("Phase", stage.phase) + _dl("Status", stage.status)
+            + _dl("Reason", stage.reason_code) + _dl("Prediction", stage.predicted_count)
+            + _dl("Accepted", stage.accepted_count) + _dl("Rejected", stage.rejected_count)
+            + fields + '</dl>'
+            + (f'<figure class="stage-overlay"><img loading="lazy" src="{_attr(_safe_asset(stage.overlay_asset))}" alt="stage overlay {_attr(stage.backend_name)}"><figcaption>Stage Overlay</figcaption></figure>' if _safe_asset(stage.overlay_asset) else '')
+            + (f'<p class="stage-note">Warnings: {_esc(", ".join(stage.warning_codes))}</p>' if stage.warning_codes else '')
+            + '</article>'
+        )
+    return '<section class="detail-block execution-process"><h4>Execution Process / 执行过程</h4>' + "".join(stages) + '</section>'
+
+
+def _model_calls(sample: ReportSample) -> str:
+    if not sample.model_calls:
+        return ""
+    calls = []
+    for index, call in enumerate(sample.model_calls, start=1):
+        raw = _esc(call.raw_response or "—")
+        parsed = _esc(call.parsed_response or "—")
+        request = _esc(call.request_summary or "—")
+        calls.append(
+            f'<article class="model-call"><h4>{index}. Model Call · {_esc(call.request_id)}</h4><dl>'
+            + _dl("Prompt version", call.prompt_version)
+            + _dl("Latency", _seconds(call.latency_seconds))
+            + _dl("Valid", call.valid) + _dl("Cache hit", call.cache_hit)
+            + _dl("Repair used", call.repair_used) + _dl("Tokens", call.token_usage)
+            + '</dl><details><summary>模型输入 / Request</summary><pre>' + request
+            + '</pre></details><details><summary>Raw response</summary><pre>' + raw
+            + '</pre></details><details><summary>Parsed model output</summary><pre>' + parsed
+            + '</pre></details></article>'
+        )
+    return '<section class="detail-block model-calls"><h4>Model Calls / 模型调用</h4>' + "".join(calls) + '</section>'
+
+
+def _technical_details(sample: ReportSample) -> str:
+    return '<details class="detail-block technical-details"><summary>Technical Details / 技术详情</summary>' + _routing_detail(sample) + _task_detail(sample) + '</details>'
 
 
 def _routing_detail(sample: ReportSample) -> str:
@@ -200,6 +357,11 @@ def _routing_detail(sample: ReportSample) -> str:
         f'<li>{_esc(item.from_backend or "unknown")} → {_esc(item.to_backend or "terminal")} · {_esc(item.reason_code or "unknown")}</li>'
         for item in route.fallback_history
     )
+    decision = ""
+    if sample.routing_decision:
+        decision = '<h5>Routing Decision</h5><dl>' + "".join(
+            _dl(key, value) for key, value in sorted(sample.routing_decision.items())
+        ) + '</dl>'
     return (
         '<div class="detail-block"><h4>Routing</h4><dl>' + _dl("Candidate Chain", chain)
         + _dl("Primary", _backend(route.primary_backend, route.primary_backend_kind))
@@ -207,7 +369,8 @@ def _routing_detail(sample: ReportSample) -> str:
         + _dl("Fallback", "YES" if route.fallback_used else "NO")
         + _dl("Selection reason", route.selection_reason) + _dl("Review backend", route.review_backend)
         + f'</dl><h5>Attempts</h5><ol>{attempts}</ol>'
-        + (f'<h5>Fallback history</h5><ol>{transitions}</ol>' if transitions else "") + "</div>"
+        + (f'<h5>Fallback history</h5><ol>{transitions}</ol>' if transitions else "")
+        + decision + "</div>"
     )
 
 
@@ -351,14 +514,14 @@ def _sample_judge_score(evaluation: Any) -> int | None:
 def _point_table(title: str, points: list[Any]) -> str:
     if not points:
         return ""
-    return f'<h5>{_esc(title)}</h5><table><thead><tr><th>ID</th><th>x</th><th>y</th><th>confidence</th><th>source</th><th>backend</th><th>reason</th></tr></thead><tbody>' + "".join(
+    return f'<details><summary>{_esc(title)} ({len(points)})</summary><div class="table-scroll"><table><thead><tr><th>ID</th><th>x</th><th>y</th><th>confidence</th><th>source</th><th>backend</th><th>reason</th></tr></thead><tbody>' + "".join(
         f'<tr>{_cells(point.point_id or "", point.x, point.y, _format_number(point.confidence), point.source or "", point.backend_name or "", point.rejection_reason or "")}</tr>' for point in points
-    ) + "</tbody></table>"
+    ) + "</tbody></table></div></details>"
 
 
 def _usage_table(title: str, usage: dict[str, int]) -> str:
     rows = "".join(f'<tr>{_cells(name, count)}</tr>' for name, count in sorted(usage.items()))
-    return f'<div><h4>{_esc(title)}</h4><table><thead><tr><th>Key</th><th>Count</th></tr></thead><tbody>{rows or "<tr><td colspan=\"2\">none</td></tr>"}</tbody></table></div>'
+    return f'<div><h4>{_esc(title)}</h4><div class="table-scroll"><table><thead><tr><th>Key</th><th>Count</th></tr></thead><tbody>{rows or "<tr><td colspan=\"2\">none</td></tr>"}</tbody></table></div></div>'
 
 
 def _usage_bars(title: str, usage: dict[str, int]) -> str:
@@ -435,13 +598,15 @@ def _public_text(value: Any) -> str:
 _CSS = """
 :root{color-scheme:light;--ink:#172033;--muted:#64748b;--line:#dbe3ef;--panel:#fff;--bg:#f3f6fa;--blue:#2563eb}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1600px;margin:auto;padding:28px}
-header{display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;background:#0f172a;color:#fff;border-radius:12px}h1{margin:.1rem 0;font-size:1.8rem}h2{font-size:1.25rem;margin-top:0}h3{font-size:1.05rem}.eyebrow,.schema{letter-spacing:.13em;font-size:.72rem;color:#93c5fd}.schema{border:1px solid #475569;padding:8px;border-radius:6px}
+header{display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;background:#0f172a;color:#fff;border-radius:12px}h1{margin:.1rem 0;font-size:1.8rem}h2{font-size:1.25rem;margin-top:0}h3{font-size:1.05rem}.eyebrow,.schema{letter-spacing:0;font-size:.72rem;color:#93c5fd}.schema{border:1px solid #475569;padding:8px;border-radius:6px}
 nav{display:flex;gap:18px;position:sticky;top:0;z-index:2;background:rgba(243,246,250,.96);padding:14px 4px}nav a{color:#334155;text-decoration:none;font-weight:650}section{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:14px 0;padding:20px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}.card{border-left:3px solid var(--blue);background:#f8fafc;padding:13px}.card span{display:block;color:var(--muted);font-size:.78rem}.card strong{font-size:1.35rem}
 table{width:100%;border-collapse:collapse;margin:.5rem 0 1rem}th,td{border-bottom:1px solid var(--line);padding:7px;text-align:left;vertical-align:top}th{font-size:.75rem;text-transform:uppercase;color:var(--muted)}.two-col,.three-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.paneltask{border-top:1px solid var(--line);padding:14px 0}.filters{display:grid;grid-template-columns:2fr repeat(6,1fr);gap:8px;margin-bottom:12px}.filters label{font-size:.72rem;color:var(--muted)}input,select{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:#fff}
-.sample{border:1px solid var(--line);border-radius:8px;margin:7px 0;background:#fff}.sample summary{display:grid;grid-template-columns:minmax(160px,1fr) 140px repeat(3,max-content) minmax(160px,1fr);gap:10px;align-items:center;cursor:pointer;padding:11px}.sample-id{font-family:ui-monospace,monospace;font-weight:700}.backend{text-align:right;color:var(--muted)}.badge{font-size:.7rem;border-radius:999px;padding:3px 7px;background:#e2e8f0}.failed,.quality-incorrect{background:#fee2e2;color:#991b1b}.partial,.fallback{background:#fef3c7;color:#92400e}.succeeded,.quality-correct{background:#dcfce7;color:#166534}.sample-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-top:1px solid var(--line);padding:12px}.detail-block{background:#f8fafc;border-radius:7px;padding:12px;overflow:auto}.visuals{grid-column:1/-1}dl{display:grid;grid-template-columns:minmax(130px,.4fr) 1fr;gap:4px 12px;margin:.4rem 0}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.image-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}figure{margin:0}img{display:block;width:100%;max-height:620px;object-fit:contain;background:#e2e8f0}figcaption{text-align:center;color:var(--muted)}.legend{display:flex;gap:22px}.green{color:#22c55e}.red{color:#ef4444}.cyan{color:#38bdf8}.amber{color:#f59e0b}.purple{color:#a855f7}
+.sample{border:1px solid var(--line);border-radius:8px;margin:7px 0;background:#fff}.sample summary{display:grid;grid-template-columns:minmax(160px,1fr) 140px repeat(3,max-content) minmax(160px,1fr);gap:10px;align-items:center;cursor:pointer;padding:11px}.sample summary.sample-preview{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start;padding:10px}.sample-id{font-family:ui-monospace,monospace;font-weight:700}.backend{text-align:right;color:var(--muted)}.badge{font-size:.7rem;border-radius:999px;padding:3px 7px;background:#e2e8f0}.failed,.quality-incorrect{background:#fee2e2;color:#991b1b}.partial,.fallback{background:#fef3c7;color:#92400e}.succeeded,.quality-correct{background:#dcfce7;color:#166534}.sample.result-correct{border-left:5px solid #16a34a;background:#f0fdf4}.sample.result-incorrect{border-left:5px solid #dc2626;background:#fff1f2}.sample.result-unknown{border-left:5px solid #d97706;background:#fffbeb}.sample.result-correct .sample-result-row{color:#166534}.sample.result-incorrect .sample-result-row{color:#991b1b}.sample.result-unknown .sample-result-row{color:#92400e}.sample-result-row strong{font-size:1rem}.sample-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-top:1px solid var(--line);padding:12px}.detail-block{background:#f8fafc;border-radius:7px;padding:12px;overflow:auto}.visuals{grid-column:1/-1}.sample-thumbnails{display:flex;gap:6px;align-items:flex-start}.summary-visual{display:grid;gap:2px;justify-items:center}.summary-visual small{font-size:.65rem;color:var(--muted)}dl{display:grid;grid-template-columns:minmax(130px,.4fr) 1fr;gap:4px 12px;margin:.4rem 0}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.image-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}figure{margin:0}img{display:block;width:100%;max-height:620px;object-fit:contain;background:#e2e8f0}figcaption{text-align:center;color:var(--muted)}.legend{display:flex;gap:22px}.green{color:#22c55e}.red{color:#ef4444}.cyan{color:#38bdf8}.amber{color:#f59e0b}.purple{color:#a855f7}
 .bar-row{display:grid;grid-template-columns:minmax(140px,1fr) 3fr 45px;gap:8px;align-items:center;margin:7px 0}.bar-row i{display:block;height:8px;background:#e2e8f0;border-radius:99px;overflow:hidden}.bar-row b{display:block;height:100%;background:#2563eb}
 .code-buttons{display:flex;flex-wrap:wrap;gap:6px}.code-buttons button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 9px;cursor:pointer}
-@media(max-width:900px){main{padding:10px}.filters{grid-template-columns:1fr 1fr}.sample summary{grid-template-columns:1fr 1fr}.sample-body{grid-template-columns:1fr}.visuals{grid-column:auto}}
+.run-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-width:720px}.run-meta-item{min-width:0}.run-meta-item span{display:block;color:#cbd5e1;font-size:.72rem}.run-meta-value{display:block;overflow-wrap:anywhere;word-break:break-word}.mono{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.aggregate-panel{background:transparent;border:0;margin:14px 0;padding:0}.aggregate-panel>summary{cursor:pointer;font-weight:700;padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.sample-preview{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;align-items:start;min-width:0;cursor:pointer;padding:12px}.sample-thumb{width:112px;height:112px;object-fit:cover;background:#e2e8f0;border-radius:4px}.sample-thumb-empty{display:grid;place-items:center;color:var(--muted);font-size:.75rem;text-align:center}.sample-summary-main{display:grid;gap:8px;min-width:0}.sample-summary-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}.sample-question{font-size:.95rem;overflow-wrap:anywhere}.answer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}.answer-cell{display:grid;gap:3px;min-width:0;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.answer-cell small{color:var(--muted)}.answer-cell strong{overflow-wrap:anywhere;word-break:break-word}.sample-result-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);overflow-wrap:anywhere}.sample-result-row strong{color:var(--ink)}.sample-body{display:block;border-top:1px solid var(--line);padding:12px}.sample-hero{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(0,1.05fr);gap:12px;min-width:0}.sample-hero>*{min-width:0}.hero-visual,.hero-answer{min-width:0}.execution-process,.model-calls{margin-top:12px}.stage,.model-call{border-top:1px solid var(--line);padding:10px 0;min-width:0}.stage h4,.model-call h4{margin:.1rem 0 .5rem;overflow-wrap:anywhere}.technical-details{margin-top:12px}.technical-details>summary{cursor:pointer;font-weight:650}.table-scroll{width:100%;overflow-x:auto}.table-scroll table{min-width:640px}
+@media(max-width:900px){main{padding:10px}.filters{grid-template-columns:1fr 1fr}.sample summary.sample-preview{grid-template-columns:160px minmax(0,1fr)}.sample-thumb{width:76px;height:76px}.answer-grid{grid-template-columns:1fr}.sample-hero{grid-template-columns:1fr}.sample-body{grid-template-columns:1fr}.visuals{grid-column:auto}}
+@media(max-width:560px){header{display:block}.schema{display:inline-block;margin-top:12px}.filters{grid-template-columns:1fr}.sample summary.sample-preview{grid-template-columns:1fr}.sample-thumbnails{width:100%}.summary-visual{width:calc(50% - 3px)}.summary-visual .sample-thumb{width:100%;height:auto;aspect-ratio:1}.sample-result-row{gap:8px}}
 """
 
 

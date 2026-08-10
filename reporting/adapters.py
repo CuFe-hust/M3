@@ -12,11 +12,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import re
 from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from agents.counting.schema import CountingResult
+from agents.counting.schema import CountingExecutionAudit, CountingResult
 from agents.schema import AgentResult
 from data.schema import UnifiedSample
 from evaluation.records import (
@@ -24,7 +26,8 @@ from evaluation.records import (
     evaluation_filename_for_runtime_task,
     evaluation_task_for_runtime_task,
 )
-from reporting.schema import RunMetadata
+from reporting.schema import ModelCallAuditView, RunMetadata
+from routing.schema import RoutingDecision
 from workflows.schema import RunRequest, SampleRunStatus
 
 
@@ -133,6 +136,216 @@ def load_trace(sample_dir: Path) -> dict[str, Any] | None:
 
     raw = read_json(sample_dir / "agent_trace.json")
     return raw if isinstance(raw, dict) else None
+
+
+def load_counting_attempts(sample_dir: Path) -> CountingExecutionAudit | None:
+    """Load an optional ordered counting audit without failing old reports."""
+    raw = read_json(sample_dir / "counting_attempts.json")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return CountingExecutionAudit.model_validate(raw)
+    except ValueError:
+        return None
+
+
+def load_routing_decision(sample_dir: Path) -> dict[str, Any] | None:
+    """Read the typed routing artifact without exposing arbitrary JSON."""
+    raw = read_json(sample_dir / "routing_decision.json")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        validated = RoutingDecision.model_validate(raw).model_dump(mode="json")
+        return {
+            str(key): value for key, value in validated.items()
+            if _routing_value_is_safe(value)
+        }
+    except ValueError:
+        allowed = {
+            "source_task", "resolved_task", "task", "router_used", "confidence",
+            "reason", "evidence", "reason_codes", "primary_agent",
+            "fallback_agents", "execution_mode", "requires_tiling",
+        }
+        projected = {
+            str(key): value
+            for key, value in raw.items()
+            if str(key) in allowed and _routing_value_is_safe(value)
+        }
+        return projected or None
+
+
+def _routing_value_is_safe(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool)):
+        return not isinstance(value, str) or _safe_meta_text(value) is not None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return math.isfinite(float(value))
+    if isinstance(value, list) and len(value) <= 20:
+        return all(_routing_value_is_safe(item) and not isinstance(item, list) for item in value)
+    return False
+
+
+_MODEL_CALL_RAW_LIMIT = 8000
+_UNSAFE_ARTIFACT_TEXT_RE = re.compile(
+    r"(?i)(?:data:image/[^;]+;base64,|\b(?:bearer\s+|sk-[a-z0-9_-]{6,})|"
+    r"[\"']?(?:api[_-]?key|authorization|access_token)[\"']?\s*:|"
+    r"(?:^|[^a-z0-9])(?:[a-z]:[\\/]|/(?:home|tmp|users|private|var)/))"
+)
+_UNSAFE_ARTIFACT_KEYS = {
+    "api_key", "apikey", "authorization", "auth_header", "access_token",
+    "refresh_token", "password", "secret", "artifact_dir", "dataset_root",
+    "checkpoint", "checkpoint_path", "weights", "weights_path",
+}
+
+
+def _inside(path: Path, root: Path) -> bool:
+    try:
+        return path.resolve().is_relative_to(root)
+    except OSError:
+        return False
+
+
+def _read_json_inside(path: Path, root: Path) -> Any | None:
+    return read_json(path) if _inside(path, root) else None
+
+
+def _read_text_inside(path: Path, root: Path) -> str | None:
+    if not _inside(path, root):
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _safe_meta_text(value: Any) -> str | None:
+    if not isinstance(value, str) or not value or _unsafe_artifact_text(value):
+        return None
+    return value
+
+
+def _safe_artifact_text(value: str | None) -> str | None:
+    if value is None or _unsafe_artifact_text(value):
+        return None
+    return value
+
+
+def _unsafe_artifact_text(value: str) -> bool:
+    if _UNSAFE_ARTIFACT_TEXT_RE.search(value):
+        return True
+    for match in re.finditer(r"[A-Za-z0-9+/]{200,}={0,2}", value):
+        if re.search(r"[0-9+/]", match.group(0)):
+            return True
+    return False
+
+
+def _safe_json(value: Any, *, depth: int = 0) -> Any:
+    if depth > 4:
+        return None
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value if math.isfinite(float(value)) else None
+    if isinstance(value, str):
+        return _safe_artifact_text(value)
+    if isinstance(value, list):
+        return [_safe_json(item, depth=depth + 1) for item in value[:100]]
+    if isinstance(value, dict):
+        return {
+            str(key): _safe_json(item, depth=depth + 1)
+            for key, item in value.items()
+            if str(key).casefold() not in _UNSAFE_ARTIFACT_KEYS
+        }
+    return None
+
+
+def _format_safe_json(value: Any) -> str | None:
+    safe = _safe_json(value)
+    if safe is None:
+        return None
+    try:
+        return json.dumps(safe, ensure_ascii=False, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool_or_none(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
+
+
+def _finite_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _token_usage(value: Any) -> dict[str, int] | None:
+    if not isinstance(value, dict):
+        return None
+    result = {
+        str(key): int(item)
+        for key, item in value.items()
+        if isinstance(key, str) and isinstance(item, int)
+        and not isinstance(item, bool) and item >= 0
+    }
+    return result or None
+
+
+def load_model_calls(sample_dir: Path) -> list[ModelCallAuditView]:
+    """Discover sanitized model-call artifacts below ``sample_dir`` only."""
+    try:
+        root = sample_dir.resolve()
+        candidates = sorted(
+            (path for path in root.rglob("request_meta.json") if _inside(path, root)),
+            key=lambda path: path.relative_to(root).as_posix(),
+        )
+    except (OSError, ValueError):
+        return []
+    result: list[ModelCallAuditView] = []
+    for meta_path in candidates:
+        raw_meta = read_json(meta_path)
+        if not isinstance(raw_meta, dict):
+            continue
+        request_id = _safe_meta_text(raw_meta.get("request_id"))
+        prompt_version = _safe_meta_text(raw_meta.get("prompt_version"))
+        if not request_id or not prompt_version:
+            continue
+        directory = meta_path.parent
+        request = _read_json_inside(directory / "request.json", root)
+        parsed = _read_json_inside(directory / "parsed.json", root)
+        validation = _read_json_inside(directory / "validation.json", root)
+        raw_response = _read_text_inside(directory / "raw_response.txt", root)
+        raw_view = _safe_artifact_text(raw_response)
+        raw_truncated = bool(raw_response is not None and len(raw_response) > _MODEL_CALL_RAW_LIMIT)
+        if raw_view is not None and raw_truncated:
+            marker = "\n[truncated]"
+            raw_view = raw_view[:_MODEL_CALL_RAW_LIMIT - len(marker)] + marker
+        parsed_view = _format_safe_json(parsed)
+        request_view = _format_safe_json(request)
+        metadata = validation.get("response_metadata") if isinstance(validation, dict) else None
+        if not isinstance(metadata, dict):
+            metadata = validation if isinstance(validation, dict) else {}
+        result.append(ModelCallAuditView(
+            request_id=request_id,
+            prompt_version=prompt_version,
+            request_hash=_safe_meta_text(raw_meta.get("request_hash")),
+            sample_id=_safe_meta_text(raw_meta.get("sample_id")),
+            tile_id=_safe_meta_text(raw_meta.get("tile_id")),
+            image_sha256=_safe_meta_text(raw_meta.get("image_sha256")),
+            cache_hit=_bool_or_none(validation.get("cache_hit")) if isinstance(validation, dict) else None,
+            valid=_bool_or_none(validation.get("valid")) if isinstance(validation, dict) else None,
+            repair_used=_bool_or_none(metadata.get("repair_used")),
+            latency_seconds=_finite_float(metadata.get("latency_seconds")),
+            token_usage=_token_usage(metadata.get("token_usage")),
+            raw_response=raw_view,
+            raw_response_truncated=raw_truncated,
+            parsed_response=parsed_view,
+            request_summary=request_view,
+        ))
+    return result
+
+
+load_model_call_artifacts = load_model_calls
 
 
 def load_evaluation(sample_dir: Path, task: str) -> EvaluationRecord | None:

@@ -1872,6 +1872,7 @@ status.json
 routing_decision.json
 agent_result.json
 counting_result.json
+counting_attempts.json       # counting only; ordered backend audit
 agent_trace.json
 predictions.jsonl
 dataset_summary.json
@@ -1915,6 +1916,7 @@ outputs/runs/<run_id>/
                 ├── routing_decision.json
                 ├── agent_result.json
                 │   or counting_result.json
+                ├── counting_attempts.json    # new counting runs only
                 ├── <task>_evaluation.json
                 ├── agent_trace.json
                 └── optional model/judge artifacts
@@ -2454,15 +2456,26 @@ result_path
 updated_at
 question
 prediction
+ground_truth
 resolved_task
 execution_agent
 fallback_used
 judge_status
 inference_seconds
 evaluation
+routing_decision
+backend_stages
+model_calls
 ```
 
 `task` 表示 execution task。
+
+`ground_truth` 是 task-neutral 的只读投影，稳定包含 answers、count、boxes、
+points、labels 与 coordinate_frame。`backend_stages` 只来自持久化的
+`counting_attempts.json`，按真实 attempt 顺序展示；旧 run 缺少该文件时保持
+空列表，不从 final result 或 trace 反推中间阶段。`model_calls` 只读取当前
+sample 目录内已有的 request/raw/parsed/validation 产物，raw response 最多
+8000 字符，且不暴露 artifact_dir、绝对路径、Base64 或 credential。
 
 ## `TaskSummary`
 
@@ -2611,8 +2624,8 @@ The export lifecycle is:
 
 ```text
 build read-only Report
-  -> select visual samples by audit priority
-  -> materialize report-relative WEBP/PNG assets
+  -> materialize every resolvable sample preview
+  -> materialize report-relative final/stage WEBP/PNG assets
   -> write report-v2 JSON/CSV/JSONL/metadata
   -> render the pure offline HTML dashboard
 ```
@@ -2624,24 +2637,30 @@ or evaluator. Evidence with an explicit `image_id` is bound strictly; missing
 IDs bind only for a single-image sample. Ambiguous multi-image evidence and
 unsafe ground-truth coordinate frames are not guessed.
 
-The dashboard contains Overview, Tasks, Expert Routing, Samples, Failures,
-and Runtime views. Counting audit cards show candidate order, attempt state,
-primary/final backend identity and kind, structured fallback transitions,
-point provenance, warnings, and accepted/rejected previews. Deterministic
-quality and optional Judge quality remain separate, including the existing
-incomplete semantic-Judge lower-bound behavior.
+The dashboard is sample-first: Samples is the first/default content, while
+Overview, Tasks, Expert Routing, Failures, and Runtime remain secondary,
+collapsible aggregate views. A collapsed sample row already shows its
+thumbnail, question, prediction, ground truth, result quality, final backend,
+fallback state, and latency. The expanded first screen shows visuals and the
+answer audit before the real persisted execution stages and sanitized model
+calls. Deterministic quality and optional Judge quality remain separate,
+including the existing incomplete semantic-Judge lower-bound behavior.
 
 Asset policy:
 
-- default visual-sample budget: 200;
-- priority: failed, partial, deterministic incorrect, fallback, warning,
-  then stable run-task/sample order;
-- original preview: WEBP, maximum side 1400, quality 85;
+- default visual-sample budget: none; every resolvable sample is materialized;
+- an explicit compatibility limit still uses failed/partial/incorrect/fallback/
+  warning priority followed by stable run-task/sample order;
+- original preview: WEBP, maximum side 1024, quality 85;
 - overlay: PNG, outline/ring only, 1–2 px;
 - accepted/prediction green, rejected red, ground truth cyan, unresolved
   amber, reviewer purple;
 - real OBB polygons are drawn as polygons, never downgraded to enclosing
   rectangles;
+- OBB/box geometry suppresses the point-pipeline helper radius; point-only
+  evidence uses a fixed 3–5 px hollow ring and never `point.radius_px`;
+- successful persisted counting attempts with geometry receive separate,
+  hash-safe stage overlays; failed/unavailable or legacy inferred stages do not;
 - dimension mismatch preserves an original preview but suppresses the
   invalid overlay.
 

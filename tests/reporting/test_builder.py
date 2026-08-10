@@ -13,6 +13,8 @@ from pathlib import Path
 
 from agents.base import AgentExecution
 from agents.counting.schema import (
+    CountingBackendAttemptAudit,
+    CountingExecutionAudit,
     CountingResult,
     GlobalPointObservation,
     IssueRecord,
@@ -27,7 +29,12 @@ from evaluation.records import (
     GroundingDeterministicMetrics,
     VQADeterministicMetrics,
 )
-from reporting.adapters import load_evaluation, load_payload
+from reporting.adapters import (
+    load_counting_attempts,
+    load_evaluation,
+    load_model_calls,
+    load_payload,
+)
 from reporting.builder import build_report
 from reporting.exporters import write_csv, write_json
 from workflows.artifact_writer import ArtifactWriter
@@ -1219,3 +1226,100 @@ def test_exporters_mme_container_shape_and_no_model_calls(tmp_path: Path) -> Non
     rows = json.loads(output.read_text(encoding="utf-8"))
     assert rows[0]["Output"] == "yes"
     assert rows[0]["field"] == 1
+
+
+def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path: Path) -> None:
+    run_dir = _create_run(tmp_path)
+    sample = UnifiedSample(
+        sample_id="audit-count", dataset="audit-set", split="test", task="counting",
+        images=[ImageRef(image_id="image-0", path="image.png", role="image")],
+        question="How many vehicles?",
+        ground_truth=GroundTruth(count=1, boxes=[[1, 2, 3, 4]], labels=["vehicle"]),
+    )
+    sample_dir = _write_sample(
+        run_dir, run_task="counting", sample=sample,
+        status=_status("audit-count", "counting", "succeeded", result_path="counting_result.json"),
+        trace=_trace(resolved_task="counting", execution_agent="counting_agent"),
+    )
+    zero = CountingResult(
+        sample_id="audit-count", target="vehicle", question=sample.question,
+        source_width=100, source_height=100, tile_count=1, final_count=0, status="completed",
+    )
+    positive = CountingResult(
+        sample_id="audit-count", target="vehicle", question=sample.question,
+        source_width=100, source_height=100, tile_count=1,
+        global_points=[_v2_point("p1", 20, accepted=True, source="semantic_component_centroid")],
+        final_count=1, status="completed",
+    )
+    (sample_dir / "counting_result.json").write_text(positive.model_dump_json(), encoding="utf-8")
+    audit = CountingExecutionAudit(
+        sample_id="audit-count", target="vehicle",
+        attempts=[
+            CountingBackendAttemptAudit(
+                backend_name="detector", backend_kind="yolo_obb", phase="primary",
+                status="succeeded", counting=zero,
+                backend_trace={"raw_detections": 0, "classes": ["vehicle"]},
+            ),
+            CountingBackendAttemptAudit(
+                backend_name="segmenter", backend_kind="semantic_segmentation",
+                phase="zero_review", status="succeeded", counting=positive,
+                backend_trace={"raw_components": 2, "nested_not_public": {"mask": [1, 2, 3]},
+                               "checkpoint": "C:/private/model.bin"},
+            ),
+        ],
+    )
+    (sample_dir / "counting_attempts.json").write_text(audit.model_dump_json(), encoding="utf-8")
+
+    row = build_report(run_dir).samples[0]
+    assert row.ground_truth is not None and row.ground_truth.count == 1
+    assert row.ground_truth.boxes == [[1.0, 2.0, 3.0, 4.0]]
+    assert [(stage.order, stage.backend_name, stage.phase) for stage in row.backend_stages] == [
+        (1, "detector", "primary"), (2, "segmenter", "zero_review")]
+    assert [stage.predicted_count for stage in row.backend_stages] == [0, 1]
+    assert row.backend_stages[1].accepted_count == 1
+    serialized = json.dumps(row.model_dump(mode="json"))
+    assert "nested_not_public" not in serialized and "C:/private" not in serialized
+
+
+def test_v21_model_call_loader_is_bounded_sanitized_and_best_effort(tmp_path: Path) -> None:
+    call_dir = tmp_path / "sample" / "calls" / "01"
+    call_dir.mkdir(parents=True)
+    (call_dir / "request_meta.json").write_text(json.dumps({
+        "request_id": "sample:qwen", "request_hash": "a" * 64,
+        "prompt_version": "v1", "sample_id": "sample",
+        "artifact_dir": "/home/private/model/output",
+    }), encoding="utf-8")
+    (call_dir / "request.json").write_text(json.dumps({
+        "messages": [{"role": "user", "content": "safe question"}],
+        "dataset_root": "/home/private/dataset", "image": "data:image/png;base64,AAAA",
+    }), encoding="utf-8")
+    (call_dir / "raw_response.txt").write_text(
+        "<script>alert(1)</script>" + "x" * 9000, encoding="utf-8")
+    (call_dir / "parsed.json").write_text(json.dumps({
+        "answer": "yes", "artifact_dir": "C:/private/model/output",
+    }), encoding="utf-8")
+    (call_dir / "validation.json").write_text(json.dumps({
+        "cache_hit": False, "valid": True,
+        "response_metadata": {"latency_seconds": 0.25, "repair_used": True,
+                              "token_usage": {"prompt_tokens": 4, "completion_tokens": 2}},
+    }), encoding="utf-8")
+    corrupt = tmp_path / "sample" / "calls" / "02"
+    corrupt.mkdir()
+    (corrupt / "request_meta.json").write_text("{bad", encoding="utf-8")
+
+    calls = load_model_calls(tmp_path / "sample")
+    assert len(calls) == 1
+    call = calls[0]
+    assert call.request_id == "sample:qwen" and call.prompt_version == "v1"
+    assert call.raw_response_truncated is True
+    assert call.raw_response is not None and len(call.raw_response) <= 8000
+    assert call.raw_response.endswith("[truncated]")
+    assert call.latency_seconds == 0.25
+    assert call.token_usage == {"prompt_tokens": 4, "completion_tokens": 2}
+    serialized = json.dumps(call.model_dump(mode="json"))
+    assert "/home/private" not in serialized
+    assert "C:/private" not in serialized
+    assert "base64" not in serialized
+
+    (tmp_path / "sample" / "counting_attempts.json").write_text("{corrupt", encoding="utf-8")
+    assert load_counting_attempts(tmp_path / "sample") is None

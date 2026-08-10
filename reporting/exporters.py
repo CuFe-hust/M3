@@ -300,7 +300,7 @@ def persist_report_bundle(
     report: Report,
     *,
     external_standard: Mapping[str, Any] | None = None,
-    max_visual_samples: int = 200,
+    max_visual_samples: int | None = None,
 ) -> Path:
     """Persist the unified current-generation report bundle under
     ``runs/<run_id>/report/``: report.html, report.json, samples.csv,

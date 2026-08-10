@@ -11,7 +11,13 @@ from PIL import Image, ImageDraw, UnidentifiedImageError
 from agents.counting.schema import CountingResult
 from agents.schema import AgentResult, VisualEvidence
 from data.schema import UnifiedSample
-from reporting.adapters import load_payload, load_run_request, load_sample, sample_dir_for_row
+from reporting.adapters import (
+    load_counting_attempts,
+    load_payload,
+    load_run_request,
+    load_sample,
+    sample_dir_for_row,
+)
 from reporting.schema import Report, VisualAssetView
 
 _ACCEPTED_COLOR = (34, 197, 94)
@@ -52,9 +58,13 @@ def _draw_counting_points(
         if polygon and len(polygon) >= 3:
             scaled = [(pair[0] * scale_x, pair[1] * scale_y) for pair in polygon]
             draw.line(scaled + [scaled[0]], fill=color, width=width)
+            # A persisted OBB is the object's geometry; do not add the
+            # point-pipeline helper radius on top of it.
+            continue
         x = point.global_x_px * scale_x
         y = point.global_y_px * scale_y
-        radius = max(3, round(point.radius_px * min(scale_x, scale_y)))
+        # radius_px is a pipeline evidence scale, not report geometry.
+        radius = max(3, min(5, round(5 * min(scale_x, scale_y))))
         draw.ellipse(
             (x - radius, y - radius, x + radius, y + radius),
             outline=color, width=width,
@@ -62,7 +72,7 @@ def _draw_counting_points(
 
 
 def materialize_report_assets(
-    run_dir: Path, report: Report, report_dir: Path, *, max_visual_samples: int = 200,
+    run_dir: Path, report: Report, report_dir: Path, *, max_visual_samples: int | None = None,
 ) -> Report:
     """Materialize selected previews and return an updated report copy.
 
@@ -79,7 +89,7 @@ def materialize_report_assets(
     )
     selected_samples = {
         (sample.run_task, sample.sample_id)
-        for sample in ranked[:max(0, max_visual_samples)]
+        for sample in (ranked if max_visual_samples is None else ranked[:max(0, max_visual_samples)])
     }
     assets_dir = report_dir / "assets"
     for sample in updated.samples:
@@ -96,6 +106,8 @@ def materialize_report_assets(
                 dataset_root, source_sample, payload, visual, assets_dir,
                 identity=f"{sample.run_task}\0{sample.sample_id}\0{visual.image_id}",
             )
+        if (sample.run_task, sample.sample_id) in selected_samples:
+            _materialize_stage_assets(dataset_root, sample_dir, source_sample, sample, assets_dir)
     updated.visual_total = sum(len(sample.visuals) for sample in updated.samples)
     updated.visual_materialized_count = sum(
         visual.status == "available" for sample in updated.samples for visual in sample.visuals
@@ -136,7 +148,7 @@ def _materialize_visual(
     visual.width, visual.height = image.size
     assets_dir.mkdir(parents=True, exist_ok=True)
     preview = image.copy()
-    preview.thumbnail((1400, 1400), Image.Resampling.LANCZOS)
+    preview.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
     preview.save(assets_dir / Path(original_rel).name, format="WEBP", quality=85, method=6)
     visual.original_asset = original_rel
     if isinstance(payload, CountingResult):
@@ -185,6 +197,61 @@ def _materialize_visual(
         visual.status = "available"
         return
     visual.status = "unsupported_geometry"
+
+
+def _materialize_stage_assets(
+    dataset_root: Path | None,
+    sample_dir: Path | None,
+    source_sample: UnifiedSample | None,
+    report_sample: object,
+    assets_dir: Path,
+) -> None:
+    """Render persisted counting attempt geometry as stage-specific overlays."""
+    if dataset_root is None or sample_dir is None or source_sample is None:
+        return
+    attempts = load_counting_attempts(sample_dir)
+    if attempts is None or len(source_sample.images) != 1:
+        return
+    visuals = getattr(report_sample, "visuals", [])
+    if not visuals:
+        return
+    image_ref = source_sample.images[0]
+    if not any(item.image_id == image_ref.image_id for item in visuals):
+        return
+    try:
+        root = dataset_root.resolve(strict=True)
+        source = (root / image_ref.path).resolve(strict=True)
+        if not source.is_file() or not source.is_relative_to(root):
+            return
+        with Image.open(source) as opened:
+            opened.load()
+            image = opened.convert("RGB")
+    except (OSError, RuntimeError, UnidentifiedImageError, ValueError):
+        return
+    preview = image.copy()
+    preview.thumbnail((1024, 1024), Image.Resampling.LANCZOS)
+    for order, attempt in enumerate(attempts.attempts, start=1):
+        counting = attempt.counting
+        if counting is None or not counting.global_points:
+            continue
+        if image.size != (counting.source_width, counting.source_height):
+            continue
+        canvas = preview.copy()
+        _draw_counting_points(
+            canvas,
+            counting,
+            scale_x=canvas.width / image.width,
+            scale_y=canvas.height / image.height,
+        )
+        digest = hashlib.sha256(
+            f"{getattr(report_sample, 'run_task', '')}\0{getattr(report_sample, 'sample_id', '')}\0stage\0{order}".encode("utf-8")
+        ).hexdigest()[:20]
+        relative = f"assets/{digest}-stage-{order:02d}.png"
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        canvas.save(assets_dir / Path(relative).name, format="PNG", optimize=False)
+        for stage in getattr(report_sample, "backend_stages", []):
+            if stage.order == order:
+                stage.overlay_asset = relative
 
 
 def _evidence_for_image(

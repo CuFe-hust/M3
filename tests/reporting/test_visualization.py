@@ -12,10 +12,16 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from agents.counting.schema import CountingResult, GlobalPointObservation, PointProvenance
+from agents.counting.schema import (
+    CountingBackendAttemptAudit,
+    CountingExecutionAudit,
+    CountingResult,
+    GlobalPointObservation,
+    PointProvenance,
+)
 from agents.schema import AgentResult, VisualEvidence
 from data.schema import GroundTruth, ImageRef, UnifiedSample
-from reporting.schema import Report, ReportSample, VisualAssetView
+from reporting.schema import BackendStageView, Report, ReportSample, VisualAssetView
 from reporting.visualization import materialize_report_assets, render_counting_overlay
 from workflows.artifact_writer import ArtifactWriter
 from workflows.schema import RunRequest
@@ -141,6 +147,41 @@ def test_report_v2_obb_draws_true_polygon_not_enclosing_rectangle(
     assert rendered.getpixel((20, 20)) == (255, 255, 255)
 
 
+def test_v21_obb_does_not_draw_pipeline_radius_ring(tmp_path: Path) -> None:
+    point = _point("obb", x=150, y=150, accepted=True, radius=100).model_copy(
+        update={"provenance": PointProvenance(
+            source="yolo_obb_center",
+            obb_polygon_global_px=[[120, 120], [180, 120], [180, 180], [120, 180]],
+        )}
+    )
+    result = _result().model_copy(update={
+        "source_width": 300, "source_height": 300,
+        "global_points": [point], "final_count": 1,
+    })
+    output = tmp_path / "obb-no-radius.png"
+    render_counting_overlay(
+        Image.new("RGB", (300, 300), "white"), result=result, output_path=output,
+    )
+    rendered = Image.open(output)
+    assert rendered.getpixel((120, 150)) == (34, 197, 94)
+    assert rendered.getpixel((250, 150)) == (255, 255, 255)
+
+
+def test_v21_point_only_uses_fixed_small_ring(tmp_path: Path) -> None:
+    point = _point("point", x=150, y=150, accepted=True, radius=100)
+    result = _result().model_copy(update={
+        "source_width": 300, "source_height": 300,
+        "global_points": [point], "final_count": 1,
+    })
+    output = tmp_path / "fixed-ring.png"
+    render_counting_overlay(
+        Image.new("RGB", (300, 300), "white"), result=result, output_path=output,
+    )
+    rendered = Image.open(output)
+    assert rendered.getpixel((155, 150)) == (34, 197, 94)
+    assert rendered.getpixel((160, 150)) == (255, 255, 255)
+
+
 def test_report_v2_visual_budget_prioritizes_failed_then_incorrect(
     tmp_path: Path,
 ) -> None:
@@ -235,6 +276,53 @@ def test_report_v2_dimension_mismatch_keeps_preview_without_forced_overlay(
     assert (run_dir / "report" / visual.original_asset).is_file()
     assert visual.overlay_asset is None
     assert dataset_root.as_posix() not in updated.model_dump_json()
+
+
+def test_v21_persisted_attempt_materializes_hash_safe_stage_overlay(
+    tmp_path: Path,
+) -> None:
+    dataset_root = tmp_path / "stage-images"
+    dataset_root.mkdir()
+    Image.new("RGB", (100, 100), "white").save(dataset_root / "source.png")
+    run_dir = tmp_path / "stage-run"
+    run_dir.mkdir()
+    (run_dir / "run_request.json").write_text(RunRequest(
+        dataset="demo", dataset_root=dataset_root.as_posix(), split="test",
+        task_mode="explicit", tasks=["counting"],
+    ).model_dump_json(), encoding="utf-8")
+    sample = UnifiedSample(
+        sample_id="stage", dataset="demo", split="test", task="counting",
+        images=[ImageRef(image_id="i0", path="source.png", role="image")],
+        question="How many?",
+    )
+    key = hashlib.sha256(sample.sample_id.encode()).hexdigest()[:24]
+    sample_dir = run_dir / "tasks" / "counting" / "samples" / key
+    ArtifactWriter().write_sample(sample_dir, sample)
+    result = _result().model_copy(update={"sample_id": "stage"})
+    (sample_dir / "counting_result.json").write_text(result.model_dump_json(), encoding="utf-8")
+    audit = CountingExecutionAudit(
+        sample_id="stage", target="car",
+        attempts=[CountingBackendAttemptAudit(
+            backend_name="qwen_point", backend_kind="qwen_point",
+            phase="primary", status="succeeded", counting=result,
+        )],
+    )
+    (sample_dir / "counting_attempts.json").write_text(audit.model_dump_json(), encoding="utf-8")
+    report = Report(
+        run_id="stage-run", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[ReportSample(
+            sample_id="stage", run_task="counting", task="counting", state="succeeded",
+            visuals=[VisualAssetView(image_id="i0", role="image")],
+            backend_stages=[BackendStageView(
+                order=1, backend_name="qwen_point", backend_kind="qwen_point",
+                phase="primary", status="succeeded",
+            )],
+        )],
+    )
+    updated = materialize_report_assets(run_dir, report, run_dir / "report")
+    asset = updated.samples[0].backend_stages[0].overlay_asset
+    assert asset is not None and asset.startswith("assets/") and "stage-01.png" in asset
+    assert (run_dir / "report" / asset).is_file()
 
 
 def test_report_v2_multi_image_evidence_binds_strictly_by_image_id(
