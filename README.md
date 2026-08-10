@@ -978,11 +978,21 @@ normalization.count_target_hint
 
 ---
 
-## 21. 可选 YOLO OBB Counting
+## 21. YOLO OBB Counting
 
-YOLO 默认不是必须依赖。
+YOLO 后端默认启用：内置配置注册 `detector_obb_csl_001`
+（`models/yolo_obb/yolov5m_obb_csl_dotav20.onnx`），Counting backend 的
+`yolo_obb` 路径默认进入候选链。权重与 ONNX Runtime 仍由本地环境准备，不
+自动下载；模型加载保持惰性，缺少权重/运行时依赖时按有序回退链降级
+（SegFormer → quantity proposal → Qwen point），不会使运行失败。
 
-启用 detector 后，Counting backend 可以注册 `yolo_obb` 路径；模型加载保持惰性，只在配置启用对应 detector 时触发。
+显式关闭方式：
+
+```yaml
+backend:
+  yolo:
+    enabled: false
+```
 
 设计边界：
 

@@ -216,13 +216,84 @@ class YoloDetectorSettings(BaseModel):
         return self
 
 
+def _default_yolo_detectors() -> list[YoloDetectorSettings]:
+    """Default detector declaration matching the frozen expert catalog.
+    与冻结专家目录一致的内置 YOLO 检测器声明。权重仍只来自本地资产，
+    本声明不做任何文件访问。"""
+    return [
+        YoloDetectorSettings(
+            name="detector_obb_csl_001",
+            enabled=True,
+            weights=Path("models/yolo_obb/yolov5m_obb_csl_dotav20.onnx"),
+            runtime="onnx_yolov5_obb",
+            task="obb",
+            model_id="YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m",
+            sha256="c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a",
+            source_dataset="DOTAv2.0",
+            priority=100,
+            classes=[
+                "plane",
+                "baseball diamond",
+                "bridge",
+                "ground track field",
+                "small vehicle",
+                "large vehicle",
+                "ship",
+                "tennis court",
+                "basketball court",
+                "storage tank",
+                "soccer ball field",
+                "roundabout",
+                "harbor",
+                "swimming pool",
+                "helicopter",
+                "container crane",
+                "airport",
+                "helipad",
+            ],
+            aliases={
+                "airplane": "plane",
+                "aeroplane": "plane",
+                "vessel": "ship",
+                "boat": "ship",
+                "storage-tank": "storage tank",
+                "oil tank": "storage tank",
+                "large-vehicle": "large vehicle",
+                "small-vehicle": "small vehicle",
+                "football field": "soccer ball field",
+                "soccer field": "soccer ball field",
+                "swimming-pool": "swimming pool",
+            },
+            composite_targets={
+                "vehicle": ["small vehicle", "large vehicle"],
+                "aircraft": ["plane", "helicopter"],
+            },
+            confidence=0.20,
+            iou=0.50,
+            image_size=1024,
+            device="0",
+            max_detections=1000,
+            require_cuda=True,
+            allow_cpu_fallback=False,
+            boundary_duplicate_iou=0.50,
+            boundary_duplicate_center_px=16.0,
+        )
+    ]
+
+
 class YoloCountingSettings(BaseModel):
-    """YOLO counting backend configuration. / YOLO 计数后端配置。"""
+    """YOLO counting backend configuration. YOLO is enabled by default with
+    the catalog-verified detector; missing weights/runtime degrade to the
+    ordered fallback chain instead of failing the run.
+    YOLO 计数后端配置。默认启用目录校验过的检测器；权重/运行时缺失时按
+    有序回退链降级，而不是使运行失败。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
-    detectors: list[YoloDetectorSettings] = Field(default_factory=list)
+    enabled: bool = True
+    detectors: list[YoloDetectorSettings] = Field(
+        default_factory=_default_yolo_detectors
+    )
 
     @model_validator(mode="after")
     def validate_enabled_detectors(self) -> "YoloCountingSettings":

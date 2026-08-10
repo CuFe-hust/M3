@@ -100,7 +100,11 @@ def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:
         PromptCatalog(REPO_ROOT / "prompts"),
         _FakeQwenClient(),
     )
-    assert registry.all_names() == ["qwen_point", "quantity_proposal"]
+    assert registry.all_names() == [
+        "qwen_point",
+        "quantity_proposal",
+        "detector_obb_csl_001",
+    ]
     assert registry.get("quantity_proposal").kind == "quantity_proposal"
 
 
@@ -117,6 +121,7 @@ def test_enabled_segformer_is_registered_lazily_and_oem_is_not(tmp_path: Path) -
     assert registry.all_names() == [
         "qwen_point",
         "quantity_proposal",
+        "detector_obb_csl_001",
         "segmenter_mitb2_001",
     ]
     backend = registry.get("segmenter_mitb2_001")
@@ -416,7 +421,7 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     )
 
 
-def test_composed_default_plan_uses_segformer_then_qwen_or_qwen_only(
+def test_composed_default_plan_uses_yolo_then_segformer_qwen_or_qwen_only(
     tmp_path: Path,
 ) -> None:
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
@@ -435,8 +440,11 @@ def test_composed_default_plan_uses_segformer_then_qwen_or_qwen_only(
     }
     pool_plan = selector.plan(swimming_pool, task="counting", hints=pool_hints)
     assert pool_plan is not None
-    assert pool_plan.primary_backend_name == "segmenter_mitb2_001"
-    assert pool_plan.fallback_backend_names == ("qwen_point",)
+    assert pool_plan.primary_backend_name == "detector_obb_csl_001"
+    assert pool_plan.fallback_backend_names == (
+        "segmenter_mitb2_001",
+        "qwen_point",
+    )
 
     crane = swimming_pool.model_copy(update={"canonical_label": "crane"})
     crane_hints = {"quantity_estimation": True, **catalog.target_hints(crane)}

@@ -42,7 +42,9 @@ def test_default_settings() -> None:
     assert settings.models.segformer_isaid.classes_filename == "classes.json"
     assert settings.models.segformer_oem.classes_filename is None
     assert settings.models.segformer_experts == {}
-    assert settings.backend.yolo.enabled is False
+    assert settings.backend.yolo.enabled is True
+    assert settings.backend.yolo.detectors[0].name == "detector_obb_csl_001"
+    assert settings.backend.yolo.detectors[0].enabled is True
     assert settings.agents.counting.default_backend == "auto"
     assert settings.counting.fallback_on_backend_unavailable is True
     assert settings.counting.verify_empty_detection is True

@@ -1304,7 +1304,10 @@ hints 匹配；VLM 不返回 backend/checkpoint 决策。
 
 YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
 
-启用 detector 时才注册相关 backend。
+默认配置启用 `detector_obb_csl_001`（`models/yolo_obb/yolov5m_obb_csl_dotav20.onnx`），
+Counting backend 默认注册 `yolo_obb` 路径；权重与 ONNX Runtime 仍由本地
+环境准备，不自动下载。缺少权重/依赖时按 `fallback_on_backend_*` 策略进入
+有序回退链，而不是使运行失败。可通过 `backend.yolo.enabled=false` 显式关闭。
 
 硬件策略由 settings 决定，例如：
 
