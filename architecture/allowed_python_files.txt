@@ -275,6 +275,7 @@ scripts/evaluate_levir_harmonization.py
 
 # === Analysis tooling ===
 scripts/classify_tasks.py
+scripts/evaluate_vrsbench_counting.py
 scripts/merge_qwen3vl_merger_lora.py
 
 # === Reporting tests ===
