@@ -461,6 +461,96 @@ def test_rejected_transform_publishes_pif_when_v2_actually_uses_it(
     assert "harmonized_t1" not in result.artifact_files
 
 
+def test_consumed_pif_is_mandatory_when_optional_artifacts_are_disabled(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings(
+        harmonization=ChangeHarmonizationSettings(
+            enabled=True,
+            save_artifacts=False,
+        )
+    )
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    prepared = replace(
+        prepared,
+        comparison_t1=prepared.raw_t1.copy(),
+        comparison_t2=prepared.raw_t2.copy(),
+        pif_mask=np.ones((64, 64), dtype=np.uint8) * 255,
+        pif_valid=True,
+        decision=HarmonizationDecision(
+            version=settings.harmonization.version,
+            status="rejected",
+            reason_codes=["REJECTED_UNSTABLE_TRANSFORM", "RAW_FALLBACK_USED"],
+            metrics=None,
+            used_for_proposal=False,
+        ),
+    )
+
+    result = publish_change_proposals(
+        prepared,
+        score_map=np.zeros((64, 64), dtype=np.float32),
+        proposals=[],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+        diagnostics={
+            "pif_valid": True,
+            "pif_used_for_feature_alignment": True,
+            "pif_used_for_threshold": True,
+        },
+    )
+
+    assert result.artifact_files["pif_mask"] == "change_preprocess/pif_mask.png"
+    assert (tmp_path / "run" / result.artifact_files["pif_mask"]).is_file()
+    assert "harmonized_t1" not in result.artifact_files
+    assert "harmonized_t2" not in result.artifact_files
+
+
+def test_unused_valid_pif_respects_disabled_optional_artifacts(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings(
+        harmonization=ChangeHarmonizationSettings(
+            enabled=True,
+            save_artifacts=False,
+        )
+    )
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    prepared = replace(
+        prepared,
+        comparison_t1=prepared.raw_t1.copy(),
+        comparison_t2=prepared.raw_t2.copy(),
+        pif_mask=np.ones((64, 64), dtype=np.uint8) * 255,
+        pif_valid=True,
+        decision=HarmonizationDecision(
+            version=settings.harmonization.version,
+            status="rejected",
+            reason_codes=["REJECTED_UNSTABLE_TRANSFORM", "RAW_FALLBACK_USED"],
+            metrics=None,
+            used_for_proposal=False,
+        ),
+    )
+
+    result = publish_change_proposals(
+        prepared,
+        score_map=np.zeros((64, 64), dtype=np.float32),
+        proposals=[],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+        diagnostics={
+            "pif_valid": True,
+            "pif_used_for_feature_alignment": False,
+            "pif_used_for_threshold": False,
+        },
+    )
+
+    assert "pif_mask" not in result.artifact_files
+    assert not (tmp_path / "run" / "change_preprocess" / "pif_mask.png").exists()
+
+
 def test_invalid_unused_pif_is_not_published_as_v2_evidence(tmp_path: Path) -> None:
     root = tmp_path / "data"
     sample = _write_pair(root)

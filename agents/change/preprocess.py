@@ -246,10 +246,11 @@ def publish_change_proposals(
                 "harmonized_t2": "change_preprocess/harmonized_t2.png",
             }
         )
-    if (
+    publish_pif = pif_used or (
         settings.harmonization.save_artifacts
-        and (prepared.decision.status == "applied" or pif_used)
-    ):
+        and prepared.decision.status == "applied"
+    )
+    if publish_pif:
         _write_image(output / "pif_mask.png", prepared.pif_mask)
         files["pif_mask"] = "change_preprocess/pif_mask.png"
 

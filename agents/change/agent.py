@@ -111,7 +111,7 @@ class ChangeAgent:
         # reservation, or any model call. 无效时相图对必须在构建证据、消费
         # budget 或调用模型之前稳定失败。
         mode = resolve_input_mode(settings)
-        content, image_hashes, image_manifest = self._build_evidence(
+        content, image_hashes, image_manifest, evidence_audit = self._build_evidence(
             sample, context, preprocess, mode
         )
         perception_audit = _perception_audit(
@@ -123,6 +123,7 @@ class ChangeAgent:
             "task": sample.task,
             "coordinate_frame": "normalized_0_999_top_left",
             "input_mode": mode,
+            "evidence_audit": evidence_audit,
             "temporal_roles": [ref.role for ref in sample.images],
             "image_manifest": image_manifest,
             "harmonization": {
@@ -202,6 +203,7 @@ class ChangeAgent:
             "model": identity.model,
             "image_roles": [ref.role for ref in sample.images],
             "input_mode": mode,
+            **evidence_audit,
             "harmonization_version": preprocess.decision.version,
             "harmonization_status": preprocess.decision.status,
             "harmonization_reason_codes": preprocess.decision.reason_codes,
@@ -280,7 +282,12 @@ class ChangeAgent:
         context: AgentContext,
         preprocess: ChangePreprocessResult,
         mode: InputMode,
-    ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, str]]]:
+    ) -> tuple[
+        list[dict[str, Any]],
+        list[str],
+        list[dict[str, str]],
+        dict[str, object],
+    ]:
         """Build the mode-specific ordered image content and manifest.
         构建模式专属的有序图像内容与清单。"""
 
@@ -294,25 +301,40 @@ class ChangeAgent:
             relative = preprocess.artifact_files.get(key)
             if relative:
                 harmonized.append((key, context.artifact_dir / relative, "artifact"))
-        if mode == "raw_only" or not harmonized:
+        # Select base comparison evidence independently from proposal
+        # attention evidence. A rejected transform legitimately degrades a
+        # dual path to the authoritative raw pair. / base comparison evidence
+        # 与 proposal attention evidence 独立选择。transform rejected 时，
+        # dual path 合法降级为 authoritative raw pair。
+        if mode == "raw_only":
             paths.extend(raw)
         elif mode == "harmonized_only":
-            paths.extend(harmonized)
+            paths.extend(harmonized if harmonized else raw)
         else:  # dual_path / 双路径
             paths.extend(raw)
             paths.extend(harmonized)
-            overlay = preprocess.artifact_files.get("proposal_overlay")
-            if overlay:
-                paths.append(("proposal_overlay", context.artifact_dir / overlay, "artifact"))
-            for proposal in preprocess.proposals[: self._settings.proposals.max_proposals]:
-                for relative in proposal.evidence_filenames:
-                    paths.append(
-                        (
-                            f"{proposal.proposal_id}:{Path(relative).stem}",
-                            context.artifact_dir / relative,
-                            "artifact",
-                        )
+
+        proposal_evidence_count = 0
+        overlay = preprocess.artifact_files.get("proposal_overlay")
+        # Preserve the established empty-overlay dual-path contract while
+        # attaching meaningful proposal evidence in every base mode.
+        # 保留既有 dual-path 空 overlay 契约，同时在任意 base mode 下独立附加
+        # 有意义的 proposal evidence。
+        if overlay and (preprocess.proposals or (mode == "dual_path" and harmonized)):
+            paths.append(
+                ("proposal_overlay", context.artifact_dir / overlay, "artifact")
+            )
+            proposal_evidence_count += 1
+        for proposal in preprocess.proposals[: self._settings.proposals.max_proposals]:
+            for relative in proposal.evidence_filenames:
+                paths.append(
+                    (
+                        f"{proposal.proposal_id}:{Path(relative).stem}",
+                        context.artifact_dir / relative,
+                        "artifact",
                     )
+                )
+                proposal_evidence_count += 1
         content: list[dict[str, Any]] = []
         hashes: list[str] = []
         manifest: list[dict[str, str]] = []
@@ -329,7 +351,14 @@ class ChangeAgent:
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}})
             hashes.append(hashlib.sha256(data).hexdigest())
             manifest.append({"index": str(index), "role": role})
-        return content, hashes, manifest
+        evidence_audit: dict[str, object] = {
+            "harmonized_evidence_available": bool(harmonized),
+            "harmonized_evidence_count": len(harmonized),
+            "proposal_evidence_attached": proposal_evidence_count > 0,
+            "proposal_evidence_count": proposal_evidence_count,
+            "image_manifest_roles": [item["role"] for item in manifest],
+        }
+        return content, hashes, manifest, evidence_audit
 
     def _resolve_raw(
         self,

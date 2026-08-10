@@ -13,8 +13,11 @@ from PIL import Image
 
 from agents.base import AgentContext
 from agents.change.agent import ChangeAgent
+from agents.change.harmonizer import HarmonizationCandidate, PairHarmonizer
+from agents.change.schema import HarmonizationDecision
 from agents.change.settings import (
     AgentChangeSettings,
+    ChangeHarmonizationSettings,
     ChangeProposalSettings,
     ChangeSemanticSettings,
 )
@@ -341,6 +344,72 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     artifact_root = tmp_path / "artifacts" / "change_preprocess"
     assert all((artifact_root / relative).is_file() for relative in expected_v2_artifacts)
     assert (artifact_root / "pif_mask.png").is_file()
+
+
+def test_rejected_transform_v2_proposals_reach_qwen_with_mandatory_pif(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def reject_transform(self, first, second):
+        return HarmonizationCandidate(
+            t1=first.copy(),
+            t2=second.copy(),
+            pif_mask=np.ones(first.shape[:2], dtype=np.uint8) * 255,
+            pif_valid=True,
+            decision=HarmonizationDecision(
+                version="pif_lab_midpoint_v1",
+                status="rejected",
+                reason_codes=[
+                    "REJECTED_UNSTABLE_TRANSFORM",
+                    "RAW_FALLBACK_USED",
+                ],
+                metrics=None,
+                used_for_proposal=False,
+            ),
+            transform_summary={"sharpness_adjustment_used": False},
+        )
+
+    monkeypatch.setattr(PairHarmonizer, "run", reject_transform)
+    dense = _DenseClient()
+    settings = _settings(enabled=True).model_copy(
+        update={
+            "harmonization": ChangeHarmonizationSettings(
+                enabled=True,
+                save_artifacts=False,
+            )
+        }
+    )
+
+    execution, qwen, budget = _run(
+        tmp_path,
+        settings=settings,
+        dense_client=dense,
+    )
+
+    assert len(dense.calls) == 2
+    assert len(qwen.calls) == 1
+    assert budget.qwen_calls == 1
+    payload = _payload(qwen)
+    roles = [item["role"] for item in payload["image_manifest"]]
+    assert roles[:2] == ["raw_full_t1", "raw_full_t2"]
+    assert "harmonized_t1" not in roles
+    assert "harmonized_t2" not in roles
+    assert "proposal_overlay" in roles
+    assert any(role.startswith("change_000:") for role in roles)
+    user_content = qwen.calls[0]["messages"][1]["content"]
+    assert sum(item["type"] == "image_url" for item in user_content) == len(roles)
+    assert execution.trace["harmonization_status"] == "rejected"
+    assert execution.trace["harmonized_evidence_available"] is False
+    assert execution.trace["proposal_evidence_attached"] is True
+    assert execution.trace["image_manifest_roles"] == roles
+
+    artifact_root = tmp_path / "artifacts" / "change_preprocess"
+    assert (artifact_root / "pif_mask.png").is_file()
+    assert (artifact_root / "proposal_overlay.png").is_file()
+    assert (artifact_root / "crops" / "change_000_raw_t1.png").is_file()
+    assert (artifact_root / "crops" / "change_000_raw_t2.png").is_file()
+    assert not (artifact_root / "harmonized_t1.png").exists()
+    assert not (artifact_root / "harmonized_t2.png").exists()
 
 
 def test_v2_trace_records_calibrated_identity_and_algorithm_settings(
