@@ -1054,6 +1054,15 @@ scripts/evaluate_levir_harmonization.py
 
 用于独立评估图像协调/校准表现，不调用 Qwen/DeepSeek 主推理链路。
 
+另有 VRSBench-counting 全流程 Counting Agent 评测脚本：
+
+```text
+scripts/evaluate_vrsbench_counting.py
+```
+
+在远端 GPU 上以真实 Qwen + 完整后端注册表 + 回退逐样本运行 CountingAgent，
+并把每个最终答案的来源（YOLO / qwen_point 回退等）写入结果 JSONL。
+
 ---
 
 ## 23. 报告

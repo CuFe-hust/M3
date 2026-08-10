@@ -3380,3 +3380,20 @@ reporting
 只读取结果，不重新执行结果。
 
 这几个边界应被视为后续开发最重要的长期契约。
+
+---
+
+# 85. Analysis tooling
+
+独立分析脚本（非 RunStore run 产物、非公共 CLI）：
+
+```text
+scripts/evaluate_vrsbench_counting.py
+```
+
+在 VRSBench-counting JSONL 上逐样本调用真实 CountingAgent（经
+`Runtime.create` 的完整组合），从 trace 标注最终答案来源
+（final_backend/kind、primary/fallback 与 target），复用
+`count_deterministic_metrics` / `aggregate_counting` 与生产车辆
+`count_target_hint`；输出 `results.jsonl` + `summary.json` +
+`unsupported_or_error.json`，无 DeepSeek/Judge 参与。
