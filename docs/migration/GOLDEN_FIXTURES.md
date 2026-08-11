@@ -114,6 +114,14 @@ python scripts/generate_migration_fixtures.py \
   `router_source` 由 `vrsbench_semantic_rule` 变为 `normalized_task_policy`；
   `routing_decision.json` 的 `router_source` 字段不再作为最终稳定契约锁定
   （parity 测试只断言其为非空字符串）。
+- **`spatial_relation` 由 `general_vqa_agent` 接管**：`agents/spatial/` 已删除，
+  `spatial_relation` 路由到 GeneralVQAAgent，单次 general_vqa_v2 Prompt 调用并
+  输出 `agent_result.json`。行为差异：旧实现最多两次 Qwen 调用（候选 + review）
+  且可能做确定性几何改写；现为单次调用、无候选完成、无确定性几何重写。冻结的
+  `tests/fixtures/migration/spatial/` 保留为历史事实（`spatial_agent` 路由、
+  `evidence_items`/`geometry` 输出），与当前运行结果不直接可比。任务名
+  `spatial_relation`、`TaskNormalization.spatial_query`、VRSBench normalization
+  与 VQA 评测族保持不变。
 - `CanonicalSample`/`CanonicalPrediction` 不再是内部主 Schema（保留为外部
   兼容/报告记录）。
 - 新代码不再保留 `spacers_agent` 兼容层；本分支从零重建，旧包目录永久禁止。

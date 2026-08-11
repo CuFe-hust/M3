@@ -1,6 +1,6 @@
 """Offline unit tests for the General VQA agent.
 
-通用 VQA Agent 离线单测：注入带 cache_identity 的 fake client，覆盖三个
+通用 VQA Agent 离线单测：注入带 cache_identity 的 fake client，覆盖四个
 受支持 task 的完整 run、选择题载荷（choices/allow_multiple）、task mismatch
 前置失败、无 VRSBench geometry、无 spacers_agent 依赖。
 """
@@ -118,7 +118,7 @@ def test_agent_identity_and_tasks() -> None:
     agent = _agent()
     assert agent.name == "general_vqa_agent"
     assert agent.supported_tasks == frozenset(
-        {"general_vqa", "scene_classification", "multiple_choice_vqa"}
+        {"general_vqa", "scene_classification", "multiple_choice_vqa", "spatial_relation"}
     )
 
 
@@ -134,7 +134,7 @@ def test_run_returns_agent_execution_with_default_filename(tmp_path: Path) -> No
     assert len(client.calls) == 1
 
 
-@pytest.mark.parametrize("task", ["general_vqa", "scene_classification", "multiple_choice_vqa"])
+@pytest.mark.parametrize("task", ["general_vqa", "scene_classification", "multiple_choice_vqa", "spatial_relation"])
 def test_all_supported_tasks_run(task: str, tmp_path: Path) -> None:
     client = _RecordingClient()
     constraints = None
@@ -145,6 +145,32 @@ def test_all_supported_tasks_run(task: str, tmp_path: Path) -> None:
     )
     assert execution.payload.answer == "yes"
     assert len(client.calls) == 1
+
+
+def test_spatial_relation_uses_general_prompt_single_call_and_general_agent(tmp_path: Path) -> None:
+    """A spatial_relation sample runs through the generic single-call VQA path:
+    one Qwen call, the default general_vqa_v2 prompt, agent_result.json, and
+    the general_vqa_agent identity — no spatial candidate review or geometry
+    rewrite. spatial_relation 样本走通用单次调用 VQA 路径：恰好一次 Qwen 调用、
+    默认 general_vqa_v2 Prompt、agent_result.json 与 general_vqa_agent 身份——
+    无 spatial 候选复核或几何改写。"""
+    client = _RecordingClient()
+    budget = _FakeBudget()
+    agent = _agent(client)
+    sample = _sample(tmp_path, task="spatial_relation")
+    execution = asyncio.run(agent.run(sample, _context(tmp_path, budget)))
+    assert execution.agent_name == "general_vqa_agent"
+    assert execution.payload.agent_name == "general_vqa_agent"
+    assert execution.result_filename == "agent_result.json"
+    assert execution.trace["prompt_version"] == "general_vqa_v2"
+    assert len(client.calls) == 1
+    assert budget.qwen_calls == 1
+    payload = _last_user_payload(client)
+    assert payload["task"] == "spatial_relation"
+    # No spatial candidate review or geometry branch in the generic path.
+    # 通用路径不含 spatial 候选复核或几何分支。
+    assert "candidate_review" not in execution.trace
+    assert "agent_class" not in execution.trace
 
 
 def test_unsupported_task_fails_before_model_call(tmp_path: Path) -> None:

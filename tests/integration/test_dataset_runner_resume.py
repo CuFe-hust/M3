@@ -590,7 +590,7 @@ def test_resume_uses_persisted_spatial_execution_task(tmp_path: Path) -> None:
         execution_task="spatial_relation",
         sample=sample,
         payload=AgentResult(
-            agent_name="spatial_agent", answer="north", status="completed"
+            agent_name="general_vqa_agent", answer="north", status="completed"
         ),
         result_filename="agent_result.json",
     )

@@ -216,7 +216,6 @@ M3/
 │   ├── caption/
 │   ├── grounding/
 │   ├── counting/
-│   ├── spatial/
 │   └── change/
 ├── routing/
 │   ├── schema.py
@@ -730,7 +729,6 @@ semantic expert 构造成 lazy client/backend，并接入固定优先级和 orde
 model
 cache_model_id
 max_tokens
-spatial_review_max_tokens
 dtype
 device_map
 use_kernels
@@ -987,7 +985,11 @@ additional_results
 general_vqa
 scene_classification
 multiple_choice_vqa
+spatial_relation
 ```
+
+`spatial_relation` 复用 general_vqa_v2 Prompt 与单次 Qwen 调用，输出
+`agent_result.json`；保留 `requires_tiling=False` 与 VQA 确定性评测/Judge 族。
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
 
@@ -1020,17 +1022,7 @@ fine_grained_counting
 
 是当前最复杂的领域 Agent，内部包含独立 backend planning/execution 与 tile/seam 处理。
 
-## 21.5 SpatialAgent
-
-覆盖：
-
-```text
-spatial_relation
-```
-
-使用空间查询规范、几何规则、候选 review 与 evidence merge。
-
-## 21.6 ChangeAgent
+## 21.5 ChangeAgent
 
 覆盖：
 
@@ -1056,7 +1048,7 @@ change_qa
 | `change_caption` | `change_agent` | — | yes |
 | `change_qa` | `change_agent` | `general_vqa_agent` | yes |
 | `grounding` | `grounding_agent` | — | yes |
-| `spatial_relation` | `spatial_agent` | — | no |
+| `spatial_relation` | `general_vqa_agent` | — | no |
 | `scene_classification` | `general_vqa_agent` | — | no |
 | `general_vqa` | `general_vqa_agent` | — | no |
 | `caption` | `caption_agent` | — | no |
@@ -1358,29 +1350,21 @@ wheel 通过 package-data 携带 expert catalog、verified SegFormer 小型 meta
 
 ---
 
-# 26. Spatial 子系统
+# 26. Spatial 子系统（已移除）
 
-目录：
+`agents/spatial/` 已从新架构删除，`spatial_relation` 由 `general_vqa_agent`
+接管（见第 22 节 Task → Route Policy）。不再存在 SpatialAgent、candidate
+review、evidence merge 或 deterministic geometry 专用实现。
 
-```text
-agents/spatial/
-```
-
-主要职责：
-
-```text
-SpatialQuerySpec / schema
-deterministic geometry
-candidate review
-evidence merge
-SpatialAgent
-```
-
-空间 Agent 不应把具体 VRSBench 字段解析重新写入 Agent。
-
-数据集源字段应在 adapter normalization 阶段变成结构化 spatial query / constraints。
+`spatial_relation` 仍保留为公开 task，`TaskNormalization.spatial_query` 与
+VRSBench normalization 规则不变，评测仍走 VQA 确定性族与可选 Judge。执行
+语义变化：原先最多两次 Qwen 调用（候选 + review）并可能做确定性几何改写，
+现为单次 general_vqa_v2 Prompt 调用，输出 `agent_result.json`；历史空间 run
+结果不直接可比。
 
 ---
+
+# 27. Change 子系统
 
 # 27. Change 子系统
 
@@ -1472,7 +1456,6 @@ judge_client = None
 CountingAgent
 ChangeAgent
 GroundingAgent
-SpatialAgent
 GeneralVQAAgent
 CaptionAgent
 ```

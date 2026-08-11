@@ -2428,7 +2428,7 @@ def test_evaluate_run_e2_families_zero_qwen(tmp_path, monkeypatch, capsys) -> No
             },
             "payload_file": "agent_result.json",
             "payload": {
-                "agent_name": "spatial_agent",
+                "agent_name": "general_vqa_agent",
                 "answer": "north",
                 "status": "completed",
             },
@@ -2689,7 +2689,7 @@ def test_evaluate_run_deepseek_covers_every_runtime_vqa_family(
         ("general_vqa", "general_vqa_agent"),
         ("multiple_choice_vqa", "general_vqa_agent"),
         ("scene_classification", "general_vqa_agent"),
-        ("spatial_relation", "spatial_agent"),
+        ("spatial_relation", "general_vqa_agent"),
         ("change_qa", "change_agent"),
     ):
         sample_id = f"evaluate-{task}"
@@ -2806,7 +2806,7 @@ def test_judge_vqa_run_covers_every_runtime_vqa_family(
         ("general_vqa", "general_vqa_agent"),
         ("multiple_choice_vqa", "general_vqa_agent"),
         ("scene_classification", "general_vqa_agent"),
-        ("spatial_relation", "spatial_agent"),
+        ("spatial_relation", "general_vqa_agent"),
         ("change_qa", "change_agent"),
     ):
         sample_id = f"family-{task}"

@@ -33,7 +33,7 @@ POLICIES: dict[str, RoutePolicy] = {
         task="grounding", primary_agent="grounding_agent", requires_tiling=True
     ),
     "spatial_relation": RoutePolicy(
-        task="spatial_relation", primary_agent="spatial_agent"
+        task="spatial_relation", primary_agent="general_vqa_agent"
     ),
     "scene_classification": RoutePolicy(
         task="scene_classification", primary_agent="general_vqa_agent"

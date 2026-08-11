@@ -48,7 +48,7 @@ def test_evidence_rejects_extra_fields() -> None:
 
 def test_all_agent_names_are_accepted() -> None:
     for name in ("counting_agent", "change_agent", "grounding_agent",
-                 "spatial_agent", "general_vqa_agent", "caption_agent"):
+                 "general_vqa_agent", "caption_agent"):
         result = AgentResult(agent_name=name, answer="ok")
         assert result.agent_name == name
 
@@ -68,7 +68,7 @@ def test_flat_top_level_box_is_wrapped() -> None:
 
 def test_corner_pairs_combined_into_boxes() -> None:
     result = AgentResult(
-        agent_name="spatial_agent",
+        agent_name="general_vqa_agent",
         answer="a",
         boxes=[[10, 20], [30, 40], [50, 60], [70, 80]],
     )
@@ -78,7 +78,7 @@ def test_corner_pairs_combined_into_boxes() -> None:
 
 
 def test_reversed_corners_are_reordered() -> None:
-    result = AgentResult(agent_name="spatial_agent", answer="a", boxes=[[30, 40, 10, 20]])
+    result = AgentResult(agent_name="general_vqa_agent", answer="a", boxes=[[30, 40, 10, 20]])
     assert result.boxes == [[10, 20, 30, 40]]
     assert "box_corners_reordered" in result.geometry["input_normalizations"]
 
@@ -92,7 +92,7 @@ def test_degenerate_top_level_box_is_dropped() -> None:
 
 def test_evidence_corner_pair_combined_as_boxes() -> None:
     result = AgentResult(
-        agent_name="spatial_agent",
+        agent_name="general_vqa_agent",
         answer="a",
         evidence_items=[
             {"label": "target", "box": [10, 20], "point": [30, 40]},
@@ -107,7 +107,7 @@ def test_evidence_corner_pair_combined_as_boxes() -> None:
 
 def test_degenerate_evidence_box_becomes_point() -> None:
     result = AgentResult(
-        agent_name="spatial_agent",
+        agent_name="general_vqa_agent",
         answer="a",
         evidence_items=[
             {"label": "target", "box": [10, 20, 10, 20]},

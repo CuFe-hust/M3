@@ -19,7 +19,7 @@ M3 当前采用分层的多模态遥感 Agent 架构，围绕 **统一样本契�
 | `change_caption` | 双时相变化描述 | ChangeAgent |
 | `change_qa` | 双时相变化问答 | ChangeAgent |
 | `grounding` | 文本目标定位 | GroundingAgent |
-| `spatial_relation` | 空间关系理解 | SpatialAgent |
+| `spatial_relation` | 空间关系理解 | GeneralVQAAgent |
 | `scene_classification` | 遥感场景分类 | GeneralVQAAgent |
 | `general_vqa` | 通用遥感 VQA | GeneralVQAAgent |
 | `caption` | 遥感图像描述 | CaptionAgent |
@@ -58,7 +58,7 @@ routing/
                 |
                 v
 agents/
-  Counting / Change / Spatial / Grounding / Caption / General VQA
+  Counting / Change / Grounding / Caption / General VQA
                 |
                 v
 workflows/

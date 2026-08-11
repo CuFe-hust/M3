@@ -60,7 +60,6 @@ jobs:
 
           import models.qwen3_vl
           import models.qwen3_5
-          import agents.spatial
           import agents.change
 
           from models.entry import list_models
@@ -74,7 +73,6 @@ jobs:
               MissingModelCacheIdentityError,
           )
           from routing import POLICIES, RoutePolicy, RoutingDecision, SampleCapabilities, TaskRouter
-          from agents.spatial import SpatialAgent
           from agents.change import AgentChangeSettings
           from workflows import CallBudget, RunStore
           from workflows.artifact_writer import ArtifactWriter
@@ -103,7 +101,6 @@ jobs:
           # OpenCV, and every new package must import from outside the tree.
           # 基础 wheel 不得要求 OpenCV，且所有新包必须在源码树外可导入。
           assert "cv2" not in sys.modules
-          assert SpatialAgent is not None
           assert AgentChangeSettings is not None
           assert CallBudget is not None
           assert RunStore is not None

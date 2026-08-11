@@ -1,10 +1,10 @@
 """General VQA agent — thin VisualAgentBase subclass for open-ended QA.
 
 通用 VQA Agent — 开放问答的轻量 VisualAgentBase 子类。覆盖 general_vqa、
-scene_classification 与 multiple_choice_vqa 三个 task；选择题载荷包含
-choices 与单/多选约束，输出在 postprocess 中按 choices 约束校验。本模块
-不做任何专用几何后处理，也不读取 Prompt 文件（提示文本以中性 PromptBinding
-注入）。
+scene_classification、multiple_choice_vqa 与 spatial_relation 四个 task；
+选择题载荷包含 choices 与单/多选约束，输出在 postprocess 中按 choices 约束
+校验。spatial_relation 与通用 VQA 共享同一条单次 Qwen 调用路径，不做任何
+专用几何后处理，也不读取 Prompt 文件（提示文本以中性 PromptBinding 注入）。
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ class GeneralVQAAgent(VisualAgentBase):
         "general_vqa",
         "scene_classification",
         "multiple_choice_vqa",
+        "spatial_relation",
     })
 
     def __init__(
