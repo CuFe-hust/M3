@@ -78,12 +78,6 @@ agents/counting/backends/yolo_adapter.py
 agents/counting/backends/yolo_model_store.py
 agents/counting/backends/yolo_obb.py
 agents/counting/backends/yolov5_obb_onnx.py
-agents/spatial/__init__.py
-agents/spatial/schema.py
-agents/spatial/agent.py
-agents/spatial/geometry.py
-agents/spatial/candidate_review.py
-agents/spatial/evidence_merge.py
 agents/change/__init__.py
 agents/change/schema.py
 agents/change/settings.py
@@ -185,10 +179,6 @@ tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
 tests/agents/change/__init__.py
-tests/agents/spatial/test_geometry.py
-tests/agents/spatial/test_evidence_merge.py
-tests/agents/spatial/test_candidate_review.py
-tests/agents/spatial/test_agent.py
 tests/agents/counting/__init__.py
 tests/agents/counting/test_settings.py
 tests/agents/counting/test_geometry.py
