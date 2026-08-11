@@ -34,7 +34,6 @@ weights/
 !models/segformer_mitb2_oem/model.safetensors
 *.ckpt
 *.bin
-*.onnx
 *.om
 *.engine
 models/*/weights/
