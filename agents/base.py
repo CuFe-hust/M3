@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol, runtime_checkable
 
 from models.base import VisionLanguageClient
-from agents.schema import AgentName
+from agents.schema import AgentName, FirstQwenVisualPlan
 from data.schema import UnifiedSample
 
 
@@ -27,6 +27,60 @@ class CallBudget(Protocol):
     def reserve_qwen(self) -> None: ...
 
     def reserve_deepseek(self) -> None: ...
+
+
+@runtime_checkable
+class VqaEvidenceService(Protocol):
+    """Feature-flagged evidence preparation for object_evidence_vqa (C7,
+    14A2): a validated plan plus decoded images -> in-memory evidence for the
+    protocol owner's single final Qwen call. The composition root injects the
+    concrete ObjectEvidenceExecutor; agents call it only when
+    context.visual_plan is present. 供 object_evidence_vqa 的特性开关证据准备
+    （C7，14A2）：已验证计划加解码图像 -> 协议 owner 唯一最终 Qwen 调用所需
+    的内存证据。组合根注入具体 ObjectEvidenceExecutor；Agent 只在
+    context.visual_plan 存在时调用。"""
+
+    def execute(
+        self,
+        plan: FirstQwenVisualPlan,
+        images: Any,
+        *,
+        fallback_image_id: str,
+    ) -> Any: ...
+
+
+@runtime_checkable
+class GroundingEvidenceService(Protocol):
+    """Feature-flagged grounding evidence flow (C6, 14A2): the single-layer
+    YOLO + final-Grounding-Qwen pass producing whole-image boxes. The
+    composition root injects the concrete GroundingEvidenceExecutor.
+    Grounding 特性开关证据流程（C6，14A2）：单层 YOLO + 最终 Grounding Qwen
+    的完整一遍，产出整图框。组合根注入具体 GroundingEvidenceExecutor。"""
+
+    async def run(
+        self,
+        plan: FirstQwenVisualPlan,
+        sample: UnifiedSample,
+        images: Any,
+        *,
+        fallback_image_id: str,
+        artifact_dir: Path,
+        budget: CallBudget | None,
+    ) -> Any: ...
+
+
+@dataclass(frozen=True)
+class VisualPlanBindings:
+    """Light service bindings travelling with a visual plan (C7, 14A2).
+    Injected by the composition root; never carries AppSettings,
+    PromptCatalog, API keys, model weights, PIL images, Base64, or full
+    masks. The protocol owner consumes only the service matching its task.
+    随 visual plan 同行的轻量服务绑定（C7，14A2）。组合根注入；绝不携带
+    AppSettings、PromptCatalog、密钥、模型权重、PIL 图像、Base64 或完整掩膜。
+    协议 owner 只消费与其 task 匹配的服务。"""
+
+    vqa_evidence: VqaEvidenceService | None = None
+    grounding_evidence: GroundingEvidenceService | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +100,12 @@ class AgentContext:
     data_root: Path | None = None
     judge_client: Any | None = None
     request_context: dict[str, Any] = field(default_factory=dict)
+    # Feature-flagged first-Qwen workflow references (C7, 14A2): the typed
+    # plan plus the light service bindings, both None when the feature is off.
+    # 特性开关第一 Qwen 工作流引用（C7，14A2）：typed plan 与轻量服务绑定，
+    # 特性关闭时两者均为 None。
+    visual_plan: FirstQwenVisualPlan | None = None
+    visual_bindings: VisualPlanBindings | None = None
 
     def __post_init__(self) -> None:
         if not self.artifact_dir or str(self.artifact_dir) in {"", "."}:

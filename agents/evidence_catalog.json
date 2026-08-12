@@ -1,0 +1,20 @@
+{
+  "catalog_version": "first-qwen-evidence-catalog-v1",
+  "composites": {
+    "vehicle": ["small_vehicle", "large_vehicle"]
+  },
+  "leaves": {
+    "small_vehicle": {
+      "yolo_labels": [],
+      "segformer_labels": null,
+      "yolo_enabled": false,
+      "segformer_enabled": false
+    },
+    "large_vehicle": {
+      "yolo_labels": [],
+      "segformer_labels": null,
+      "yolo_enabled": false,
+      "segformer_enabled": false
+    }
+  }
+}

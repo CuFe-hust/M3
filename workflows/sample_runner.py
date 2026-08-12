@@ -42,6 +42,7 @@ from workflows.artifact_writer import ArtifactWriter
 from workflows.call_budget import CallBudget, CallBudgetFactory
 from workflows.judge_service import JudgeService
 from workflows.schema import SampleRunOutcome, SampleRunStatus
+from workflows.visual_planner import VisualPlanError, VisualPlanningGate
 
 # Hard bound on the candidate attempt plan: never run all agents.
 # 候选 attempt plan 的硬上限：绝不跑所有 Agent。
@@ -224,6 +225,7 @@ class SampleRunner:
         judge_service: JudgeService | None = None,
         fallback_on_partial: bool = False,
         data_root: Path | None = None,
+        visual_planning: VisualPlanningGate | None = None,
     ) -> None:
         self.agent_registry = registry
         self.router = router
@@ -233,6 +235,11 @@ class SampleRunner:
         self.judge_service = judge_service
         self.fallback_on_partial = fallback_on_partial
         self.data_root = data_root
+        # Feature-flagged first-Qwen planning gate; None keeps every existing
+        # call count, result, trace, and artifact byte-identical.
+        # 特性开关第一 Qwen 规划门；None 时现有调用次数、结果、trace 与产物
+        # 逐字节一致。
+        self.visual_planning = visual_planning
 
     async def run_one(
         self,
@@ -263,6 +270,52 @@ class SampleRunner:
         started_at = time.perf_counter()
         base_task = resolution.task if resolution is not None else sample.task
         budget = budget if budget is not None else self.call_budget_factory.create_for_sample(base_task)
+        visual_plan = None
+        if self.visual_planning is not None:
+            try:
+                visual_plan = await self.visual_planning.plan_sample(
+                    sample,
+                    data_root=self.data_root,
+                    artifact_dir=sample_dir,
+                    budget=budget,
+                )
+            except VisualPlanError as error:
+                # Frozen planner failure policy (14A2 gate 2): strict failure,
+                # no retry, no legacy fallback, no sample.task rewrite. The
+                # public message carries only the stable code.
+                # 冻结规划器失败策略（14A2 门禁 2）：严格失败，无重试、无旧路径
+                # 回退、不改 sample.task。公共消息只携带稳定 code。
+                return self._finish_failed(
+                    sample=sample,
+                    sample_dir=sample_dir,
+                    base_task=base_task,
+                    resolution=resolution,
+                    started_at=started_at,
+                    attempts=[],
+                    skipped=[],
+                    error_code=str(error),
+                    error_message="VisualPlanError",
+                )
+            except Exception as error:
+                # Defensive bound: any unexpected gate failure is still a
+                # stable-code sample failure, never a raw exception escape.
+                # 防御性兜底：任何意外 gate 失败仍是稳定 code 的样本失败，
+                # 绝不外泄原始异常。
+                return self._finish_failed(
+                    sample=sample,
+                    sample_dir=sample_dir,
+                    base_task=base_task,
+                    resolution=resolution,
+                    started_at=started_at,
+                    attempts=[],
+                    skipped=[],
+                    error_code=type(error).__name__,
+                )
+            if visual_plan is not None:
+                # Persist the validated plan (validated schema only, never a
+                # raw model body). / 持久化已验证计划（只存已校验 schema，
+                # 绝不存原始模型正文）。
+                self.artifact_writer.write_visual_plan(sample_dir, visual_plan)
         attempts, skipped = self._build_attempt_plan(sample, resolution)
         if not attempts:
             return self._finish_failed(
@@ -284,6 +337,12 @@ class SampleRunner:
             judge_client=(
                 self.judge_service.judge_client
                 if self.judge_service is not None
+                else None
+            ),
+            visual_plan=visual_plan,
+            visual_bindings=(
+                self.visual_planning.bindings
+                if self.visual_planning is not None
                 else None
             ),
         )
@@ -564,6 +623,7 @@ class SampleRunner:
         attempts: list[_Attempt],
         skipped: list[dict[str, str]],
         error_code: str,
+        error_message: str | None = None,
         fallback_used: bool = False,
     ) -> SampleRunOutcome:
         """Write the failure trace and the final failed status with only
@@ -589,7 +649,7 @@ class SampleRunner:
             sample,
             "failed",
             error_code=error_code,
-            error_message=error_code,
+            error_message=error_message or error_code,
         )
         self.artifact_writer.write_final_status(sample_dir, final)
         routing = attempts[0].decision if attempts else None

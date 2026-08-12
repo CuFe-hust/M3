@@ -9,8 +9,17 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from agents.base import AgentContext, AgentExecution
-from agents.schema import AgentName, AgentResult
+from agents.base import (
+    AgentContext,
+    AgentExecution,
+    GroundingEvidenceService,
+)
+from agents.errors import AgentExecutionError
+from agents.grounding.evidence import (
+    GroundingEvidenceError,
+    GroundingEvidenceResult,
+)
+from agents.schema import AgentName, AgentResult, FirstQwenVisualPlan, VisualEvidence
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import UnifiedSample
 from models.base import VisionLanguageClient
@@ -32,6 +41,12 @@ _DEFAULT_PROMPT_TEXT = (
 )
 
 _DEFAULT_PROMPT_VERSION = "general_vqa_v2"
+
+# Semantic placeholder for the persisted grounding evidence bundle (C7, 14A2
+# §4.3); the final owned basename set is frozen by C8 §5.1.
+# 持久化 Grounding 证据包的语义占位 basename（C7，14A2 §4.3）；最终 owned
+# basename 集合由 C8 §5.1 冻结。
+_GROUNDING_EVIDENCE_FILENAME = "grounding_evidence.json"
 
 
 class GroundingAgent(VisualAgentBase):
@@ -56,17 +71,108 @@ class GroundingAgent(VisualAgentBase):
         )
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
-        """Run the shared pipeline and enrich the trace with a stable agent
-        class and route; no request construction happens here.
-        运行共享管线并向 trace 增加稳定的 agent class 与 route；本处不做
-        任何请求构造。"""
-        execution = await super().run(sample, context)
+        """Protocol-owner entry (14A2 §4.3): when the feature is on (typed plan
+        carrying an evidence request plus the injected grounding service), run
+        the C6 grounding evidence seam; every other sample keeps the legacy
+        direct path byte-identical. The trace is always enriched with a stable
+        agent class and route; no request construction happens here.
+        协议 owner 入口（14A2 §4.3）：特性开启（携带 evidence request 的 typed
+        plan 加注入的 grounding 服务）时运行 C6 Grounding 证据 seam；其余样本
+        保持旧直接路径逐字节一致。trace 始终补充稳定的 agent class 与 route；
+        本处不做任何请求构造。"""
+        plan = context.visual_plan
+        bindings = context.visual_bindings
+        if (
+            plan is not None
+            and plan.evidence_request is not None
+            and bindings is not None
+            and bindings.grounding_evidence is not None
+        ):
+            execution = await self._run_grounding_evidence(
+                sample, context, plan, bindings.grounding_evidence
+            )
+            route = f"{type(self).__name__}.run -> GroundingEvidenceExecutor.run"
+        else:
+            execution = await super().run(sample, context)
+            route = f"{type(self).__name__}.run -> VisualAgentBase.run -> complete_json"
         return replace(
             execution,
             trace={
                 **execution.trace,
                 "agent_class": f"{type(self).__module__}.{type(self).__qualname__}",
-                "route": f"{type(self).__name__}.run -> VisualAgentBase.run -> complete_json",
+                "route": route,
+            },
+        )
+
+    async def _run_grounding_evidence(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+        plan: FirstQwenVisualPlan,
+        service: GroundingEvidenceService,
+    ) -> AgentExecution:
+        """Run the C6 seam (per-ROI YOLO + exactly one final Grounding Qwen
+        call) and serialize the deterministic whole-image boxes into the
+        existing AgentResult grounding contract; the evidence bundle persists
+        under the protocol owner's additional results. The seam never emits
+        confidence, never draws boxes, and never rewrites sample.task.
+        运行 C6 seam（逐 ROI YOLO + 恰好一次最终 Grounding Qwen 调用），把
+        确定性整图框序列化进现有 AgentResult grounding 契约；证据包在协议
+        owner 的附加结果名下持久化。seam 绝不输出置信度、绝不绘制框、绝不
+        改写 sample.task。"""
+        if not sample.images:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause="grounding evidence requires at least one image",
+            )
+        images = self._read_evidence_images(sample, context)
+        try:
+            result: GroundingEvidenceResult = await service.run(
+                plan,
+                sample,
+                images,
+                fallback_image_id=sample.images[0].image_id,
+                artifact_dir=context.artifact_dir,
+                budget=context.call_budget,
+            )
+        except GroundingEvidenceError as exc:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause=f"grounding_evidence_failed:{exc.code}",
+            ) from exc
+        except Exception as exc:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause=f"grounding_evidence_failed:{type(exc).__name__}",
+            ) from exc
+        payload = AgentResult(
+            agent_name=self.name,
+            # 14C §8: the final Qwen never produces free-text coordinate
+            # answers; the deterministic answer summarizes the retained labels.
+            # 14C §8：最终 Qwen 不生成自由文本坐标答案；确定性答案汇总保留的
+            # 标签。
+            answer=", ".join(box.label for box in result.whole_image_boxes),
+            boxes=[list(box.box) for box in result.whole_image_boxes],
+            evidence_items=[
+                VisualEvidence(label=item.label, box=list(item.box))
+                for item in result.whole_image_boxes
+            ],
+            status="completed",
+        )
+        payload = await self.postprocess(sample, payload)
+        return AgentExecution(
+            agent_name=self.name,
+            payload=payload,
+            result_filename=self.result_filename(sample),
+            trace={
+                "workflow": "grounding_evidence",
+                "catalog_version": result.bundle.catalog_version,
+            },
+            additional_results={
+                _GROUNDING_EVIDENCE_FILENAME: result.bundle.model_dump(mode="json"),
             },
         )
 

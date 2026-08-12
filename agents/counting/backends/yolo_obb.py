@@ -36,6 +36,7 @@ from agents.counting.schema import (
     TileSpec,
 )
 from agents.counting.settings import CountingSettings, YoloDetectorSettings
+from models.base import ObjectDetectionClient, RuntimeObjectDetectionClient
 
 
 class YoloOBBCountingBackend:
@@ -144,16 +145,18 @@ class YoloOBBCountingBackend:
             model_max_side=self._counting.model_max_side,
         )
         model = self._store.get(self._detector)
-        # ONNX provider audit: never silently run CPU in place of a required
-        # GPU. ONNX provider 审计：绝不把 CPU 静默伪装成所需 GPU。
-        provider_trace: dict[str, object] = {
-            "requested_provider": str(getattr(model, "requested_provider", "")),
-            "requested_device": str(getattr(model, "requested_device", "")),
-            "actual_providers": list(getattr(model, "providers", ())),
-            "resolved_provider": str(getattr(model, "resolved_provider", "")),
-            "resolved_device": str(getattr(model, "resolved_device", "")),
-            "cpu_fallback_used": bool(getattr(model, "cpu_fallback_used", False)),
-        }
+        # Shared detection seam: the audited runtime model is adapted to the
+        # model-independent ObjectDetectionClient, and the provider/device
+        # audit comes from the same seam so CPU is never silently claimed as
+        # a required GPU. 共享检测 seam：将已审计运行时模型适配为模型无关的
+        # ObjectDetectionClient；provider/device 审计来自同一 seam，绝不把
+        # CPU 静默伪装成所需 GPU。
+        client = RuntimeObjectDetectionClient(
+            model,
+            logical_model_id=self._detector.model_id,
+            weights_sha256=self._detector.sha256,
+        )
+        provider_trace: dict[str, object] = dict(client.provider_audit)
         points: list[GlobalPointObservation] = []
         warnings: list[IssueRecord] = []
         succeeded: list[str] = []
@@ -162,7 +165,7 @@ class YoloOBBCountingBackend:
         for tile in tiles:
             try:
                 tile_points, tile_raw, tile_unrelated = self._detect_tile(
-                    model, crop_for_tile(image, tile), tile, request, allowed
+                    client, crop_for_tile(image, tile), tile, request, allowed
                 )
                 points.extend(tile_points)
                 raw_count += tile_raw
@@ -306,42 +309,32 @@ class YoloOBBCountingBackend:
 
     def _detect_tile(
         self,
-        model: Any,
+        client: ObjectDetectionClient,
         crop: Any,
         tile: TileSpec,
         request: CountingRequest,
         allowed: frozenset[str],
     ) -> tuple[list[GlobalPointObservation], int, int]:
-        results = model.predict(
-            source=crop,
-            conf=self._detector.confidence,
+        outputs = client.detect(
+            crop,
+            confidence=self._detector.confidence,
             iou=self._detector.iou,
-            imgsz=self._detector.image_size,
+            image_size=self._detector.image_size,
             device=self._detector.device,
-            max_det=self._detector.max_detections,
-            verbose=False,
+            max_detections=self._detector.max_detections,
         )
-        if not results or getattr(results[0], "obb", None) is None:
-            return [], 0, 0
-        obb = results[0].obb
-        polygons, classes, confidences = obb.xyxyxyxy, obb.cls, obb.conf
-        names = _model_names(getattr(model, "names", {}))
         points: list[GlobalPointObservation] = []
         unrelated = 0
-        raw_count = len(polygons)
+        raw_count = len(outputs)
         crop_w, crop_h = crop.size
-        for index in range(raw_count):
-            class_id = int(_scalar(classes[index]))
-            if class_id not in names:
-                raise ValueError(f"YOLO_CLASS_ID_UNKNOWN:{class_id}")
-            class_name = names[class_id].casefold()
+        for index, output in enumerate(outputs):
+            class_name = output.label.casefold()
             if class_name not in allowed:
                 unrelated += 1
                 continue
-            polygon = [
-                [float(_scalar(corner[0])), float(_scalar(corner[1]))]
-                for corner in polygons[index]
-            ]
+            if output.polygon is None:
+                raise ValueError("YOLO_OBB_POLYGON_MISSING")
+            polygon = [[x, y] for x, y in output.polygon]
             center_x = sum(point[0] for point in polygon) / len(polygon)
             center_y = sum(point[1] for point in polygon) / len(polygon)
             local_x = max(0, min(999, round(center_x / max(1, crop_w - 1) * 999)))
@@ -353,14 +346,14 @@ class YoloOBBCountingBackend:
                 0,
                 min(250, round(radius_px / max(1, max(crop_w, crop_h)) * 999)),
             )
-            confidence = float(_scalar(confidences[index]))
+            confidence = output.confidence
             local = LocalPointObservation(
                 local_id=f"yolo_{tile.tile_id}_{index:04d}",
                 x=local_x,
                 y=local_y,
                 confidence=confidence,
                 radius=local_radius,
-                short_evidence=f"YOLO OBB {names[class_id]} in {tile.tile_id}",
+                short_evidence=f"YOLO OBB {output.label} in {tile.tile_id}",
             )
             point = convert_local_point_to_global(
                 local,
@@ -375,7 +368,7 @@ class YoloOBBCountingBackend:
                         source="yolo_obb_center",
                         backend_name=self.name,
                         model_id=self._detector.model_id,
-                        source_class=names[class_id],
+                        source_class=output.label,
                         detector_confidence=confidence,
                         obb_polygon_local_px=polygon,
                         obb_polygon_global_px=[
@@ -392,11 +385,6 @@ class YoloOBBCountingBackend:
         return points, raw_count, unrelated
 
 
-def _scalar(value: Any) -> float:
-    item = getattr(value, "item", None)
-    return float(item() if callable(item) else value)
-
-
 def _safe_exception_type(error: BaseException) -> str:
     """Return a bounded, identifier-only exception type name.
     返回有界、仅标识符的异常类型名。"""
@@ -404,14 +392,6 @@ def _safe_exception_type(error: BaseException) -> str:
     if not name.isidentifier() or len(name) > 80:
         return "BackendError"
     return name
-
-
-def _model_names(value: object) -> dict[int, str]:
-    if isinstance(value, dict):
-        return {int(index): str(name).strip() for index, name in value.items()}
-    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
-        return {index: str(name).strip() for index, name in enumerate(value)}
-    return {}
 
 
 def _detector_duplicate_pairs(

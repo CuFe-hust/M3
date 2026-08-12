@@ -32,6 +32,7 @@ from agents.errors import (
     DetectorWeightsPointerError,
 )
 from data.schema import GroundTruth, ImageRef, UnifiedSample
+from models.base import ObjectDetectionOutput, RuntimeObjectDetectionClient
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
@@ -820,3 +821,143 @@ def test_identity_error_defined_exactly_once() -> None:
         counting_base.MissingModelCacheIdentityError
         is models_base.MissingModelCacheIdentityError
     )
+
+
+# ── C2 共享检测 seam / shared object-detection seam ───────────────────────
+
+
+def test_runtime_detection_client_builds_verified_outputs(tmp_path: Path) -> None:
+    """ObjectDetectionOutput carries the input size, label, internal
+    confidence, pixel frames, logical identity, weight digest, and provider
+    audit — never a physical path or tensor. ObjectDetectionOutput 携带输入
+    尺寸、标签、内部分数、像素坐标系、逻辑身份、权重摘要与 provider 审计 —
+    绝不携带物理路径或 tensor。"""
+    from models.base import ModelCacheIdentity
+
+    model = _FakeRuntimeModel(
+        [_obb([[[10.0, 10.0], [10.0, 30.0], [30.0, 30.0], [30.0, 10.0]]], [0.0], [0.8])]
+    )
+    client = RuntimeObjectDetectionClient(
+        model, logical_model_id="m1", weights_sha256="ab" * 32
+    )
+    outputs = client.detect(
+        Image.new("RGB", (100, 100)),
+        confidence=0.25,
+        iou=0.5,
+        image_size=640,
+        device="cpu",
+        max_detections=50,
+    )
+    assert len(outputs) == 1
+    record = outputs[0]
+    assert isinstance(record, ObjectDetectionOutput)
+    assert record.label == "car"
+    assert record.confidence == 0.8
+    assert record.xyxy == (10.0, 10.0, 30.0, 30.0)
+    assert record.polygon == ((10.0, 10.0), (10.0, 30.0), (30.0, 30.0), (30.0, 10.0))
+    assert record.input_width == 640
+    assert record.input_height == 640
+    assert record.logical_model_id == "m1"
+    assert record.weights_sha256 == "ab" * 32
+    assert record.provider_audit["requested_provider"] == ""
+    assert record.provider_audit["cpu_fallback_used"] is False
+    identity = client.cache_identity
+    assert isinstance(identity, ModelCacheIdentity)
+    assert identity.model == "m1"
+    assert str(tmp_path) not in str(record)
+
+
+def test_runtime_detection_client_forwards_identical_parameters() -> None:
+    """The seam forwards the exact inference parameters the counting backend
+    historically passed to the runtime. seam 向运行时转发与计数后端历史完全
+    相同的推理参数。"""
+    model = _FakeRuntimeModel([_obb([], [], [])])
+    client = RuntimeObjectDetectionClient(model, logical_model_id="m1")
+    image = Image.new("RGB", (64, 64))
+    client.detect(
+        image,
+        confidence=0.3,
+        iou=0.45,
+        image_size=512,
+        device="0",
+        max_detections=9,
+    )
+    kwargs = model.predict_kwargs_list[0]
+    assert set(kwargs) == {"source", "conf", "iou", "imgsz", "device", "max_det", "verbose"}
+    assert kwargs["source"] is image
+    assert kwargs["conf"] == 0.3
+    assert kwargs["iou"] == 0.45
+    assert kwargs["imgsz"] == 512
+    assert kwargs["device"] == "0"
+    assert kwargs["max_det"] == 9
+    assert kwargs["verbose"] is False
+
+
+def test_runtime_detection_client_unknown_class_id_fails_stably() -> None:
+    model = _FakeRuntimeModel(
+        [_obb([[[0.0, 0.0], [0.0, 1.0], [1.0, 1.0], [1.0, 0.0]]], [7.0], [0.9])]
+    )
+    client = RuntimeObjectDetectionClient(model, logical_model_id="m1")
+    with pytest.raises(ValueError, match="YOLO_CLASS_ID_UNKNOWN:7"):
+        client.detect(
+            Image.new("RGB", (10, 10)),
+            confidence=0.2,
+            iou=0.5,
+            image_size=64,
+            device="cpu",
+            max_detections=10,
+        )
+
+
+def test_runtime_detection_client_empty_when_no_obb_output() -> None:
+    client = RuntimeObjectDetectionClient(_FakeRuntimeModel([]), logical_model_id="m1")
+    assert (
+        client.detect(
+            Image.new("RGB", (10, 10)),
+            confidence=0.2,
+            iou=0.5,
+            image_size=64,
+            device="cpu",
+            max_detections=10,
+        )
+        == []
+    )
+
+
+def test_runtime_detection_client_rejects_physical_logical_ids() -> None:
+    with pytest.raises(ValueError, match="logical identifier"):
+        RuntimeObjectDetectionClient(
+            _FakeRuntimeModel(), logical_model_id="/home/user/models/det.pt"
+        )
+
+
+def test_counting_parity_via_shared_seam(tmp_path: Path) -> None:
+    """The refactored counting backend still produces the identical outcome
+    shape, trace audit keys, and point provenance. 重构后的计数后端仍然产出
+    完全相同的 outcome 结构、trace 审计键与点 provenance。"""
+    model = _FakeRuntimeModel([_obb([_single_detection_polygon()], [0.0], [0.9])])
+    detector = _detector(tmp_path)
+    backend = YoloOBBCountingBackend(
+        detector,
+        counting=CountingSettings(),
+        model_store=YoloModelStore(loader=lambda path: model),
+    )
+    outcome = asyncio.run(
+        backend.count(_request(tmp_path, Image.new("RGB", (200, 200), (1, 2, 3))), _context())
+    )
+    assert outcome.counting.final_count == 1
+    for key in (
+        "requested_provider",
+        "requested_device",
+        "actual_providers",
+        "resolved_provider",
+        "resolved_device",
+        "cpu_fallback_used",
+    ):
+        assert key in outcome.trace, key
+    point = outcome.counting.global_points[0]
+    assert point.provenance is not None
+    assert point.provenance.source_class == "car"
+    assert point.provenance.model_id == detector.model_id
+    assert point.provenance.weights_sha256 == detector.sha256
+    assert str(tmp_path) not in str(outcome.trace)

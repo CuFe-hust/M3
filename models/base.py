@@ -484,6 +484,164 @@ class SemanticSegmentationClient(Protocol):
         返回源图像分辨率下的类别 ID 与置信度。"""
 
 
+@dataclass(frozen=True)
+class ObjectDetectionOutput:
+    """One retained detection in the input-image pixel frame, with the
+    model's actual input size and a stable audit trail. Coordinates are
+    crop/tile-local pixel values (the input-image frame the caller sees);
+    the optional polygon is the OBB corner list in the same frame and xyxy is
+    its axis-aligned envelope. confidence is the model's internal score and
+    never survives into final public evidence. The record deliberately
+    carries no absolute checkpoint path, raw tensor, or backend private
+    object. 输入图像像素坐标系下的一条保留检测，附带模型实际输入尺寸与稳定
+    审计轨迹。坐标是 crop/tile 局部像素值（调用方看到的输入图像坐标系）；
+    可选 polygon 为同一坐标系下的 OBB 角点列表，xyxy 为其轴对齐包络。
+    confidence 是模型内部分数，绝不进入最终公共证据。记录刻意不携带绝对
+    checkpoint 路径、原始 tensor 或 backend 私有对象。"""
+
+    label: str
+    confidence: float
+    xyxy: tuple[float, float, float, float]
+    polygon: tuple[tuple[float, float], ...] | None
+    input_width: int
+    input_height: int
+    logical_model_id: str
+    weights_sha256: str | None
+    provider_audit: Mapping[str, Any]
+
+
+class ObjectDetectionClient(Protocol):
+    """Model-independent object-detection seam shared by counting and VQA.
+    Counting and VQA both depend on this protocol only; neither imports a
+    concrete YOLO backend or runtime. 计数与 VQA 共用的模型无关目标检测 seam。
+    计数与 VQA 都只依赖本协议，都不 import 具体 YOLO backend 或运行时。"""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity: ...
+
+    def detect(
+        self,
+        image: Any,
+        *,
+        confidence: float,
+        iou: float,
+        image_size: int,
+        device: str,
+        max_detections: int,
+    ) -> list[ObjectDetectionOutput]:
+        """Run one inference on an in-memory image and return all retained
+        detections in the input-image pixel frame. Exceptions from the
+        underlying runtime propagate unchanged so callers keep their stable
+        error semantics. 对内存图像运行一次推理，返回输入图像像素坐标系下的
+        全部保留检测。底层运行时异常原样传播，保持调用方稳定错误语义。"""
+
+
+class RuntimeObjectDetectionClient:
+    """Concrete adapter turning one audited runtime model object (loaded
+    through the shared YoloModelStore) into the ObjectDetectionClient
+    protocol. The same adapter serves the counting backend and later VQA
+    evidence execution; import never loads weights or runtimes.
+    将经共享 YoloModelStore 加载的一个已审计运行时模型对象适配为
+    ObjectDetectionClient 协议的实现。同一适配器服务于计数后端与后续 VQA
+    证据执行；import 绝不加载权重或运行时。"""
+
+    def __init__(
+        self,
+        model: Any,
+        *,
+        logical_model_id: str,
+        weights_sha256: str | None = None,
+    ) -> None:
+        self._model = model
+        self._logical_model_id = validate_logical_model_id(
+            logical_model_id, where="RuntimeObjectDetectionClient.logical_model_id"
+        )
+        self._weights_sha256 = weights_sha256
+        self._cache_identity = ModelCacheIdentity(
+            model=self._logical_model_id,
+            generation={"weights_sha256": weights_sha256},
+            client_version="yolo-detection-runtime-v1",
+        )
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        """Stable logical identity for cache and audit keying.
+        用于缓存与审计键的稳定逻辑身份。"""
+        return self._cache_identity
+
+    @property
+    def provider_audit(self) -> dict[str, object]:
+        """Provider/device audit read from the runtime model attributes;
+        never silently claims a provider the runtime did not resolve.
+        从运行时模型属性读取的 provider/device 审计；绝不把运行时未解析的
+        provider 冒充为已解析。"""
+        model = self._model
+        return {
+            "requested_provider": str(getattr(model, "requested_provider", "")),
+            "requested_device": str(getattr(model, "requested_device", "")),
+            "actual_providers": list(getattr(model, "providers", ())),
+            "resolved_provider": str(getattr(model, "resolved_provider", "")),
+            "resolved_device": str(getattr(model, "resolved_device", "")),
+            "cpu_fallback_used": bool(getattr(model, "cpu_fallback_used", False)),
+        }
+
+    def detect(
+        self,
+        image: Any,
+        *,
+        confidence: float,
+        iou: float,
+        image_size: int,
+        device: str,
+        max_detections: int,
+    ) -> list[ObjectDetectionOutput]:
+        """Forward the exact same inference parameters the counting backend
+        historically passed, so parity is preserved at the seam boundary.
+        转发与计数后端历史完全相同的推理参数，在 seam 边界保持 parity。"""
+        results = self._model.predict(
+            source=image,
+            conf=confidence,
+            iou=iou,
+            imgsz=image_size,
+            device=device,
+            max_det=max_detections,
+            verbose=False,
+        )
+        if not results or getattr(results[0], "obb", None) is None:
+            return []
+        obb = results[0].obb
+        polygons, classes, confidences = obb.xyxyxyxy, obb.cls, obb.conf
+        names = _model_class_names(getattr(self._model, "names", {}))
+        actual_size = getattr(self._model, "model_input_size", None)
+        input_width, input_height = actual_size or (int(image_size), int(image_size))
+        audit = self.provider_audit
+        outputs: list[ObjectDetectionOutput] = []
+        for index in range(len(polygons)):
+            class_id = int(_as_float(classes[index]))
+            if class_id not in names:
+                raise ValueError(f"YOLO_CLASS_ID_UNKNOWN:{class_id}")
+            polygon = tuple(
+                (float(_as_float(corner[0])), float(_as_float(corner[1])))
+                for corner in polygons[index]
+            )
+            xs = [point[0] for point in polygon]
+            ys = [point[1] for point in polygon]
+            outputs.append(
+                ObjectDetectionOutput(
+                    label=names[class_id],
+                    confidence=float(_as_float(confidences[index])),
+                    xyxy=(min(xs), min(ys), max(xs), max(ys)),
+                    polygon=polygon,
+                    input_width=input_width,
+                    input_height=input_height,
+                    logical_model_id=self._logical_model_id,
+                    weights_sha256=self._weights_sha256,
+                    provider_audit=dict(audit),
+                )
+            )
+        return outputs
+
+
 def build_request_hash(
     *,
     model: str,
@@ -541,3 +699,21 @@ def _sanitize_value(value: Any) -> Any:
     if isinstance(value, list):
         return [_sanitize_value(item) for item in value]
     return value
+
+
+def _as_float(value: Any) -> float:
+    """Convert a runtime scalar (torch/numpy) to a plain float without
+    importing the runtime. 在不导入运行时的情况下把运行时标量（torch/numpy）
+    转换为普通 float。"""
+    item = getattr(value, "item", None)
+    return float(item() if callable(item) else value)
+
+
+def _model_class_names(value: object) -> dict[int, str]:
+    """Normalize a runtime class-name mapping into an int-keyed dict.
+    将运行时类别名映射规范化为 int 键字典。"""
+    if isinstance(value, dict):
+        return {int(index): str(name).strip() for index, name in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return {index: str(name).strip() for index, name in enumerate(value)}
+    return {}

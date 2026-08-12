@@ -315,3 +315,114 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
         )
     if "radius" in expected:
         assert settings.agents.change.semantic.local_match_radius == expected["radius"]
+
+
+# ── visual planning group (C7, 14A2) / 视觉规划配置组 ─────────────────────
+
+
+def test_visual_planning_defaults_to_frozen_disabled_state() -> None:
+    """The whole group must default to the frozen disabled state: flag off,
+    planner sane, no detector/segmenter policies, strict failure policy.
+    整个配置组必须默认为冻结禁用状态：flag off、planner 合理默认、无
+    detector/segmenter 策略、严格失败策略。"""
+    settings = AppSettings()
+    assert settings.visual_planning.enabled is False
+    assert settings.visual_planning.planner.prompt_version == "v1"
+    assert settings.visual_planning.planner.catalog_version == "first-qwen-plan-v1"
+    assert settings.visual_planning.planner.max_rois == 3
+    assert settings.visual_planning.planner.halo_ratio == pytest.approx(0.10)
+    assert settings.visual_planning.planner.confidence_threshold == pytest.approx(0.70)
+    assert settings.visual_planning.planner.failure.on_low_confidence == "fail"
+    assert settings.visual_planning.planner.failure.on_planner_error == "fail"
+    assert settings.visual_planning.detectors == {}
+    assert settings.visual_planning.segmenters == {}
+    assert settings.visual_planning.roi_partial_failure == "continue"
+
+
+def test_visual_planning_detector_policy_accepts_calibrated_values() -> None:
+    """Range validation applies once calibrated values are provided.
+    一旦提供已校准值即进行范围校验。"""
+    settings = AppSettings(
+        visual_planning={
+            "detectors": {
+                "small_vehicle": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.45,
+                    "max_detections": 5,
+                }
+            }
+        }
+    )
+    detector = settings.visual_planning.detectors["small_vehicle"]
+    assert detector.confidence_threshold == 0.5
+    assert detector.nms_iou_threshold == 0.45
+    assert detector.max_detections == 5
+
+
+def test_visual_planning_detector_out_of_range_rejected_when_set() -> None:
+    """Out-of-range calibrated values fail at parse time, never silently.
+    越界的已校准值在解析时失败，绝不静默接受。"""
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "detectors": {"small_vehicle": {"confidence_threshold": 1.5}}
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "detectors": {"small_vehicle": {"max_detections": 0}}
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "detectors": {"small_vehicle": {"nms_iou_threshold": -0.1}}
+            }
+        )
+
+
+def test_visual_planning_unset_detector_values_remain_none() -> None:
+    """Uncalibrated means capability off: every value stays None and no
+    arbitrary default is invented (approved gate). 未校准即能力关闭：所有值
+    保持 None，绝不杜撰任意默认值（已批准门禁）。"""
+    detector = AppSettings(visual_planning={}).visual_planning.detectors.get(
+        "small_vehicle"
+    )
+    assert detector is None
+
+
+def test_visual_planning_segmenter_requires_class_map_when_enabled() -> None:
+    """An enabled segmenter must declare an approved class map version.
+    启用的分割器必须声明已批准 class map 版本。"""
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={"segmenters": {"building": {"enabled": True}}}
+        )
+    settings = AppSettings(
+        visual_planning={
+            "segmenters": {"building": {"enabled": True, "class_map_version": "isaid-v2"}}
+        }
+    )
+    assert settings.visual_planning.segmenters["building"].class_map_version == "isaid-v2"
+
+
+def test_visual_planning_unknown_fields_rejected() -> None:
+    """The strict extra=forbid semantics must not weaken for the new group.
+    新配置组不得弱化严格 extra=forbid 语义。"""
+    with pytest.raises(ValueError):
+        AppSettings(visual_planning={"unknown_field": 1})
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={"roi_partial_failure": "abort"}
+        )
+
+
+def test_visual_planning_enabled_does_not_imply_calibration() -> None:
+    """Even with the feature flag on, empty detector/segmenter policies keep
+    every capability disabled. 即使特性 flag 开启，空的 detector/segmenter
+    策略仍保持全部能力禁用。"""
+    settings = AppSettings(visual_planning={"enabled": True})
+    assert settings.visual_planning.enabled is True
+    assert settings.visual_planning.detectors == {}
+    assert settings.visual_planning.segmenters == {}

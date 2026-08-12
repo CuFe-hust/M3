@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -237,3 +238,127 @@ def _repair_severity(normalizations: list[str]) -> str:
     if normalizations:
         return "low"
     return "none"
+
+
+# ── First-Qwen visual plan contracts ──────────────────────────────────────
+# Shared by the VisualPlanner and the VQA protocol owner. The shared schema
+# deliberately holds no VQA masks, no Grounding box ids, and no
+# CountingResult; backend/checkpoint/device and the final answer are never
+# allowed here. 由 VisualPlanner 与 VQA 协议 owner 共用。共享 schema 刻意不
+# 携带 VQA 掩膜、Grounding box_id 或 CountingResult；此处不允许出现
+# backend/checkpoint/device 或最终答案。
+
+# Frozen plan schema version; the model output must match it exactly.
+# 冻结的计划 schema 版本；模型输出必须精确匹配。
+PLAN_SCHEMA_VERSION = "first-qwen-plan-v1"
+
+# Execution family selects the internal completion path; it never rewrites
+# UnifiedSample.task. 内部完成路径选择；绝不改写 UnifiedSample.task。
+ExecutionFamily = Literal["direct_vqa", "object_evidence_vqa"]
+
+_MAX_PLAN_COMPOSITE_CATEGORIES = 3
+_MAX_PLAN_ATTENTION_ROIS = 3
+
+_ROI_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+
+
+class RoiRegion(BaseModel):
+    """One semantic attention ROI in the frozen normalized [0,1] top-left
+    xyxy frame. image_id must reference an existing UnifiedSample image id
+    (enforced by the planner); the full image is expressed as [0,0,1,1];
+    degenerate zero-extent boxes are rejected.
+    一条使用冻结 [0,1] top-left xyxy 制式的语义注意 ROI。image_id 必须引用
+    已存在 UnifiedSample 的图像 id（由 Planner 强制校验）；整图表示为
+    [0,0,1,1]；退化零面积框被拒绝。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    roi_id: str = Field(min_length=1, pattern=_ROI_ID_PATTERN)
+    image_id: str = Field(min_length=1)
+    xyxy: tuple[float, float, float, float]
+
+    @model_validator(mode="after")
+    def validate_xyxy(self) -> "RoiRegion":
+        """Require finite [0,1] coordinates and a non-degenerate box.
+        要求有限 [0,1] 坐标且框非退化。"""
+        if not all(math.isfinite(value) for value in self.xyxy):
+            raise ValueError("ROI xyxy must be finite")
+        if not all(0.0 <= value <= 1.0 for value in self.xyxy):
+            raise ValueError("ROI xyxy must lie within [0, 1]")
+        x1, y1, x2, y2 = self.xyxy
+        if x1 >= x2 or y1 >= y2:
+            raise ValueError("ROI must be non-degenerate with x1<x2 and y1<y2")
+        return self
+
+
+class RoiPlan(BaseModel):
+    """Validated ROI plan: zero ROIs mean "no reliable spatial constraint"
+    (the geometry layer maps this to the unique full-image ROI), otherwise
+    one to three attention ROIs. The whole plan is strict: more than three
+    ROIs or any degenerate ROI reject the plan rather than truncating it.
+    校验后的 ROI 计划：零 ROI 表示“无可靠空间约束”（几何层映射为唯一整图
+    ROI），否则为一到三个注意 ROI。整个计划严格：超过三个或任一退化 ROI
+    直接拒绝整个计划，绝不截断。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rois: list[RoiRegion] = Field(default_factory=list, max_length=_MAX_PLAN_ATTENTION_ROIS)
+
+
+class ObjectEvidenceRequest(BaseModel):
+    """Requested closed composite categories for object-evidence VQA. The
+    planner validates every category against the same-version catalog and
+    deduplicates them; the schema enforces only the count and string shape.
+    对象证据 VQA 请求的封闭组合类别。Planner 使用同版本目录校验每个类别并
+    去重；schema 只强制数量与字符串形状。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    composite_categories: list[str] = Field(
+        min_length=1, max_length=_MAX_PLAN_COMPOSITE_CATEGORIES
+    )
+
+    @model_validator(mode="after")
+    def validate_categories(self) -> "ObjectEvidenceRequest":
+        """Reject blank, control-character, or path-like category names.
+        拒绝空白、控制字符或类路径的类别名。"""
+        for category in self.composite_categories:
+            stripped = category.strip()
+            if not stripped or any(ord(character) < 32 for character in category):
+                raise ValueError(f"invalid composite category: {category!r}")
+            if "/" in category or "\\" in category:
+                raise ValueError(f"composite category must not be path-like: {category!r}")
+        return self
+
+
+class FirstQwenVisualPlan(BaseModel):
+    """Strict first-Qwen planning output. version is frozen; execution_family
+    selects the internal completion path without ever rewriting
+    UnifiedSample.task; no backend/checkpoint/device or final answer is
+    allowed here. object_evidence_vqa requires an evidence request while
+    direct_vqa must not carry one; the plan never reads Ground Truth.
+    严格的第一次 Qwen 规划输出。version 冻结；execution_family 选择内部完成
+    路径，绝不改写 UnifiedSample.task；此处不允许 backend/checkpoint/device
+    或最终答案。object_evidence_vqa 必须携带 evidence request，direct_vqa
+    不得携带；本计划绝不读取 Ground Truth。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[PLAN_SCHEMA_VERSION]  # type: ignore[valid-type]
+    execution_family: ExecutionFamily
+    confidence: float = Field(ge=0.0, le=1.0)
+    roi_plan: RoiPlan
+    evidence_request: ObjectEvidenceRequest | None = None
+    reason_codes: list[str] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def validate_family_linkage(self) -> "FirstQwenVisualPlan":
+        """Enforce the required linkage between execution family and evidence
+        request: object evidence implies categories, direct VQA forbids them.
+        强制执行家族与证据请求的联动：对象证据必须携带类别，直接 VQA 禁止
+        携带类别。"""
+        if self.execution_family == "object_evidence_vqa" and self.evidence_request is None:
+            raise ValueError("object_evidence_vqa requires an evidence_request")
+        if self.execution_family == "direct_vqa" and self.evidence_request is not None:
+            raise ValueError("direct_vqa must not carry an evidence_request")
+        return self

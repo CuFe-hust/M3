@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 13
+    assert len(catalog.all_keys()) == 14
     for key in (
         "count_tile",
         "target",
@@ -27,6 +27,7 @@ def test_catalog_loads_all_bound_prompts() -> None:
         "caption",
         "seam",
         "task_resolver",
+        "visual_plan",
         "count_judge",
         "vqa_judge",
         "json_repair",
@@ -44,6 +45,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.version("count_tile") == "v4"
     assert catalog.version("general") == "v2"
     assert catalog.version("task_resolver") == "v1"
+    assert catalog.version("visual_plan") == "v1"
+    assert catalog.asset("visual_plan").path.name == "first_qwen_visual_plan_v1.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
     assert catalog.version("change") == "v2"
@@ -56,7 +59,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 12  # 13 keys, general_vqa_v2 shared by two keys
+    assert len(paths) == 13  # 14 keys, general_vqa_v2 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 
@@ -139,6 +142,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "caption_v1.md",
         "seam_review_v2.md",
         "task_resolver_v1.md",
+        "first_qwen_visual_plan_v1.md",
         "deepseek_judge_v1.md",
         "deepseek_vqa_judge_v2.md",
         "json_repair_v1.md",

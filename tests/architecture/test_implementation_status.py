@@ -16,7 +16,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATUS_PATH = REPO_ROOT / "architecture" / "implementation_status.json"
 WHITELIST_PATH = REPO_ROOT / "architecture" / "allowed_python_files.txt"
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", "build", "dist", "tmp"}
+# .firecrawl is a git-ignored local tool workspace (firecrawl scripts), not
+# part of the new architecture, so it must never be scanned by this guard.
+# .firecrawl 是 git-ignored 的本地 firecrawl 工具工作区，不属于新架构，
+# 因此本守卫不得扫描该目录。
+SKIP_DIRS = {".git", ".firecrawl", "__pycache__", ".pytest_cache", ".venv", "venv", "node_modules", "build", "dist", "tmp"}
 PRODUCTION_ROOTS = (
     "data",
     "models",
