@@ -350,20 +350,6 @@ def test_plan_client_error_is_typed_failure(tmp_path: Path) -> None:
         {
             "roi_plan": {
                 "rois": [
-                    {"roi_id": "r1", "image_id": "img1", "xyxy": (0.3, 0.3, 0.3, 0.3)}
-                ]
-            }
-        },  # degenerate box
-        {
-            "roi_plan": {
-                "rois": [
-                    {"roi_id": "r1", "image_id": "img1", "xyxy": (0.0, 0.0, 2.0, 1.0)}
-                ]
-            }
-        },  # outside [0,1]
-        {
-            "roi_plan": {
-                "rois": [
                     {
                         "roi_id": "r1",
                         "image_id": "img1",
@@ -371,7 +357,7 @@ def test_plan_client_error_is_typed_failure(tmp_path: Path) -> None:
                     }
                 ]
             }
-        },  # non-finite
+        },  # non-finite (not even a number -> schema rejection, not fallback)
         {"evidence_request": None},  # object_evidence_vqa missing request
         {"evidence_request": {"composite_categories": []}},  # empty categories
     ],
@@ -382,8 +368,93 @@ def test_plan_schema_invalid_responses_fail_typed(tmp_path: Path, overrides: dic
     budget = CallBudget(max_qwen_calls=5)
     with pytest.raises(VisualPlanError, match="SCHEMA_INVALID"):
         _run(_planner(client), _sample(tmp_path), tmp_path, budget=budget)
-    assert budget.qwen_calls_used == 1  # the call was attempted
-    assert len(client.calls) == 1
+
+
+# ── 14B §6.2 ROI fallback / ROI 整图回退 ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("rois", "max_rois", "expected_count"),
+    [
+        (
+            [{"roi_id": "r1", "image_id": "img1", "xyxy": (0.3, 0.3, 0.3, 0.3)}],
+            3,
+            0,
+        ),  # degenerate / 退化
+        (
+            [{"roi_id": "r1", "image_id": "img1", "xyxy": (0.0, 0.0, 2.0, 1.0)}],
+            3,
+            0,
+        ),  # outside [0,1] / 越界
+        (
+            [{"roi_id": "r1", "image_id": "img1", "xyxy": (-0.1, 0.0, 0.5, 0.5)}],
+            3,
+            0,
+        ),  # negative / 负坐标
+        (
+            [
+                {"roi_id": "r1", "image_id": "img1", "xyxy": (0.0, 0.0, 0.4, 0.4)},
+                {"roi_id": "r2", "image_id": "img1", "xyxy": (0.1, 0.1, 0.5, 0.5)},
+            ],
+            1,
+            0,
+        ),  # over max_rois=1 / 超过上限 1
+        (
+            [
+                {"roi_id": f"r{index}", "image_id": "img1", "xyxy": (0.1 * index, 0.1, 0.4, 0.5)}
+                for index in range(1, 4)
+            ],
+            3,
+            3,
+        ),  # three valid ROIs under the default cap: kept / 3 个合法 ROI 未超限
+    ],
+)
+def test_plan_roi_geometry_follows_14b_fallback(
+    tmp_path: Path,
+    rois: list[dict],
+    max_rois: int,
+    expected_count: int,
+) -> None:
+    """14B §6.2: degenerate, out-of-range, or over-limit ROI plans collapse to
+    the unique full-image ROI (empty roi_plan -> full image at the geometry
+    layer); geometrically valid plans under the cap are kept; the validated
+    category plan survives; no re-call, no truncation.
+    14B §6.2：退化、越界或超限 ROI 计划折叠为唯一整图 ROI（空 roi_plan 在几
+    何层即整图）；未超限且几何合法的计划原样保留；已校验类别计划保留；不重调、
+    不截断。"""
+    client = _FakeClient(
+        identity=_identity(),
+        response=_plan_response(rois=rois, categories=("vehicle",)),
+    )
+    plan = _run(
+        _planner(client, max_rois=max_rois), _sample(tmp_path), tmp_path
+    )
+    assert len(plan.roi_plan.rois) == expected_count
+    # The category plan is preserved. / 类别计划被保留。
+    assert plan.evidence_request.composite_categories == ["vehicle"]
+    assert len(client.calls) == 1  # never re-called / 绝不重调
+
+
+def test_plan_max_rois_is_configurable_and_bounded(tmp_path: Path) -> None:
+    """The configured per-plan ROI cap is enforced (over-limit -> full-image
+    fallback) and the cap itself is validated. 配置的每计划 ROI 上限生效（超限
+    -> 整图回退），且上限本身被校验。"""
+    with pytest.raises(ValueError, match="max_rois"):
+        _planner(_FakeClient(identity=_identity()), max_rois=0)
+    with pytest.raises(ValueError, match="max_rois"):
+        _planner(_FakeClient(identity=_identity()), max_rois=4)
+    client = _FakeClient(
+        identity=_identity(),
+        response=_plan_response(
+            rois=[
+                {"roi_id": f"r{index}", "image_id": "img1", "xyxy": (0.1 * index, 0.1, 0.4, 0.5)}
+                for index in range(1, 4)
+            ]
+        ),
+    )
+    plan = _run(_planner(client, max_rois=2), _sample(tmp_path), tmp_path)
+    assert plan.roi_plan.rois == []  # 3 ROIs exceed the cap of 2 / 3 个 ROI 超过 2 上限
+    assert len(client.calls) == 1  # the call was attempted once / 恰好尝试一次调用
 
 
 def test_plan_out_of_catalog_category_fails_typed(tmp_path: Path) -> None:

@@ -204,6 +204,11 @@ class VqaEvidenceBundle(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     workflow: Literal["object_evidence_vqa"] = "object_evidence_vqa"
+    # Catalog version pins the closed category/leaf mapping this evidence was
+    # produced from (14A2 §5.1); audit and resume can verify provenance.
+    # catalog version 固定产生本证据的封闭类别/叶子映射（14A2 §5.1）；审计与
+    # resume 可据此核验来源。
+    catalog_version: str = Field(min_length=1)
     rois: list[RoiEvidenceRecord] = Field(default_factory=list)
     detections: list[YoloDetectionRecord] = Field(default_factory=list)
     segments: list[SegFormerEvidenceRecord] = Field(default_factory=list)

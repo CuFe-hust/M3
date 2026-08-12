@@ -123,11 +123,12 @@ def roi_records_from_plan(
     halo_ratio: float = HALO_RATIO,
 ) -> list[RoiEvidenceRecord]:
     """Map every plan ROI in plan order (cross-platform stable). An unknown
-    image_id fails with a stable error instead of guessing a size; more than
-    three ROIs are impossible here because the plan schema rejects them —
-    geometry never truncates. 按计划顺序映射每个计划 ROI（跨平台稳定）。
-    未知 image_id 以稳定错误失败而非猜测尺寸；超过三个 ROI 因计划 schema
-    拒绝而在此不可能出现——几何层绝不截断。"""
+    image_id fails with a stable error instead of guessing a size; geometry
+    never truncates — an over-limit, out-of-range, or degenerate plan has
+    already been collapsed to the unique full-image ROI by the planner
+    (14B §6.2) before this layer. 按计划顺序映射每个计划 ROI（跨平台稳定）。
+    未知 image_id 以稳定错误失败而非猜测尺寸；几何层绝不截断——超限、越界
+    或退化的计划已在到达本层前由规划器折叠为唯一整图 ROI（14B §6.2）。"""
     records: list[RoiEvidenceRecord] = []
     for region in plan.roi_plan.rois:
         if region.image_id not in sizes:
@@ -147,11 +148,11 @@ def resolve_roi_records(
 ) -> list[RoiEvidenceRecord]:
     """Frozen ROI resolution: a plan with no spatial constraint falls back to
     the unique full-image ROI of the fallback image; a valid non-empty plan
-    maps directly. An invalid raw plan is rejected by schema validation
-    before this layer and falls back in the executor without retry.
+    maps directly. Finite but invalid raw geometry has already been collapsed
+    to an empty ROI plan by the planner, without retrying the planning model.
     冻结 ROI 解析：无空间约束的计划回退为 fallback 图的唯一整图 ROI；合法
-    非空计划直接映射。非法原始计划在到达本层前被 schema 校验拒绝，并由执行
-    器直接回退，绝不重试。"""
+    非空计划直接映射。有限但几何无效的原始计划已由 Planner 折叠为
+    空 ROI 计划，且不重试规划模型。"""
     if not plan.roi_plan.rois:
         if fallback_image_id not in sizes:
             raise ValueError(

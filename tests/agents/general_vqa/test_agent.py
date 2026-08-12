@@ -448,6 +448,7 @@ def _bundle() -> VqaEvidenceBundle:
     one missing leaf, and a full call audit. 一个整图 ROI，含一条 YOLO 检测、
     一条 SegFormer 掩膜命中、一个缺失叶子与完整调用审计。"""
     return VqaEvidenceBundle(
+        catalog_version="first-qwen-plan-v1",
         rois=[
             RoiEvidenceRecord(
                 roi_id="full",

@@ -1,6 +1,11 @@
-"""Isolated first-Qwen visual planner (C4, 14A1) — not wired to SampleRunner.
+"""Isolated first-Qwen visual planner (C4, 14A1) and its feature-flagged
+SampleRunner gate (C7, 14A2). The planner is an orchestration service that
+never executes downstream evidence work; the gate is wired only when the
+composition root injects it (production assembly is deferred to 14A3).
 
-孤立的第一 Qwen 视觉规划器（C4，14A1）——尚未接入 SampleRunner。
+孤立的第一 Qwen 视觉规划器（C4，14A1）及其特性开关式 SampleRunner 门
+（C7，14A2）。规划器是绝不执行下游证据工作的编排服务；门只有在组合根注入时
+才接入（生产组装延后到 14A3）。
 
 Pipeline (order is immutable: SampleDraft -> TaskResolver -> UnifiedSample ->
 VisualPlanner): 管线（顺序不可变：SampleDraft -> TaskResolver -> UnifiedSample
@@ -29,9 +34,11 @@ Hard constraints / 硬约束：
   identity/revision/catalog version；
 - artifacts/requests never carry Base64, secrets, raw model bodies, or absolute
   image paths; 产物/请求绝不携带 Base64、secret、原始模型正文或绝对图像路径；
-- strict rejection of extra fields, out-of-catalog categories, degenerate ROIs,
-  wrong image ids, and non-finite values. 严格拒绝额外字段、目录外类别、退化
-  ROI、错误 image id 与非 finite 值。
+- strict rejection of extra fields, out-of-catalog categories, wrong image
+  ids, and non-finite values; per 14B §6.2 an over-limit, out-of-range, or
+  degenerate ROI plan collapses to the unique full-image ROI (the category
+  plan survives). 严格拒绝额外字段、目录外类别、错误 image id 与非 finite 值；
+  按 14B §6.2，超限、越界或退化的 ROI 计划折叠为唯一整图 ROI（类别计划保留）。
 
 Unfrozen policies (typed failure seam ONLY — no production defaults, no
 "existing agent + full image" fallback): schema invalid, low confidence, client
@@ -54,7 +61,7 @@ from agents.base import CallBudget, VisualPlanBindings
 from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from agents.general_vqa.evidence.geometry import MAX_MODEL_SIDE
 from agents.general_vqa.evidence.rendering import preview_from_path
-from agents.schema import FirstQwenVisualPlan, ObjectEvidenceRequest
+from agents.schema import FirstQwenVisualPlan, ObjectEvidenceRequest, RoiPlan
 from data.schema import UnifiedSample
 from models.base import (
     MissingModelCacheIdentityError,
@@ -93,15 +100,19 @@ class VisualPlanner:
         prompt_version: str = "v1",
         catalog: EvidenceCatalog,
         confidence_threshold: float = 0.70,
+        max_rois: int = 3,
         max_side: int = MAX_MODEL_SIDE,
     ) -> None:
         if not 0.0 <= confidence_threshold <= 1.0:
             raise ValueError("confidence_threshold must be within [0.0, 1.0]")
+        if not 1 <= max_rois <= 3:
+            raise ValueError("max_rois must be within [1, 3]")
         self._client = client
         self._system_prompt = system_prompt
         self._prompt_version = prompt_version
         self._catalog = catalog
         self._confidence_threshold = confidence_threshold
+        self._max_rois = max_rois
         self._max_side = max_side
 
     async def plan(
@@ -189,9 +200,10 @@ class VisualPlanner:
             )
         except ValidationError as exc:
             # The model returned a plan the strict schema rejects: extra
-            # fields, degenerate/non-finite ROIs, wrong family linkage, etc.
-            # 模型返回的计划被严格 schema 拒绝：额外字段、退化/非有限 ROI、
-            # 家族联动错误等。
+            # fields, non-finite ROIs, wrong family linkage, etc. Finite but
+            # invalid geometry is handled by planner-side full-image fallback.
+            # 模型返回的计划被严格 schema 拒绝：额外字段、非有限 ROI、
+            # 家族联动错误等。有限但几何无效的 ROI 由 Planner 回退整图。
             raise VisualPlanError("SCHEMA_INVALID") from exc
         except Exception as exc:
             raise VisualPlanError("CLIENT_ERROR") from exc
@@ -241,10 +253,16 @@ class VisualPlanner:
         """Planner-side strict checks the schema cannot express: categories
         must belong to the same-version closed catalog, every ROI image_id
         must reference a sample image, duplicates are deduplicated stably, and
-        low confidence is a typed failure until a policy is frozen.
+        low confidence is a typed failure until a policy is frozen. Per 14B
+        §6.2, an over-limit, out-of-range, or degenerate ROI plan collapses to
+        the unique full-image ROI (empty plan = full image at the geometry
+        layer); the already-valid category plan is preserved, nothing is
+        truncated, and the planning Qwen is never re-called.
         Schema 无法表达的规划器侧严格检查：类别必须属于同版本封闭目录、每个
         ROI 的 image_id 必须引用样本图像、重复类别稳定去重，且低置信度在策略
-        冻结前作为 typed failure。"""
+        冻结前作为 typed failure。按 14B §6.2，超限、越界或退化的 ROI 计划折
+        叠为唯一整图 ROI（空计划在几何层即整图）；保留已合法解析的类别计划，
+        绝不截断，也绝不重调规划 Qwen。"""
         if plan.evidence_request is not None:
             categories = plan.evidence_request.composite_categories
             try:
@@ -271,12 +289,38 @@ class VisualPlanner:
         for region in plan.roi_plan.rois:
             if region.image_id not in known_ids:
                 raise VisualPlanError("SCHEMA_INVALID")
+        if self._needs_full_image_fallback(plan):
+            # 14B §6.2: the whole ROI plan is void; the unique full-image ROI
+            # replaces it (empty roi_plan), while the validated category plan
+            # survives intact. 14B §6.2：整个 ROI 计划失效；唯一整图 ROI 取
+            # 代之（空 roi_plan），已校验类别计划原样保留。
+            plan = plan.model_copy(
+                update={"roi_plan": RoiPlan(rois=[])}
+            )
         if plan.confidence < self._confidence_threshold:
             # The low-confidence policy (retry / fallback / reject) is not
             # frozen; C4 only surfaces the typed failure.
             # 低置信度策略（重试 / 回退 / 拒绝）未冻结；C4 只暴露 typed failure。
             raise VisualPlanError("LOW_CONFIDENCE")
         return plan
+
+    def _needs_full_image_fallback(self, plan: FirstQwenVisualPlan) -> bool:
+        """14B §6.2 verdict on the ROI plan: over the configured cap, outside
+        the normalized [0,1] frame, or degenerate (zero extent) — any of these
+        voids the whole ROI plan and triggers the unique full-image fallback.
+        14B §6.2 对 ROI 计划的判定：超过配置上限、越出归一化 [0,1] 制式或退化
+        （零范围）——任一情况使整个 ROI 计划失效并触发唯一整图回退。"""
+        if len(plan.roi_plan.rois) > self._max_rois:
+            return True
+        for region in plan.roi_plan.rois:
+            x1, y1, x2, y2 = region.xyxy
+            if not (0.0 <= x1 <= 1.0 and 0.0 <= y1 <= 1.0):
+                return True
+            if not (0.0 <= x2 <= 1.0 and 0.0 <= y2 <= 1.0):
+                return True
+            if x1 >= x2 or y1 >= y2:
+                return True
+        return False
 
 
 class VisualPlanningGate:

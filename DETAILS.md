@@ -855,7 +855,7 @@ First-Qwen 视觉工作流配置组（C7，14A2），默认整体禁用：
 ```text
 enabled = False
 prompt_version = "v1"
-catalog_version = "first-qwen-plan-v1"
+catalog_version = "first-qwen-evidence-catalog-v1"
 max_rois = 3
 halo_ratio = 0.10
 confidence_threshold = 0.70
@@ -1436,8 +1436,8 @@ logical identity、expected SHA 或 verified class-map semantics。
 公共 trace 不保存 mask、tensor、prompt、base64、secret 或绝对路径，并至少记录 canonical
 target、候选/尝试/final backend、fallback history、counting mode 与 accepted count。
 
-wheel 通过 package-data 携带 expert catalog、verified SegFormer 小型 metadata 与 prompts，
-不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
+wheel 通过 package-data 携带 expert catalog、`agents/evidence_catalog.json`、verified
+SegFormer 小型 metadata 与 prompts，不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
 Prompt root 的顺序是 explicit override → `project_root/prompts` → installed package
 `prompts`；显式错误配置 fail closed，公开 composition error 不包含绝对路径。CI 使用真实
 wheel 在源码树外组装 runtime，验证 catalog/prompt metadata、QuantityProposal、lazy
@@ -3257,8 +3257,16 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 `visual_planning.enabled` 默认 `False`：门禁不参与运行，调用次数、结果、
 trace、产物与启用前逐字节一致。即使开启，未校准的 detector/segmenter
 能力默认关闭（None），`vqa_evidence.json`、ROI overlay 等为语义占位，
-持久化格式/质量参数未批准（14A2 §5.1）。真实组装（application
-composition root 接线）、wheel 产物、live 校准与默认翻转属于后续任务。
+持久化格式/质量参数未批准（14A2 §5.1）。组合根装配已落地（14A3 C9）：
+`application/bootstrap.py` 按版本绑定检查组装 `VisualPlanningGate` 与
+`VisualPlanBindings`；VQA 证据服务仅在完整校准策略 + 启用检测器时组装，
+grounding 证据 seam 以显式全 None 策略运行；启用 segmenter 而无冻结模型
+绑定、部分/多条校准、无启用检测器均组装期严格失败；`agents/evidence_catalog.json`
+已进 wheel 包数据。检测器一律惰性接线（`_LazyObjectDetectionClient`），组合
+期绝不加载 YOLO 权重，首次推理才经共享审计 store；未校准 grounding 完全不
+接线 detector。ROI 计划按 14B §6.2：超限（`max_rois`，1–3，默认 3）、越界
+或退化时折叠为唯一整图 ROI，保留已校验类别计划，不截断、不重调；非有限
+坐标与错误 image_id 仍为 SCHEMA_INVALID。live 校准与默认翻转属于后续任务。
 
 ### 79.5 Live validation
 

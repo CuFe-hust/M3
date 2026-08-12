@@ -1057,3 +1057,39 @@ def test_unknown_image_id_fails_before_any_model_call() -> None:
             fallback_image_id="img1",
         )
     assert yolo.calls == []
+
+
+def test_segformer_leaf_with_multiple_labels_matches_any_class() -> None:
+    """A leaf mapping to several SegFormer labels is present when the argmax
+    class is ANY of them (OR). The old consecutive-AND logic required one
+    pixel to be several mutually exclusive classes at once and was always
+    empty. 映射到多个 SegFormer 标签的叶子在其 argmax 类别是其中任意一个
+    （OR）时存在。旧连续 AND 逻辑要求同一像素同时是多个互斥类别，必然为空。"""
+    catalog = EvidenceCatalog(
+        {
+            "catalog_version": "test-catalog-v1",
+            "composites": {"vehicle": ["small_vehicle"]},
+            "leaves": {
+                "small_vehicle": {
+                    "yolo_labels": ["small_vehicle"],
+                    "yolo_enabled": True,
+                    "segformer_labels": ["vehicle_small", "building"],
+                    "segformer_enabled": True,
+                }
+            },
+        }
+    )
+    yolo = _FakeYolo({})  # YOLO phase misses -> SegFormer phase runs
+    # The hit pixel belongs to the SECOND label ("building"); with the old
+    # AND logic the presence mask was always empty and the leaf was missing.
+    # 命中像素属于第二个标签（"building"）；旧 AND 逻辑下存在掩膜必然为空、
+    # 叶子被判为缺失。
+    seg = _FakeSegFormer([{"building": "hit"}])
+    execution = _executor(catalog, yolo=yolo, seg=seg).execute(
+        _plan(categories=("vehicle",), rois=[_roi("roi-1", (0.25, 0.25, 0.75, 0.75))]),
+        {"img1": _image()},
+        fallback_image_id="img1",
+    )
+    assert execution.bundle.leaf_states["small_vehicle"] == "hit"
+    assert bool(execution.masks[("roi-1", "small_vehicle")].any())
+    assert seg.calls  # the SegFormer phase actually ran / SegFormer 阶段确实运行

@@ -96,7 +96,10 @@ class VisualPlannerSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     prompt_version: str = "v1"
-    catalog_version: str = "first-qwen-plan-v1"
+    # Must equal the version declared by agents/evidence_catalog.json; the
+    # composition root verifies the binding when the feature is enabled.
+    # 必须等于 agents/evidence_catalog.json 声明的版本；启用时组合根校验该绑定。
+    catalog_version: str = "first-qwen-evidence-catalog-v1"
     max_rois: int = Field(default=3, ge=1, le=3)
     halo_ratio: float = Field(default=0.10, ge=0.0, le=1.0)
     confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)

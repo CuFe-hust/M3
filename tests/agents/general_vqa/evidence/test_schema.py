@@ -120,22 +120,25 @@ def test_plan_rejects_path_like_category() -> None:
         ObjectEvidenceRequest(composite_categories=["/home/user/vehicle"])
 
 
-def test_plan_rejects_more_than_three_rois() -> None:
+def test_plan_accepts_more_than_three_rois() -> None:
+    """The count is not capped at the schema: 14B §6.2 lets the planner
+    collapse an over-limit plan to the unique full-image ROI instead of
+    rejecting it. 数量不在 schema 封顶：14B §6.2 让规划器把超限计划折叠为
+    唯一整图 ROI 而非拒绝。"""
     rois = [_region(f"roi-{index}") for index in range(1, 4)]
     rois.append(_region("roi-4"))
-    with pytest.raises(ValidationError):
-        RoiPlan(rois=rois)
+    assert len(RoiPlan(rois=rois).rois) == 4
 
 
-def test_plan_rejects_degenerate_and_out_of_range_rois() -> None:
-    with pytest.raises(ValidationError, match="non-degenerate"):
-        _region("d", (0.2, 0.2, 0.2, 0.6))
-    with pytest.raises(ValidationError, match="non-degenerate"):
-        _region("d", (0.2, 0.2, 0.6, 0.2))
-    with pytest.raises(ValidationError, match=r"\[0, 1\]"):
-        _region("o", (0.0, 0.0, 1.1, 1.0))
-    with pytest.raises(ValidationError, match=r"\[0, 1\]"):
-        _region("o", (-0.1, 0.0, 0.5, 0.5))
+def test_plan_accepts_degenerate_and_out_of_range_rois() -> None:
+    """Geometric validity is decided by the planner (14B §6.2 full-image
+    fallback), so the schema parses finite out-of-range or degenerate boxes.
+    几何合法性由规划器决定（14B §6.2 整图回退），因此 schema 接受有限的越界
+    或退化框。"""
+    assert _region("d", (0.2, 0.2, 0.2, 0.6)).xyxy == (0.2, 0.2, 0.2, 0.6)
+    assert _region("d", (0.2, 0.2, 0.6, 0.2)).xyxy == (0.2, 0.2, 0.6, 0.2)
+    assert _region("o", (0.0, 0.0, 1.1, 1.0)).xyxy == (0.0, 0.0, 1.1, 1.0)
+    assert _region("o", (-0.1, 0.0, 0.5, 0.5)).xyxy == (-0.1, 0.0, 0.5, 0.5)
 
 
 def test_plan_rejects_non_finite_roi_coordinates() -> None:
@@ -317,6 +320,7 @@ def test_model_call_audit_requires_error_code_on_failure() -> None:
 
 def _bundle(**overrides) -> VqaEvidenceBundle:
     data = {
+        "catalog_version": "test-catalog-v1",
         "rois": [
             RoiEvidenceRecord(
                 roi_id="roi-1",

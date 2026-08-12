@@ -328,7 +328,14 @@ def test_visual_planning_defaults_to_frozen_disabled_state() -> None:
     settings = AppSettings()
     assert settings.visual_planning.enabled is False
     assert settings.visual_planning.planner.prompt_version == "v1"
-    assert settings.visual_planning.planner.catalog_version == "first-qwen-plan-v1"
+    # The declared version must bind the same evidence catalog asset
+    # (agents/evidence_catalog.json); the composition root verifies this.
+    # 声明版本必须绑定同一证据目录资产（agents/evidence_catalog.json）；
+    # 组合根校验该绑定。
+    assert (
+        settings.visual_planning.planner.catalog_version
+        == "first-qwen-evidence-catalog-v1"
+    )
     assert settings.visual_planning.planner.max_rois == 3
     assert settings.visual_planning.planner.halo_ratio == pytest.approx(0.10)
     assert settings.visual_planning.planner.confidence_threshold == pytest.approx(0.70)

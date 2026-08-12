@@ -169,18 +169,28 @@ def _audit_identity(
 
 
 def _mask_presence(probabilities: Any, class_indices: list[int], threshold: float) -> Any:
-    """Duck-typed boolean presence mask: pixels whose argmax class is one of
-    the leaf's classes with max probability at least the threshold. No box,
-    no count, no runtime import — operates on the client's arrays through
-    their own methods only. 鸭子类型布尔存在掩膜：argmax 类别属于叶子类别且
-    最大概率不低于阈值的像素。不转框、不计数、不导入运行时——只通过客户端
+    """Duck-typed boolean presence mask: pixels whose argmax class is ANY of
+    the leaf's class indices (OR, not AND — a pixel has exactly one argmax
+    class, so consecutive ANDs of mutually exclusive classes would always be
+    empty) with max probability at least the threshold. No box, no count, no
+    runtime import — operates on the client's arrays through their own
+    methods only. 鸭子类型布尔存在掩膜：argmax 类别属于叶子类别索引中任意一
+    个（OR 而非 AND——像素只有一个 argmax 类别，对互斥类别连续 AND 必然为空）
+    且最大概率不低于阈值的像素。不转框、不计数、不导入运行时——只通过客户端
     数组自身的方法操作。"""
     max_prob = probabilities.max(axis=0)
     best = probabilities.argmax(axis=0)
     present = max_prob >= threshold
-    for index in class_indices:
-        present = present & (best == index)
-    return present
+    if not class_indices:
+        # No approved labels: the leaf cannot be present anywhere; keep the
+        # presence honest instead of treating every pixel as the leaf.
+        # 无已批准标签：叶子任何位置都不可能存在；保持存在性诚实，而不是把
+        # 每个像素都当成该叶子。
+        return present & (best != best)
+    class_mask = best == class_indices[0]
+    for index in class_indices[1:]:
+        class_mask = class_mask | (best == index)
+    return present & class_mask
 
 
 class ObjectEvidenceExecutor:
@@ -198,18 +208,33 @@ class ObjectEvidenceExecutor:
         yolo_device: str,
         yolo_image_size: int,
         segformer_client: DenseSemanticClient | None,
-        segformer_tile_size: int,
-        segformer_tile_overlap: int,
-        segformer_feature_stage: int,
+        segformer_tile_size: int | None = None,
+        segformer_tile_overlap: int | None = None,
+        segformer_feature_stage: int | None = None,
     ) -> None:
         if yolo_image_size <= 0:
             raise ValueError("yolo_image_size must be positive")
-        if segformer_tile_size <= 0:
+        # Tile policy is inject-only: no production default exists, so the
+        # values are required exactly when a SegFormer client is present and
+        # otherwise stay None. 切片策略仅注入：无生产默认值，因此仅当存在
+        # SegFormer client 时才必须提供，否则保持 None。
+        if segformer_tile_size is not None and segformer_tile_size <= 0:
             raise ValueError("segformer_tile_size must be positive")
-        if not 0 <= segformer_tile_overlap < segformer_tile_size:
+        if segformer_tile_overlap is not None and (
+            segformer_tile_size is None
+            or not 0 <= segformer_tile_overlap < segformer_tile_size
+        ):
             raise ValueError("segformer_tile_overlap must be within [0, tile_size)")
-        if segformer_feature_stage < 0:
+        if segformer_feature_stage is not None and segformer_feature_stage < 0:
             raise ValueError("segformer_feature_stage must be non-negative")
+        if segformer_client is not None and (
+            segformer_tile_size is None
+            or segformer_tile_overlap is None
+            or segformer_feature_stage is None
+        ):
+            raise ValueError(
+                "SegFormer tile policy is required when a segformer client is present"
+            )
         self._catalog = catalog
         self._policy = policy
         self._yolo_client = yolo_client
@@ -258,6 +283,7 @@ class ObjectEvidenceExecutor:
         )
         layer_states, final_states, missing = self._aggregate(leaves)
         bundle = VqaEvidenceBundle(
+            catalog_version=self._catalog.catalog_version,
             rois=[record for record in records],
             detections=detections,
             segments=segments,

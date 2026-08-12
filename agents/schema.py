@@ -257,7 +257,6 @@ PLAN_SCHEMA_VERSION = "first-qwen-plan-v1"
 ExecutionFamily = Literal["direct_vqa", "object_evidence_vqa"]
 
 _MAX_PLAN_COMPOSITE_CATEGORIES = 3
-_MAX_PLAN_ATTENTION_ROIS = 3
 
 _ROI_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 
@@ -265,11 +264,16 @@ _ROI_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
 class RoiRegion(BaseModel):
     """One semantic attention ROI in the frozen normalized [0,1] top-left
     xyxy frame. image_id must reference an existing UnifiedSample image id
-    (enforced by the planner); the full image is expressed as [0,0,1,1];
-    degenerate zero-extent boxes are rejected.
-    一条使用冻结 [0,1] top-left xyxy 制式的语义注意 ROI。image_id 必须引用
-    已存在 UnifiedSample 的图像 id（由 Planner 强制校验）；整图表示为
-    [0,0,1,1]；退化零面积框被拒绝。"""
+    (enforced by the planner); the full image is expressed as [0,0,1,1].
+    Geometric validity (range, degeneracy) is NOT rejected here: per 14B
+    §6.2 the planner collapses an invalid ROI plan to the unique full-image
+    ROI instead of rejecting it; non-finite coordinates stay a strict
+    schema rejection (a value that is not even a number cannot be parsed
+    into geometry). 一条使用冻结 [0,1] top-left xyxy 制式的语义注意 ROI。
+    image_id 必须引用已存在 UnifiedSample 的图像 id（由 Planner 强制校验）；
+    整图表示为 [0,0,1,1]。几何合法性（范围、退化）不在此拒绝：按 14B §6.2
+    规划器将非法 ROI 计划折叠为唯一整图 ROI 而非拒绝；非有限坐标仍属 schema
+    严格拒绝（连数字都算不上的值无法解析成几何）。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -279,30 +283,27 @@ class RoiRegion(BaseModel):
 
     @model_validator(mode="after")
     def validate_xyxy(self) -> "RoiRegion":
-        """Require finite [0,1] coordinates and a non-degenerate box.
-        要求有限 [0,1] 坐标且框非退化。"""
+        """Require finite coordinates; the [0,1] range and degeneracy are
+        decided by the planner per 14B §6.2. 要求坐标有限；[0,1] 范围与退化
+        由规划器按 14B §6.2 决定。"""
         if not all(math.isfinite(value) for value in self.xyxy):
             raise ValueError("ROI xyxy must be finite")
-        if not all(0.0 <= value <= 1.0 for value in self.xyxy):
-            raise ValueError("ROI xyxy must lie within [0, 1]")
-        x1, y1, x2, y2 = self.xyxy
-        if x1 >= x2 or y1 >= y2:
-            raise ValueError("ROI must be non-degenerate with x1<x2 and y1<y2")
         return self
 
 
 class RoiPlan(BaseModel):
     """Validated ROI plan: zero ROIs mean "no reliable spatial constraint"
     (the geometry layer maps this to the unique full-image ROI), otherwise
-    one to three attention ROIs. The whole plan is strict: more than three
-    ROIs or any degenerate ROI reject the plan rather than truncating it.
+    the attention ROIs. The count is not capped here: per 14B §6.2 an
+    over-limit, out-of-range, or degenerate plan collapses to the unique
+    full-image ROI in the planner — never truncated, never re-called.
     校验后的 ROI 计划：零 ROI 表示“无可靠空间约束”（几何层映射为唯一整图
-    ROI），否则为一到三个注意 ROI。整个计划严格：超过三个或任一退化 ROI
-    直接拒绝整个计划，绝不截断。"""
+    ROI），否则为注意 ROI。数量不在此封顶：按 14B §6.2，超限、越界或退化
+    的计划在规划器中折叠为唯一整图 ROI——绝不截断、绝不重调。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    rois: list[RoiRegion] = Field(default_factory=list, max_length=_MAX_PLAN_ATTENTION_ROIS)
+    rois: list[RoiRegion] = Field(default_factory=list)
 
 
 class ObjectEvidenceRequest(BaseModel):

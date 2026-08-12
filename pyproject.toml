@@ -47,7 +47,10 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-agents = ["counting/expert_catalog.json"]
+agents = [
+  "counting/expert_catalog.json",
+  "evidence_catalog.json",
+]
 models = [
   "segformer_mitb2_isaid/classes.json",
   "segformer_mitb2_isaid/config.json",
