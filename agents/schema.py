@@ -15,7 +15,6 @@ AgentName = Literal[
     "counting_agent",
     "change_agent",
     "grounding_agent",
-    "spatial_agent",
     "general_vqa_agent",
     "caption_agent",
 ]

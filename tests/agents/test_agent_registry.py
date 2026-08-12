@@ -180,7 +180,7 @@ def test_execution_rejects_sensitive_value_prefixes() -> None:
 
 def test_execution_payload_agent_name_must_match() -> None:
     with pytest.raises(ValueError, match="does not match"):
-        _execution(agent_name="spatial_agent")
+        _execution(agent_name="caption_agent")
 
 
 def test_execution_additional_results_must_not_collide() -> None:

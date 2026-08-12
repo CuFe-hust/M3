@@ -27,7 +27,6 @@ class QwenSettings(BaseModel):
     # 用于哈希与 trace 的逻辑、与机器无关的模型身份。
     cache_model_id: str | None = None
     max_tokens: int = Field(default=4096, gt=0)
-    spatial_review_max_tokens: int = Field(default=128, gt=0)
     dtype: Literal["auto", "float16", "bfloat16", "float32"] = "auto"
     device_map: str = "auto"
     use_kernels: bool = False

@@ -36,7 +36,6 @@ from agents.counting.settings import CountingTargetStrategy
 from agents.general_vqa import GeneralVQAAgent
 from agents.grounding import GroundingAgent
 from agents.registry import AgentRegistry
-from agents.spatial import SpatialAgent
 from agents.visual_base import PromptBinding
 from application.prompts import PromptCatalog
 from application.settings import AppSettings
@@ -259,23 +258,11 @@ def _build_agent_registry(
         settings=settings.agents.change,
     )
     grounding_agent = GroundingAgent(qwen_client)
-    spatial_agent = SpatialAgent(
-        qwen_client,
-        prompt=PromptBinding(text=catalog["spatial"], version=catalog.version("spatial")),
-        grid_prompt=PromptBinding(
-            text=catalog["spatial_grid"], version=catalog.version("spatial_grid")
-        ),
-        review_prompt=catalog["spatial_review"],
-        review_prompt_version=catalog.version("spatial_review"),
-        grid_review_prompt=catalog["spatial_grid_review"],
-        grid_review_prompt_version=catalog.version("spatial_grid_review"),
-        review_max_tokens=settings.models.qwen.spatial_review_max_tokens,
-    )
     general_vqa_agent = GeneralVQAAgent(qwen_client)
     caption_agent = CaptionAgent(qwen_client)
 
     registry = AgentRegistry()
-    for agent in (counting_agent, change_agent, grounding_agent, spatial_agent,
+    for agent in (counting_agent, change_agent, grounding_agent,
                   general_vqa_agent, caption_agent):
         registry.register(agent)
     registry.validate_task_coverage(set(_routable_tasks()))

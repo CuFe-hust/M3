@@ -72,12 +72,11 @@ def _assemble(tmp_path: Path, **kwargs: Any) -> Any:
 def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
     assert components.qwen_client is not None
-    assert len(components.agent_registry) == 6
+    assert len(components.agent_registry) == 5
     assert components.agent_registry.names() == (
         "counting_agent",
         "change_agent",
         "grounding_agent",
-        "spatial_agent",
         "general_vqa_agent",
         "caption_agent",
     )

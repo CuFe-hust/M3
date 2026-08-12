@@ -17,12 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 17
+    assert len(catalog.all_keys()) == 13
     for key in (
         "count_tile",
         "target",
         "change",
-        "spatial",
         "general",
         "grounding",
         "caption",
@@ -57,7 +56,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 16  # 17 keys, general_vqa_v2 shared by two keys
+    assert len(paths) == 12  # 13 keys, general_vqa_v2 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 
@@ -136,10 +135,6 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "target_parse_v1.md",
         "missing_point_review_v3.md",
         "change_dual_path_v2.md",
-        "spatial_v4.md",
-        "spatial_v5.md",
-        "spatial_candidate_review_v4.md",
-        "spatial_candidate_review_v5.md",
         "general_vqa_v2.md",
         "caption_v1.md",
         "seam_review_v2.md",

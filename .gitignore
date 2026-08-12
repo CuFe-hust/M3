@@ -25,6 +25,28 @@ runs/
 .env.local
 /secrets.txt
 
+# Local dataset copies (never commit; source code under data/ is tracked)
+data/GeoChat/
+data/Levir-CC-dataset/
+data/MME-Realworld/
+data/VRSBench-counting/
+data/VRSBench-full/
+data/VRSBench-mission-type/
+data/XLRS-Bench/
+data/vrsbench-phase1-train/
+
+# Firecrawl crawl cache
+.firecrawl/
+
+# One-off analysis artifacts
+dataset_task_types.html
+
+# Local server config (contains credentials, never commit)
+config/
+
+# Local model weights
+models/InternVL3_5-8B/
+
 # Model weights are local by default. Explicit exceptions below are Git LFS assets.
 weights/
 *.pt

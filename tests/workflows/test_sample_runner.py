@@ -787,7 +787,7 @@ def test_vqa_judge_policy_none_records_not_requested(tmp_path: Path) -> None:
         ("general_vqa", "general_vqa_agent"),
         ("multiple_choice_vqa", "general_vqa_agent"),
         ("scene_classification", "general_vqa_agent"),
-        ("spatial_relation", "spatial_agent"),
+        ("spatial_relation", "general_vqa_agent"),
         ("change_qa", "change_agent"),
     ],
 )
@@ -1010,10 +1010,10 @@ def test_change_qa_uses_generic_vqa_exact_match(
 
 def test_spatial_relation_uses_vqa_evaluation(tmp_path: Path) -> None:
     agent = _FakeAgent(
-        "spatial_agent",
+        "general_vqa_agent",
         ("spatial_relation",),
         payload=AgentResult(
-            agent_name="spatial_agent", answer="north", status="completed"
+            agent_name="general_vqa_agent", answer="north", status="completed"
         ),
     )
     sample = _sample(

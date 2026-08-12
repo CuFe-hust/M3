@@ -50,6 +50,9 @@ def test_primary_and_fallback_agents() -> None:
     assert policy_for("general_vqa").execution_mode == "single"
     assert policy_for("scene_classification").primary_agent == "general_vqa_agent"
     assert policy_for("multiple_choice_vqa").primary_agent == "general_vqa_agent"
+    assert policy_for("spatial_relation").primary_agent == "general_vqa_agent"
+    assert policy_for("spatial_relation").fallback_agents == ()
+    assert policy_for("spatial_relation").execution_mode == "single"
 
 
 def test_unknown_task_fails_explicitly() -> None:
