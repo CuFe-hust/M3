@@ -1366,8 +1366,6 @@ VRSBench normalization 规则不变，评测仍走 VQA 确定性族与可选 Jud
 
 # 27. Change 子系统
 
-# 27. Change 子系统
-
 目录：
 
 ```text
