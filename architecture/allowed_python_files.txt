@@ -57,6 +57,7 @@ agents/base.py
 agents/registry.py
 agents/errors.py
 agents/visual_base.py
+agents/evidence_catalog.py
 agents/counting/__init__.py
 agents/counting/schema.py
 agents/counting/settings.py
@@ -93,10 +94,16 @@ agents/change/proposal_fusion.py
 agents/change/perception.py
 agents/grounding/__init__.py
 agents/grounding/agent.py
+agents/grounding/evidence.py
 agents/caption/__init__.py
 agents/caption/agent.py
 agents/general_vqa/__init__.py
 agents/general_vqa/agent.py
+agents/general_vqa/evidence/__init__.py
+agents/general_vqa/evidence/schema.py
+agents/general_vqa/evidence/geometry.py
+agents/general_vqa/evidence/rendering.py
+agents/general_vqa/evidence/executor.py
 
 # === routing ===
 routing/__init__.py
@@ -115,6 +122,7 @@ workflows/judge_service.py
 workflows/sample_runner.py
 workflows/dataset_runner.py
 workflows/task_resolver.py
+workflows/visual_planner.py
 
 # === evaluation ===
 evaluation/__init__.py
@@ -172,12 +180,19 @@ tests/conftest.py
 tests/test_main.py
 tests/agents/test_agent_registry.py
 tests/agents/test_visual_base.py
+tests/agents/test_evidence_catalog.py
 tests/agents/general_vqa/__init__.py
 tests/agents/general_vqa/test_agent.py
+tests/agents/general_vqa/evidence/__init__.py
+tests/agents/general_vqa/evidence/test_schema.py
+tests/agents/general_vqa/evidence/test_geometry.py
+tests/agents/general_vqa/evidence/test_rendering.py
+tests/agents/general_vqa/evidence/test_executor.py
 tests/agents/caption/__init__.py
 tests/agents/caption/test_agent.py
 tests/agents/grounding/__init__.py
 tests/agents/grounding/test_agent.py
+tests/agents/grounding/test_evidence.py
 tests/agents/change/__init__.py
 tests/agents/counting/__init__.py
 tests/agents/counting/test_settings.py
@@ -240,6 +255,7 @@ tests/workflows/test_call_budget.py
 tests/workflows/test_run_store.py
 tests/workflows/test_artifact_writer.py
 tests/workflows/test_task_resolver.py
+tests/workflows/test_visual_planner.py
 tests/workflows/test_judge_service.py
 tests/workflows/test_sample_runner.py
 tests/workflows/test_dataset_runner.py
