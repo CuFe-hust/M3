@@ -17,7 +17,18 @@ from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.records import EvaluationRecord, VQADeterministicMetrics
 from reporting.builder import build_report
 from reporting.html import build_html
-from reporting.schema import Report, ReportSample, TaskSummary
+from reporting.schema import (
+    CountingReportDetail,
+    FallbackTransitionView,
+    GroundTruthView,
+    ModelCallAuditView,
+    Report,
+    ReportSample,
+    RoutingAttemptView,
+    RoutingView,
+    TaskSummary,
+    VisualAssetView,
+)
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
@@ -283,3 +294,163 @@ def test_html_displays_caption_dependency_status() -> None:
     assert "dependency_missing" in document
     assert "pycocoevalcap" in document
     assert "record_count" in document
+
+
+def test_report_v2_dashboard_routing_filters_counting_and_relative_asset() -> None:
+    sample = ReportSample(
+        sample_id="count-a",
+        run_task="counting",
+        task="counting",
+        state="partial",
+        result_quality="incorrect",
+        question="How many small vehicles?",
+        prediction="12",
+        ground_truth=GroundTruthView(count=13),
+        inference_seconds=0.48,
+        fallback_used=True,
+        warnings=["SEMANTIC_TILE_INFERENCE_FAILED"],
+        routing=RoutingView(
+            resolved_task="counting",
+            execution_agent="counting_agent",
+            candidate_backends=["detector_obb_csl_001", "segmenter_mitb2_001"],
+            attempted_backends=[
+                RoutingAttemptView(
+                    backend_name="detector_obb_csl_001",
+                    backend_kind="yolo_obb",
+                    status="unavailable",
+                    reason_code="BACKEND_UNAVAILABLE",
+                ),
+                RoutingAttemptView(
+                    backend_name="segmenter_mitb2_001",
+                    backend_kind="semantic_segmentation",
+                    status="partial",
+                ),
+            ],
+            primary_backend="detector_obb_csl_001",
+            primary_backend_kind="yolo_obb",
+            final_backend="segmenter_mitb2_001",
+            final_backend_kind="semantic_segmentation",
+            fallback_used=True,
+            fallback_history=[FallbackTransitionView(
+                from_backend="detector_obb_csl_001",
+                to_backend="segmenter_mitb2_001",
+                reason_code="BACKEND_UNAVAILABLE",
+            )],
+        ),
+        task_detail=CountingReportDetail(
+            target="small-vehicle",
+            predicted_count=12,
+            gold_count=13,
+            absolute_error=1,
+            exact_match=False,
+            accepted_point_count=12,
+            rejected_point_count=2,
+            merged_group_count=1,
+            unresolved_conflict_count=1,
+        ),
+        visuals=[VisualAssetView(
+            image_id="i0",
+            role="image",
+            original_asset="assets/abc-original.webp",
+            overlay_asset="assets/abc-overlay.png",
+            status="available",
+        )],
+    )
+    report = Report(
+        run_id="v2-run", total=1, succeeded=0, partial=1, failed=0, skipped=0,
+        samples=[sample],
+    )
+    document = build_html(report)
+    for section in ("Overview", "Tasks", "Expert Routing", "Samples", "Failures", "Runtime"):
+        assert section in document
+    for attribute in (
+        "data-task=", "data-state=", "data-quality=", "data-backend=",
+        "data-fallback=", "data-warning=",
+    ):
+        assert attribute in document
+    for text in (
+        "Candidate Chain", "detector_obb_csl_001", "segmenter_mitb2_001",
+        "BACKEND_UNAVAILABLE", "Target", "Gold", "Prediction", "Absolute Error",
+        "Accepted", "Rejected", "Merged", "Unresolved",
+    ):
+        assert text in document
+    assert 'src="assets/abc-overlay.png"' in document
+    assert document.count('src="assets/abc-original.webp"') >= 2
+    assert document.count('src="assets/abc-overlay.png"') >= 2
+    assert 'class="sample result-incorrect"' in document
+    assert "✕ 错误 / Incorrect" in document
+    assert ".sample summary.sample-preview{display:grid;grid-template-columns:236px minmax(0,1fr)" in document
+    assert "@media(max-width:560px)" in document
+    for class_name in ("run-meta", "sample-preview", "sample-hero", "table-scroll"):
+        assert class_name in document
+    for text in ("Question", "Prediction", "Ground Truth", "Final backend", "Latency"):
+        assert text in document
+    assert document.index('id="samples"') < document.index('id="overview"')
+    assert "data:image" not in document
+
+
+def test_legacy_unknown_quality_uses_persisted_exact_match() -> None:
+    sample = ReportSample(
+        sample_id="legacy-correct",
+        run_task="counting",
+        task="counting",
+        state="succeeded",
+        result_quality="unknown",
+        prediction="2",
+        ground_truth=GroundTruthView(count=2),
+        task_detail=CountingReportDetail(
+            predicted_count=2,
+            gold_count=2,
+            exact_match=True,
+        ),
+    )
+    document = build_html(Report(
+        run_id="legacy", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[sample],
+    ))
+    assert 'data-quality="correct"' in document
+    assert 'class="sample result-correct"' in document
+    assert "✓ 正确 / Correct" in document
+    assert "? 未知 / Unknown" not in document
+
+
+def test_v21_model_call_raw_and_parsed_text_are_escaped() -> None:
+    report = Report(
+        run_id="model-call", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[ReportSample(
+            sample_id="call-1", run_task="general_vqa", task="general_vqa",
+            state="succeeded", model_calls=[ModelCallAuditView(
+                request_id="qwen-1", prompt_version="v1",
+                raw_response="<script>alert(1)</script>",
+                parsed_response='{"answer":"<b>yes</b>"}',
+            )],
+        )],
+    )
+    document = build_html(report)
+    assert "<script>alert(1)</script>" not in document
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in document
+    assert "<b>yes</b>" not in document
+    assert "&lt;b&gt;yes&lt;/b&gt;" in document
+
+
+def test_report_v2_bundle_contains_offline_outputs_and_assets_directory(
+    tmp_path: Path,
+) -> None:
+    from reporting.exporters import REPORT_SCHEMA_VERSION, persist_report_bundle
+
+    run_dir = _build_escaping_run(tmp_path)
+    report_dir = persist_report_bundle(run_dir, build_report(run_dir))
+    for name in (
+        "report.html", "report.json", "samples.csv", "samples.jsonl", "metadata.json",
+    ):
+        assert (report_dir / name).is_file()
+    assert (report_dir / "assets").is_dir()
+    metadata = json.loads((report_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["schema_version"] == REPORT_SCHEMA_VERSION == "report-v2"
+    text = "\n".join(
+        (report_dir / name).read_text(encoding="utf-8-sig")
+        for name in ("report.html", "report.json", "samples.csv", "samples.jsonl", "metadata.json")
+    )
+    assert str(tmp_path) not in text
+    assert "dataset_root" not in text
+    assert "data:image" not in text

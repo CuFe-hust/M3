@@ -42,13 +42,22 @@ def test_default_settings() -> None:
     assert settings.models.segformer_isaid.classes_filename == "classes.json"
     assert settings.models.segformer_oem.classes_filename is None
     assert settings.models.segformer_experts == {}
-    assert settings.backend.yolo.enabled is True
-    assert settings.backend.yolo.detectors[0].name == "detector_obb_csl_001"
-    assert settings.backend.yolo.detectors[0].enabled is True
+    assert settings.backend.yolo.enabled is False
+    assert settings.backend.yolo.detectors == []
     assert settings.agents.counting.default_backend == "auto"
     assert settings.counting.fallback_on_backend_unavailable is True
     assert settings.counting.verify_empty_detection is True
     assert settings.counting.verify_empty_semantic is False
+
+
+def test_local_config_declares_detector_inventory() -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+
+    assert settings.backend.yolo.enabled is True
+    assert [item.name for item in settings.backend.yolo.detectors] == [
+        "detector_obb_csl_001"
+    ]
+    assert settings.backend.yolo.detectors[0].enabled is True
 
 
 def test_legacy_yolo_execution_policy_migrates_only_at_settings_boundary(

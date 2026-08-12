@@ -32,7 +32,7 @@ from agents.counting.backends.yolo_obb import YoloOBBCountingBackend
 from agents.counting.backends.yolo_model_store import YoloModelStore
 from agents.counting.expert_catalog import ExpertCatalog, ExpertSpec
 from agents.counting.schema import CountTargetSpec
-from agents.counting.settings import CountingTargetStrategy
+from agents.counting.settings import CountingTargetStrategy, YoloDetectorSettings
 from agents.general_vqa import GeneralVQAAgent
 from agents.grounding import GroundingAgent
 from agents.registry import AgentRegistry
@@ -104,7 +104,7 @@ def assemble_runtime(
     测试注入）；仅在提供 api_key 时创建 DeepSeek 客户端——无 key 时 judge
     服务退化为纯确定性。"""
 
-    catalog = PromptCatalog(prompts_root or project_root / "prompts")
+    catalog = _load_prompt_catalog(project_root, prompts_root)
     service_cache = JsonResponseCache(settings.runs.root / "service" / "cache")
     if qwen_client is None:
         qwen_client = create_model(
@@ -317,10 +317,10 @@ def _build_backend_registry(
             key=lambda item: item.name,
         ):
             if detector.enabled:
-                validated_detector = detector
+                validated_detector = _resolve_yolo_detector(detector, project_root)
                 if expert_catalog is not None:
                     validated_detector = _catalog_validated_yolo_detector(
-                        detector,
+                        validated_detector,
                         expert_catalog,
                     )
                 registry.register(
@@ -346,6 +346,47 @@ def _build_backend_registry(
                 )
             )
     return registry
+
+
+def _load_prompt_catalog(
+    project_root: Path,
+    explicit: Path | None,
+) -> PromptCatalog:
+    """Resolve and validate active prompts without exposing host paths."""
+
+    if explicit is not None:
+        try:
+            return PromptCatalog(explicit)
+        except (OSError, UnicodeError, KeyError):
+            raise RuntimeCompositionError(
+                "explicit prompt metadata is unavailable"
+            ) from None
+
+    package_root = Path(__file__).resolve().parents[1]
+    seen: set[Path] = set()
+    for candidate in (project_root / "prompts", package_root / "prompts"):
+        resolved = candidate.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        try:
+            return PromptCatalog(candidate)
+        except (OSError, UnicodeError, KeyError):
+            continue
+    raise RuntimeCompositionError("prompt metadata is unavailable")
+
+
+def _resolve_yolo_detector(
+    detector: YoloDetectorSettings,
+    project_root: Path | None,
+) -> YoloDetectorSettings:
+    """Canonicalize physical weights once at the composition boundary."""
+
+    weights = detector.weights
+    if not weights.is_absolute():
+        root = project_root or Path(__file__).resolve().parents[1]
+        weights = (root / weights).resolve()
+    return detector.model_copy(update={"weights": weights})
 
 
 def _load_expert_catalog(project_root: Path) -> ExpertCatalog:

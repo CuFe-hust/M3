@@ -149,8 +149,9 @@ def _stub_preprocess(
     带真实产物文件的受控预处理结果。"""
     output = artifact_dir / "change_preprocess"
     output.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (32, 32), (1, 2, 3)).save(output / "harmonized_t1.png")
-    Image.new("RGB", (32, 32), (1, 2, 3)).save(output / "harmonized_t2.png")
+    if status == "applied":
+        Image.new("RGB", (32, 32), (1, 2, 3)).save(output / "harmonized_t1.png")
+        Image.new("RGB", (32, 32), (1, 2, 3)).save(output / "harmonized_t2.png")
     Image.new("RGB", (32, 32), (1, 2, 3)).save(output / "proposal_overlay.png")
     proposals = proposals or []
     for proposal in proposals:
@@ -175,10 +176,15 @@ def _stub_preprocess(
         "validation_report": "change_preprocess/validation_report.json",
         "difference_map": "change_preprocess/difference_map.png",
         "proposal_overlay": "change_preprocess/proposal_overlay.png",
-        "harmonized_t1": "change_preprocess/harmonized_t1.png",
-        "harmonized_t2": "change_preprocess/harmonized_t2.png",
         "harmonization_report": "change_preprocess/harmonization_report.json",
     }
+    if status == "applied":
+        files.update(
+            {
+                "harmonized_t1": "change_preprocess/harmonized_t1.png",
+                "harmonized_t2": "change_preprocess/harmonized_t2.png",
+            }
+        )
     if proposals:
         files["proposals"] = "change_preprocess/proposals.json"
     return ChangePreprocessResult(
@@ -342,6 +348,43 @@ def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
         "change_000:change_000_raw_t1",
         "change_000:change_000_raw_t2",
     ]
+
+
+def test_rejected_transform_keeps_raw_and_attaches_proposal_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal = _proposal()
+    preprocess = _stub_preprocess(
+        tmp_path / "artifacts",
+        status="rejected",
+        proposals=[proposal],
+    )
+
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: preprocess,
+    )
+    client = _RecordingClient()
+    budget = _FakeBudget()
+
+    execution = asyncio.run(
+        _agent(client).run(_sample(tmp_path), _context(tmp_path, budget))
+    )
+
+    assert _manifest_roles(client) == [
+        "raw_full_t1",
+        "raw_full_t2",
+        "proposal_overlay",
+        "change_000:change_000_raw_t1",
+        "change_000:change_000_raw_t2",
+    ]
+    assert len(client.calls) == 1
+    assert budget.qwen_calls == 1
+    assert execution.trace["harmonized_evidence_available"] is False
+    assert execution.trace["proposal_evidence_attached"] is True
+    assert execution.trace["image_manifest_roles"] == _manifest_roles(client)
 
 
 def test_manifest_ordering_is_stable_and_indexed(tmp_path: Path, monkeypatch) -> None:

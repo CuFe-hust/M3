@@ -133,15 +133,17 @@ def test_detector_rejects_bad_sha256() -> None:
 # ── YoloCountingSettings / YOLO 计数配置 ───────────────────────────────────
 
 
-def test_yolo_counting_settings_default_detector() -> None:
+def test_yolo_settings_do_not_embed_concrete_default_detector_inventory() -> None:
     settings = YoloCountingSettings()
-    assert settings.enabled is True
-    assert len(settings.detectors) == 1
-    assert settings.detectors[0].name == "detector_obb_csl_001"
-    assert settings.detectors[0].enabled is True
-    assert settings.detectors[0].weights == Path(
-        "models/yolo_obb/yolov5m_obb_csl_dotav20.onnx"
-    )
+    assert settings.enabled is False
+    assert settings.detectors == []
+
+    source = (
+        Path(__file__).resolve().parents[3] / "agents" / "counting" / "settings.py"
+    ).read_text(encoding="utf-8")
+    assert "_default_yolo_detectors" not in source
+    assert "detector_obb_csl_001" not in source
+    assert "DOTA-v2.0" not in source
 
 
 def test_yolo_counting_settings_requires_unique_detector_names() -> None:

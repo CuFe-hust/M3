@@ -1,9 +1,33 @@
 {
+  "counting_target_summary": [],
   "dataset": "auto-demo",
   "failed": 0,
+  "failure_summary": {
+    "backend_failure_counts": {},
+    "sample_error_codes": {},
+    "warning_codes": {}
+  },
+  "metadata": {
+    "dataset": "auto-demo",
+    "model_ids": {
+      "deepseek": "deepseek-v4-flash",
+      "qwen": "qwen3-vl-4b-instruct"
+    },
+    "sample_filter": null,
+    "split": "test"
+  },
   "partial": 0,
+  "routing_summary": {
+    "fallback_count": 0,
+    "fallback_rate": 0.0,
+    "fallback_reason_counts": {},
+    "fallback_transitions": [],
+    "final_backend_usage": {},
+    "primary_backend_usage": {}
+  },
   "samples": [
     {
+      "backend_stages": [],
       "error_code": null,
       "evaluation": {
         "deterministic_metrics": {
@@ -23,13 +47,63 @@
       },
       "execution_agent": "general_vqa_agent",
       "fallback_used": false,
+      "ground_truth": null,
       "judge_status": "succeeded",
+      "model_calls": [],
       "prediction": "yes",
       "question": "Is there a road?",
+      "reference_answers": [],
       "resolved_task": "general_vqa",
+      "result_quality": "incorrect",
+      "routing": {
+        "attempted_backends": [],
+        "candidate_backends": [],
+        "execution_agent": "general_vqa_agent",
+        "fallback_history": [],
+        "fallback_used": false,
+        "final_backend": null,
+        "final_backend_kind": null,
+        "primary_backend": null,
+        "primary_backend_kind": null,
+        "resolved_task": "general_vqa",
+        "review_backend": null,
+        "selection_reason": null
+      },
+      "routing_decision": {
+        "execution_mode": "single",
+        "fallback_agents": [],
+        "primary_agent": "general_vqa_agent",
+        "reason_codes": ["task_general_vqa"],
+        "requires_tiling": false,
+        "task": "general_vqa"
+      },
       "run_task": "auto",
       "state": "succeeded",
-      "task": "general_vqa"
+      "task": "general_vqa",
+      "task_detail": {
+        "exact_match": false,
+        "geometry_repair_severity": null,
+        "judge_concise_rationale": "ok",
+        "judge_score": 1.0,
+        "judge_status": "succeeded",
+        "kind": "general_vqa",
+        "prediction": "yes",
+        "question": "Is there a road?",
+        "reference_answers": [],
+        "visual_evidence_count": 0
+      },
+      "visuals": [
+        {
+          "height": 4,
+          "image_id": "0-0",
+          "original_asset": "assets/66768d2e64ada6ef52dd-original.webp",
+          "overlay_asset": null,
+          "role": "image",
+          "status": "unsupported_geometry",
+          "width": 4
+        }
+      ],
+      "warnings": []
     }
   ],
   "skipped": 0,
@@ -39,9 +113,12 @@
       "agent_usage": {
         "general_vqa_agent": 1
       },
+      "correct": 0,
       "failed": 0,
       "fallback_count": 0,
       "fallback_rate": 0.0,
+      "final_backend_usage": {},
+      "incorrect": 1,
       "judge_status_counts": {
         "succeeded": 1
       },
@@ -54,11 +131,16 @@
         }
       },
       "partial": 0,
+      "primary_backend_usage": {},
       "run_task": "auto",
       "skipped": 0,
       "succeeded": 1,
-      "total": 1
+      "total": 1,
+      "unknown_quality": 0,
+      "warning_count": 0
     }
   ],
-  "total": 1
+  "total": 1,
+  "visual_materialized_count": 0,
+  "visual_total": 1
 }

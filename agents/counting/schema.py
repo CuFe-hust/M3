@@ -11,6 +11,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from data.schema import JsonValue
+
 
 class PixelRect(BaseModel):
     """Half-open integer pixel rectangle used by all internal geometry.
@@ -271,3 +273,29 @@ class CountingResult(BaseModel):
         if self.failed_tiles and self.status not in {"partial", "failed"}:
             raise ValueError("failed tiles require partial or failed status")
         return self
+
+
+class CountingBackendAttemptAudit(BaseModel):
+    """Persisted, path-free audit record for one backend execution attempt."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    backend_name: str = Field(min_length=1)
+    backend_kind: str = Field(min_length=1)
+    phase: Literal["primary", "fallback", "zero_review"]
+    status: Literal["succeeded", "partial", "failed", "unavailable"]
+    reason_code: str | None = None
+    error_type: str | None = None
+    counting: CountingResult | None = None
+    agent_result: dict[str, JsonValue] | None = None
+    backend_trace: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class CountingExecutionAudit(BaseModel):
+    """Complete ordered audit for one sample's counting backend attempts."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sample_id: str = Field(min_length=1)
+    target: str = Field(min_length=1)
+    attempts: list[CountingBackendAttemptAudit] = Field(default_factory=list)

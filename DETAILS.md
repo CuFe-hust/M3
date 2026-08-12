@@ -1031,7 +1031,7 @@ change_caption
 change_qa
 ```
 
-处理有序时相图对，包含 pair validation、单次 harmonization、proposal perception、artifact publish 与 rule-only review。默认关闭 semantic auxiliary path，保持 V1 difference proposal；启用时由 bootstrap 单独构造并注入抽象 `DenseSemanticClient`，按 low-level、PIF feature residual、confidence-weighted semantic difference 和 robust fusion 生成 V2 proposal。PIF validity 与 harmonization transform validity 是独立事实：PIF 同时满足原始 pixel-count/ratio gate 才可用于 feature normalization 与 robust threshold；transform 即使被拒绝，valid raw-derived PIF 仍可与 raw comparison pair 进入 V2。每个 V2 proposal 发布三路 score、融合图、二值 mask、crop-local mask/overlay 与相对路径清单；实际消费 PIF 时必须发布 `pif_mask.png`。trace 记录阈值来源、fallback、组件有效权重、PIF validity/usage、SegFormer logical identity、verified weight SHA 与算法设置，绝不记录 checkpoint 绝对路径或完整 feature/probability tensor。SegFormer 不消耗 Qwen budget；失败按显式策略稳定降级或在 Qwen 调用前终止。raw T1/T2 始终是语义事实依据，harmonized 图、SegFormer 输出和 proposal mask 仅用于注意力引导。Change runtime prompt 由 bootstrap 从 `PromptCatalog` 注入，运行时文本、版本、request hash 与 run prompt snapshot 共享同一权威资产。
+处理有序时相图对，包含 pair validation、单次 harmonization、proposal perception、artifact publish 与 rule-only review。默认关闭 semantic auxiliary path，保持 V1 difference proposal；启用时由 bootstrap 单独构造并注入抽象 `DenseSemanticClient`，按 low-level、PIF feature residual、confidence-weighted semantic difference 和 robust fusion 生成 V2 proposal。PIF validity 与 harmonization transform validity 是独立事实：PIF 同时满足原始 pixel-count/ratio gate 才可用于 feature normalization 与 robust threshold；transform 即使被拒绝，valid raw-derived PIF 仍可与 raw comparison pair 进入 V2。Proposal attention evidence 的附加不依赖 harmonized artifacts：rejected transform 的成功 V2 run 向 Qwen 发送 raw full T1/T2 与 proposal evidence，并省略不存在的 harmonized images。每个 V2 proposal 发布三路 score、融合图、二值 mask、crop-local mask/overlay 与相对路径清单；V2 实际消费 PIF 时，无论 `harmonization.save_artifacts` 如何设置，都必须发布 mandatory `pif_mask.png`，该开关只控制 optional harmonized artifacts。trace 记录实际 evidence roles/count、阈值来源、fallback、组件有效权重、PIF validity/usage、SegFormer logical identity、verified weight SHA 与算法设置，绝不记录 checkpoint 绝对路径或完整 feature/probability tensor。SegFormer 不消耗 Qwen budget；失败按显式策略稳定降级或在 Qwen 调用前终止。raw T1/T2 始终是语义事实依据，harmonized 图、SegFormer 输出和 proposal mask 仅用于注意力引导。Change runtime prompt 由 bootstrap 从 `PromptCatalog` 注入，运行时文本、版本、request hash 与 run prompt snapshot 共享同一权威资产。
 
 2026-08-10 NVIDIA GB10 离线校准后，semantic path 的基准配置为 MiT-B2 iSAID、`feature_stage=1`（stride 8）、`tile_size=768`、`tile_overlap=64`、`local_match_radius=1`、`pif_threshold_k=4.5`，三路融合权重保持 `0.25/0.50/0.25`。该选择来自 stage/tile、20 对 LEVIR-CC、5×4 threshold/fusion 联合矩阵与 iSAID/OEM 对照；不是通用 benchmark 结论。`semantic.enabled` 仍默认关闭，live 校准不会改变 V1 行为。
 
@@ -1296,10 +1296,13 @@ hints 匹配；VLM 不返回 backend/checkpoint 决策。
 
 YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
 
-默认配置启用 `detector_obb_csl_001`（`models/yolo_obb/yolov5m_obb_csl_dotav20.onnx`），
-Counting backend 默认注册 `yolo_obb` 路径；权重与 ONNX Runtime 仍由本地
-环境准备，不自动下载。缺少权重/依赖时按 `fallback_on_backend_*` 策略进入
-有序回退链，而不是使运行失败。可通过 `backend.yolo.enabled=false` 显式关闭。
+Python `YoloCountingSettings` 只保留 schema 与通用默认值：默认 `enabled=false`、
+`detectors=[]`，不包含具体 checkpoint、labels 或 backend id。`ExpertCatalog` 是 capability、
+logical identity、SHA、labels 与 priority 的事实源；`configs/local.yaml` 等部署配置是 enabled、
+物理权重路径、provider/device 与阈值的事实源。只有显式部署 inventory 才注册 YOLO。
+相对权重路径在 composition root 按 `project_root` canonicalize，绝对外部挂载路径保持不变；
+物理路径不参与 catalog identity。权重与 ONNX Runtime 不自动下载，缺失时仍按通用 fallback
+策略进入下一专家。
 
 硬件策略由 settings 决定，例如：
 
@@ -1347,6 +1350,10 @@ target、候选/尝试/final backend、fallback history、counting mode 与 acce
 
 wheel 通过 package-data 携带 expert catalog、verified SegFormer 小型 metadata 与 prompts，
 不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
+Prompt root 的顺序是 explicit override → `project_root/prompts` → installed package
+`prompts`；显式错误配置 fail closed，公开 composition error 不包含绝对路径。CI 使用真实
+wheel 在源码树外组装 runtime，验证 catalog/prompt metadata、QuantityProposal、lazy
+SegFormer 与不加载权重的 YOLO 注册。
 
 ---
 
@@ -1846,6 +1853,7 @@ status.json
 routing_decision.json
 agent_result.json
 counting_result.json
+counting_attempts.json       # counting only; ordered backend audit
 agent_trace.json
 predictions.jsonl
 dataset_summary.json
@@ -1889,6 +1897,7 @@ outputs/runs/<run_id>/
                 ├── routing_decision.json
                 ├── agent_result.json
                 │   or counting_result.json
+                ├── counting_attempts.json    # new counting runs only
                 ├── <task>_evaluation.json
                 ├── agent_trace.json
                 └── optional model/judge artifacts
@@ -2428,15 +2437,26 @@ result_path
 updated_at
 question
 prediction
+ground_truth
 resolved_task
 execution_agent
 fallback_used
 judge_status
 inference_seconds
 evaluation
+routing_decision
+backend_stages
+model_calls
 ```
 
 `task` 表示 execution task。
+
+`ground_truth` 是 task-neutral 的只读投影，稳定包含 answers、count、boxes、
+points、labels 与 coordinate_frame。`backend_stages` 只来自持久化的
+`counting_attempts.json`，按真实 attempt 顺序展示；旧 run 缺少该文件时保持
+空列表，不从 final result 或 trace 反推中间阶段。`model_calls` 只读取当前
+sample 目录内已有的 request/raw/parsed/validation 产物，raw response 最多
+8000 字符，且不暴露 artifact_dir、绝对路径、Base64 或 credential。
 
 ## `TaskSummary`
 
@@ -2534,7 +2554,7 @@ raw secret
 
 ```json
 {
-  "schema_version": "report-v1",
+  "schema_version": "report-v2",
   "external_standard": {
     "...": "..."
   }
@@ -2572,6 +2592,63 @@ CountingResult
 这是展示能力，不参与 metric。
 
 如果图像尺寸/结果契约不一致，应失败，不应为了画图改变计数结果。
+
+### Report V2 presentation and asset boundary
+
+Report V2 is a typed presentation layer over persisted artifacts. Its stable
+models include `RunMetadata`, `LatencySummary`, `RoutingView`, typed task
+details, `VisualAssetView`, routing/failure/target aggregates, and bounded
+Counting point previews. Missing optional artifacts remain missing; they are
+not converted to zero/false or reconstructed from names.
+
+The export lifecycle is:
+
+```text
+build read-only Report
+  -> materialize every resolvable sample preview
+  -> materialize report-relative final/stage WEBP/PNG assets
+  -> write report-v2 JSON/CSV/JSONL/metadata
+  -> render the pure offline HTML dashboard
+```
+
+Visual materialization is the only reporting stage allowed to consume the
+private `run_request.dataset_root`, and that value never enters a Report view
+model or text export. It does not call an Agent, router, model, backend, judge,
+or evaluator. Evidence with an explicit `image_id` is bound strictly; missing
+IDs bind only for a single-image sample. Ambiguous multi-image evidence and
+unsafe ground-truth coordinate frames are not guessed.
+
+The dashboard is sample-first: Samples is the first/default content, while
+Overview, Tasks, Expert Routing, Failures, and Runtime remain secondary,
+collapsible aggregate views. A collapsed sample row already shows its
+thumbnail, question, prediction, ground truth, result quality, final backend,
+fallback state, and latency. The expanded first screen shows visuals and the
+answer audit before the real persisted execution stages and sanitized model
+calls. Deterministic quality and optional Judge quality remain separate,
+including the existing incomplete semantic-Judge lower-bound behavior.
+
+Asset policy:
+
+- default visual-sample budget: none; every resolvable sample is materialized;
+- an explicit compatibility limit still uses failed/partial/incorrect/fallback/
+  warning priority followed by stable run-task/sample order;
+- original preview: WEBP, maximum side 1024, quality 85;
+- overlay: PNG, outline/ring only, 1–2 px;
+- accepted/prediction green, rejected red, ground truth cyan, unresolved
+  amber, reviewer purple;
+- real OBB polygons are drawn as polygons, never downgraded to enclosing
+  rectangles;
+- OBB/box geometry suppresses the point-pipeline helper radius; point-only
+  evidence uses a fixed 3–5 px hollow ring and never `point.radius_px`;
+- successful persisted counting attempts with geometry receive separate,
+  hash-safe stage overlays; failed/unavailable or legacy inferred stages do not;
+- dimension mismatch preserves an original preview but suppresses the
+  invalid overlay.
+
+All report text exports remove host paths, dataset roots, unsafe raw exception
+messages, credentials, authorization values, and network URLs. HTML consumes
+only the structured `Report`; it performs no I/O and contains no external
+resource or Base64 dependency.
 
 ---
 
