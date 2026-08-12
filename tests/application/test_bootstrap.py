@@ -16,6 +16,7 @@ import pytest
 from agents.change.settings import ChangeSemanticSettings
 from agents.counting.expert_catalog import ExpertCatalog, ExpertCatalogError
 from agents.counting.schema import CountTargetSpec
+from agents.counting.settings import YoloDetectorSettings
 from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
@@ -654,3 +655,290 @@ def test_import_application_has_no_side_effects(tmp_path: Path, monkeypatch) -> 
         ).read_text(encoding="utf-8")
         assert "create_model(" not in source, module_name
         assert "complete_json" not in source, module_name
+
+
+# ── visual planning composition (14A3 C9) / 视觉规划组合装配 ─────────────
+
+
+def _visual_settings(
+    tmp_path: Path,
+    *,
+    visual_planning: dict[str, Any] | None = None,
+    yolo: dict[str, Any] | None = None,
+) -> AppSettings:
+    payload: dict[str, Any] = dict(
+        runs={"root": tmp_path / "runs"},
+    )
+    if visual_planning is not None:
+        payload["visual_planning"] = visual_planning
+    if yolo is not None:
+        payload["backend"] = {"yolo": yolo}
+    return AppSettings(**payload)
+
+
+def _calibrated_detector(tmp_path: Path, name: str = "fake-det") -> YoloDetectorSettings:
+    """A structurally valid detector whose weights file does not exist, so
+    the shared store fails closed at assembly. 结构合法但权重文件不存在的检测
+    器，使共享 store 在组装时严格失败。"""
+    return YoloDetectorSettings(
+        name=name,
+        enabled=True,
+        weights=tmp_path / f"{name}.onnx",
+        model_id=f"fake:{name}:v1",
+        sha256="0" * 64,
+        classes=["plane"],
+        require_cuda=False,
+        device="cpu",
+    )
+
+
+def test_visual_planning_flag_off_wires_none(tmp_path: Path) -> None:
+    """The feature flag off must leave the gate unwired so the legacy path
+    stays byte-identical. flag 关闭时门禁必须保持未接线，旧路径逐字节一致。"""
+    components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
+    runner = components.sample_runner_factory(data_root=tmp_path)
+    assert runner.visual_planning is None
+
+
+def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
+    tmp_path: Path,
+) -> None:
+    """Enabled with default (uncalibrated) policies: the planner gate is
+    wired, the prompt/catalog version binding holds, the VQA evidence service
+    stays absent (fail closed at runtime), and the grounding seam runs with
+    the explicit all-None policy. 默认（未校准）策略下启用：规划门接线、prompt/
+    catalog 版本绑定成立、VQA 证据服务保持缺失（运行时严格失败）、grounding
+    seam 以显式全 None 策略运行。"""
+    settings = _visual_settings(tmp_path, visual_planning={"enabled": True})
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    runner = components.sample_runner_factory(data_root=tmp_path)
+    gate = runner.visual_planning
+    assert gate is not None
+    # The settings-declared versions must bind the real prompt/catalog assets.
+    # settings 声明版本必须绑定真实 prompt/catalog 资产。
+    planner = gate._planner
+    assert planner._prompt_version == components.prompt_catalog.version("visual_plan")
+    assert planner._catalog.catalog_version == (
+        settings.visual_planning.planner.catalog_version
+    )
+    assert gate.bindings is not None
+    assert gate.bindings.vqa_evidence is None
+    assert gate.bindings.grounding_evidence is not None
+    grounding = gate.bindings.grounding_evidence
+    assert grounding._policy.yolo_enabled is False
+    # Uncalibrated means the YOLO phase is off: no detector is wired at all,
+    # so nothing is ever loaded for it. 未校准即 YOLO 阶段关闭：完全不接线检测
+    # 器，因此永远不会为它加载任何东西。
+    assert grounding._yolo_client is None
+
+
+def test_visual_planning_catalog_version_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A settings catalog version that drifts from the evidence catalog asset
+    must fail closed at assembly. settings 的 catalog 版本与证据目录资产漂移
+    时必须在组装时严格失败。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "enabled": True,
+            "planner": {"catalog_version": "bogus-catalog-v1"},
+        },
+    )
+    with pytest.raises(RuntimeCompositionError):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_prompt_version_mismatch_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A settings prompt version that drifts from the prompt catalog binding
+    must fail closed at assembly. settings 的 prompt 版本与 prompt catalog 绑
+    定漂移时必须在组装时严格失败。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={"enabled": True, "planner": {"prompt_version": "v99"}},
+    )
+    with pytest.raises(RuntimeCompositionError):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_partial_calibration_fails_closed(tmp_path: Path) -> None:
+    """A partially calibrated detector policy cannot form a global policy and
+    must fail closed instead of inventing defaults. 部分校准的检测策略无法构成
+    全局策略，必须严格失败而不是杜撰默认值。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "enabled": True,
+            "detectors": {"small_vehicle": {"confidence_threshold": 0.5}},
+        },
+    )
+    with pytest.raises(RuntimeCompositionError):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_multiple_calibration_fails_closed(tmp_path: Path) -> None:
+    """Multiple differing calibrated policies are ambiguous for the single
+    global executor policy and must fail closed. 多条不同已校准策略对单一全局
+    执行器策略构成歧义，必须严格失败。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "enabled": True,
+            "detectors": {
+                "small_vehicle": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                },
+                "large_vehicle": {
+                    "confidence_threshold": 0.6,
+                    "nms_iou_threshold": 0.4,
+                    "max_detections": 3,
+                },
+            },
+        },
+    )
+    with pytest.raises(RuntimeCompositionError):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_calibrated_without_detector_fails_closed(
+    tmp_path: Path,
+) -> None:
+    """A calibrated VQA policy without any enabled detector is inconsistent
+    and must fail closed. 已校准 VQA 策略没有任何启用检测器即不一致，必须严格
+    失败。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "enabled": True,
+            "detectors": {
+                "small_vehicle": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                }
+            },
+        },
+    )
+    with pytest.raises(RuntimeCompositionError):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_enabled_segmenter_fails_closed(tmp_path: Path) -> None:
+    """An enabled segmenter whose model binding is not frozen must fail closed
+    at assembly instead of silently ignoring the declared capability.
+    已启用分割器但模型绑定未冻结时必须在组装时严格失败，而不是静默忽略已声明
+    能力。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "enabled": True,
+            "segmenters": {
+                "building": {"enabled": True, "class_map_version": "isaid-v2"}
+            },
+        },
+    )
+    with pytest.raises(RuntimeCompositionError):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_yolo_stays_lazy_until_first_inference(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Composition must never load YOLO weights (AGENTS.md lazy-loading
+    contract): assembly wires a lazy client without touching the store, the
+    first detect() goes through the shared audited store, and a missing
+    weights failure surfaces only then — as the stable domain error, never
+    with a host path. 组合期绝不加载 YOLO 权重（AGENTS.md 惰性加载契约）：装
+    配只接线惰性客户端而不触碰 store，首次 detect() 才经共享审计 store；权重
+    缺失的失败只在那时呈现——以稳定领域错误出现，绝不携带主机路径。"""
+
+    get_calls: list[str] = []
+
+    class _FakeStore:
+        def get(self, detector: YoloDetectorSettings) -> Any:
+            get_calls.append(detector.name)
+            from agents.errors import DetectorWeightsMissingError
+
+            raise DetectorWeightsMissingError(detector.name, "weights.onnx")
+
+    monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
+    detector = _calibrated_detector(tmp_path)
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "enabled": True,
+            "detectors": {
+                "small_vehicle": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                }
+            },
+        },
+        yolo={"enabled": False, "detectors": [detector]},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    gate = components.sample_runner_factory(data_root=tmp_path).visual_planning
+    assert gate is not None and gate.bindings is not None
+    assert get_calls == []  # assembly never loads / 组合期绝不加载
+    vqa = gate.bindings.vqa_evidence
+    assert vqa is not None
+    with pytest.raises(Exception) as exc_info:
+        vqa._yolo_client.detect(  # type: ignore[attr-defined]
+            "unused",
+            confidence=0.5,
+            iou=0.5,
+            image_size=1024,
+            device="cpu",
+            max_detections=5,
+        )
+    assert get_calls == ["fake-det"]  # first inference loads once / 首次推理才加载
+    # Only the stable error type name surfaces; never the host path.
+    # 只呈现稳定错误类型名；绝不携带主机路径。
+    assert "DetectorWeightsMissingError" in type(exc_info.value).__name__
+    assert str(tmp_path) not in str(exc_info.value)

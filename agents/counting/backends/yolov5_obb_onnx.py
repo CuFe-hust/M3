@@ -107,6 +107,11 @@ class YoloV5ObbOnnxModel:
             raise ValueError(
                 f"YOLOv5-OBB ONNX input must be [1, 3, 1024, 1024], got {input_shape!r}"
             )
+        # Actual model input size; consumed by the shared detection seam so
+        # outputs report the real letterboxed resolution, not a configured one.
+        # 模型实际输入尺寸；共享检测 seam 消费该值，使输出报告真实 letterbox
+        # 分辨率而非配置值。
+        self.model_input_size = (1024, 1024)
         expected_channels = 5 + len(classes) + 180
         if output_shape[-1] != expected_channels:
             raise ValueError(

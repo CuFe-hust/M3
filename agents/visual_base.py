@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
+
 from agents.base import AgentContext, AgentExecution
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentName, AgentResult
@@ -24,7 +26,12 @@ from models.base import (
     VisionLanguageClient,
     build_request_hash,
 )
-from models.images import UnsupportedImageFormatError, detect_image_mime, image_to_data_url
+from models.images import (
+    UnsupportedImageFormatError,
+    detect_image_mime,
+    image_to_data_url,
+    read_normalized_image,
+)
 
 
 @dataclass(frozen=True)
@@ -219,6 +226,31 @@ class VisualAgentBase:
             client_version=identity.client_version,
             model_revision=identity.revision,
         )
+
+    def _read_evidence_images(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+    ) -> dict[str, Image.Image]:
+        """Decode every sample image through the escape-guarded seam, keyed by
+        image_id; I/O failures map to stable codes and never leak machine
+        paths. Shared by the object-evidence protocol owners (14A2 §4.3).
+        通过防逃逸 seam 解码每条样本图像，按 image_id 索引；I/O 失败映射为
+        稳定 code，绝不泄漏机器路径。由对象证据协议 owner 共享（14A2 §4.3）。"""
+        images: dict[str, Image.Image] = {}
+        for image_ref in sample.images:
+            candidate_path, _ = self._read_image(
+                image_ref.path, context, sample_id=sample.sample_id
+            )
+            try:
+                images[image_ref.image_id] = read_normalized_image(candidate_path)
+            except (OSError, ValueError) as exc:
+                raise AgentExecutionError(
+                    self.name,
+                    sample.sample_id,
+                    cause=f"image_decode_failed:{type(exc).__name__}",
+                ) from exc
+        return images
 
     def _read_image(
         self,

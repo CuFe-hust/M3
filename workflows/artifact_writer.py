@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.base import AgentExecution, _validate_plain_basename
+from agents.schema import FirstQwenVisualPlan
 from data.adapters.base import AdapterProbe
 from data.schema import UnifiedSample
 from workflows.events import _atomic_replace, _path_lock, _reject_secrets
@@ -28,6 +29,11 @@ AGENT_TRACE_FILENAME = "agent_trace.json"
 PREDICTIONS_FILENAME = "predictions.jsonl"
 DATASET_SUMMARY_FILENAME = "dataset_summary.json"
 DATASET_PROBE_FILENAME = "dataset_probe.json"
+# Frozen first-Qwen visual-plan basename (C7, 14A2): sample-relative,
+# validated-schema only, never a raw model body.
+# 冻结第一 Qwen visual plan basename（C7，14A2）：样本相对、只存已校验
+# schema，绝不存原始模型正文。
+VISUAL_PLAN_FILENAME = "visual_plan.json"
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -78,6 +84,16 @@ class ArtifactWriter:
         """Persist a routing decision. / 持久化路由决策。"""
 
         atomic_write_json(sample_dir / ROUTING_DECISION_FILENAME, _json_value(routing))
+
+    def write_visual_plan(self, sample_dir: Path, plan: FirstQwenVisualPlan) -> Path:
+        """Atomically persist the validated visual plan under the frozen
+        basename; only the validated schema is stored, never a raw model
+        body. 在冻结 basename 下原子持久化已验证 visual plan；只存已校验
+        schema，绝不存原始模型正文。"""
+
+        path = sample_dir / VISUAL_PLAN_FILENAME
+        atomic_write_json(path, plan.model_dump(mode="json"))
+        return path
 
     def write_execution(self, sample_dir: Path, execution: AgentExecution) -> Path:
         """Persist an Agent payload under its declared result filename, plus

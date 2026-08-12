@@ -25,6 +25,7 @@ from workflows.artifact_writer import (
     ROUTING_DECISION_FILENAME,
     SAMPLE_FILENAME,
     STATUS_FILENAME,
+    VISUAL_PLAN_FILENAME,
     ArtifactWriter,
     atomic_append_jsonl,
     atomic_write_json,
@@ -94,6 +95,50 @@ def test_write_routing(tmp_path: Path) -> None:
     ArtifactWriter().write_routing(tmp_path, decision)
     payload = json.loads((tmp_path / ROUTING_DECISION_FILENAME).read_text(encoding="utf-8"))
     assert payload["primary_agent"] == "change_agent"
+
+
+def test_write_visual_plan_persists_validated_schema(tmp_path: Path) -> None:
+    from agents.schema import FirstQwenVisualPlan, ObjectEvidenceRequest, RoiPlan, RoiRegion
+
+    # Only the validated schema is stored — the frozen basename is a pure
+    # basename and the payload is exactly the model_dump of the plan.
+    # 只存已校验 schema——冻结 basename 是纯 basename，载荷就是 plan 的
+    # model_dump，绝不存原始模型正文。
+    plan = FirstQwenVisualPlan(
+        version="first-qwen-plan-v1",
+        execution_family="object_evidence_vqa",
+        confidence=0.92,
+        roi_plan=RoiPlan(
+            rois=[
+                RoiRegion(
+                    roi_id="r1",
+                    image_id="image",
+                    xyxy=(0.1, 0.2, 0.5, 0.6),
+                )
+            ]
+        ),
+        evidence_request=ObjectEvidenceRequest(
+            composite_categories=["vehicle", "building"]
+        ),
+    )
+    writer = ArtifactWriter()
+    written = writer.write_visual_plan(tmp_path, plan)
+    assert written == tmp_path / VISUAL_PLAN_FILENAME
+    stored = json.loads((tmp_path / VISUAL_PLAN_FILENAME).read_text(encoding="utf-8"))
+    assert stored == plan.model_dump(mode="json")
+    assert stored["execution_family"] == "object_evidence_vqa"
+    assert stored["roi_plan"]["rois"][0]["roi_id"] == "r1"
+    assert stored["evidence_request"]["composite_categories"] == ["vehicle", "building"]
+    # Never any raw model body / extra keys.
+    # 绝不包含原始模型正文或多余键。
+    assert set(stored) == {
+        "version",
+        "execution_family",
+        "confidence",
+        "roi_plan",
+        "evidence_request",
+        "reason_codes",
+    }
 
 
 def test_write_execution_primary_and_additional(tmp_path: Path) -> None:

@@ -18,13 +18,13 @@ from PIL import Image
 from agents.counting.schema import CountingResult, GlobalPointObservation
 from agents.general_vqa import GeneralVQAAgent
 from agents.registry import AgentRegistry
-from agents.schema import AgentResult
+from agents.schema import AgentResult, FirstQwenVisualPlan, ObjectEvidenceRequest, RoiPlan
 from data.adapters.base import AdapterProbe
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.judges.base import VQAAnswerJudgeResult
 from models.base import ModelCacheIdentity
 from routing.router import TaskRouter
-from workflows.artifact_writer import ArtifactWriter
+from workflows.artifact_writer import VISUAL_PLAN_FILENAME, ArtifactWriter
 from workflows.call_budget import CallBudgetFactory
 from workflows.dataset_runner import DatasetRunner, storage_key
 from workflows.judge_service import JudgeService
@@ -320,6 +320,88 @@ def test_resume_supplement_missing_result_marks_skipped(tmp_path: Path) -> None:
     status = _status_of(run_dir, "general_vqa", "resume-1")
     assert status["state"] == "skipped"
     assert status["error_code"] == "PERSISTED_RESULT_MISSING"
+
+
+# ── resume: first-Qwen inference artifacts (14A2 §5.3) ──────────────────────
+# Inference-time artifacts (visual plan / evidence / ROI images) are never
+# part of the post-inference repair scope: a succeeded sample keeps them
+# exactly as persisted — no rerun, no repair — because only evaluation,
+# judge, or report may be supplemented.
+# 推理期产物（visual plan / evidence / ROI 图像）绝不进入补判范围：succeeded
+# 样本保持原样——不重跑、不修复——因为只有 evaluation、judge、report 允许补写。
+
+
+def test_resume_succeeded_corrupt_visual_plan_no_rerun(tmp_path: Path) -> None:
+    root, client, _, _, dataset_runner, run_dir = _setup(tmp_path)
+    _run(dataset_runner, root=root)
+    sample_dir = _sample_dir(run_dir, "general_vqa", "resume-1")
+    plan_path = sample_dir / VISUAL_PLAN_FILENAME
+    plan_path.write_text("{corrupt", encoding="utf-8")
+    summary = _run(dataset_runner, root=root, resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 1  # no planner/final-Qwen rerun / 不重跑
+    assert plan_path.read_text(encoding="utf-8") == "{corrupt"  # untouched
+    assert _status_of(run_dir, "general_vqa", "resume-1")["state"] == "succeeded"
+
+
+def test_resume_succeeded_missing_evidence_artifact_no_rerun(tmp_path: Path) -> None:
+    root, client, _, _, dataset_runner, run_dir = _setup(tmp_path)
+    _run(dataset_runner, root=root)
+    sample_dir = _sample_dir(run_dir, "general_vqa", "resume-1")
+    evidence_path = sample_dir / "vqa_evidence.json"
+    evidence_path.write_text("{corrupt", encoding="utf-8")
+    summary = _run(dataset_runner, root=root, resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 1  # evidence is inference-time, never re-inferred
+    assert evidence_path.read_text(encoding="utf-8") == "{corrupt"  # untouched
+    assert _status_of(run_dir, "general_vqa", "resume-1")["state"] == "succeeded"
+
+
+def test_resume_plan_family_never_overrides_execution_task_family(
+    tmp_path: Path,
+) -> None:
+    """A persisted object_evidence_vqa plan must not pull the metric family
+    away from the actual persisted execution task (14A2 §5.3). Resume reads
+    the plan nowhere; the sample stays in the scene_classification execution
+    task's general_vqa bucket. 持久化 object_evidence_vqa plan 绝不把指标族
+    从实际执行任务拉走（14A2 §5.3）。resume 不读 plan；样本保持在
+    scene_classification 执行任务的 general_vqa 桶。"""
+    sample = _vqa_bucket_sample("scene_classification", ["ok"])
+    root, client, _, _, dataset_runner, run_dir = _setup(
+        tmp_path, adapter_samples=[sample]
+    )
+    sample_dir = _seed_succeeded_sample(
+        run_dir,
+        task="scene_classification",
+        sample=sample,
+        payload=AgentResult(
+            agent_name="general_vqa_agent", answer="ok", status="completed"
+        ),
+        result_filename="agent_result.json",
+    )
+    # A valid persisted plan claiming the object-evidence completion family.
+    # 一个声称对象证据完成家族的合法持久化 plan。
+    ArtifactWriter().write_visual_plan(
+        sample_dir,
+        FirstQwenVisualPlan(
+            version="first-qwen-plan-v1",
+            execution_family="object_evidence_vqa",
+            confidence=0.95,
+            roi_plan=RoiPlan(rois=[]),
+            evidence_request=ObjectEvidenceRequest(
+                composite_categories=["building"]
+            ),
+        ),
+    )
+    summary = _run(dataset_runner, root=root, task="scene_classification", resume=True)
+    assert summary.succeeded == 1
+    assert client.calls == 0
+    evaluation = _read_json(sample_dir / "vqa_evaluation.json")
+    assert evaluation["task"] == "general_vqa"  # execution-task family / 执行任务族
+    assert evaluation["deterministic_metrics"]["exact_match"] is True
+    assert _status_of(run_dir, "scene_classification", "parity-scene_classification")[
+        "state"
+    ] == "succeeded"
 
 
 # ── resume: judge / resume：judge 补判 ──────────────────────────────────────

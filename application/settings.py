@@ -10,9 +10,10 @@ the composition root and injected directly into the judge client.
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -74,6 +75,110 @@ class AgentsSettings(BaseModel):
     change: AgentChangeSettings = Field(default_factory=AgentChangeSettings)
 
 
+class VisualPlannerFailureSettings(BaseModel):
+    """Frozen planner failure policy (14A2 approved gate: strict failure).
+    Only "fail" is a supported value — any future relaxation requires a new
+    approval. 冻结规划器失败策略（14A2 批准门禁：严格失败）。只支持 "fail"——
+    未来任何放宽都需新批准。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    on_low_confidence: Literal["fail"] = "fail"
+    on_planner_error: Literal["fail"] = "fail"
+
+
+class VisualPlannerSettings(BaseModel):
+    """First-Qwen planner runtime parameters (C7, 14A2). The catalog/prompt
+    versions bind the planner prompt and the closed evidence catalog to one
+    versioned pair. 第一 Qwen 规划器运行时参数（C7，14A2）。catalog/prompt
+    版本把规划 prompt 与封闭证据目录绑定到单一版本对。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    prompt_version: str = "v1"
+    # Must equal the version declared by agents/evidence_catalog.json; the
+    # composition root verifies the binding when the feature is enabled.
+    # 必须等于 agents/evidence_catalog.json 声明的版本；启用时组合根校验该绑定。
+    catalog_version: str = "first-qwen-evidence-catalog-v1"
+    max_rois: int = Field(default=3, ge=1, le=3)
+    halo_ratio: float = Field(default=0.10, ge=0.0, le=1.0)
+    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
+    failure: VisualPlannerFailureSettings = Field(
+        default_factory=VisualPlannerFailureSettings
+    )
+
+
+class VisualDetectorSettings(BaseModel):
+    """Per-label detector policy (C7, 14A2): every value defaults to None
+    meaning "not calibrated" and disabling the capability (approved gate:
+    uncalibrated = capability off). Values are range-validated when set; no
+    arbitrary production default is ever invented. 逐标签检测策略（C7，14A2）：
+    每个值默认 None 表示“未校准”并关闭能力（已批准门禁：未校准=能力关闭）。
+    设置值时校验范围；绝不杜撰任意生产默认值。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    confidence_threshold: float | None = None
+    nms_iou_threshold: float | None = None
+    max_detections: int | None = None
+
+    @model_validator(mode="after")
+    def validate_calibrated_values(self) -> "VisualDetectorSettings":
+        """Validate ranges only for calibrated (non-None) values.
+        只对已校准（非 None）值校验范围。"""
+
+        if self.confidence_threshold is not None:
+            if not math.isfinite(self.confidence_threshold):
+                raise ValueError("confidence_threshold must be finite")
+            if not 0.0 <= self.confidence_threshold <= 1.0:
+                raise ValueError("confidence_threshold must be within [0.0, 1.0]")
+        if self.nms_iou_threshold is not None:
+            if not math.isfinite(self.nms_iou_threshold):
+                raise ValueError("nms_iou_threshold must be finite")
+            if not 0.0 <= self.nms_iou_threshold <= 1.0:
+                raise ValueError("nms_iou_threshold must be within [0.0, 1.0]")
+        if self.max_detections is not None and self.max_detections < 1:
+            raise ValueError("max_detections must be at least 1 when set")
+        return self
+
+
+class VisualSegmenterSettings(BaseModel):
+    """Per-label segmenter policy (C7, 14A2): disabled until explicitly
+    calibrated with an approved class map version. 逐标签分割器策略（C7，
+    14A2）：显式以已批准 class map 版本校准前保持禁用。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    class_map_version: str | None = None
+
+    @model_validator(mode="after")
+    def require_class_map_when_enabled(self) -> "VisualSegmenterSettings":
+        """An enabled segmenter must declare the approved class map version —
+        never a guessed label mapping. 启用的分割器必须声明已批准 class map
+        版本——绝不猜测标签映射。"""
+
+        if self.enabled and not self.class_map_version:
+            raise ValueError("enabled segmenter requires a class_map_version")
+        return self
+
+
+class VisualPlanningSettings(BaseModel):
+    """Feature-flagged first-Qwen visual workflow configuration group (C7,
+    14A2). Everything defaults to the frozen disabled state; the flag off
+    keeps all existing behaviour byte-identical. 特性开关式第一 Qwen 视觉工作
+    流配置组（C7，14A2）。全部默认即冻结的禁用状态；flag off 完全保持现有
+    行为。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    planner: VisualPlannerSettings = Field(default_factory=VisualPlannerSettings)
+    detectors: dict[str, VisualDetectorSettings] = Field(default_factory=dict)
+    segmenters: dict[str, VisualSegmenterSettings] = Field(default_factory=dict)
+    roi_partial_failure: Literal["continue"] = "continue"
+
+
 class AppSettings(BaseModel):
     """Full application settings; no secret values by construction.
     完整应用配置；构造上不含任何密钥值。"""
@@ -87,6 +192,9 @@ class AppSettings(BaseModel):
     paths: PathSettings = Field(default_factory=PathSettings)
     backend: BackendSettings = Field(default_factory=BackendSettings)
     agents: AgentsSettings = Field(default_factory=AgentsSettings)
+    visual_planning: VisualPlanningSettings = Field(
+        default_factory=VisualPlanningSettings
+    )
 
     @model_validator(mode="before")
     @classmethod

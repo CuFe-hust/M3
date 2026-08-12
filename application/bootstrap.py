@@ -9,12 +9,14 @@ DeepSeek 客户端仅在注入 api_key 时创建（无 key 即 judge 禁用，�
 from __future__ import annotations
 
 import json
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from agents.base import CallBudget as _CallBudgetProtocol
+from agents.base import VisualPlanBindings
 from agents.caption import CaptionAgent
 from agents.change.agent import ChangeAgent
 from agents.counting import (
@@ -33,16 +35,31 @@ from agents.counting.backends.yolo_model_store import YoloModelStore
 from agents.counting.expert_catalog import ExpertCatalog, ExpertSpec
 from agents.counting.schema import CountTargetSpec
 from agents.counting.settings import CountingTargetStrategy, YoloDetectorSettings
+from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from agents.general_vqa import GeneralVQAAgent
+from agents.general_vqa.evidence.executor import (
+    EvidencePolicy,
+    ObjectEvidenceExecutor,
+)
 from agents.grounding import GroundingAgent
+from agents.grounding.evidence import (
+    GroundingEvidenceExecutor,
+    GroundingEvidencePolicy,
+)
 from agents.registry import AgentRegistry
 from agents.visual_base import PromptBinding
 from application.prompts import PromptCatalog
-from application.settings import AppSettings
+from application.settings import AppSettings, VisualDetectorSettings
 from data.adapters.base import DatasetAdapter
 from data.registry import build_default_registry
 from evaluation.judges.deepseek import DeepSeekJudgeClient
-from models.base import DenseSemanticClient, VisionLanguageClient
+from models.base import (
+    DenseSemanticClient,
+    ModelCacheIdentity,
+    ObjectDetectionOutput,
+    RuntimeObjectDetectionClient,
+    VisionLanguageClient,
+)
 from models.cache import JsonResponseCache
 from models.entry import create_model
 from models.settings import SegFormerSettings
@@ -57,6 +74,7 @@ from workflows.judge_service import JudgeService
 from workflows.run_store import RunStore
 from workflows.sample_runner import SampleRunner
 from workflows.task_resolver import TaskResolver
+from workflows.visual_planner import VisualPlanner, VisualPlanningGate
 
 
 @dataclass(frozen=True)
@@ -120,6 +138,19 @@ def assemble_runtime(
         expert_catalog,
         project_root=asset_root,
     )
+    # One audited YOLO model store per runtime assembly, shared by the
+    # counting backends and the feature-flagged visual evidence services
+    # (14A3 C9). No weights are loaded by constructing the store itself.
+    # 每次 runtime assembly 一个可审计 YOLO 模型 store，计数后端与特性开关式
+    # 视觉证据服务共享（14A3 C9）。仅构造 store 本身不加载任何权重。
+    model_store = YoloModelStore()
+    visual_planning = _build_visual_planning(
+        settings,
+        catalog,
+        qwen_client,
+        model_store,
+        project_root=asset_root,
+    )
     if settings.agents.change.semantic.enabled and semantic_client is None:
         semantic_client = segformer_clients.get(
             settings.models.segformer_isaid.logical_model_id
@@ -139,6 +170,7 @@ def assemble_runtime(
         expert_catalog=expert_catalog,
         segformer_clients=segformer_clients,
         project_root=asset_root,
+        model_store=model_store,
     )
     router = TaskRouter()
     task_resolver = TaskResolver(
@@ -173,6 +205,11 @@ def assemble_runtime(
             judge_service=judge_service,
             fallback_on_partial=settings.router.fallback_on_partial,
             data_root=data_root,
+            # None while the feature flag is off, keeping the legacy path
+            # byte-identical; the gate is assembled only when enabled (14A3).
+            # 特性开关关闭时为 None，保持旧路径逐字节一致；仅在启用时组装
+            # 门禁（14A3）。
+            visual_planning=visual_planning,
         )
 
     def dataset_runner_factory(
@@ -222,6 +259,7 @@ def _build_agent_registry(
     expert_catalog: ExpertCatalog | None = None,
     segformer_clients: dict[str, Any] | None = None,
     project_root: Path | None = None,
+    model_store: YoloModelStore | None = None,
 ) -> AgentRegistry:
     """Register every business agent in stable order; all routable tasks must
     be covered. 按稳定顺序注册全部业务 Agent；所有可路由任务必须有覆盖。"""
@@ -235,6 +273,7 @@ def _build_agent_registry(
         expert_catalog=expert_catalog,
         segformer_clients=segformer_clients,
         project_root=root,
+        model_store=model_store,
     )
     counting_agent = CountingAgent(
         qwen_client,
@@ -277,9 +316,12 @@ def _build_backend_registry(
     expert_catalog: ExpertCatalog | None = None,
     segformer_clients: dict[str, Any] | None = None,
     project_root: Path | None = None,
+    model_store: YoloModelStore | None = None,
 ) -> BackendRegistry:
     """The Qwen point backend is always registered; YOLO backends only when
-    enabled. Qwen 点式后端恒注册；YOLO 后端仅启用时注册。"""
+    enabled. All enabled detectors share the assembly's single model store.
+    Qwen 点式后端恒注册；YOLO 后端仅启用时注册。全部启用检测器共享本次组装
+    的单一模型 store。"""
 
     registry = BackendRegistry()
     strategy_resolver = (
@@ -311,7 +353,7 @@ def _build_backend_registry(
         )
     )
     if settings.backend.yolo.enabled:
-        model_store = YoloModelStore()
+        model_store = model_store or YoloModelStore()
         for detector in sorted(
             settings.backend.yolo.detectors,
             key=lambda item: item.name,
@@ -590,6 +632,294 @@ def _build_judge_client(
         repair_prompt=catalog["json_repair"],
         cache=JsonResponseCache(settings.runs.root / "service" / "deepseek_cache"),
     )
+
+
+def _build_visual_planning(
+    settings: AppSettings,
+    catalog: PromptCatalog,
+    qwen_client: VisionLanguageClient,
+    model_store: YoloModelStore,
+    *,
+    project_root: Path,
+) -> VisualPlanningGate | None:
+    """Assemble the feature-flagged first-Qwen planning gate (14A3 C9). The
+    gate is None while the flag is off, so the legacy path keeps every
+    existing behaviour byte-identical. When enabled, the settings-declared
+    prompt/catalog versions must bind the same prompt and evidence catalog
+    asset pair — any drift fails closed at assembly.
+    组装特性开关式第一 Qwen 规划门（14A3 C9）。flag 关闭时为 None，旧路径
+    逐字节保持现有行为。启用时，settings 声明的 prompt/catalog 版本必须绑定
+    同一 prompt 与证据目录资产对——任何漂移在组装时严格失败。"""
+
+    if not settings.visual_planning.enabled:
+        return None
+    evidence_catalog = _load_evidence_catalog(project_root)
+    planner_settings = settings.visual_planning.planner
+    if planner_settings.catalog_version != evidence_catalog.catalog_version:
+        raise RuntimeCompositionError(
+            "visual planning catalog version differs from the evidence catalog asset"
+        )
+    if planner_settings.prompt_version != catalog.version("visual_plan"):
+        raise RuntimeCompositionError(
+            "visual planning prompt version differs from the prompt catalog"
+        )
+    planner = VisualPlanner(
+        qwen_client,
+        system_prompt=catalog["visual_plan"],
+        prompt_version=planner_settings.prompt_version,
+        catalog=evidence_catalog,
+        confidence_threshold=planner_settings.confidence_threshold,
+        # The configured per-plan ROI cap; exceeding it falls back to the
+        # unique full-image ROI (14B §6.2) — never truncated.
+        # 配置的每计划 ROI 上限；超限回退唯一整图 ROI（14B §6.2）——绝不截断。
+        max_rois=planner_settings.max_rois,
+    )
+    bindings = VisualPlanBindings(
+        vqa_evidence=_build_vqa_evidence_service(
+            settings, evidence_catalog, model_store, project_root=project_root
+        ),
+        grounding_evidence=_build_grounding_evidence_service(
+            settings,
+            catalog,
+            evidence_catalog,
+            qwen_client,
+            model_store,
+            project_root=project_root,
+        ),
+    )
+    return VisualPlanningGate(planner, bindings=bindings)
+
+
+def _load_evidence_catalog(project_root: Path) -> EvidenceCatalog:
+    """Load the shared closed evidence catalog asset; failures stay stable
+    and never expose host paths. 加载共享封闭证据目录资产；失败保持稳定且不
+    暴露主机路径。"""
+    try:
+        return EvidenceCatalog.from_file(
+            project_root / "agents" / "evidence_catalog.json"
+        )
+    except (CatalogCategoryError, OSError) as exc:
+        raise RuntimeCompositionError(
+            "visual evidence catalog is unavailable"
+        ) from exc
+
+
+class _LazyObjectDetectionClient:
+    """Defer YOLO weight loading to the first inference so composition never
+    touches weights (AGENTS.md lazy-loading contract). The shared store
+    validates digest/task/class map on first use; load failures surface at
+    runtime inside the executor's per-ROI failure seam as stable type names,
+    never as host paths. 将 YOLO 权重加载推迟到首次推理，使组合期绝不触碰权
+    重（AGENTS.md 惰性加载契约）。共享 store 在首次使用时校验摘要/任务/类别
+    映射；加载失败在运行时执行器逐 ROI 失败 seam 内以稳定类型名呈现，绝不携
+    带主机路径。"""
+
+    def __init__(
+        self,
+        model_store: YoloModelStore,
+        detector: YoloDetectorSettings,
+    ) -> None:
+        self._model_store = model_store
+        self._detector = detector
+        self._delegate: RuntimeObjectDetectionClient | None = None
+        self._lock = threading.Lock()
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        """Logical identity without loading weights. 无需加载权重即可得到的
+        逻辑身份。"""
+        return ModelCacheIdentity(
+            model=self._detector.model_id,
+            generation={"weights_sha256": self._detector.sha256},
+            client_version="yolo-detection-runtime-v1",
+        )
+
+    def detect(
+        self,
+        image: Any,
+        *,
+        confidence: float,
+        iou: float,
+        image_size: int,
+        device: str,
+        max_detections: int,
+    ) -> list[ObjectDetectionOutput]:
+        if self._delegate is None:
+            with self._lock:
+                if self._delegate is None:
+                    self._delegate = RuntimeObjectDetectionClient(
+                        self._model_store.get(self._detector),
+                        logical_model_id=self._detector.model_id,
+                        weights_sha256=self._detector.sha256,
+                    )
+        return self._delegate.detect(
+            image,
+            confidence=confidence,
+            iou=iou,
+            image_size=image_size,
+            device=device,
+            max_detections=max_detections,
+        )
+
+
+def _build_vqa_evidence_service(
+    settings: AppSettings,
+    evidence_catalog: EvidenceCatalog,
+    model_store: YoloModelStore,
+    *,
+    project_root: Path,
+) -> ObjectEvidenceExecutor | None:
+    """Assemble the VQA object-evidence executor only when the settings
+    declare a fully calibrated global detector policy; otherwise the service
+    stays absent and object_evidence_vqa plans fail closed at runtime. An
+    enabled segmenter without a frozen model binding fails closed at
+    assembly — no production default is ever invented.
+    仅在 settings 声明完整校准的全局检测策略时组装 VQA object-evidence
+    执行器；否则服务保持缺失，object_evidence_vqa 计划在运行时严格失败。
+    已启用分割器但没有冻结的模型绑定时在组装时严格失败——绝不杜撰生产默认值。"""
+
+    if any(
+        entry.enabled for entry in settings.visual_planning.segmenters.values()
+    ):
+        raise RuntimeCompositionError(
+            "visual segmenter calibration is declared but its model binding is not frozen"
+        )
+    policy = _resolved_evidence_policy(settings.visual_planning.detectors)
+    if policy is None:
+        return None
+    detector = _first_enabled_detector(settings, project_root)
+    if detector is None:
+        raise RuntimeCompositionError(
+            "calibrated VQA detector policy requires an enabled detector"
+        )
+    # The detector is wired lazily: composition never loads weights; the
+    # first inference goes through the shared audited store.
+    # 检测器惰性接线：组合期绝不加载权重；首次推理经共享审计 store。
+    yolo_client = _LazyObjectDetectionClient(model_store, detector)
+    return ObjectEvidenceExecutor(
+        catalog=evidence_catalog,
+        policy=EvidencePolicy(
+            confidence_threshold=policy.confidence_threshold,
+            nms_iou_threshold=policy.nms_iou_threshold,
+            max_detections=policy.max_detections,
+        ),
+        yolo_client=yolo_client,
+        yolo_device=detector.device,
+        yolo_image_size=detector.image_size,
+        segformer_client=None,
+    )
+
+
+def _build_grounding_evidence_service(
+    settings: AppSettings,
+    catalog: PromptCatalog,
+    evidence_catalog: EvidenceCatalog,
+    qwen_client: VisionLanguageClient,
+    model_store: YoloModelStore,
+    *,
+    project_root: Path,
+) -> GroundingEvidenceExecutor:
+    """Assemble the grounding evidence seam (14A3 C9). An all-None policy is
+    the explicit uncalibrated state (YOLO phase off, final Qwen free boxes);
+    a fully calibrated policy requires an enabled detector, otherwise the
+    assembly fails closed. 组装 grounding 证据 seam（14A3 C9）。全 None 策略是
+    显式未校准状态（YOLO 阶段关闭，最终 Qwen 自由补框）；完整校准策略必须
+    有启用检测器，否则组装严格失败。"""
+
+    policy = _resolved_evidence_policy(settings.visual_planning.detectors)
+    yolo_client = None
+    yolo_device = None
+    yolo_image_size = None
+    # The executor policy defaults to the explicit all-None uncalibrated
+    # state; a calibrated policy supplies the frozen values instead and
+    # requires an enabled detector — an uncalibrated policy never wires a
+    # detector it will not use, and the wiring stays lazy so composition
+    # never loads weights. 执行器策略默认显式全 None 未校准状态；已校准策略
+    # 改提供冻结值并要求启用检测器——未校准策略绝不接线用不到的检测器，接线
+    # 保持惰性使组合期绝不加载权重。
+    executor_policy = GroundingEvidencePolicy()
+    if policy is not None:
+        executor_policy = GroundingEvidencePolicy(
+            confidence_threshold=policy.confidence_threshold,
+            nms_iou_threshold=policy.nms_iou_threshold,
+            max_detections=policy.max_detections,
+        )
+        detector = _first_enabled_detector(settings, project_root)
+        if detector is None:
+            raise RuntimeCompositionError(
+                "calibrated grounding detector policy requires an enabled detector"
+            )
+        yolo_client = _LazyObjectDetectionClient(model_store, detector)
+        yolo_device = detector.device
+        yolo_image_size = detector.image_size
+    try:
+        return GroundingEvidenceExecutor(
+            catalog=evidence_catalog,
+            qwen_client=qwen_client,
+            prompt=PromptBinding(
+                text=catalog["grounding"], version=catalog.version("grounding")
+            ),
+            policy=executor_policy,
+            yolo_client=yolo_client,
+            yolo_device=yolo_device,
+            yolo_image_size=yolo_image_size,
+            halo_ratio=settings.visual_planning.planner.halo_ratio,
+        )
+    except ValueError as exc:
+        raise RuntimeCompositionError(str(exc)) from exc
+
+
+def _resolved_evidence_policy(
+    detectors: dict[str, VisualDetectorSettings],
+) -> VisualDetectorSettings | None:
+    """Resolve the single global detector policy from the per-label settings:
+    zero calibrated entries mean uncalibrated (None), exactly one fully
+    calibrated entry is the global policy, and any partial or multiple
+    calibration is ambiguous and fails closed. 从逐标签设置解析单一全局检测
+    策略：零条已校准条目表示未校准（None），恰好一条完整校准条目即全局策略，
+    部分或多条校准即歧义并严格失败。"""
+
+    calibrated = [
+        entry
+        for entry in detectors.values()
+        if entry.confidence_threshold is not None
+        or entry.nms_iou_threshold is not None
+        or entry.max_detections is not None
+    ]
+    if not calibrated:
+        return None
+    if len(calibrated) > 1:
+        raise RuntimeCompositionError(
+            "multiple calibrated detector policies cannot form one global policy"
+        )
+    entry = calibrated[0]
+    if (
+        entry.confidence_threshold is None
+        or entry.nms_iou_threshold is None
+        or entry.max_detections is None
+    ):
+        raise RuntimeCompositionError(
+            "partially calibrated detector policy is not frozen"
+        )
+    return entry
+
+
+def _first_enabled_detector(
+    settings: AppSettings,
+    project_root: Path,
+) -> YoloDetectorSettings | None:
+    """Deterministic single detector for the evidence services: the first
+    enabled detector in stable name order, resolved against the project root.
+    证据服务的确定性单检测器：按稳定名称顺序的第一个启用检测器，相对项目根
+    解析。"""
+
+    enabled = sorted(
+        (detector for detector in settings.backend.yolo.detectors if detector.enabled),
+        key=lambda item: item.name,
+    )
+    if not enabled:
+        return None
+    return _resolve_yolo_detector(enabled[0], project_root)
 
 
 def _routable_tasks() -> set[str]:

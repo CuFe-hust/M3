@@ -14,11 +14,11 @@ from typing import Any
 
 import pytest
 
-from agents.base import AgentExecution
+from agents.base import AgentExecution, VisualPlanBindings
 from agents.counting.schema import CountingResult, GlobalPointObservation
 from agents.errors import AgentTaskMismatchError
 from agents.registry import AgentRegistry
-from agents.schema import AgentResult
+from agents.schema import AgentResult, FirstQwenVisualPlan, RoiPlan
 from data.schema import GroundTruth, ImageRef, TaskNormalization, UnifiedSample
 from evaluation.judges.base import VQAAnswerJudgeResult
 from evaluation.records import EvaluationRecord
@@ -29,6 +29,7 @@ from workflows.call_budget import CallBudget, CallBudgetFactory
 from workflows.judge_service import JudgeService
 from workflows.sample_runner import SampleRunner, sample_state_from_payload
 from workflows.schema import SampleRunOutcome
+from workflows.visual_planner import VisualPlanError, VisualPlanningGate
 
 
 # ── helpers / 测试辅助 ──────────────────────────────────────────────────────
@@ -207,6 +208,7 @@ def _runner(
     judge_service: JudgeService | None = None,
     fallback_on_partial: bool = False,
     router: TaskRouter | None = None,
+    visual_planning: VisualPlanningGate | None = None,
 ) -> SampleRunner:
     registry = AgentRegistry()
     for agent in agents:
@@ -219,6 +221,7 @@ def _runner(
         call_budget_factory=CallBudgetFactory(),
         judge_service=judge_service,
         fallback_on_partial=fallback_on_partial,
+        visual_planning=visual_planning,
     )
 
 
@@ -1317,3 +1320,138 @@ def test_counting_status_result_path_is_basename(tmp_path: Path) -> None:
     )
     outcome = _run(runner, sample, _sample_dir(tmp_path))
     assert outcome.status.result_path == Path("counting_result.json")
+
+
+# ── visual planning gate (C7, 14A2) / 视觉规划门 ────────────────────────────
+
+
+class _FakePlanner:
+    """Duck-typed VisualPlanner with a configurable outcome and call record.
+    The configured plan lives under result so it never shadows the plan
+    method the gate invokes. 可配置结果并记录调用的 VisualPlanner 鸭子类型；
+    配置的计划放在 result 下，避免遮蔽 gate 调用的 plan 方法。"""
+
+    def __init__(self, result=None, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[UnifiedSample, object, object, object]] = []
+
+    async def plan(self, sample, *, data_root, artifact_dir, budget):
+        self.calls.append((sample, data_root, artifact_dir, budget))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _visual_plan() -> FirstQwenVisualPlan:
+    """A valid direct_vqa plan (feature on, legacy-equivalent family).
+    一条合法 direct_vqa 计划（特性开启但等价于旧路径的家族）。"""
+    return FirstQwenVisualPlan(
+        version="first-qwen-plan-v1",
+        execution_family="direct_vqa",
+        confidence=0.9,
+        roi_plan=RoiPlan(rois=[]),
+    )
+
+
+def test_visual_planning_gate_runs_planner_once_for_planning_task(
+    tmp_path: Path,
+) -> None:
+    """A planning-task sample gets exactly one planner call, a persisted
+    visual_plan.json, and the plan/bindings inside AgentContext; the budget
+    is shared between planner and agent.
+    规划任务样本恰好一次规划调用、持久化 visual_plan.json、plan/bindings 进入
+    AgentContext；预算在规划器与 Agent 间共享。"""
+    planner = _FakePlanner(result=_visual_plan())
+    bindings = VisualPlanBindings()
+    gate = VisualPlanningGate(planner, bindings=bindings)
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent], visual_planning=gate)
+    sample = _sample()
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert len(planner.calls) == 1
+    planned_sample, _data_root, _artifact_dir, planned_budget = planner.calls[0]
+    assert planned_sample.sample_id == sample.sample_id
+    assert planned_budget is agent.calls[0][1].call_budget  # shared / 共享预算
+    plan_json = _read_json(_sample_dir(tmp_path) / "visual_plan.json")
+    assert plan_json["version"] == "first-qwen-plan-v1"
+    assert plan_json["execution_family"] == "direct_vqa"
+    context = agent.calls[0][1]
+    assert context.visual_plan == _visual_plan()
+    assert context.visual_bindings is bindings
+    # Legacy artifacts still land unchanged. / 旧产物仍然原样落盘。
+    assert (_sample_dir(tmp_path) / "routing_decision.json").is_file()
+    assert (_sample_dir(tmp_path) / "agent_result.json").is_file()
+
+
+def test_visual_planning_gate_skips_non_planning_task(tmp_path: Path) -> None:
+    """caption/change/counting samples never reach the planner: no call, no
+    plan artifact, and no plan/bindings leak into AgentContext.
+    caption/change/counting 样本绝不触达规划器：无调用、无计划产物、
+    plan/bindings 不泄漏进 AgentContext。"""
+    planner = _FakePlanner(result=_visual_plan())
+    gate = VisualPlanningGate(planner)
+    caption_agent = _FakeAgent("caption_agent", ("caption",))
+    runner = _runner([caption_agent], visual_planning=gate)
+    sample = _sample(task="caption", question="Describe the scene.")
+    outcome = _run(runner, sample, _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert planner.calls == []
+    assert not (_sample_dir(tmp_path) / "visual_plan.json").exists()
+    context = caption_agent.calls[0][1]
+    assert context.visual_plan is None
+    assert context.visual_bindings is None
+
+
+def test_visual_planning_gate_absent_writes_no_plan_artifact(tmp_path: Path) -> None:
+    """The frozen flag-off state (no gate wired) must not produce any
+    visual-plan artifact. 冻结的 flag-off 状态（未接 gate）不得产生任何
+    visual-plan 产物。"""
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent])
+    outcome = _run(runner, _sample(), _sample_dir(tmp_path))
+    assert outcome.status.state == "succeeded"
+    assert not (_sample_dir(tmp_path) / "visual_plan.json").exists()
+    context = agent.calls[0][1]
+    assert context.visual_plan is None
+    assert context.visual_bindings is None
+
+
+def test_visual_planning_gate_plan_error_is_strict_failure(tmp_path: Path) -> None:
+    """Frozen planner failure policy: VisualPlanError becomes a failed sample
+    with the stable VISUAL_PLAN_FAILED:<CODE> error code, no retry, no legacy
+    fallback, and no agent call. 冻结规划失败策略：VisualPlanError 变为携带
+    稳定 VISUAL_PLAN_FAILED:<CODE> 错误码的 failed 样本，无重试、无旧路径
+    回退、不调用 Agent。"""
+    planner = _FakePlanner(error=VisualPlanError("LOW_CONFIDENCE"))
+    gate = VisualPlanningGate(planner)
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent], visual_planning=gate)
+    outcome = _run(runner, _sample(), _sample_dir(tmp_path))
+    assert outcome.status.state == "failed"
+    assert outcome.status.error_code == "VISUAL_PLAN_FAILED:LOW_CONFIDENCE"
+    assert outcome.status.error_message == "VisualPlanError"
+    assert len(agent.calls) == 0
+    assert not (_sample_dir(tmp_path) / "visual_plan.json").exists()
+    assert not (_sample_dir(tmp_path) / "routing_decision.json").exists()
+    trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
+    assert trace["failure_code"] == "VISUAL_PLAN_FAILED:LOW_CONFIDENCE"
+
+
+def test_visual_planning_gate_unexpected_error_is_stable_code(
+    tmp_path: Path,
+) -> None:
+    """An unexpected gate exception maps to its type name; the raw message
+    never leaks into persisted artifacts. 意外 gate 异常映射为类型名；原始
+    消息绝不泄漏进持久化产物。"""
+    planner = _FakePlanner(error=RuntimeError("raw secret detail"))
+    gate = VisualPlanningGate(planner)
+    runner = _runner([_FakeAgent("general_vqa_agent", ("general_vqa",))], visual_planning=gate)
+    outcome = _run(runner, _sample(), _sample_dir(tmp_path))
+    assert outcome.status.state == "failed"
+    assert outcome.status.error_code == "RuntimeError"
+    status_text = (_sample_dir(tmp_path) / "status.json").read_text(encoding="utf-8")
+    trace_text = (_sample_dir(tmp_path) / "agent_trace.json").read_text(encoding="utf-8")
+    assert "secret" not in status_text
+    assert "secret" not in trace_text

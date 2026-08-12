@@ -19,6 +19,11 @@ SegFormer 回退、全部候选直接作为答案或坐标形态与本文冲突�
 本文不表示相关生产代码已经存在。实施仍须遵守仓库白名单、包边界、模型单次组装、
 artifact、resume、评测与路径安全契约。
 
+实现归属已进一步冻结：Grounding 证据逻辑保留在 `agents/grounding/`；不得 import
+`agents/general_vqa/evidence/`，也不得创建 `agents/object_evidence/`。Grounding 与
+VQA 只共享版本化类别目录、模型无关检测协议和图片裁切原语，不共享最终证据状态机、
+Prompt、SegFormer 回退或结果后处理。
+
 ## 2. 适用范围
 
 本文只定义 public task 为 `grounding` 时，由 `GroundingAgent` 执行的内部路径。
@@ -338,4 +343,3 @@ Golden fixtures 或 resume 契约。
 - 新 public task、新 Agent 或新评测指标；
 - Ground Truth、dataset split 或 official evaluator 的新解释；
 - ROI 裁切工具的具体实现。
-

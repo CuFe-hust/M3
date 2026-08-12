@@ -16,9 +16,11 @@ from models import (
     RequestMeta,
     VisionLanguageClient,
     build_request_hash,
+    crop_image_region,
     sanitize_messages,
 )
 from models.images import image_sha256, image_to_data_url
+from PIL import Image, ImageOps
 from pydantic import ValidationError
 
 IMAGE_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
@@ -334,3 +336,226 @@ def test_validate_logical_model_id_accepts_remote_names() -> None:
     for value in ("Qwen/Qwen3-VL-4B-Instruct", "qwen3-vl-4b-local",
                   "qwen3.5-gb10", "org:model@rev"):
         assert validate_logical_model_id(value, where="cache_model_id") == value
+
+
+# ── crop_image_region / 图像 ROI 裁切 ─────────────────────────────────────
+
+
+def _make_pattern_image(width: int, height: int) -> Image.Image:
+    """RGB image whose pixel color encodes its (x, y) position.
+    像素颜色编码其 (x, y) 位置的 RGB 图像。"""
+    buf = bytearray(width * height * 3)
+    i = 0
+    for y in range(height):
+        for x in range(width):
+            buf[i] = x % 256
+            buf[i + 1] = y % 256
+            buf[i + 2] = (x + y) % 256
+            i += 3
+    return Image.frombytes("RGB", (width, height), bytes(buf))
+
+
+def _assert_crop_matches(
+    result: Image.Image,
+    source: Image.Image,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+) -> None:
+    """Assert the crop is exactly the integer pixel region of ``source``.
+    断言裁切结果正是 ``source`` 的整数像素区域。"""
+    expected = source.crop((left, top, right, bottom))
+    assert result.size == (right - left, bottom - top)
+    assert result.tobytes() == expected.tobytes()
+
+
+def test_crop_full_image_is_exact(tmp_path) -> None:
+    source = _make_pattern_image(120, 80)
+    path = tmp_path / "full.png"
+    source.save(path, format="PNG")
+
+    for frame, box in (
+        ("normalized_0_1_top_left", [0.0, 0.0, 1.0, 1.0]),
+        ("normalized_0_999_top_left", [0.0, 0.0, 999.0, 999.0]),
+    ):
+        result = crop_image_region(path, box, coordinate_frame=frame)
+        assert result.size == source.size
+        assert result.tobytes() == source.tobytes()
+
+
+def test_crop_coordinate_frames_are_equivalent() -> None:
+    source = _make_pattern_image(100, 80)
+    one = crop_image_region(
+        source, [0.25, 0.25, 0.75, 0.75], coordinate_frame="normalized_0_1_top_left"
+    )
+    nine = crop_image_region(
+        source,
+        [249.75, 249.75, 749.25, 749.25],
+        coordinate_frame="normalized_0_999_top_left",
+    )
+    assert one.size == nine.size == (50, 40)
+    assert one.tobytes() == nine.tobytes()
+    _assert_crop_matches(one, source, 25, 20, 75, 60)
+
+
+def test_crop_path_and_pil_inputs_agree(tmp_path) -> None:
+    source = _make_pattern_image(60, 40)
+    path = tmp_path / "img.png"
+    source.save(path, format="PNG")
+
+    box = [0.1, 0.2, 0.6, 0.7]
+    from_path = crop_image_region(path, box, coordinate_frame="normalized_0_1_top_left")
+    from_pil = crop_image_region(source, box, coordinate_frame="normalized_0_1_top_left")
+    assert from_path.size == from_pil.size
+    assert from_path.tobytes() == from_pil.tobytes()
+    _assert_crop_matches(from_pil, source, 6, 8, 36, 28)
+
+
+def test_crop_path_applies_exif_orientation(tmp_path) -> None:
+    source = _make_pattern_image(24, 14)
+    exif = Image.Exif()
+    exif[274] = 6  # EXIF Orientation: rotate 90 degrees CW. / 旋转 90° CW。
+    path = tmp_path / "rotated.jpg"
+    source.save(path, format="JPEG", exif=exif)
+
+    result = crop_image_region(
+        path, [0.0, 0.0, 1.0, 1.0], coordinate_frame="normalized_0_1_top_left"
+    )
+    expected = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
+    # Orientation applied: the stored (24, 14) JPEG must crop as (14, 24).
+    # 方向已应用：存储为 (24, 14) 的 JPEG 必须按 (14, 24) 裁切。
+    assert result.size == expected.size == (14, 24)
+    assert result.tobytes() == expected.tobytes()
+
+
+def test_crop_converts_non_rgb_to_rgb() -> None:
+    source_rgb = _make_pattern_image(30, 20)
+    rgba = source_rgb.convert("RGBA")
+    result = crop_image_region(
+        rgba, [0.0, 0.0, 1.0, 1.0], coordinate_frame="normalized_0_1_top_left"
+    )
+    assert result.mode == "RGB"
+    assert result.tobytes() == source_rgb.tobytes()
+
+
+def test_crop_odd_dimensions_round_outward() -> None:
+    source = _make_pattern_image(101, 99)
+    result = crop_image_region(
+        source, [0.5, 0.5, 0.75, 0.75], coordinate_frame="normalized_0_1_top_left"
+    )
+    # x0/y0 floor, x1/y1 ceil on the odd dimensions.
+    # 奇数尺寸下左上向下取整、右下向上取整。
+    _assert_crop_matches(result, source, 50, 49, 76, 75)
+
+
+def test_crop_1px_image() -> None:
+    source = _make_pattern_image(1, 1)
+    result = crop_image_region(
+        source, [0.0, 0.0, 1.0, 1.0], coordinate_frame="normalized_0_1_top_left"
+    )
+    _assert_crop_matches(result, source, 0, 0, 1, 1)
+
+
+def test_crop_edge_roi() -> None:
+    source = _make_pattern_image(100, 100)
+    result = crop_image_region(
+        source, [0.0, 0.0, 0.1, 0.1], coordinate_frame="normalized_0_1_top_left"
+    )
+    _assert_crop_matches(result, source, 0, 0, 10, 10)
+
+
+def test_crop_halo_expands_all_sides() -> None:
+    source = _make_pattern_image(100, 100)
+    result = crop_image_region(
+        source,
+        [0.2, 0.2, 0.4, 0.4],
+        coordinate_frame="normalized_0_1_top_left",
+        halo_ratio=0.1,
+    )
+    _assert_crop_matches(result, source, 18, 18, 42, 42)
+
+
+def test_crop_halo_clamps_to_image_bounds() -> None:
+    source = _make_pattern_image(100, 100)
+    result = crop_image_region(
+        source,
+        [0.0, 0.0, 0.1, 0.1],
+        coordinate_frame="normalized_0_1_top_left",
+        halo_ratio=0.1,
+    )
+    _assert_crop_matches(result, source, 0, 0, 11, 11)
+
+
+def test_crop_full_image_with_halo_is_whole_image() -> None:
+    source = _make_pattern_image(64, 48)
+    result = crop_image_region(
+        source,
+        [0.0, 0.0, 1.0, 1.0],
+        coordinate_frame="normalized_0_1_top_left",
+        halo_ratio=0.5,
+    )
+    _assert_crop_matches(result, source, 0, 0, 64, 48)
+
+
+def test_crop_does_not_modify_input_image() -> None:
+    source = _make_pattern_image(40, 30)
+    before = source.tobytes()
+    size_before = source.size
+    result = crop_image_region(
+        source, [0.25, 0.25, 0.75, 0.75], coordinate_frame="normalized_0_1_top_left"
+    )
+    assert source.tobytes() == before
+    assert source.size == size_before
+    assert result is not source
+
+
+@pytest.mark.parametrize("box", [
+    [0.1, 0.2, 0.3],                        # too few / 数量过少
+    [0.1, 0.2, 0.3, 0.4, 0.5],              # too many / 数量过多
+    [float("nan"), 0.0, 1.0, 1.0],          # NaN x0
+    [0.0, float("inf"), 1.0, 1.0],          # +Inf y0
+    [0.0, 0.0, 1.0, float("-inf")],         # -Inf y1
+    [-0.1, 0.0, 1.0, 1.0],                  # below lower bound / 低于下界
+    [0.0, 0.0, 1.5, 1.0],                   # above upper bound (0..1 frame) / 越上界
+    [0.5, 0.5, 0.5, 1.0],                   # zero-width degenerate / 零宽退化框
+    [0.6, 0.4, 0.4, 1.0],                   # reversed / 反向框
+    ["0.1", 0.0, 1.0, 1.0],                 # non-numeric / 非数值
+])
+def test_crop_rejects_invalid_box(box) -> None:
+    source = _make_pattern_image(20, 20)
+    with pytest.raises(ValueError):
+        crop_image_region(source, box, coordinate_frame="normalized_0_1_top_left")
+
+
+def test_crop_rejects_out_of_range_999_frame() -> None:
+    source = _make_pattern_image(20, 20)
+    with pytest.raises(ValueError):
+        crop_image_region(
+            source, [0.0, 0.0, 1000.0, 999.0], coordinate_frame="normalized_0_999_top_left"
+        )
+
+
+def test_crop_rejects_unknown_coordinate_frame() -> None:
+    source = _make_pattern_image(20, 20)
+    with pytest.raises(ValueError, match="coordinate_frame"):
+        crop_image_region(source, [0.0, 0.0, 1.0, 1.0], coordinate_frame="bogus_frame")
+
+
+@pytest.mark.parametrize("halo_ratio", [-0.1, float("nan"), float("inf")])
+def test_crop_rejects_invalid_halo(halo_ratio: float) -> None:
+    source = _make_pattern_image(20, 20)
+    with pytest.raises(ValueError):
+        crop_image_region(
+            source,
+            [0.0, 0.0, 1.0, 1.0],
+            coordinate_frame="normalized_0_1_top_left",
+            halo_ratio=halo_ratio,
+        )
+
+
+def test_crop_rejects_non_path_non_image_input() -> None:
+    with pytest.raises(TypeError):
+        crop_image_region(
+            "not/a/path.png", [0.0, 0.0, 1.0, 1.0], coordinate_frame="normalized_0_1_top_left"
+        )

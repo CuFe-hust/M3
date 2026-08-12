@@ -25,6 +25,11 @@ VQA 分支、ROI、类别目录、YOLO、SegFormer、逐类别回退以及最终
 本文不表示相关生产代码已经存在。实施仍须遵守仓库白名单、包边界、测试、
 artifact、resume、模型构造与评测保护规则。
 
+实现归属已进一步冻结：VQA 专属视觉证据代码放在现有
+`agents/general_vqa/evidence/` 子包中；允许在 `agents/general_vqa/` 下创建该子文件夹，
+但不得创建 `agents/object_evidence/` 或新的通用 evidence Agent。共享类别目录、模型
+协议和图片裁切原语不执行 VQA 工作流；Grounding 不 import 此 VQA 子包。
+
 ## 2. 适用范围与基本前提
 
 本文只定义 VQA Agent 内部的子工作流，不把其最终 Qwen 输入形式推广到 Caption、

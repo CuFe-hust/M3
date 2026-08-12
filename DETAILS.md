@@ -719,6 +719,41 @@ watershed 或隐式 instance splitting。composition root 已按 `ExpertCatalog`
 semantic expert 构造成 lazy client/backend，并接入固定优先级和 ordered fallback；OEM
 因缺少 verified class map 保持 disabled。
 
+## 14.4 图像工具（`models/images.py`）
+
+`models/images.py` 除 EXIF 转正、RGB、MIME、data URL 与图片哈希外，提供纯内存
+ROI 裁切接口：
+
+```python
+def crop_image_region(
+    image: Path | Image.Image,
+    box: Sequence[float],
+    *,
+    coordinate_frame: Literal[
+        "normalized_0_1_top_left",
+        "normalized_0_999_top_left",
+    ],
+    halo_ratio: float = 0.0,
+) -> Image.Image:
+```
+
+- 直接消费 Qwen 输出的 xyxy 坐标，在内存中裁切：不写文件、不缩放图片、不接入
+  Agent 或 Workflow。
+- 输入为 `Path` 或 `PIL.Image.Image`，两者都先应用 EXIF orientation 并转换为
+  RGB；不修改原图片对象，返回独立的内存 RGB 图像。
+- 坐标制式（左上角原点的 xyxy）：
+  - `normalized_0_1_top_left`：`[0, 1]` 归一化坐标（14B 冻结制式），图片边缘对应 `1.0`；
+  - `normalized_0_999_top_left`：`[0, 999]` 归一化坐标（14A 制式），图片边缘对应 `999.0`。
+- 像素映射与舍入规则（Pillow 半开像素边界）：
+  - 左上边界向下取整（floor）；
+  - 右下边界向上取整（ceil）；
+  - 像素边界裁剪到原图范围；
+  - `[0, 0, 1, 1]` 与 `[0, 0, 999, 999]` 均精确返回整张原图。
+- `halo_ratio` 默认 `0.0`：按映射后 ROI 的宽高向四边扩张对应比例（`0.10` 即
+  14B 默认上下文扩张），扩张结果裁剪到原图范围。
+- 严格拒绝：坐标数量错误、非有限值（NaN/Infinity）、越界值、退化/反向框、
+  未知坐标系，以及非法 `halo_ratio`（负数或非有限值）。
+
 ---
 
 # 15. Qwen Settings
@@ -810,7 +845,32 @@ router
 paths
 backend
 agents
+visual_planning
 ```
+
+### `VisualPlanningSettings`（`agents.visual_planning`）
+
+First-Qwen 视觉工作流配置组（C7，14A2），默认整体禁用：
+
+```text
+enabled = False
+prompt_version = "v1"
+catalog_version = "first-qwen-evidence-catalog-v1"
+max_rois = 3
+halo_ratio = 0.10
+confidence_threshold = 0.70
+failure:
+    on_low_confidence = "fail"
+    on_planner_error  = "fail"
+detectors:   每类别策略；None = 未校准 = 能力关闭
+segmenters:  同上；启用必须携带已验证 class map
+roi_partial_failure = "continue"
+```
+
+- `enabled=False` 时整个门禁不参与运行，调用次数/结果/产物与启用前逐字节一致；
+- 未校准能力（None）视为关闭，绝不带默认值参与推理；
+- `failure` 只支持 `"fail"`，任何放宽需新批准；
+- catalog/prompt 版本绑定规划 prompt 与封闭证据目录为单一版本对，进入 request hash。
 
 主要分组：
 
@@ -939,7 +999,13 @@ call_budget
 data_root
 judge_client
 request_context
+visual_plan          # Optional; 仅当 VisualPlanningGate 启用时注入
+visual_bindings      # Optional; 仅当 VisualPlanningGate 启用时注入
 ```
+
+`visual_plan` 是已验证的 `FirstQwenVisualPlan`（绝不变更 `sample.task`，
+只选择内部完成路径）；`visual_bindings` 是完成路径与证据服务的绑定。
+两者默认均为 `None`，此时 Agent 走既有 legacy 路径，产物逐字节一致。
 
 它是单样本轻量上下文。
 
@@ -993,6 +1059,19 @@ spatial_relation
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
 
+First-Qwen 视觉工作流（C7，14A2，默认关闭）：当
+`AgentContext.visual_plan.execution_family == "object_evidence_vqa"` 时，
+GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
+`VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜），按 14B §10 契约
+组装唯一一次 final Qwen 调用：clean ROI 图在前、逐 ROI 掩膜 overlay 按
+`roi_id` 序在后，文本证据含 question、answer constraints、图像尺寸、
+ROI 裁切几何、YOLO 文本记录（local+global 坐标）与 SegFormer 颜色叶子
+图例；绝不携带 confidence、绝不使用画框图。`vqa_evidence.json` 作为
+additional result 持久化 bundle（严格 JSON-safe，无掩膜数组/无 secret）。
+`execution_family == "direct_vqa"` 或无 plan 时走既有 legacy 路径。
+禁止组合（如 scene_classification + object evidence）以
+`object_evidence_plan_forbidden_for_task` 稳定失败；兼容矩阵见 14A2 §4.4。
+
 ## 21.2 CaptionAgent
 
 覆盖：
@@ -1010,6 +1089,15 @@ grounding
 ```
 
 completed 结果需要合法定位证据。
+
+First-Qwen 视觉工作流（C6/C7，14A2，默认关闭）：当
+`AgentContext.visual_plan.execution_family == "object_evidence_vqa"` 时，
+GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
+唯一一次 final Grounding Qwen 调用（evidence 管线在 Agent 外执行），
+返回确定性整图框 `WholeImageBox`。`AgentResult.answer` 为
+`, `.join(labels) 文本；final Qwen 绝不产出自由文本坐标（14C §8）。
+`direct_vqa` 或无 plan 时走既有 legacy 路径。服务缺失/失败以
+`grounding_evidence_failed:<CODE>` 稳定失败。
 
 ## 21.4 CountingAgent
 
@@ -1348,8 +1436,8 @@ logical identity、expected SHA 或 verified class-map semantics。
 公共 trace 不保存 mask、tensor、prompt、base64、secret 或绝对路径，并至少记录 canonical
 target、候选/尝试/final backend、fallback history、counting mode 与 accepted count。
 
-wheel 通过 package-data 携带 expert catalog、verified SegFormer 小型 metadata 与 prompts，
-不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
+wheel 通过 package-data 携带 expert catalog、`agents/evidence_catalog.json`、verified
+SegFormer 小型 metadata 与 prompts，不携带 `.safetensors`、`.onnx` 或 `.pt` 大权重。
 Prompt root 的顺序是 explicit override → `project_root/prompts` → installed package
 `prompts`；显式错误配置 fail closed，公开 composition error 不包含绝对路径。CI 使用真实
 wheel 在源码树外组装 runtime，验证 catalog/prompt metadata、QuantityProposal、lazy
@@ -1755,6 +1843,7 @@ auto
 persist sample
 persist running status
 resolve/use task
+optional VisualPlanningGate        # default off
 build routing/attempt plan
 run Agent
 persist result
@@ -1764,6 +1853,16 @@ persist trace
 persist final status
 append execution index
 ```
+
+`VisualPlanningGate`（C7，14A2，默认关闭）只对 PLANNING_TASKS
+（general_vqa / scene_classification / multiple_choice_vqa /
+spatial_relation / grounding）生效：一次 VisualPlanner Qwen 调用产出
+plan → `visual_plan.json` 原子持久化 → 与证据服务绑定注入 AgentContext；
+planner 与 Agent 共享同一样本预算（fallback 不创建新 budget）。
+`VisualPlanError` 严格失败为
+`state=failed, error_code="VISUAL_PLAN_FAILED:<CODE>",
+error_message="VisualPlanError"`，不重试、不 legacy 兜底、不变更
+`sample.task`。门禁关闭或非规划任务时零调用、零产物。
 
 职责：
 
@@ -1855,10 +1954,18 @@ agent_result.json
 counting_result.json
 counting_attempts.json       # counting only; ordered backend audit
 agent_trace.json
+visual_plan.json             # First-Qwen; validated schema only, never raw body
 predictions.jsonl
 dataset_summary.json
 dataset_probe.json
 ```
+
+`visual_plan.json` 只存已验证 `FirstQwenVisualPlan` schema（原子写入），
+绝不存原始模型正文。对象证据路径的证据 bundle 作为 Agent additional
+result 持久化（`vqa_evidence.json` / grounding candidate JSON），严格
+JSON-safe；clean ROI 图像与 SegFormer overlay 目前仅内存传输，持久化
+格式/质量参数未批准（14A2 §5.1 语义占位）。ROI 图像文件、目录结构等
+后续阶段冻结前不采用。
 
 Evaluation filename 由 evaluation dispatch 按任务声明，但同样必须是安全纯 basename。
 
@@ -1898,9 +2005,16 @@ outputs/runs/<run_id>/
                 ├── agent_result.json
                 │   or counting_result.json
                 ├── counting_attempts.json    # new counting runs only
+                ├── visual_plan.json          # First-Qwen gate on (default off)
                 ├── <task>_evaluation.json
                 ├── agent_trace.json
                 └── optional model/judge artifacts
+```
+
+First-Qwen 证据路径（门禁开启时）可能另存 additional result：
+
+```text
+vqa_evidence.json     # object_evidence_vqa bundle (JSON-safe)
 ```
 
 实际 evaluation filename 由共享 dispatch 决定，当前主要包括：
@@ -2004,6 +2118,12 @@ resume 是持久化契约的重要组成。
 默认不重复推理。
 
 如果缺确定性评测或允许补 Judge，可按共享逻辑补充。
+
+First-Qwen 推理期产物（C8，14A2 §5.3）：`visual_plan.json`、证据
+JSON、ROI 图像属于推理期产物，绝不进入补判范围——succeeded 样本保持
+原样（不重跑、不修复），即使损坏或缺失也只可能通过后续 explicit
+rerun 契约处理。resume 判断 metric family 只用 `status.task`（实际执行
+任务），持久化 plan 的 `execution_family` 绝不覆盖指标族。
 
 ### Partial / Failed / Running / Pending
 
@@ -3132,7 +3252,23 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 
 当前工作流 JSONL 并发安全承诺局限于同一 Python 进程。
 
-### 79.4 Live validation
+### 79.4 First-Qwen visual workflow is disabled and uncalibrated
+
+`visual_planning.enabled` 默认 `False`：门禁不参与运行，调用次数、结果、
+trace、产物与启用前逐字节一致。即使开启，未校准的 detector/segmenter
+能力默认关闭（None），`vqa_evidence.json`、ROI overlay 等为语义占位，
+持久化格式/质量参数未批准（14A2 §5.1）。组合根装配已落地（14A3 C9）：
+`application/bootstrap.py` 按版本绑定检查组装 `VisualPlanningGate` 与
+`VisualPlanBindings`；VQA 证据服务仅在完整校准策略 + 启用检测器时组装，
+grounding 证据 seam 以显式全 None 策略运行；启用 segmenter 而无冻结模型
+绑定、部分/多条校准、无启用检测器均组装期严格失败；`agents/evidence_catalog.json`
+已进 wheel 包数据。检测器一律惰性接线（`_LazyObjectDetectionClient`），组合
+期绝不加载 YOLO 权重，首次推理才经共享审计 store；未校准 grounding 完全不
+接线 detector。ROI 计划按 14B §6.2：超限（`max_rois`，1–3，默认 3）、越界
+或退化时折叠为唯一整图 ROI，保留已校验类别计划，不截断、不重调；非有限
+坐标与错误 image_id 仍为 SCHEMA_INVALID。live 校准与默认翻转属于后续任务。
+
+### 79.5 Live validation
 
 离线测试通过不代表：
 
@@ -3144,16 +3280,16 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 
 必须分别验证。
 
-### 79.5 Optional vision/deployment dependencies
+### 79.6 Optional vision/deployment dependencies
 
 变化检测、YOLO/ONNX 等扩展能力依赖环境配置，基础 import 不等于所有 backend 都 available。
 
-### 79.6 OEM class labels
+### 79.7 OEM class labels
 
 迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`，没有经训练
 语义验证的 `classes.json`。当前 runtime 保留该事实，不用网络资料猜测类别顺序。
 
-### 79.7 Semantic connected-component counting
+### 79.8 Semantic connected-component counting
 
 SegFormer 输出 semantic region 而非 instance mask。相接实例可能形成一个 component 并
 低估数量；当前不隐藏加入 watershed 或 instance splitting。此限制应在 benchmark 中单列。
