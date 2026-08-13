@@ -23,10 +23,14 @@ two learning rates, resumable composite checkpoints only.
   `tests/test_finetune_qwen3vl_phase2.py` (user pre-authorized the allowlist
   change; test file itself is deferred per user instruction).
 - `scripts/finetune_qwen3vl_phase2.py` (new): training script.
+- `tests/test_finetune_qwen3vl_phase2.py` (new, follow-up commit): unit tests
+  with a fake Qwen model tree + fake processor + real peft (19 tests, all
+  CPU, offline).
 - `DETAILS.md`: added the script to `scripts/` responsibilities (section 85).
 
-Not created in this round: `tests/test_finetune_qwen3vl_phase2.py` — the user
-explicitly deferred tests ("测试暂时不管，等环境补齐后运行测试").
+Timeline: the user initially deferred tests ("测试暂时不管"); the test file
+was written and committed in a follow-up once the M3 conda environment was
+confirmed ready, and the acceptance battery from doc section 12 was run.
 
 ## Core Changes
 
@@ -72,6 +76,10 @@ explicitly deferred tests ("测试暂时不管，等环境补齐后运行测试"
   one-step Trainer training with complete composite checkpoint, resume
   validation (data/lora conflicts detected), broken-dir refusal, gradient
   smoke check — all passed.
+- `pytest tests/test_finetune_qwen3vl_phase2.py`: 19 passed (follow-up run
+  with the committed test suite; also covers import-weight-freedom,
+  visual same-name projection trap, epoch augmentation-seed stability,
+  resume conflict refusal, composite checkpoint layout, gradient smoke).
 - `pytest tests/test_qwen3vl_phase2_data.py tests/test_prepare_qwen3vl_phase2_sft.py`:
   52 passed.
 - Architecture tests: 41 passed; 1 pre-existing failure
@@ -80,6 +88,11 @@ explicitly deferred tests ("测试暂时不管，等环境补齐后运行测试"
   scripts/qwen3vl_lora_remote.py, scripts/prepare_vrsbench_phase2.py,
   tests/test_qwen3vl_lora_cli.py, tests/test_qwen3vl_lora_remote.py) which
   are not in the allowlist yet — not part of this task.
+
+Bug fix included in the follow-up commit: `audit_trainable_parameters`
+passed the vision root name as a plain string to `_under_any`, which
+iterates over characters and silently skipped frozen-vision counting; now
+wrapped as a single-element list (covered by the new test suite).
 
 ## Not Done / Risks
 

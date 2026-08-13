@@ -740,7 +740,7 @@ def audit_trainable_parameters(
             else:
                 merger_trainable.append(_param_meta(logical, parameter))
         else:
-            if _under_any(logical, roots.vision_name):
+            if _under_any(logical, [roots.vision_name]):
                 frozen_vision_total += int(parameter.numel())
                 if not _under_any(logical, merger_names):
                     frozen_vision_non_merger += int(parameter.numel())
@@ -783,7 +783,7 @@ def audit_trainable_parameters(
     base = unwrap_base(peft_model)
     for name, parameter in base.named_parameters():
         if parameter.requires_grad:
-            if _under_any(name, roots.vision_name) and not _under_any(name, merger_names):
+            if _under_any(name, [roots.vision_name]) and not _under_any(name, merger_names):
                 errors.append(f"non-merger vision parameter trainable: {name}")
             if name.startswith(roots.text_name + ".") and not _has_lora_segment(name):
                 errors.append(f"LLM base parameter trainable: {name}")
