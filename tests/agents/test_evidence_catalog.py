@@ -10,13 +10,18 @@ from pathlib import Path
 
 import pytest
 
+from agents.counting.expert_catalog import ExpertCatalog
 from agents.evidence_catalog import (
     CatalogCategoryError,
     EvidenceCatalog,
 )
+from application.settings import load_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRODUCTION_CATALOG = REPO_ROOT / "agents" / "evidence_catalog.json"
+_COUNTING_EXPERT_CATALOG = (
+    REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
+)
 
 
 def _catalog(**overrides) -> EvidenceCatalog:
@@ -251,16 +256,45 @@ def test_catalog_rejects_path_like_labels() -> None:
 
 def test_production_catalog_loads_and_is_consistent() -> None:
     catalog = EvidenceCatalog.from_file(_PRODUCTION_CATALOG)
-    assert catalog.catalog_version == "first-qwen-evidence-catalog-v1"
-    assert catalog.composite_categories == ("vehicle",)
+    assert catalog.catalog_version == "first-qwen-evidence-catalog-v2"
+    assert catalog.composite_categories == (
+        "vehicle",
+        "aircraft",
+        "watercraft",
+        "sports_facility",
+        "transport_infrastructure",
+        "industrial_facility",
+        "aviation_infrastructure",
+    )
     assert catalog.composite_leaves("vehicle") == ("small_vehicle", "large_vehicle")
-    # The seed catalog is deliberately uncalibrated: no verified labels and no
-    # enabled capability until a model calibration task approves content.
-    # 种子目录刻意未校准：在模型校准任务批准内容前，无已验证标签、无启用能力。
-    assert catalog.leaf_yolo_labels("small_vehicle") == ()
-    assert catalog.capability_enabled("small_vehicle", "yolo") is False
-    assert catalog.capability_enabled("small_vehicle", "segformer") is False
-    assert catalog.capability_enabled("large_vehicle", "yolo") is False
+    assert catalog.composite_leaves("aircraft") == ("plane", "helicopter")
+    assert catalog.composite_leaves("watercraft") == ("ship",)
+    assert catalog.leaf_yolo_labels("small_vehicle") == ("small vehicle",)
+    assert catalog.leaf_segformer_labels("small_vehicle") == ("Small_Vehicle",)
+    assert catalog.capability_enabled("small_vehicle", "yolo") is True
+    assert catalog.capability_enabled("small_vehicle", "segformer") is True
+    assert catalog.capability_enabled("container_crane", "yolo") is True
+    assert catalog.capability_enabled("container_crane", "segformer") is False
+
+
+def test_production_catalog_labels_are_backed_by_current_model_maps() -> None:
+    evidence = EvidenceCatalog.from_file(_PRODUCTION_CATALOG)
+    experts = ExpertCatalog.load(_COUNTING_EXPERT_CATALOG, asset_root=REPO_ROOT)
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    (yolo,) = settings.backend.yolo.detectors
+    segformer = experts.expert("segmenter_mitb2_001")
+    yolo_labels = set(yolo.classes)
+    segformer_labels = {
+        label
+        for support in segformer.supports.values()
+        for label in support.model_labels
+    }
+
+    for leaf in evidence.leaf_categories:
+        if evidence.capability_enabled(leaf, "yolo"):
+            assert set(evidence.leaf_yolo_labels(leaf)) <= yolo_labels
+        if evidence.capability_enabled(leaf, "segformer"):
+            assert set(evidence.leaf_segformer_labels(leaf) or ()) <= segformer_labels
 
 
 def test_catalog_asset_has_no_physical_paths() -> None:

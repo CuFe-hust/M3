@@ -1,19 +1,128 @@
 {
-  "catalog_version": "first-qwen-evidence-catalog-v1",
+  "catalog_version": "first-qwen-evidence-catalog-v2",
   "composites": {
-    "vehicle": ["small_vehicle", "large_vehicle"]
+    "vehicle": ["small_vehicle", "large_vehicle"],
+    "aircraft": ["plane", "helicopter"],
+    "watercraft": ["ship"],
+    "sports_facility": [
+      "baseball_diamond",
+      "basketball_court",
+      "ground_track_field",
+      "soccer_ball_field",
+      "swimming_pool",
+      "tennis_court"
+    ],
+    "transport_infrastructure": ["bridge", "harbor", "roundabout"],
+    "industrial_facility": ["storage_tank", "container_crane"],
+    "aviation_infrastructure": ["airport", "helipad"]
   },
   "leaves": {
     "small_vehicle": {
-      "yolo_labels": [],
-      "segformer_labels": null,
-      "yolo_enabled": false,
-      "segformer_enabled": false
+      "yolo_labels": ["small vehicle"],
+      "segformer_labels": ["Small_Vehicle"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
     },
     "large_vehicle": {
-      "yolo_labels": [],
+      "yolo_labels": ["large vehicle"],
+      "segformer_labels": ["Large_Vehicle"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "plane": {
+      "yolo_labels": ["plane"],
+      "segformer_labels": ["plane"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "helicopter": {
+      "yolo_labels": ["helicopter"],
+      "segformer_labels": ["Helicopter"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "ship": {
+      "yolo_labels": ["ship"],
+      "segformer_labels": ["ship"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "baseball_diamond": {
+      "yolo_labels": ["baseball diamond"],
+      "segformer_labels": ["baseball_diamond"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "basketball_court": {
+      "yolo_labels": ["basketball court"],
+      "segformer_labels": ["basketball_court"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "ground_track_field": {
+      "yolo_labels": ["ground track field"],
+      "segformer_labels": ["Ground_Track_Field"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "soccer_ball_field": {
+      "yolo_labels": ["soccer ball field"],
+      "segformer_labels": ["Soccer_ball_field"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "swimming_pool": {
+      "yolo_labels": ["swimming pool"],
+      "segformer_labels": ["Swimming_pool"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "tennis_court": {
+      "yolo_labels": ["tennis court"],
+      "segformer_labels": ["tennis_court"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "bridge": {
+      "yolo_labels": ["bridge"],
+      "segformer_labels": ["Bridge"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "harbor": {
+      "yolo_labels": ["harbor"],
+      "segformer_labels": ["Harbor"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "roundabout": {
+      "yolo_labels": ["roundabout"],
+      "segformer_labels": ["Roundabout"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "storage_tank": {
+      "yolo_labels": ["storage tank"],
+      "segformer_labels": ["storage_tank"],
+      "yolo_enabled": true,
+      "segformer_enabled": true
+    },
+    "container_crane": {
+      "yolo_labels": ["container crane"],
       "segformer_labels": null,
-      "yolo_enabled": false,
+      "yolo_enabled": true,
+      "segformer_enabled": false
+    },
+    "airport": {
+      "yolo_labels": ["airport"],
+      "segformer_labels": null,
+      "yolo_enabled": true,
+      "segformer_enabled": false
+    },
+    "helipad": {
+      "yolo_labels": ["helipad"],
+      "segformer_labels": null,
+      "yolo_enabled": true,
       "segformer_enabled": false
     }
   }

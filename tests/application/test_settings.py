@@ -334,7 +334,7 @@ def test_visual_planning_defaults_to_frozen_disabled_state() -> None:
     # 组合根校验该绑定。
     assert (
         settings.visual_planning.planner.catalog_version
-        == "first-qwen-evidence-catalog-v1"
+        == "first-qwen-evidence-catalog-v2"
     )
     assert settings.visual_planning.planner.max_rois == 3
     assert settings.visual_planning.planner.halo_ratio == pytest.approx(0.10)
