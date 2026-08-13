@@ -179,6 +179,7 @@ tests/__init__.py
 tests/conftest.py
 tests/test_main.py
 tests/test_prepare_qwen3vl_phase2_sft.py
+tests/test_qwen3vl_phase2_data.py
 tests/agents/test_agent_registry.py
 tests/agents/test_visual_base.py
 tests/agents/test_evidence_catalog.py
@@ -285,6 +286,7 @@ scripts/classify_tasks.py
 scripts/evaluate_vrsbench_counting.py
 scripts/merge_qwen3vl_merger_lora.py
 scripts/prepare_qwen3vl_phase2_sft.py
+scripts/qwen3vl_phase2_data.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py
