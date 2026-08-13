@@ -3740,3 +3740,43 @@ assistant mask（5.14.1 键 `assistant_masks`，4.x `assistant_tokens_mask`，
 `(batch, meta)`，视觉张量沿 dim0 拼接。processor 契约已对照 M3 环境
 transformers 5.14.1 验证（pixel_values (G,1176)、image_grid_thw (1,3)、
 mm_token_type_ids 默认开启）。
+
+```text
+scripts/finetune_qwen3vl_phase2.py
+```
+
+Phase 2 Qwen3-VL-8B SFT 训练脚本（任务文档见
+`docs/train/03_FINETUNE_QWEN3VL_PHASE2.md`）。策略：Vision Encoder 冻结；
+主 `model.visual.merger` 与全部 `deepstack_merger_list.*` 全量训练
+（`--merger-lr`，不挂 LoRA）；LLM base 冻结，每层
+`self_attn.{q,k,v,o}_proj` 与 `mlp.{gate,up,down}_proj` 挂 LoRA
+（`--lora-lr`）。结构定位不依赖模糊字符串匹配：按属性识别视觉根
+（merger + deepstack_merger_list）与文本根（layers + embed_tokens），已对照
+transformers 5.14.1（视觉根 `model.visual`、文本根 `model.language_model`）。
+启动时硬审计：LoRA target 全路径、trainable/冻结计数、可训练参数精确分类为
+`merger_base`/`llm_lora` 且两集合不重叠，审计 JSON 写入
+`output_dir/parameter_audit.json`。optimizer 显式四组（merger/lora ×
+decay/no_decay），cosine + warmup（默认 0.03）使用同一 lambda 保持两套 LR
+比值；DeepSpeed/FSDP 被稳定拒绝（四组 optimizer 契约与复合保存要求全量
+权重，CLI 传入即报错）。数据只消费 `scripts/qwen3vl_phase2_data.py` 的
+`Phase2EpisodeDataset`/`Phase2DataCollator`/`AugmentationConfig`/
+`DatasetRootConfig`，不复制数据语义、增强或 prompt 逻辑；支持确定性 group
+repeat weight（默认 1；按 episode JSONL 的 group key 稳定展开，每 epoch 至少
+遍历全部 Episode 一次；配置与实际 group 计数进 manifest）。唯一产物是可
+resume 的复合 checkpoint：`checkpoint-N/{adapter/,
+merger_model.safetensors, processor/, phase2_training_manifest.json,
+trainer_state.json, optimizer.pt, scheduler.pt, rng_state.pth}`；
+manifest 最后写作为完成标记（含 base/processor 逻辑身份与 revision、
+train/eval Episode checksum 与上游 manifest checksum、LoRA 配置与完整
+target 列表、merger 参数 name/shape/dtype/numel 表、adapter/merger 文件
+sha256、optimizer group 摘要与两套 LR、增强 seed 与配置、训练参数、
+git HEAD 与 transformers/torch/peft 版本）。resume 按 manifest 与当前显式
+请求逐项校验（base/processor 身份、数据 checksum、LoRA rank/alpha/target、
+merger 参数表、optimizer group 拓扑、增强 seed/配置、max_seq_length 与图像
+像素设置），冲突稳定拒绝；默认自动 resume 最新完整 checkpoint，半成品目录
+不视为成功且拒绝覆盖。`--smoke-gradients` 在训练前做小型 forward/backward
+梯度检查（peft 将 lora_B 初始化为零，首步 lora_A 梯度按设计为零，检查先做
+一步 warm-up 更新）；`--image-min/max-pixels` 仅在处理器声明支持时注入
+（5.14.1 Qwen3-VL processor 不支持该参数，manifest 记录
+`image_pixels_applied=false`）。默认 `--local-files-only`；模块 import 不加载
+权重（torch/transformers/peft 惰性导入）。
