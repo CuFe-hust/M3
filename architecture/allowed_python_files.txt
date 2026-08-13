@@ -180,6 +180,7 @@ tests/conftest.py
 tests/test_main.py
 tests/test_prepare_qwen3vl_phase2_sft.py
 tests/test_qwen3vl_phase2_data.py
+tests/test_finetune_qwen3vl_phase2.py
 tests/agents/test_agent_registry.py
 tests/agents/test_visual_base.py
 tests/agents/test_evidence_catalog.py
@@ -287,6 +288,7 @@ scripts/evaluate_vrsbench_counting.py
 scripts/merge_qwen3vl_merger_lora.py
 scripts/prepare_qwen3vl_phase2_sft.py
 scripts/qwen3vl_phase2_data.py
+scripts/finetune_qwen3vl_phase2.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py
