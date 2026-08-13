@@ -3718,3 +3718,25 @@ GeoChat `[refer]`→target 框、`[identify]`→input 框 + 文本、普通对�
 保序，坐标统一 `round(c*999/100)` 转换且转换前后校验，拒绝记录以稳定
 错误码进 `rejected.jsonl`（含闭合计数）。episode_id 全局唯一；输出无
 机器绝对路径；同输入同 seed 字节级稳定。
+
+```text
+scripts/qwen3vl_phase2_data.py
+```
+
+Phase 2 数据管线（任务文档见 `docs/train/02_QWEN3VL_PHASE2_DATA_PIPELINE.md`）：
+公开 `Phase2EpisodeDataset` / `Phase2DataCollator` / `AugmentationConfig` /
+`DatasetRootConfig`，供训练脚本消费，不解析原始标注、不加载主模型。
+要点：图片路径经 `image_source -> root` 映射安全解析（拒绝绝对路径/盘符/
+UNC/`.`/`..`/符号链接逃逸，错误只带相对路径）；在线增强 seed 为
+`sha256(seed|epoch|parent_episode_id)`，成对有框/无框 VQA 同 epoch 图像完全
+一致；几何（90°旋转/仿射/透视）与成像退化（对比度/亮度/暗角/失焦或运动
+模糊/噪声/JPEG）用独立随机子流，退化不移动坐标；任一必需框未过质量门禁
+则整条 episode 回退 identity；`orientation_locked` 永不做几何增强但允许成像
+退化；对话渲染统一（grounding/refer 输出 JSON 框、VQA 有框版声明
+`Available annotated regions`、无框版不含任何坐标）；labels 来自 chat-template
+assistant mask（5.14.1 键 `assistant_masks`，4.x `assistant_tokens_mask`，
+不支持时逐 turn 边界编码回退），图像 token 展开按长度差 delta 对齐；截断
+只按完整 turn pair、单对超长抛 `episode_too_long`；collator 右填充并返回
+`(batch, meta)`，视觉张量沿 dim0 拼接。processor 契约已对照 M3 环境
+transformers 5.14.1 验证（pixel_values (G,1176)、image_grid_thw (1,3)、
+mm_token_type_ids 默认开启）。
