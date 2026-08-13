@@ -18,8 +18,9 @@ from pathlib import Path
 import pytest
 
 from data.adapters.base import AdapterProbe
-from data.schema import GroundTruth, ImageRef, UnifiedSample
+from data.schema import GroundTruth, ImageRef, SampleDraft, UnifiedSample
 from workflows.artifact_writer import ArtifactWriter
+from workflows.call_budget import CallBudgetFactory
 from workflows.dataset_runner import (
     DatasetRunner,
     _shard_matches,
@@ -81,11 +82,22 @@ class _StubSampleRunner:
         self.fail_ids = fail_ids or set()
         self.raise_error = raise_error
         self.calls: list[tuple[UnifiedSample, Path, str, object]] = []
+        self.joint_plans: list[tuple[str, object, object]] = []
         self.in_flight = 0
         self.max_in_flight = 0
 
-    async def run_one(self, sample, sample_dir, *, resolution=None, judge_policy="none"):
+    async def run_one(
+        self,
+        sample,
+        sample_dir,
+        *,
+        resolution=None,
+        joint_plan=None,
+        budget=None,
+        judge_policy="none",
+    ):
         self.calls.append((sample, sample_dir, judge_policy, resolution))
+        self.joint_plans.append((sample.sample_id, joint_plan, budget))
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         delay = self.delays.get(sample.sample_id, self.delay)
@@ -114,6 +126,16 @@ class _StubSampleRunner:
             json.dumps(status.model_dump(mode="json"), ensure_ascii=False),
             encoding="utf-8",
         )
+        if state == "succeeded":
+            # Like the real runner, a succeeded sample carries its
+            # deterministic evaluation artifact; resume supplements only
+            # missing pieces. 与真实 runner 一致：succeeded 样本携带确定性
+            # 评估产物；resume 只补缺失部分。
+            from evaluation.records import evaluation_filename_for_runtime_task
+
+            filename = evaluation_filename_for_runtime_task(sample.task)
+            if filename is not None:
+                (sample_dir / filename).write_text("{}", encoding="utf-8")
         return SampleRunOutcome(
             execution=None,
             status=status,
@@ -156,13 +178,29 @@ def _runner(
     run_dir: Path,
     *,
     judge_policy: str = "none",
+    joint_planner=None,
+    data_root: Path | None = None,
 ) -> DatasetRunner:
+    # Joint mode bypasses the resolver but the draft-mode guard still
+    # requires non-None; legacy mode keeps both unset so configuration-time
+    # failures stay observable. 联合模式绕过 resolver，但 draft 模式守卫仍要求
+    # 非 None；旧模式保持两者未设置，使配置期失败仍然可观察。
+    if joint_planner is not None:
+        task_resolver = object()
+        call_budget_factory = CallBudgetFactory()
+    else:
+        task_resolver = None
+        call_budget_factory = None
     return DatasetRunner(
         adapter=adapter,
         sample_runner=sample_runner,
         run_dir=run_dir,
         artifact_writer=ArtifactWriter(),
         judge_policy=judge_policy,
+        task_resolver=task_resolver,
+        call_budget_factory=call_budget_factory,
+        joint_planner=joint_planner,
+        data_root=data_root,
     )
 
 
@@ -672,3 +710,208 @@ def test_judge_sample_rate_intermediate_deterministic_across_resume(
     summary2 = _run(runner2, resume=True)
     assert runner2.judge_sample_rate == 0.5
     assert summary2.judge_sample_rate == 0.5
+
+
+# ── joint mode (doc 15) / 联合模式（doc 15） ────────────────────────────────
+
+
+class _DraftAdapter(_FakeAdapter):
+    """Adapter that yields SampleDraft entries for the auto-task entry.
+    为 auto-task 入口产出 SampleDraft 的适配器。"""
+
+    supported_tasks = frozenset()
+
+    def __init__(self, drafts: list[SampleDraft]) -> None:
+        self._drafts = drafts
+        self.probe_calls = 0
+
+    def probe(self, root: Path, task: str | None = None) -> AdapterProbe:
+        self.probe_calls += 1
+        return AdapterProbe(
+            dataset="fake-draft",
+            version="1",
+            sample_file=root / "drafts.jsonl",
+            observed_fields=("id",),
+            sample_count=len(self._drafts),
+            task=task,
+            available_tasks=(),
+        )
+
+    def iter_drafts(self, root: Path, split: str):
+        for draft in self._drafts:
+            yield draft
+
+
+def _draft(sample_id: str) -> SampleDraft:
+    return SampleDraft(
+        sample_id=sample_id,
+        dataset="fake-draft",
+        split="test",
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
+        question="q",
+    )
+
+
+class _FakeJointPlanner:
+    """Duck-typed JointVisualPlanner with a configurable outcome and call
+    record; the configured plan lives under result so it never shadows the
+    plan method the runner invokes. 可配置结果并记录调用的 JointVisualPlanner
+    鸭子类型；配置的计划放在 result 下，避免遮蔽 runner 调用的 plan 方法。"""
+
+    def __init__(self, result=None, error: Exception | None = None) -> None:
+        self.result = result
+        self.error = error
+        self.calls: list[tuple[object, object, object, object]] = []
+
+    async def plan(self, view, *, data_root, artifact_dir, budget):
+        self.calls.append((view, data_root, artifact_dir, budget))
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def _joint_plan(*, task: str = "caption") -> dict:
+    """A valid joint plan dict; the runner passes it through opaque.
+    一条合法联合计划 dict；runner 原样透传。"""
+    from agents.schema import JointQwenVisualPlan
+
+    return JointQwenVisualPlan(
+        version="joint-qwen-plan-v1",
+        task=task,  # type: ignore[arg-type]
+        visual_plan={
+            "version": "first-qwen-plan-v1",
+            "execution_family": "direct_vqa",
+            "confidence": 0.9,
+            "roi_plan": {"rois": []},
+        },
+    )
+
+
+def test_joint_mode_sample_entry_one_planner_call(tmp_path: Path) -> None:
+    """An adapter (explicit/default) sample gets exactly one planner call;
+    the sample is rebuilt to the model-selected task, run_one receives the
+    joint plan, and the persisted summary closes. 适配器（显式/默认）样本恰好
+    一次规划调用；样本按模型选定 task 重建，run_one 收到联合计划，持久化
+    汇总闭合。"""
+    samples = [_sample("s0"), _sample("s1")]
+    run_dir, _ = _create_run(tmp_path, run_id="joint-sample")
+    planner = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    stub = _StubSampleRunner()
+    runner = _runner(_FakeAdapter(samples), stub, run_dir, joint_planner=planner)
+    summary = _run(runner)
+    assert len(planner.calls) == 2  # one per sample / 每条样本一次
+    assert [call[0].sample_id for call in planner.calls] == ["s0", "s1"]
+    # run_one got the rebuilt sample and the same joint plan / run_one 收到
+    # 重建样本与同一联合计划
+    assert [call[0].task for call in stub.calls] == ["caption", "caption"]
+    assert all(plan.task == "caption" for _sid, plan, _budget in stub.joint_plans)
+    # The shared budget spans planner and runner / 共享预算贯穿规划与执行
+    planned_budget = planner.calls[0][3]
+    assert stub.joint_plans[0][2] is planned_budget
+    assert summary.total == 2
+    assert summary.succeeded == 2
+
+
+def test_joint_mode_incompatible_rebuild_fails_closed(tmp_path: Path) -> None:
+    """A model-selected task the sample cannot be rebuilt for (change task on
+    a single image) fails closed with INCOMPATIBLE_JOINT_TASK — never a
+    guessed task, never a run_one call. 样本无法重建为模型选定 task（单图上的
+    变化任务）时以 INCOMPATIBLE_JOINT_TASK 严格失败——绝不猜测 task、绝不
+    调用 run_one。"""
+    run_dir, _ = _create_run(tmp_path, run_id="joint-incompatible")
+    planner = _FakeJointPlanner(result=_joint_plan(task="change_caption"))
+    stub = _StubSampleRunner()
+    runner = _runner(_FakeAdapter([_sample("s0")]), stub, run_dir, joint_planner=planner)
+    summary = _run(runner)
+    assert len(planner.calls) == 1
+    assert stub.calls == []
+    status = _read_json(
+        run_dir / "tasks" / "general_vqa" / "samples" / storage_key("s0") / "status.json"
+    )
+    assert status["state"] == "failed"
+    assert status["error_code"] == "INCOMPATIBLE_JOINT_TASK"
+    assert status["task"] == "change_caption"
+    assert summary.failed == 1
+
+
+def test_joint_mode_planner_error_is_stable_failure(tmp_path: Path) -> None:
+    """A JointPlanError collapses to a failed status with the stable code,
+    no agent execution, and honest 'unknown' task label.
+    JointPlanError 收敛为携带稳定 code 的 failed 状态，不执行 Agent，
+    task 标签诚实为 'unknown'。"""
+    from workflows.visual_planner import JointPlanError
+
+    run_dir, _ = _create_run(tmp_path, run_id="joint-error")
+    planner = _FakeJointPlanner(error=JointPlanError("LOW_CONFIDENCE"))
+    stub = _StubSampleRunner()
+    runner = _runner(_FakeAdapter([_sample("s0")]), stub, run_dir, joint_planner=planner)
+    summary = _run(runner)
+    assert stub.calls == []
+    status = _read_json(
+        run_dir / "tasks" / "general_vqa" / "samples" / storage_key("s0") / "status.json"
+    )
+    assert status["state"] == "failed"
+    assert status["error_code"] == "LOW_CONFIDENCE"
+    assert status["task"] == "unknown"
+    assert summary.failed == 1
+
+
+def test_joint_mode_draft_entry_one_planner_call(tmp_path: Path) -> None:
+    """The auto-task entry drafts through the joint planner: one planner call
+    per draft, materialization under the model-selected task, run_one with
+    the joint plan. auto-task 入口的 draft 经联合规划器处理：每条 draft 一次
+    规划调用、按模型选定 task 物化、run_one 携带联合计划。"""
+    run_dir, _ = _create_run(tmp_path, run_id="joint-draft")
+    planner = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    stub = _StubSampleRunner()
+    runner = _runner(_DraftAdapter([_draft("d0"), _draft("d1")]), stub, run_dir, joint_planner=planner)
+    summary = _run(runner, task=None)
+    assert len(planner.calls) == 2
+    assert all(isinstance(call[0], SampleDraft) for call in planner.calls)
+    assert [call[0].task for call in stub.calls] == ["caption", "caption"]
+    assert stub.joint_plans[0][1].task == "caption"
+    assert summary.total == 2
+    assert summary.succeeded == 2
+
+
+def test_joint_mode_draft_materialization_failure_fails_closed(tmp_path: Path) -> None:
+    """An incompatible draft (change task on a single image) fails closed
+    with the stable materialization code and the known task label.
+    不兼容 draft（单图上的变化任务）以稳定物化 code 与已知 task 标签严格失败。"""
+    run_dir, _ = _create_run(tmp_path, run_id="joint-draft-incompatible")
+    planner = _FakeJointPlanner(result=_joint_plan(task="change_caption"))
+    stub = _StubSampleRunner()
+    runner = _runner(_DraftAdapter([_draft("d0")]), stub, run_dir, joint_planner=planner)
+    summary = _run(runner, task=None)
+    assert len(planner.calls) == 1
+    assert stub.calls == []
+    status = _read_json(
+        run_dir / "tasks" / "auto" / "samples" / storage_key("d0") / "status.json"
+    )
+    assert status["state"] == "failed"
+    assert status["error_code"] == "CHANGE_TASK_NEEDS_TWO_IMAGES"
+    assert status["task"] == "change_caption"
+    assert summary.failed == 1
+
+
+def test_joint_mode_resume_succeeded_has_zero_model_calls(tmp_path: Path) -> None:
+    """Resuming a succeeded run in joint mode never calls the planner (doc 15
+    §4.6): zero model calls per resumed sample. 联合模式下 resume 已 succeeded
+    的运行绝不调用规划器（doc 15 §4.6）：每条恢复样本零模型调用。"""
+    samples = [_sample("s0"), _sample("s1")]
+    run_dir, _ = _create_run(tmp_path, run_id="joint-resume")
+    first = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    stub1 = _StubSampleRunner()
+    runner1 = _runner(_FakeAdapter(samples), stub1, run_dir, joint_planner=first)
+    summary1 = _run(runner1)
+    assert summary1.succeeded == 2
+    assert len(first.calls) == 2
+    # A fresh runner resumes; the planner must not be touched.
+    # 新 runner 恢复；规划器绝不能被触碰。
+    fresh = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    stub2 = _StubSampleRunner()
+    runner2 = _runner(_FakeAdapter(samples), stub2, run_dir, joint_planner=fresh)
+    summary2 = _run(runner2, resume=True)
+    assert summary2.succeeded == 2
+    assert fresh.calls == []
+    assert all(call[1] is None for call in stub2.joint_plans)

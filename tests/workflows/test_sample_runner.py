@@ -13,12 +13,18 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from PIL import Image
 
 from agents.base import AgentExecution, VisualPlanBindings
 from agents.counting.schema import CountingResult, GlobalPointObservation
 from agents.errors import AgentTaskMismatchError
 from agents.registry import AgentRegistry
-from agents.schema import AgentResult, FirstQwenVisualPlan, RoiPlan
+from agents.schema import (
+    AgentResult,
+    FirstQwenVisualPlan,
+    JointQwenVisualPlan,
+    RoiPlan,
+)
 from data.schema import GroundTruth, ImageRef, TaskNormalization, UnifiedSample
 from evaluation.judges.base import VQAAnswerJudgeResult
 from evaluation.records import EvaluationRecord
@@ -209,6 +215,8 @@ def _runner(
     fallback_on_partial: bool = False,
     router: TaskRouter | None = None,
     visual_planning: VisualPlanningGate | None = None,
+    joint_bindings: VisualPlanBindings | None = None,
+    data_root: Path | None = None,
 ) -> SampleRunner:
     registry = AgentRegistry()
     for agent in agents:
@@ -222,6 +230,8 @@ def _runner(
         judge_service=judge_service,
         fallback_on_partial=fallback_on_partial,
         visual_planning=visual_planning,
+        joint_bindings=joint_bindings,
+        data_root=data_root,
     )
 
 
@@ -231,6 +241,7 @@ def _run(
     sample_dir: Path,
     *,
     resolution: TaskResolution | None = None,
+    joint_plan: JointQwenVisualPlan | None = None,
     judge_policy: str = "none",
     budget: CallBudget | None = None,
 ) -> SampleRunOutcome:
@@ -239,6 +250,7 @@ def _run(
             sample,
             sample_dir,
             resolution=resolution,
+            joint_plan=joint_plan,
             judge_policy=judge_policy,
             budget=budget,
         )
@@ -1455,3 +1467,238 @@ def test_visual_planning_gate_unexpected_error_is_stable_code(
     trace_text = (_sample_dir(tmp_path) / "agent_trace.json").read_text(encoding="utf-8")
     assert "secret" not in status_text
     assert "secret" not in trace_text
+
+
+# ── joint mode (doc 15) / 联合模式（doc 15） ────────────────────────────────
+
+
+def _joint_plan(*, task: str = "general_vqa") -> JointQwenVisualPlan:
+    """A valid joint plan: model-selected task plus a direct_vqa plan.
+    一条合法联合计划：模型选定 task 加 direct_vqa 计划。"""
+    return JointQwenVisualPlan(
+        version="joint-qwen-plan-v1",
+        task=task,  # type: ignore[arg-type]
+        visual_plan=_visual_plan(),
+    )
+
+
+def test_run_one_joint_writes_artifact_and_derives_resolution(
+    tmp_path: Path,
+) -> None:
+    """joint_plan persists joint_visual_plan.json, derives the resolution
+    deterministically (source model, single candidate), injects the plan and
+    bindings into AgentContext, and records joint_plan in the trace.
+    joint_plan 持久化 joint_visual_plan.json、确定性派生 resolution（source
+    model、单一候选）、把计划与绑定注入 AgentContext，并在 trace 记录
+    joint_plan。"""
+    bindings = VisualPlanBindings()
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent], joint_bindings=bindings)
+    plan = _joint_plan()
+    outcome = _run(runner, _sample(), _sample_dir(tmp_path), joint_plan=plan)
+    assert outcome.status.state == "succeeded"
+    joint_json = _read_json(_sample_dir(tmp_path) / "joint_visual_plan.json")
+    assert joint_json["version"] == "joint-qwen-plan-v1"
+    assert joint_json["task"] == "general_vqa"
+    assert joint_json["visual_plan"]["execution_family"] == "direct_vqa"
+    trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
+    assert trace["joint_plan"] is True
+    assert trace["task_type"] == "general_vqa"
+    assert trace["resolution_source"] == "model"
+    assert trace["candidate_tasks"] == ["general_vqa"]
+    context = agent.calls[0][1]
+    assert context.visual_plan == _visual_plan()
+    assert context.visual_bindings is bindings
+    # The routing artifact reflects the model task. / routing 产物反映模型任务。
+    routing = _read_json(_sample_dir(tmp_path) / "routing_decision.json")
+    assert routing["task"] == "general_vqa"
+    # No separate visual_plan.json from the old gate. / 旧 gate 的独立
+    # visual_plan.json 不出现。
+    assert not (_sample_dir(tmp_path) / "visual_plan.json").exists()
+
+
+def test_run_one_joint_resolution_and_joint_plan_are_mutually_exclusive(
+    tmp_path: Path,
+) -> None:
+    """Supplying both resolution and joint_plan fails closed instead of
+    guessing which one wins. 同时提供 resolution 与 joint_plan 严格失败，
+    绝不猜测哪个生效。"""
+    runner = _runner([_FakeAgent("general_vqa_agent", ("general_vqa",))])
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        _run(
+            runner,
+            _sample(),
+            _sample_dir(tmp_path),
+            resolution=_resolution("general_vqa", ["general_vqa"], low_confidence=False),
+            joint_plan=_joint_plan(),
+        )
+
+
+def test_run_one_joint_task_mismatch_fails_closed(tmp_path: Path) -> None:
+    """The executed sample must already carry the model-selected task; a
+    mismatch raises instead of silently re-routing. 被执行样本必须已携带模型
+    选定 task；不一致直接抛出而不是静默改路由。"""
+    runner = _runner([_FakeAgent("general_vqa_agent", ("general_vqa",))])
+    plan = _joint_plan(task="caption")
+    with pytest.raises(ValueError, match="must equal the model-selected task"):
+        _run(runner, _sample(), _sample_dir(tmp_path), joint_plan=plan)
+
+
+def test_run_one_joint_shares_external_budget(tmp_path: Path) -> None:
+    """The budget that already paid for the planner call is the same budget
+    the agent sees; no second budget is minted inside run_one.
+    已为规划调用付费的预算与 Agent 所见为同一对象；run_one 内部不新建预算。"""
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent])
+    budget = CallBudget(max_qwen_calls=100)
+    _run(
+        runner,
+        _sample(),
+        _sample_dir(tmp_path),
+        joint_plan=_joint_plan(),
+        budget=budget,
+    )
+    assert agent.calls[0][1].call_budget is budget
+
+
+def test_run_one_joint_unroutable_task_fails_with_joint_mode_trace(
+    tmp_path: Path,
+) -> None:
+    """A model-selected task with no registered agent collapses to a stable
+    UnsupportedAgentError failure; the trace still records joint_plan
+    honestly. 模型选定 task 无注册 Agent 时收敛为稳定 UnsupportedAgentError
+    失败；trace 仍如实记录 joint_plan。"""
+    agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
+    runner = _runner([agent])
+    plan = _joint_plan(task="counting")
+    outcome = _run(
+        runner,
+        _sample(task="counting"),
+        _sample_dir(tmp_path),
+        joint_plan=plan,
+    )
+    assert outcome.status.state == "failed"
+    assert outcome.status.error_code == "UnsupportedAgentError"
+    trace = _read_json(_sample_dir(tmp_path) / "agent_trace.json")
+    assert trace["joint_plan"] is True
+    assert trace["failure_code"] == "UnsupportedAgentError"
+    assert len(agent.calls) == 0
+
+
+# ── joint mode × real agent ROI consumption (doc 15 §4.5, Phase D) ─────────
+
+
+class _EvidenceRecordingClient:
+    """Minimal VisionLanguageClient recording calls and returning a stable
+    AgentResult; cache_identity satisfies the evidence identity guard.
+    记录调用并返回稳定 AgentResult 的最小 VisionLanguageClient；
+    cache_identity 满足证据身份守卫。"""
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    @property
+    def cache_identity(self):
+        from models.base import ModelCacheIdentity
+
+        return ModelCacheIdentity(
+            model="fake-model",
+            generation={"temperature": 0.0, "do_sample": False, "max_tokens": 128},
+            client_version="1",
+        )
+
+    async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
+        self.calls += 1
+        return response_model.model_validate(
+            {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}
+        )
+
+
+def test_run_one_joint_object_evidence_plan_drives_real_agent_evidence_path(
+    tmp_path: Path,
+) -> None:
+    """A joint object-evidence plan reaches the real general_vqa agent through
+    AgentContext and selects the evidence path: the injected service executes
+    exactly once and the final Qwen call happens exactly once — the plan is
+    consumed, not ignored. 联合 object-evidence 计划经 AgentContext 到达真实
+    general_vqa Agent 并选择证据路径：注入服务恰好执行一次、最终 Qwen 恰好
+    调用一次——计划被消费而非忽略。"""
+    import numpy as np
+
+    from agents.general_vqa.agent import GeneralVQAAgent
+    from agents.general_vqa.evidence.executor import EvidenceExecution
+    from agents.general_vqa.evidence.schema import RoiEvidenceRecord, VqaEvidenceBundle
+    from agents.schema import ObjectEvidenceRequest, RoiRegion
+
+    # A 200x160 image under the preview shrink floor: the full-image ROI crop
+    # keeps its native size, matching the presence-mask shape (H, W).
+    # 200x160 图像低于预览缩放下限：整图 ROI 裁切保持原始尺寸，与 presence
+    # mask 形状 (H, W) 一致。
+    image_path = tmp_path / "img0.png"
+    image_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (200, 160), (1, 2, 3)).save(image_path, format="PNG")
+
+    client = _EvidenceRecordingClient()
+    agent = GeneralVQAAgent(client)
+    service_calls: list[tuple[object, dict, str]] = []
+
+    class _FakeVqaEvidenceService:
+        """VqaEvidenceService protocol fake: records the call and returns a
+        minimal evidence execution. VqaEvidenceService 协议 fake：记录调用并
+        返回最小证据执行结果。"""
+
+        def execute(self, plan, images, *, fallback_image_id):
+            service_calls.append((plan, dict(images), fallback_image_id))
+            return EvidenceExecution(
+                bundle=VqaEvidenceBundle(
+                    catalog_version="first-qwen-plan-v1",
+                    rois=[
+                        RoiEvidenceRecord(
+                            roi_id="full",
+                            image_id="i0",
+                            source_size=(200, 160),
+                            core_xyxy=(0, 0, 200, 160),
+                            expanded_xyxy=(0, 0, 200, 160),
+                            crop_size=(200, 160),
+                        )
+                    ],
+                    leaf_states={"building_outline": "hit"},
+                ),
+                layer_states=(),
+                outcomes=(),
+                masks={("full", "building_outline"): np.ones((160, 200), dtype=bool)},
+            )
+
+    bindings = VisualPlanBindings(vqa_evidence=_FakeVqaEvidenceService())
+    plan = JointQwenVisualPlan(
+        version="joint-qwen-plan-v1",
+        task="general_vqa",
+        visual_plan=FirstQwenVisualPlan(
+            version="first-qwen-plan-v1",
+            execution_family="object_evidence_vqa",
+            confidence=0.9,
+            roi_plan=RoiPlan(rois=[]),
+            evidence_request=ObjectEvidenceRequest(
+                composite_categories=["building_outline"]
+            ),
+        ),
+    )
+    runner = _runner([agent], joint_bindings=bindings, data_root=tmp_path)
+    sample = _sample(sample_id="s1")
+    budget = CallBudget(max_qwen_calls=10)
+    budget.reserve_qwen()  # the joint planner call already consumed one / 联合
+    # 规划调用已消费一次
+    outcome = _run(runner, sample, _sample_dir(tmp_path), joint_plan=plan, budget=budget)
+    assert outcome.status.state == "succeeded"
+    # The evidence path fired: one service execution and one final Qwen call.
+    # 证据路径触发：一次服务执行与一次最终 Qwen 调用。
+    assert len(service_calls) == 1
+    assert service_calls[0][0].execution_family == "object_evidence_vqa"
+    assert set(service_calls[0][1]) == {"i0"}
+    assert service_calls[0][2] == "i0"
+    assert client.calls == 1
+    assert budget.qwen_calls_used == 2  # planner + final agent call / 规划+最终
+    # The joint artifact and the standard result land together.
+    # 联合产物与标准结果一起落盘。
+    assert (_sample_dir(tmp_path) / "joint_visual_plan.json").is_file()
+    assert (_sample_dir(tmp_path) / "agent_result.json").is_file()

@@ -703,12 +703,13 @@ def test_visual_planning_flag_off_wires_none(tmp_path: Path) -> None:
 def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
     tmp_path: Path,
 ) -> None:
-    """Enabled with default (uncalibrated) policies: the planner gate is
-    wired, the prompt/catalog version binding holds, the VQA evidence service
-    stays absent (fail closed at runtime), and the grounding seam runs with
-    the explicit all-None policy. 默认（未校准）策略下启用：规划门接线、prompt/
-    catalog 版本绑定成立、VQA 证据服务保持缺失（运行时严格失败）、grounding
-    seam 以显式全 None 策略运行。"""
+    """Enabled with default (uncalibrated) policies: the doc 15 joint planner
+    is wired (the legacy gate is not), the joint prompt/catalog version
+    binding holds, the VQA evidence service stays absent (fail closed at
+    runtime), and the grounding seam runs with the explicit all-None policy.
+    默认（未校准）策略下启用：doc 15 联合规划器接线（旧 gate 不接线）、联合
+    prompt/catalog 版本绑定成立、VQA 证据服务保持缺失（运行时严格失败）、
+    grounding seam 以显式全 None 策略运行。"""
     settings = _visual_settings(tmp_path, visual_planning={"enabled": True})
     components = assemble_runtime(
         settings,
@@ -717,19 +718,22 @@ def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
         qwen_client=_FakeQwenClient(),
     )
     runner = components.sample_runner_factory(data_root=tmp_path)
-    gate = runner.visual_planning
-    assert gate is not None
+    # Joint mode replaces the gate: exactly one of them is ever wired.
+    # 联合模式取代 gate：两者绝不并存。
+    assert runner.visual_planning is None
+    planner = components.joint_planner
+    assert planner is not None
     # The settings-declared versions must bind the real prompt/catalog assets.
     # settings 声明版本必须绑定真实 prompt/catalog 资产。
-    planner = gate._planner
-    assert planner._prompt_version == components.prompt_catalog.version("visual_plan")
+    assert planner._prompt_version == components.prompt_catalog.version("joint_plan")
     assert planner._catalog.catalog_version == (
         settings.visual_planning.planner.catalog_version
     )
-    assert gate.bindings is not None
-    assert gate.bindings.vqa_evidence is None
-    assert gate.bindings.grounding_evidence is not None
-    grounding = gate.bindings.grounding_evidence
+    assert runner.joint_bindings is planner.bindings
+    assert planner.bindings is not None
+    assert planner.bindings.vqa_evidence is None
+    assert planner.bindings.grounding_evidence is not None
+    grounding = planner.bindings.grounding_evidence
     assert grounding._policy.yolo_enabled is False
     # Uncalibrated means the YOLO phase is off: no detector is wired at all,
     # so nothing is ever loaded for it. 未校准即 YOLO 阶段关闭：完全不接线检测
@@ -923,10 +927,10 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
         prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
     )
-    gate = components.sample_runner_factory(data_root=tmp_path).visual_planning
-    assert gate is not None and gate.bindings is not None
+    planner = components.joint_planner
+    assert planner is not None and planner.bindings is not None
     assert get_calls == []  # assembly never loads / 组合期绝不加载
-    vqa = gate.bindings.vqa_evidence
+    vqa = planner.bindings.vqa_evidence
     assert vqa is not None
     with pytest.raises(Exception) as exc_info:
         vqa._yolo_client.detect(  # type: ignore[attr-defined]

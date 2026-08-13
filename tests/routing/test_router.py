@@ -89,3 +89,68 @@ def test_sample_capabilities_is_frozen() -> None:
     assert dataclasses.is_dataclass(capabilities)
     assert capabilities.__dataclass_params__.frozen
     assert capabilities.high_resolution is True
+
+
+# ── joint plan -> resolution conversion (doc 15) / 联合计划转 resolution ─
+
+
+def _joint_plan_dict(*, task: str = "general_vqa", confidence: float = 0.9) -> dict:
+    from agents.schema import JointQwenVisualPlan
+
+    return JointQwenVisualPlan.model_validate(
+        {
+            "version": "joint-qwen-plan-v1",
+            "task": task,
+            "visual_plan": {
+                "version": "first-qwen-plan-v1",
+                "execution_family": "direct_vqa",
+                "confidence": confidence,
+                "roi_plan": {"rois": []},
+                "evidence_request": None,
+                "reason_codes": ["plan"],
+            },
+        }
+    )
+
+
+def test_joint_plan_to_resolution_carries_model_task() -> None:
+    """The conversion is pure and deterministic: model task authoritative,
+    single candidate, model source, confidence and reason codes flow through.
+    转换纯且确定：模型 task 权威、单一候选、model 来源，置信度与 reason
+    codes 透传。"""
+    from routing.schema import joint_plan_to_resolution
+
+    plan = _joint_plan_dict(task="grounding", confidence=0.8)
+    resolution = joint_plan_to_resolution(plan)
+    assert resolution.task == "grounding"
+    assert resolution.confidence == 0.8
+    assert resolution.candidate_tasks == ["grounding"]
+    assert not resolution.needs_candidate_fallback
+    assert resolution.source == "model"
+    assert resolution.reason_codes[0] == "plan"
+    assert "joint_plan_model_task" in resolution.reason_codes
+
+
+def test_joint_plan_to_resolution_dedupes_reason_codes() -> None:
+    """The injected marker never duplicates an existing reason code.
+    注入标记绝不与已有 reason code 重复。"""
+    from agents.schema import JointQwenVisualPlan
+
+    from routing.schema import joint_plan_to_resolution
+
+    plan = JointQwenVisualPlan.model_validate(
+        {
+            "version": "joint-qwen-plan-v1",
+            "task": "general_vqa",
+            "visual_plan": {
+                "version": "first-qwen-plan-v1",
+                "execution_family": "direct_vqa",
+                "confidence": 0.9,
+                "roi_plan": {"rois": []},
+                "evidence_request": None,
+                "reason_codes": ["joint_plan_model_task"],
+            },
+        }
+    )
+    resolution = joint_plan_to_resolution(plan)
+    assert resolution.reason_codes == ["joint_plan_model_task"]

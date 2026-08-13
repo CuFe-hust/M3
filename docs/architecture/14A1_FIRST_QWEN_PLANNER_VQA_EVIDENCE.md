@@ -1,5 +1,15 @@
 # 14A1 — Model Seams, ROI Geometry, VisualPlanner, and VQA Evidence
 
+> Superseded note (doc 15): the joint flow (`visual_planning.enabled=True`)
+> replaces the independent VisualPlanner gate with one joint Qwen call
+> (task + visual plan) and overrides the
+> `SampleDraft -> TaskResolver -> UnifiedSample -> VisualPlanner` order for
+> that flow. §6's frozen order stays valid for the disabled (legacy) path.
+> 取代注记（doc 15）：联合流程（`visual_planning.enabled=True`）用单次联合
+> Qwen 调用（task + 视觉计划）替代独立 VisualPlanner 门禁，并在该流程中
+> 覆盖 `SampleDraft -> TaskResolver -> UnifiedSample -> VisualPlanner` 顺序；
+> §6 冻结顺序对关闭（legacy）路径仍然有效。
+
 > Execute only after the 14A0 allowlist change is approved and complete.
 > 仅在 14A0 白名单架构变更已获批准并完成后执行。
 

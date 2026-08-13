@@ -1,5 +1,15 @@
 # 14A3 — Application Assembly, Validation, Calibration, and Rollout
 
+> Superseded note (doc 15): composition root now assembles
+> `JointVisualPlanner` (with joint `VisualPlanBindings`) instead of
+> `VisualPlanningGate` when `visual_planning.enabled=True`; the two are never
+> wired simultaneously and the flag stays disabled by default. The gate
+> assembly described here remains the disabled (legacy) path.
+> 取代注记（doc 15）：`visual_planning.enabled=True` 时组合根组装
+> `JointVisualPlanner`（含联合 `VisualPlanBindings`）而非
+> `VisualPlanningGate`；两者绝不同时接线，flag 保持默认关闭。本文描述的
+> 门禁装配仍是关闭（legacy）路径。
+
 > Execute only after 14A2 is complete with the feature flag still disabled by default.
 > 仅在 14A2 完成且 feature flag 仍默认关闭后执行。
 

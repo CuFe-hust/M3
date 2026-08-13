@@ -30,12 +30,13 @@ from agents.schema import AgentResult
 from application.bootstrap import RuntimeComponents, assemble_runtime
 from application.settings import AppSettings, load_settings
 from data.registry import DatasetRegistry, build_default_registry
-from data.schema import CHANGE_TASKS, GroundTruth, ImageRef, TaskName, UnifiedSample
+from data.schema import CHANGE_TASKS, GroundTruth, ImageRef, SampleDraft, TaskName, UnifiedSample
 from reporting.schema import Report
 from routing.schema import SampleCapabilities, TaskResolutionRequest
 from workflows.artifact_writer import atomic_write_json
 from workflows.run_store import RunManifest, RunStore
 from workflows.schema import DatasetRunOptions, DatasetRunSummary, RunRequest
+from workflows.task_resolver import materialize_sample
 
 # Only the first level of a manual image directory is scanned. / 手动图片目录只扫描第一层。
 MAX_MANUAL_IMAGES = 8
@@ -784,9 +785,14 @@ class Runtime:
         current TaskResolver (deterministic rules for empty questions, one
         model call otherwise). Low-confidence manual requests still execute
         only the resolved primary task — no multi-attempt fallback.
-        显式任务跳过 TaskResolver；auto 经当前 TaskResolver 解析（空问题走
-        确定性规则，否则一次模型调用）。低置信度手动请求仍只执行解析出的
-        主任务——无多尝试兜底。"""
+        In joint mode (doc 15, flag on) the whole decision is one
+        schema-validated planner call over a placeholder-role draft view; the
+        model task is authoritative and the source task is never sent to the
+        model. 显式任务跳过 TaskResolver；auto 经当前 TaskResolver 解析（空
+        问题走确定性规则，否则一次模型调用）。低置信度手动请求仍只执行解析出
+        的主任务——无多尝试兜底。联合模式（doc 15，flag 开启）下整个决策是
+        对占位角色 draft 视图的一次 schema 校验规划调用；模型 task 权威，来源
+        task 绝不发给模型。"""
 
         if task != "auto" and task not in _ALL_TASK_NAMES:
             raise ValueError(
@@ -803,8 +809,51 @@ class Runtime:
             item.width * item.height > self.settings.counting.max_pixels_without_tiling
             for item in collected
         )
+        joint_mode = self.components.joint_planner is not None
 
-        if task == "auto":
+        visual_plan = None
+        bindings = None
+        joint_plan = None
+        budget = None
+        sample: UnifiedSample | None = None
+        if joint_mode:
+            # One shared budget spans the planner call and the agent
+            # execution. / 一个共享预算贯穿规划调用与 Agent 执行。
+            budget = self.components.call_budget_factory.create_for_sample("draft")
+            draft = SampleDraft(
+                sample_id=request_id,
+                dataset="manual",
+                split="user",
+                # Placeholder-role refs (image-0 / context-N); the roles are
+                # rebuilt for the model-selected task at materialization.
+                # 占位角色引用（image-0 / context-N）；角色在物化时按模型选定
+                # 任务重建。
+                images=build_image_refs("general_vqa", collected, image_root),
+                question=question,
+                explicit_task=task if task != "auto" else None,
+                ground_truth=GroundTruth(),
+                metadata={
+                    "source": source,
+                    "image_dir": "manual://input",
+                },
+            )
+            joint_plan = await self.components.joint_planner.plan(
+                draft,
+                data_root=image_root,
+                artifact_dir=request_dir,
+                budget=budget,
+            )
+            resolved_task = joint_plan.task
+            # Materialization with the model-selected task; an incompatible
+            # draft fails closed with a stable code, like the dataset path.
+            # 按模型选定任务物化；不兼容 draft 与数据集路径一样严格失败。
+            sample = materialize_sample(draft, resolved_task)
+            visual_plan = joint_plan.visual_plan
+            bindings = self.components.joint_planner.bindings
+            self.components.artifact_writer.write_joint_visual_plan(
+                request_dir, joint_plan
+            )
+        elif task == "auto":
             resolution = await self.components.task_resolver.resolve(
                 TaskResolutionRequest(
                     question=question,
@@ -827,20 +876,21 @@ class Runtime:
         primary_agent = decision.primary_agent
         validate_image_count(resolved_task, collected)
 
-        images = build_image_refs(resolved_task, collected, image_root)
-        sample = UnifiedSample(
-            sample_id=request_id,
-            dataset="manual",
-            split="user",
-            task=resolved_task,  # type: ignore[arg-type]
-            images=images,
-            question=question,
-            ground_truth=GroundTruth(),
-            metadata={
-                "source": source,
-                "image_dir": "manual://input",
-            },
-        )
+        if sample is None:
+            images = build_image_refs(resolved_task, collected, image_root)
+            sample = UnifiedSample(
+                sample_id=request_id,
+                dataset="manual",
+                split="user",
+                task=resolved_task,  # type: ignore[arg-type]
+                images=images,
+                question=question,
+                ground_truth=GroundTruth(),
+                metadata={
+                    "source": source,
+                    "image_dir": "manual://input",
+                },
+            )
 
         request_payload = {
             "request_id": request_id,
@@ -853,11 +903,12 @@ class Runtime:
                     "width": ref.width,
                     "height": ref.height,
                 }
-                for ref in images
+                for ref in sample.images
             ],
             "question": question,
             "requested_task": task,
             "resolved_task": resolved_task,
+            "joint_plan": joint_mode,
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)
@@ -865,11 +916,17 @@ class Runtime:
         context = AgentContext(
             artifact_dir=request_dir / "agent",
             qwen_client=self.components.qwen_client,
-            call_budget=self.components.call_budget_factory.create_for_sample(
-                resolved_task
+            call_budget=(
+                budget
+                if budget is not None
+                else self.components.call_budget_factory.create_for_sample(
+                    resolved_task
+                )
             ),
             data_root=image_root,
             judge_client=None,
+            visual_plan=visual_plan,
+            visual_bindings=bindings,
         )
         agent = self.components.agent_registry.get(primary_agent)
         execution = await agent.run(sample, context)

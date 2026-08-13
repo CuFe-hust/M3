@@ -42,6 +42,7 @@ from workflows.artifact_writer import ArtifactWriter
 from workflows.call_budget import CallBudgetFactory
 from workflows.sample_runner import (
     SampleRunner,
+    _rebuild_sample_for_task,
     build_deterministic_evaluation,
 )
 from workflows.schema import DatasetRunSummary, SampleRunStatus
@@ -51,6 +52,7 @@ from workflows.task_resolver import (
     TaskResolver,
     materialize_sample,
 )
+from workflows.visual_planner import JointPlanError, JointVisualPlanner
 
 # Storage key length: sha256(sample_id) hex digest, truncated for directory
 # names. / 存储键长度：sha256(sample_id) 十六进制摘要截断为目录名。
@@ -141,6 +143,8 @@ class DatasetRunner:
         judge_sample_rate: float | None = None,
         task_resolver: TaskResolver | None = None,
         call_budget_factory: CallBudgetFactory | None = None,
+        joint_planner: JointVisualPlanner | None = None,
+        data_root: Path | None = None,
     ) -> None:
         self.adapter = adapter
         self.sample_runner = sample_runner
@@ -150,6 +154,14 @@ class DatasetRunner:
         self.judge_sample_rate = judge_sample_rate
         self.task_resolver = task_resolver
         self.call_budget_factory = call_budget_factory
+        # Doc 15 joint planner: when wired, every entry point (draft, adapter
+        # default, explicit) resolves task + visual plan in exactly one model
+        # call; the TaskResolver is bypassed. None keeps the legacy two-stage
+        # path byte-identical. 联合规划器（doc 15）：接线后每个入口（draft、
+        # adapter 默认、显式）都在恰好一次模型调用内解析 task + 视觉计划；
+        # TaskResolver 被绕过。None 时旧两阶段路径逐字节一致。
+        self.joint_planner = joint_planner
+        self.data_root = data_root
 
     async def run(
         self,
@@ -393,10 +405,15 @@ class DatasetRunner:
             if persisted is not None and persisted.state == "succeeded":
                 # Supplement by the executed task (status.task), never the
                 # resolved task: candidate fallback may have executed a
-                # different task than the sample declares.
+                # different task than the sample declares. The supplement
+                # path never calls a model — succeeded resume stays model-free
+                # in joint mode too (doc 15 §4.6).
                 # 按执行任务（status.task）补判，绝不按解析任务：候选兜底可能
-                # 执行了与样本声明不同的任务。
+                # 执行了与样本声明不同的任务。补判路径绝不调用模型——联合模式
+                # 下 succeeded resume 同样零模型调用（doc 15 §4.6）。
                 return await self._resume_supplement(sample, sample_dir, persisted.task)
+        if self.joint_planner is not None:
+            return await self._run_sample_joint(sample, sample_dir)
         try:
             outcome = await self.sample_runner.run_one(
                 sample, sample_dir, judge_policy=self._judge_policy_for(sample.sample_id)
@@ -409,6 +426,59 @@ class DatasetRunner:
             status = _defensive_failed_status(sample, sample.task, error)
             self.artifact_writer.write_final_status(sample_dir, status)
             return status
+        return outcome.status
+
+    async def _run_sample_joint(
+        self,
+        sample: UnifiedSample,
+        sample_dir: Path,
+    ) -> SampleRunStatus:
+        """Joint mode for explicit and adapter-default entries (doc 15):
+        exactly one planner call selects the authoritative task, the sample is
+        rebuilt for it (an incompatible rebuild fails closed), and execution
+        carries the joint plan. The shared budget spans the planner call and
+        every agent attempt. 显式与 adapter 默认入口的联合模式（doc 15）：
+        恰好一次规划调用选定权威 task，样本按它重建（不兼容重建严格失败），
+        执行携带联合计划。共享预算贯穿规划调用与所有 agent attempt。"""
+
+        budget = self.call_budget_factory.create_for_sample("sample")
+        task_known: str | None = None
+        try:
+            joint_plan = await self.joint_planner.plan(
+                sample,
+                data_root=self.data_root,
+                artifact_dir=sample_dir,
+                budget=budget,
+            )
+            task_known = joint_plan.task
+            rebuilt = _rebuild_sample_for_task(sample, joint_plan.task)
+            if rebuilt is None:
+                return self._write_draft_failure(
+                    sample,
+                    sample_dir,
+                    task=task_known,
+                    code="INCOMPATIBLE_JOINT_TASK",
+                )
+        except JointPlanError as error:
+            return self._write_draft_failure(
+                sample, sample_dir, task=None, code=error.code
+            )
+        except Exception as error:
+            return self._write_draft_failure(
+                sample, sample_dir, task=task_known, code=_stable_error_code(error)
+            )
+        try:
+            outcome = await self.sample_runner.run_one(
+                rebuilt,
+                sample_dir,
+                joint_plan=joint_plan,
+                budget=budget,
+                judge_policy=self._judge_policy_for(sample.sample_id),
+            )
+        except Exception as error:
+            return self._write_draft_failure(
+                sample, sample_dir, task=task_known, code=_stable_error_code(error)
+            )
         return outcome.status
 
     async def _run_draft(
@@ -439,6 +509,8 @@ class DatasetRunner:
                     return await self._resume_supplement(
                         persisted_sample, sample_dir, persisted.task
                     )
+        if self.joint_planner is not None:
+            return await self._run_draft_joint(draft, sample_dir)
         if draft.explicit_task is not None:
             try:
                 sample = materialize_sample(draft, draft.explicit_task)
@@ -502,18 +574,70 @@ class DatasetRunner:
             )
         return outcome.status
 
-    def _write_draft_failure(
+    async def _run_draft_joint(
         self,
         draft: SampleDraft,
+        sample_dir: Path,
+    ) -> SampleRunStatus:
+        """Joint mode for auto-task entries (doc 15): exactly one planner call
+        selects the authoritative task, the draft is materialized with the
+        model-selected task, and execution carries the joint plan. The shared
+        budget spans the planner call and every agent attempt.
+        auto-task 入口的联合模式（doc 15）：恰好一次规划调用选定权威 task，
+        draft 按模型选定任务物化，执行携带联合计划。共享预算贯穿规划调用与
+        所有 agent attempt。"""
+
+        budget = self.call_budget_factory.create_for_sample("draft")
+        task_known: str | None = None
+        try:
+            joint_plan = await self.joint_planner.plan(
+                draft,
+                data_root=self.data_root,
+                artifact_dir=sample_dir,
+                budget=budget,
+            )
+            task_known = joint_plan.task
+            sample = materialize_sample(draft, joint_plan.task)
+        except JointPlanError as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=None, code=error.code
+            )
+        except SampleMaterializationError as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=task_known, code=error.code
+            )
+        except Exception as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=task_known, code=_stable_error_code(error)
+            )
+        try:
+            outcome = await self.sample_runner.run_one(
+                sample,
+                sample_dir,
+                joint_plan=joint_plan,
+                budget=budget,
+                judge_policy=self._judge_policy_for(sample.sample_id),
+            )
+        except Exception as error:
+            return self._write_draft_failure(
+                draft, sample_dir, task=task_known, code=_stable_error_code(error)
+            )
+        return outcome.status
+
+    def _write_draft_failure(
+        self,
+        draft: SampleDraft | UnifiedSample,
         sample_dir: Path,
         *,
         task: str | None,
         code: str,
     ) -> SampleRunStatus:
-        """Persist a failed status for a pre-task draft failure; the task
-        label is the known task or the honest sentinel 'unknown' — never a
-        guessed general_vqa. 持久化预 task draft 失败的 failed 状态；task
-        标签为已知任务或诚实哨兵 'unknown'——绝不猜测 general_vqa。"""
+        """Persist a failed status for a pre-task failure; the task label is
+        the known task or the honest sentinel 'unknown' — never a guessed
+        general_vqa. Accepts drafts and joint-mode samples, which share the
+        sample_id. 持久化预 task 失败的 failed 状态；task 标签为已知任务或
+        诚实哨兵 'unknown'——绝不猜测 general_vqa。接受 draft 与联合模式
+        样本，二者共享 sample_id。"""
 
         status = SampleRunStatus(
             sample_id=draft.sample_id,

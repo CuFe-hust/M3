@@ -26,6 +26,7 @@ from workflows.artifact_writer import (
     SAMPLE_FILENAME,
     STATUS_FILENAME,
     VISUAL_PLAN_FILENAME,
+    JOINT_VISUAL_PLAN_FILENAME,
     ArtifactWriter,
     atomic_append_jsonl,
     atomic_write_json,
@@ -388,3 +389,38 @@ def test_lexical_alias_paths_share_lock_and_lose_no_lines(tmp_path: Path) -> Non
     rows = [json_module.loads(line) for line in lines]
     assert {row["i"] for row in rows} == set(range(100))
     assert list(root.rglob("*.tmp")) == []
+
+
+def test_write_joint_visual_plan_persists_validated_schema(tmp_path: Path) -> None:
+    from agents.schema import JointQwenVisualPlan
+
+    # The joint artifact stores the validated joint schema under the frozen
+    # basename: task plus visual-plan substructure, never a raw model body.
+    # 联合产物在冻结 basename 下保存已校验联合 schema：task 加视觉计划子结构，
+    # 绝不存原始模型正文。
+    plan = JointQwenVisualPlan(
+        version="joint-qwen-plan-v1",
+        task="general_vqa",
+        visual_plan={
+            "version": "first-qwen-plan-v1",
+            "execution_family": "direct_vqa",
+            "confidence": 0.9,
+            "roi_plan": {"rois": []},
+        },
+    )
+    writer = ArtifactWriter()
+    written = writer.write_joint_visual_plan(tmp_path, plan)
+    assert written == tmp_path / JOINT_VISUAL_PLAN_FILENAME
+    stored = json.loads(
+        (tmp_path / JOINT_VISUAL_PLAN_FILENAME).read_text(encoding="utf-8")
+    )
+    assert stored == plan.model_dump(mode="json")
+    assert stored["version"] == "joint-qwen-plan-v1"
+    assert stored["task"] == "general_vqa"
+    assert stored["visual_plan"]["execution_family"] == "direct_vqa"
+    # Never any raw model body / extra keys.
+    # 绝不包含原始模型正文或多余键。
+    assert set(stored) == {"version", "task", "visual_plan"}
+    # The joint basename never collides with the legacy plan basename.
+    # 联合 basename 与旧计划 basename 绝不冲突。
+    assert JOINT_VISUAL_PLAN_FILENAME != VISUAL_PLAN_FILENAME

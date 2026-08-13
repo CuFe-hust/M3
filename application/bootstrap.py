@@ -74,7 +74,11 @@ from workflows.judge_service import JudgeService
 from workflows.run_store import RunStore
 from workflows.sample_runner import SampleRunner
 from workflows.task_resolver import TaskResolver
-from workflows.visual_planner import VisualPlanner, VisualPlanningGate
+from workflows.visual_planner import (
+    JointVisualPlanner,
+    VisualPlanner,
+    VisualPlanningGate,
+)
 
 
 @dataclass(frozen=True)
@@ -100,6 +104,10 @@ class RuntimeComponents:
     sample_runner_factory: Callable[[Path], SampleRunner] = field(
         default=None  # type: ignore[assignment]
     )
+    # Doc 15 joint planner; wired only when the feature flag is enabled, in
+    # which case the legacy gate is not assembled. / 联合规划器（doc 15）；
+    # 仅在特性开关启用时接线，此时旧 gate 不组装。
+    joint_planner: JointVisualPlanner | None = None
 
 
 class RuntimeCompositionError(ValueError):
@@ -144,13 +152,29 @@ def assemble_runtime(
     # 每次 runtime assembly 一个可审计 YOLO 模型 store，计数后端与特性开关式
     # 视觉证据服务共享（14A3 C9）。仅构造 store 本身不加载任何权重。
     model_store = YoloModelStore()
-    visual_planning = _build_visual_planning(
-        settings,
-        catalog,
-        qwen_client,
-        model_store,
-        project_root=asset_root,
-    )
+    # The joint planner (doc 15) replaces the two-stage decision when the
+    # feature flag is enabled; the legacy gate is then not assembled, so the
+    # two modes are never wired together. Flag off keeps the legacy path
+    # byte-identical. 特性开关启用时联合规划器（doc 15）取代两阶段决策，旧
+    # gate 不再组装，两种模式绝不同时接线。开关关闭保持旧路径逐字节一致。
+    if settings.visual_planning.enabled:
+        visual_planning = None
+        joint_planner = _build_joint_planning(
+            settings,
+            catalog,
+            qwen_client,
+            model_store,
+            project_root=asset_root,
+        )
+    else:
+        visual_planning = _build_visual_planning(
+            settings,
+            catalog,
+            qwen_client,
+            model_store,
+            project_root=asset_root,
+        )
+        joint_planner = None
     if settings.agents.change.semantic.enabled and semantic_client is None:
         semantic_client = segformer_clients.get(
             settings.models.segformer_isaid.logical_model_id
@@ -207,9 +231,14 @@ def assemble_runtime(
             data_root=data_root,
             # None while the feature flag is off, keeping the legacy path
             # byte-identical; the gate is assembled only when enabled (14A3).
-            # 特性开关关闭时为 None，保持旧路径逐字节一致；仅在启用时组装
-            # 门禁（14A3）。
+            # In joint mode (doc 15) the gate is None and the joint bindings
+            # serve every sample instead. 特性开关关闭时为 None，保持旧路径
+            # 逐字节一致；仅在启用时组装门禁（14A3）。联合模式下（doc 15）
+            # gate 为 None，由联合绑定服务每条样本。
             visual_planning=visual_planning,
+            joint_bindings=(
+                joint_planner.bindings if joint_planner is not None else None
+            ),
         )
 
     def dataset_runner_factory(
@@ -229,6 +258,8 @@ def assemble_runtime(
             judge_sample_rate=judge_sample_rate,
             task_resolver=task_resolver,
             call_budget_factory=call_budget_factory,
+            joint_planner=joint_planner,
+            data_root=data_root,
         )
 
     components = RuntimeComponents(
@@ -246,6 +277,7 @@ def assemble_runtime(
         render_overlay=render_counting_overlay,
         dataset_runner_factory=dataset_runner_factory,
         sample_runner_factory=make_sample_runner,
+        joint_planner=joint_planner,
     )
     return components
 
@@ -674,7 +706,77 @@ def _build_visual_planning(
         # 配置的每计划 ROI 上限；超限回退唯一整图 ROI（14B §6.2）——绝不截断。
         max_rois=planner_settings.max_rois,
     )
-    bindings = VisualPlanBindings(
+    bindings = _build_visual_bindings(
+        settings,
+        catalog,
+        evidence_catalog,
+        qwen_client,
+        model_store,
+        project_root=project_root,
+    )
+    return VisualPlanningGate(planner, bindings=bindings)
+
+
+def _build_joint_planning(
+    settings: AppSettings,
+    catalog: PromptCatalog,
+    qwen_client: VisionLanguageClient,
+    model_store: YoloModelStore,
+    *,
+    project_root: Path,
+) -> JointVisualPlanner:
+    """Assemble the doc 15 joint planner (one schema-validated call returns
+    task + visual plan) with the same-version evidence catalog and prompt
+    binding as the legacy gate; any drift fails closed at assembly. The
+    planner owns the shared evidence bindings injected into every sample.
+    组装 doc 15 联合规划器（一次 schema 校验调用返回 task + 视觉计划），使用
+    与旧 gate 同版本的证据目录与 prompt 绑定；任何漂移在组装时严格失败。规划器
+    持有注入每条样本的共享证据绑定。"""
+
+    evidence_catalog = _load_evidence_catalog(project_root)
+    planner_settings = settings.visual_planning.planner
+    if planner_settings.catalog_version != evidence_catalog.catalog_version:
+        raise RuntimeCompositionError(
+            "joint planning catalog version differs from the evidence catalog asset"
+        )
+    if planner_settings.prompt_version != catalog.version("joint_plan"):
+        raise RuntimeCompositionError(
+            "joint planning prompt version differs from the prompt catalog"
+        )
+    bindings = _build_visual_bindings(
+        settings,
+        catalog,
+        evidence_catalog,
+        qwen_client,
+        model_store,
+        project_root=project_root,
+    )
+    return JointVisualPlanner(
+        qwen_client,
+        system_prompt=catalog["joint_plan"],
+        prompt_version=planner_settings.prompt_version,
+        catalog=evidence_catalog,
+        confidence_threshold=planner_settings.confidence_threshold,
+        max_rois=planner_settings.max_rois,
+        bindings=bindings,
+    )
+
+
+def _build_visual_bindings(
+    settings: AppSettings,
+    catalog: PromptCatalog,
+    evidence_catalog: EvidenceCatalog,
+    qwen_client: VisionLanguageClient,
+    model_store: YoloModelStore,
+    *,
+    project_root: Path,
+) -> VisualPlanBindings:
+    """Shared evidence bindings for both planning modes: the VQA object
+    evidence executor and the grounding evidence executor, assembled from the
+    frozen settings policies. 两种规划模式共享的证据绑定：VQA object-evidence
+    执行器与 grounding 证据执行器，由冻结的 settings 策略组装。"""
+
+    return VisualPlanBindings(
         vqa_evidence=_build_vqa_evidence_service(
             settings, evidence_catalog, model_store, project_root=project_root
         ),
@@ -687,7 +789,6 @@ def _build_visual_planning(
             project_root=project_root,
         ),
     )
-    return VisualPlanningGate(planner, bindings=bindings)
 
 
 def _load_evidence_catalog(project_root: Path) -> EvidenceCatalog:

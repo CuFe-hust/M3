@@ -1,5 +1,16 @@
 # 14A2 — Agent Integration, Artifacts, Budget, and Resume
 
+> Superseded note (doc 15): when `visual_planning.enabled=True` the
+> `VisualPlanner` gate shown here is replaced by one joint Qwen call
+> (task + visual plan) per sample; artifact becomes `joint_visual_plan.json`,
+> succeeded-resume stays zero model calls, and the resume supplement only
+> backfills missing deterministic evaluation. The gate pipeline in this doc
+> remains the disabled (legacy) path.
+> 取代注记（doc 15）：`visual_planning.enabled=True` 时，本文的
+> `VisualPlanner` 门禁被每条样本一次联合 Qwen 调用（task + 视觉计划）
+> 替代；产物为 `joint_visual_plan.json`，succeeded resume 仍零模型调用，
+> 补评测只回填缺失的确定性评测。本文门禁流水线仍是关闭（legacy）路径。
+
 > Execute only after 14A1 is complete and its policy gates are approved.
 > 仅在 14A1 完成且其策略门禁已获批准后执行。
 

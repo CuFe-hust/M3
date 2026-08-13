@@ -12,6 +12,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from data.schema import TaskName
+
 AgentName = Literal[
     "counting_agent",
     "change_agent",
@@ -363,3 +365,41 @@ class FirstQwenVisualPlan(BaseModel):
         if self.execution_family == "direct_vqa" and self.evidence_request is not None:
             raise ValueError("direct_vqa must not carry an evidence_request")
         return self
+
+
+# ── Joint task + visual planning contract (doc 15) ────────────────────────
+# One schema-validated Qwen call returns the authoritative execution task and
+# the reusable visual-plan substructure together. The task becomes the
+# materialized/routed/executed task; a dataset-supplied source task is audit
+# only and never overrides it. The substructure reuses the frozen
+# FirstQwenVisualPlan contract (ROI, evidence request, execution family) — no
+# parallel ROI or coordinate implementation is created here. 单次 schema 校验
+# 的 Qwen 调用同时返回权威执行 task 与可复用的视觉计划子结构。该 task 成为
+# 物化、路由与执行使用的 task；数据集提供的来源 task 只作审计保留，绝不
+# 覆盖它。子结构复用冻结的 FirstQwenVisualPlan 契约（ROI、证据请求、
+# execution family）——不创建平行的 ROI 或坐标实现。
+
+# Frozen joint schema version; the model output must match it exactly.
+# 冻结的联合 schema 版本；模型输出必须精确匹配。
+JOINT_PLAN_SCHEMA_VERSION = "joint-qwen-plan-v1"
+
+
+class JointQwenVisualPlan(BaseModel):
+    """Versioned strict joint planning output: the authoritative execution
+    task plus the reusable visual-plan substructure. task must belong to the
+    closed data.schema.TaskName set; the visual_plan substructure is a
+    validated FirstQwenVisualPlan (family/evidence linkage, ROI frame, and
+    closed-category membership are enforced by that contract plus the
+    planner). The plan never carries a final answer, backend, checkpoint,
+    device, path, secret, or Ground Truth; extra="forbid" rejects undeclared
+    fields. 版本化严格联合规划输出：权威执行 task 加可复用视觉计划子结构。
+    task 必须属于封闭 data.schema.TaskName 集合；visual_plan 子结构是已校验
+    的 FirstQwenVisualPlan（family/证据联动、ROI 制式与封闭类别归属由该契约
+    与规划器共同强制）。计划绝不携带最终答案、backend、checkpoint、device、
+    路径、secret 或 Ground Truth；extra="forbid" 拒绝未声明字段。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal[JOINT_PLAN_SCHEMA_VERSION]  # type: ignore[valid-type]
+    task: TaskName
+    visual_plan: FirstQwenVisualPlan

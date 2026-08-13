@@ -18,13 +18,18 @@ import pytest
 from PIL import Image
 
 from agents.evidence_catalog import EvidenceCatalog
-from agents.schema import FirstQwenVisualPlan
+from agents.schema import FirstQwenVisualPlan, JointQwenVisualPlan
 from application.prompts import PromptCatalog
-from data.schema import ImageRef, UnifiedSample
+from data.schema import ImageRef, SampleDraft, UnifiedSample
 from models.base import ModelCacheIdentity
 from models.images import image_sha256
 from workflows.call_budget import CallBudget
-from workflows.visual_planner import VisualPlanError, VisualPlanner
+from workflows.visual_planner import (
+    JointPlanError,
+    JointVisualPlanner,
+    VisualPlanError,
+    VisualPlanner,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -617,3 +622,539 @@ def test_visual_plan_prompt_bound_in_catalog() -> None:
     assert catalog.version("visual_plan") == "v1"
     assert catalog["visual_plan"].strip()
     assert (REPO_ROOT / "prompts" / "first_qwen_visual_plan_v1.md").is_file()
+
+
+# ── Joint task + visual planning (doc 15) / 联合任务 + 视觉规划 ──────────
+# One schema-validated call over a pre-routing view (SampleDraft or
+# UnifiedSample) returns the authoritative task plus the visual-plan
+# substructure: exactly one call, one budget entry, full identity and hash
+# coverage, strict schema rejection, 14B §6.2 ROI collapse, no leaks.
+# 对物化前视图（SampleDraft 或 UnifiedSample）的一次 schema 校验调用返回
+# 权威 task 加视觉计划子结构：恰好一次调用、一次预算、完整身份与 hash 覆盖、
+# 严格 schema 拒绝、14B §6.2 ROI 折叠、无泄漏。
+
+
+def _draft(
+    tmp_path: Path,
+    *,
+    question: str = "Are there any vehicles?",
+    image_fill: int = 7,
+    image_size=(64, 48),
+) -> SampleDraft:
+    image_path = _make_image(tmp_path, fill=image_fill, size=image_size)
+    return SampleDraft(
+        sample_id="s1",
+        dataset="demo",
+        split="val",
+        images=[ImageRef(image_id="img1", path=image_path.name, role="image")],
+        question=question,
+        explicit_task=None,
+        ground_truth=None,
+        metadata={},
+    )
+
+
+def _draft_two_images(tmp_path: Path, *, fill_1: int = 7, fill_2: int = 200) -> SampleDraft:
+    path_1 = _make_image(tmp_path, name="t1.png", fill=fill_1)
+    path_2 = _make_image(tmp_path, name="t2.png", fill=fill_2)
+    return SampleDraft(
+        sample_id="s2",
+        dataset="demo",
+        split="val",
+        images=[
+            ImageRef(image_id="t1", path=path_1.name, role="image"),
+            ImageRef(image_id="t2", path=path_2.name, role="image"),
+        ],
+        question="",
+        explicit_task=None,
+        ground_truth=None,
+        metadata={},
+    )
+
+
+def _joint_response(*, task: str = "general_vqa", **plan_overrides) -> dict:
+    return {
+        "version": "joint-qwen-plan-v1",
+        "task": task,
+        "visual_plan": _plan_response(**plan_overrides),
+    }
+
+
+def _joint_planner(client, *, catalog=None, prompt_version="v1", **kwargs) -> JointVisualPlanner:
+    return JointVisualPlanner(
+        client,
+        system_prompt="You are the joint planner.",
+        prompt_version=prompt_version,
+        catalog=catalog or _catalog(),
+        **kwargs,
+    )
+
+
+def _joint_run(planner: JointVisualPlanner, view, tmp_path: Path, budget=None):
+    return asyncio.run(
+        planner.plan(
+            view,
+            data_root=tmp_path,
+            artifact_dir=tmp_path / "artifacts",
+            budget=budget,
+        )
+    )
+
+
+# ── happy path / 正常路径 ───────────────────────────────────────────────
+
+
+def test_joint_plan_returns_task_and_plan_in_one_call(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(task="general_vqa", family="direct_vqa"),
+    )
+    plan = _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+    assert isinstance(plan, JointQwenVisualPlan)
+    assert plan.version == "joint-qwen-plan-v1"
+    assert plan.task == "general_vqa"
+    assert plan.visual_plan.execution_family == "direct_vqa"
+    assert len(client.calls) == 1
+
+
+def test_joint_plan_object_evidence_family(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(task="grounding", categories=("vehicle",)),
+    )
+    plan = _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+    assert plan.task == "grounding"
+    assert plan.visual_plan.evidence_request.composite_categories == ["vehicle"]
+
+
+def test_joint_plan_accepts_unified_sample_view(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(task="general_vqa", family="direct_vqa"),
+    )
+    plan = _joint_run(_joint_planner(client), _sample(tmp_path), tmp_path)
+    assert plan.task == "general_vqa"
+    assert len(client.calls) == 1
+
+
+def test_joint_plan_dedupes_categories_stably(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(categories=("vehicle", "vehicle", "building")),
+    )
+    plan = _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+    assert plan.visual_plan.evidence_request.composite_categories == ["vehicle", "building"]
+
+
+# ── model task is authoritative / 模型 task 权威 ─────────────────────────
+
+
+def test_joint_plan_never_sends_source_task_to_model(tmp_path: Path) -> None:
+    """The dataset-supplied source task stays audit-only: it is never part of
+    the request payload, and the model's task wins for routing/materialization.
+    数据集提供的来源 task 只用于审计：绝不进入请求载荷，模型 task 对路由与
+    物化权威。"""
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(task="general_vqa", family="direct_vqa"),
+    )
+    draft = _draft(tmp_path).model_copy(update={"explicit_task": "counting"})
+    plan = _joint_run(_joint_planner(client), draft, tmp_path)
+    assert plan.task == "general_vqa"
+    payload_text = str(client.calls[0]["messages"][1]["content"])
+    # The payload carries neither a source-task key nor a top-level task key
+    # (the task set in allowed_tasks is legal vocabulary, not a selection).
+    # 载荷既不携带来源 task 键也不携带顶层 task 键（allowed_tasks 中的任务
+    # 名是合法词汇表，不是已选任务）。
+    assert "explicit_task" not in payload_text
+    assert '"task"' not in payload_text
+
+
+def test_joint_plan_payload_carries_closed_task_and_category_sets(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+    (text,) = [
+        item["text"]
+        for item in client.calls[0]["messages"][1]["content"]
+        if item.get("type") == "text"
+    ]
+    import json
+
+    payload = json.loads(text)
+    assert payload["question"] == "Are there any vehicles?"
+    assert payload["images"] == [{"image_id": "img1", "role": "image"}]
+    assert payload["catalog_version"] == "first-qwen-evidence-catalog-v1"
+    assert payload["composite_categories"] == ["vehicle", "building"]
+    assert payload["allowed_tasks"] == sorted(
+        [
+            "counting",
+            "fine_grained_counting",
+            "change_caption",
+            "change_qa",
+            "grounding",
+            "spatial_relation",
+            "scene_classification",
+            "general_vqa",
+            "caption",
+            "multiple_choice_vqa",
+        ]
+    )
+    assert payload["answer_constraints"] == {}
+
+
+def test_joint_plan_carries_answer_constraints_from_unified_sample(tmp_path: Path) -> None:
+    from data.schema import TaskNormalization
+
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    sample = _sample(tmp_path).model_copy(
+        update={
+            "normalization": TaskNormalization(
+                source_task="vqa",
+                normalized_task="general_vqa",
+                normalizer="demo",
+                version="v1",
+                answer_constraints={"domain": ["yes", "no"]},
+            )
+        }
+    )
+    _joint_run(_joint_planner(client), sample, tmp_path)
+    (text,) = [
+        item["text"]
+        for item in client.calls[0]["messages"][1]["content"]
+        if item.get("type") == "text"
+    ]
+    import json
+
+    payload = json.loads(text)
+    assert payload["answer_constraints"] == {"domain": ["yes", "no"]}
+
+
+def test_joint_plan_never_leaks_ground_truth_or_paths(tmp_path: Path) -> None:
+    """The request never carries GT, file paths, or answer/backend vocabulary;
+    the returned plan JSON never carries answer text, backend/checkpoint
+    names, paths, or image content either. 请求绝不携带 GT、文件路径或
+    答案/backend 词汇；返回计划 JSON 也绝不携带答案文本、backend/checkpoint
+    名称、路径或图像内容。"""
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    draft = _draft(tmp_path).model_copy(
+        update={"ground_truth": {"raw": {"answer": "two vehicles"}}}
+    )
+    plan = _joint_run(_joint_planner(client), draft, tmp_path)
+    payload_text = str(client.calls[0]["messages"][1]["content"])
+    assert "ground_truth" not in payload_text
+    assert "two vehicles" not in payload_text
+    assert ".png" not in payload_text
+    dumped = str(plan.model_dump(mode="json"))
+    for forbidden in ("two vehicles", "backend", "checkpoint", ".png", "data:image/"):
+        assert forbidden not in dumped
+    joined_meta = str(client.calls[0]["request_meta"].model_dump(mode="json"))
+    assert "base64" not in joined_meta
+    assert "data:image/" not in joined_meta
+    assert client.calls[0]["request_meta"].request_hash.isalnum()
+
+
+# ── request metadata / 请求元数据 ───────────────────────────────────────
+
+
+def test_joint_plan_request_meta_contract(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+    (meta,) = [call["request_meta"] for call in client.calls]
+    assert meta.request_id == "s1:joint_plan"
+    assert meta.prompt_version == "v1"
+    assert meta.sample_id == "s1"
+    assert meta.image_sha256 == image_sha256(_preview_bytes(client.calls[0]))
+    assert meta.artifact_dir == tmp_path / "artifacts" / "joint_plan"
+
+
+# ── budget / 预算 ──────────────────────────────────────────────────────
+
+
+def test_joint_plan_consumes_exactly_one_budget_entry(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    budget = CallBudget(max_qwen_calls=5)
+    _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path, budget=budget)
+    assert budget.qwen_calls_used == 1
+
+
+def test_joint_plan_budget_exhausted_is_typed_failure(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    budget = CallBudget(max_qwen_calls=0)
+    with pytest.raises(JointPlanError, match="BUDGET_EXHAUSTED"):
+        _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path, budget=budget)
+    assert client.calls == []
+    assert budget.qwen_calls_used == 0
+
+
+# ── identity & client failures / 身份与客户端失败 ────────────────────────
+
+
+def test_joint_plan_requires_real_model_cache_identity(tmp_path: Path) -> None:
+    class _DuckClient:
+        @property
+        def cache_identity(self):
+            return {"model": "fake"}
+
+        async def complete_json(self, **kwargs):
+            raise AssertionError("model must not be called without identity")
+
+    budget = CallBudget(max_qwen_calls=5)
+    with pytest.raises(JointPlanError, match="CLIENT_UNAVAILABLE"):
+        _joint_run(_joint_planner(_DuckClient()), _draft(tmp_path), tmp_path, budget=budget)
+    assert budget.qwen_calls_used == 0
+
+
+def test_joint_plan_client_error_is_typed_failure(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=None, raise_error=RuntimeError("boom")
+    )
+    budget = CallBudget(max_qwen_calls=5)
+    with pytest.raises(JointPlanError, match="CLIENT_ERROR"):
+        _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path, budget=budget)
+    assert budget.qwen_calls_used == 1
+
+
+def test_joint_plan_missing_image_is_typed_failure(tmp_path: Path) -> None:
+    draft = _draft(tmp_path).model_copy(
+        update={"images": [ImageRef(image_id="img1", path=Path("nope.png"), role="image")]}
+    )
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    budget = CallBudget(max_qwen_calls=5)
+    with pytest.raises(JointPlanError, match="PREVIEW_DECODE_FAILED"):
+        _joint_run(_joint_planner(client), draft, tmp_path, budget=budget)
+    assert budget.qwen_calls_used == 0
+
+
+# ── strict rejection / 严格拒绝 ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _joint_response(task="hack_task", family="direct_vqa"),  # unknown task
+        _joint_response(version="other-version", family="direct_vqa"),  # frozen version
+        _joint_response(family="direct_vqa", extra_field=True),  # extra field
+        _joint_response(task="general_vqa", execution_family="hack", evidence_request=None),
+        _joint_response(
+            task="general_vqa",
+            roi_plan={
+                "rois": [
+                    {
+                        "roi_id": "r1",
+                        "image_id": "img1",
+                        "xyxy": (0.0, 0.0, float("nan"), 1.0),
+                    }
+                ]
+            },
+        ),  # non-finite -> schema rejection, not fallback
+    ],
+)
+def test_joint_plan_schema_invalid_responses_fail_typed(
+    tmp_path: Path, response: dict
+) -> None:
+    client = _FakeClient(identity=_identity(), response=response)
+    with pytest.raises(JointPlanError, match="SCHEMA_INVALID"):
+        _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+
+
+def test_joint_plan_out_of_catalog_category_fails_typed(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(categories=("flying_car",)),
+    )
+    with pytest.raises(JointPlanError, match="SCHEMA_INVALID"):
+        _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+
+
+def test_joint_plan_roi_with_unknown_image_id_fails_typed(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(
+            rois=[{"roi_id": "r1", "image_id": "ghost", "xyxy": (0.1, 0.1, 0.5, 0.5)}]
+        ),
+    )
+    with pytest.raises(JointPlanError, match="SCHEMA_INVALID"):
+        _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path)
+
+
+def test_joint_plan_low_confidence_is_typed_failure(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(confidence=0.4)
+    )
+    budget = CallBudget(max_qwen_calls=5)
+    with pytest.raises(JointPlanError, match="LOW_CONFIDENCE"):
+        _joint_run(_joint_planner(client), _draft(tmp_path), tmp_path, budget=budget)
+    assert budget.qwen_calls_used == 1
+
+
+# ── 14B §6.2 ROI fallback / ROI 整图回退 ───────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "rois",
+    [
+        [{"roi_id": "r1", "image_id": "img1", "xyxy": (0.3, 0.3, 0.3, 0.3)}],  # degenerate
+        [{"roi_id": "r1", "image_id": "img1", "xyxy": (0.0, 0.0, 2.0, 1.0)}],  # out of range
+        [
+            {"roi_id": f"r{index}", "image_id": "img1", "xyxy": (0.1 * index, 0.1, 0.4, 0.5)}
+            for index in range(1, 4)
+        ],  # 3 ROIs with cap 2 -> over-limit / 3 个 ROI 超 cap 2 上限
+    ],
+)
+def test_joint_plan_roi_geometry_follows_14b_fallback(tmp_path: Path, rois: list[dict]) -> None:
+    """Over-limit (here: cap 2 with 3 ROIs), out-of-range, or degenerate ROI
+    plans collapse to the unique full-image ROI while the validated category
+    plan survives; never re-called, never truncated.
+    超限（此处 cap 2 配 3 个 ROI）、越界或退化 ROI 计划折叠为唯一整图 ROI，
+    已校验类别计划保留；绝不重调、绝不截断。"""
+    client = _FakeClient(
+        identity=_identity(),
+        response=_joint_response(rois=rois, categories=("vehicle",)),
+    )
+    plan = _joint_run(_joint_planner(client, max_rois=2), _draft(tmp_path), tmp_path)
+    assert plan.visual_plan.roi_plan.rois == []
+    assert plan.visual_plan.evidence_request.composite_categories == ["vehicle"]
+    assert len(client.calls) == 1
+
+
+# ── previews / 预览 ─────────────────────────────────────────────────────
+
+
+def test_joint_plan_multi_image_order_and_digest(tmp_path: Path) -> None:
+    """Two-image views send both previews in view order, and the request
+    digest covers every transmitted image. 双图视图按视图顺序发送两张预览，
+    request digest 覆盖全部传输图像。"""
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    draft = _draft_two_images(tmp_path, fill_1=7, fill_2=200)
+    _joint_run(_joint_planner(client), draft, tmp_path)
+    image_urls = [
+        item["image_url"]["url"]
+        for item in client.calls[0]["messages"][1]["content"]
+        if item.get("type") == "image_url"
+    ]
+    assert len(image_urls) == 2
+    digests = [
+        image_sha256(base64.b64decode(url.split(";base64,", 1)[1])) for url in image_urls
+    ]
+    meta = client.calls[0]["request_meta"]
+    assert meta.image_sha256 == "|".join(digests)
+
+
+def test_joint_plan_preview_shrinks_only_when_above_cap(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    draft = _draft(tmp_path, image_size=(2000, 1000))
+    _joint_run(_joint_planner(client), draft, tmp_path)
+    preview = Image.open(io.BytesIO(_preview_bytes(client.calls[0])))
+    assert preview.size == (1080, 540)
+    client_small = _FakeClient(
+        identity=_identity(), response=_joint_response(family="direct_vqa")
+    )
+    _joint_run(_joint_planner(client_small), _draft(tmp_path, image_size=(64, 48)), tmp_path)
+    small = Image.open(io.BytesIO(_preview_bytes(client_small.calls[0])))
+    assert small.size == (64, 48)  # never upscaled / 绝不放大
+
+
+# ── request hash coverage / request hash 覆盖 ──────────────────────────
+
+
+def _joint_run_and_hash(tmp_path: Path, planner: JointVisualPlanner, fill: int = 7):
+    client = planner._client
+    view = _draft(tmp_path, image_fill=fill)
+    _joint_run(planner, view, tmp_path)
+    return client.calls[0]["request_meta"].request_hash
+
+
+def test_joint_plan_hash_covers_prompt_version(tmp_path: Path) -> None:
+    response = _joint_response(family="direct_vqa")
+    a = _joint_run_and_hash(
+        tmp_path,
+        _joint_planner(_FakeClient(identity=_identity(), response=response), prompt_version="v1"),
+    )
+    b = _joint_run_and_hash(
+        tmp_path,
+        _joint_planner(_FakeClient(identity=_identity(), response=response), prompt_version="v2"),
+    )
+    assert a != b
+
+
+def test_joint_plan_hash_covers_catalog_version(tmp_path: Path) -> None:
+    response = _joint_response(family="direct_vqa")
+    a = _joint_run_and_hash(
+        tmp_path,
+        _joint_planner(
+            _FakeClient(identity=_identity(), response=response),
+            catalog=_catalog("first-qwen-evidence-catalog-v1"),
+        ),
+    )
+    b = _joint_run_and_hash(
+        tmp_path,
+        _joint_planner(
+            _FakeClient(identity=_identity(), response=response),
+            catalog=_catalog("first-qwen-evidence-catalog-v2"),
+        ),
+    )
+    assert a != b
+
+
+def test_joint_plan_hash_covers_image_digest(tmp_path: Path) -> None:
+    response = _joint_response(family="direct_vqa")
+    a = _joint_run_and_hash(
+        tmp_path, _joint_planner(_FakeClient(identity=_identity(), response=response)), fill=7
+    )
+    b = _joint_run_and_hash(
+        tmp_path, _joint_planner(_FakeClient(identity=_identity(), response=response)), fill=200
+    )
+    assert a != b
+
+
+def test_joint_plan_hash_covers_generation_and_identity(tmp_path: Path) -> None:
+    response = _joint_response(family="direct_vqa")
+    base = _identity()
+    variants = [
+        _identity(generation={"temperature": 0.7}),
+        _identity(client_version="fake-client-v2"),
+        _identity(revision="rev-2"),
+        _identity(model="qwen-demo-2"),
+    ]
+    hashes = [
+        _joint_run_and_hash(
+            tmp_path, _joint_planner(_FakeClient(identity=base, response=response))
+        )
+    ]
+    for identity in variants:
+        hashes.append(
+            _joint_run_and_hash(
+                tmp_path,
+                _joint_planner(_FakeClient(identity=identity, response=response)),
+            )
+        )
+    assert len(set(hashes)) == len(hashes)
+
+
+def test_joint_plan_hash_is_deterministic_for_identical_inputs(tmp_path: Path) -> None:
+    response = _joint_response(family="direct_vqa")
+    a = _joint_run_and_hash(
+        tmp_path, _joint_planner(_FakeClient(identity=_identity(), response=response))
+    )
+    b = _joint_run_and_hash(
+        tmp_path, _joint_planner(_FakeClient(identity=_identity(), response=response))
+    )
+    assert a == b

@@ -38,11 +38,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 class _FakeQwenClient:
     """Branches on the response model: task resolutions for the resolver,
-    agent results for the visual agents. 按 response model 分支：解析器收到
-    任务解析、视觉 Agent 收到 Agent 结果。"""
+    joint plans for the doc 15 planner (configurable task), agent results for
+    the visual agents. 按 response model 分支：解析器收到任务解析、doc 15
+    规划器收到联合计划（task 可配置）、视觉 Agent 收到 Agent 结果。"""
 
-    def __init__(self) -> None:
+    def __init__(self, joint_task: str = "general_vqa") -> None:
         self.calls = 0
+        self.joint_task = joint_task
 
     @property
     def cache_identity(self) -> ModelCacheIdentity:
@@ -62,6 +64,19 @@ class _FakeQwenClient:
                     "confidence": 0.95,
                     "candidate_tasks": ["general_vqa"],
                     "reason_codes": ["model_high_confidence"],
+                }
+            )
+        if name == "JointQwenVisualPlan":
+            return response_model.model_validate(
+                {
+                    "version": "joint-qwen-plan-v1",
+                    "task": self.joint_task,
+                    "visual_plan": {
+                        "version": "first-qwen-plan-v1",
+                        "execution_family": "direct_vqa",
+                        "confidence": 0.9,
+                        "roi_plan": {"rois": []},
+                    },
                 }
             )
         return response_model.model_validate(
@@ -408,10 +423,19 @@ def _ask_runtime(
     tmp_path: Path,
     client: _FakeQwenClient | None = None,
     agents: dict[str, _RecordingAgent] | None = None,
+    *,
+    joint: bool = False,
 ) -> Runtime:
-    """A Runtime with the real resolver/router but recording stub agents.
-    使用真实 resolver/router 与记录型 stub Agent 的 Runtime。"""
+    """A Runtime with the real resolver/router but recording stub agents;
+    joint=True wires the doc 15 joint planner through the real bootstrap.
+    使用真实 resolver/router 与记录型 stub Agent 的 Runtime；joint=True 经真实
+    bootstrap 接上 doc 15 联合规划器。"""
     settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
+    if joint:
+        settings = AppSettings(
+            runs=RunSettings(root=tmp_path / "runs"),
+            visual_planning={"enabled": True},
+        )
     client = client or _FakeQwenClient()
     components = assemble_runtime(
         settings,
@@ -618,6 +642,87 @@ def test_ask_reuses_single_qwen_client(tmp_path: Path) -> None:
     second = _ask(runtime, image_dir=tmp_path / "imgs")
     assert runtime.components.qwen_client is client  # created once, reused
     assert first.request_id != second.request_id
+
+
+# ── joint mode ask (doc 15) / 联合模式 ask（doc 15） ────────────────────────
+
+
+def test_ask_joint_mode_one_model_call_and_model_task(tmp_path: Path) -> None:
+    """In joint mode the manual ask is exactly one schema-validated planner
+    call over a placeholder-role draft: the model task is authoritative,
+    roles are rebuilt at materialization, and the joint plan is persisted.
+    联合模式下 manual ask 恰好一次 schema 校验规划调用：对占位角色 draft，
+    模型 task 权威、角色在物化时重建、联合计划被持久化。"""
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient()
+    agent = _RecordingAgent("general_vqa_agent", "general_vqa")
+    runtime = _ask_runtime(
+        tmp_path, client=client, agents={"general_vqa_agent": agent}, joint=True
+    )
+    answer = _ask(
+        runtime, image_dir=tmp_path / "imgs", question="Is there a road?"
+    )
+    assert client.calls == 1  # one call for task + plan / 一次调用完成 task+plan
+    assert answer.task == "general_vqa"
+    assert answer.agent == "general_vqa_agent"
+    sample, context = agent.runs[0]
+    assert sample.task == "general_vqa"
+    # Roles rebuilt for the model task; placeholder roles never survive.
+    # 角色按模型任务重建；占位角色绝不残留。
+    assert [image.role for image in sample.images] == ["image"]
+    assert [image.image_id for image in sample.images] == ["image-0"]
+    # The validated plan and bindings reach the agent context.
+    # 已验证计划与绑定进入 AgentContext。
+    assert context.visual_plan is not None
+    assert context.visual_plan.execution_family == "direct_vqa"
+    assert context.visual_bindings is runtime.components.joint_planner.bindings
+    request_dir = tmp_path / "runs" / "service" / "requests" / answer.request_id
+    request = json.loads((request_dir / "request.json").read_text(encoding="utf-8"))
+    assert request["joint_plan"] is True
+    assert request["resolved_task"] == "general_vqa"
+    joint = json.loads(
+        (request_dir / "joint_visual_plan.json").read_text(encoding="utf-8")
+    )
+    assert joint["version"] == "joint-qwen-plan-v1"
+    assert joint["task"] == "general_vqa"
+
+
+def test_ask_joint_mode_explicit_task_still_goes_through_planner(
+    tmp_path: Path,
+) -> None:
+    """Even an explicit manual task resolves task + plan in the single joint
+    call; the source task is never re-sent or re-guessed.
+    即使显式 manual task 也在单次联合调用内解析 task + plan；来源 task 绝不
+    被重发或重猜。"""
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient(joint_task="caption")
+    agent = _RecordingAgent("caption_agent", "caption")
+    runtime = _ask_runtime(
+        tmp_path, client=client, agents={"caption_agent": agent}, joint=True
+    )
+    answer = _ask(
+        runtime,
+        image_dir=tmp_path / "imgs",
+        question="Describe the scene.",
+        task="caption",
+    )
+    assert client.calls == 1  # explicit task no longer zero-call in joint mode
+    assert answer.task == "caption"  # 联合模式下显式 task 不再是零调用
+    assert answer.agent == "caption_agent"
+
+
+def test_ask_joint_mode_incompatible_plan_fails_closed(tmp_path: Path) -> None:
+    """A model task incompatible with the collected images fails closed with
+    a stable materialization code instead of guessing.
+    模型 task 与收集图片不兼容时以稳定物化 code 严格失败，绝不猜测。"""
+    from workflows.task_resolver import SampleMaterializationError
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeQwenClient(joint_task="change_caption")
+    runtime = _ask_runtime(tmp_path, client=client, agents={}, joint=True)
+    with pytest.raises(SampleMaterializationError, match="CHANGE_TASK_NEEDS_TWO_IMAGES"):
+        _ask(runtime, image_dir=tmp_path / "imgs")
+    assert client.calls == 1
 
 
 # ── public answer mapping / 公开结果映射 ────────────────────────────────────

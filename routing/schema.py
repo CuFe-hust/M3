@@ -14,7 +14,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from agents.schema import AgentName
+from agents.schema import AgentName, JointQwenVisualPlan
 from data.schema import JsonValue, TaskName
 
 ExecutionMode = Literal["single", "fallback"]
@@ -123,3 +123,25 @@ class TaskResolution(BaseModel):
         if len(self.candidate_tasks) != len(set(self.candidate_tasks)):
             raise ValueError("candidate_tasks must not contain duplicates")
         return self
+
+
+def joint_plan_to_resolution(plan: JointQwenVisualPlan) -> TaskResolution:
+    """Pure conversion from a validated joint plan to the runtime resolution
+    consumed by the deterministic TaskRouter (doc 15): the model task is
+    authoritative, a single candidate with model source, and the visual
+    plan's confidence and reason codes flow through. The conversion never
+    reads the question, the images, or any model; it is deterministic.
+    从已验证联合计划到确定性 TaskRouter 消费的运行时 resolution 的纯转换
+    （doc 15）：模型 task 权威、单一候选、model 来源，并透传视觉计划的
+    置信度与 reason codes。转换绝不读取 question、图像或任何模型；完全
+    确定性。"""
+
+    reason_codes = list(dict.fromkeys([*plan.visual_plan.reason_codes, "joint_plan_model_task"]))
+    return TaskResolution(
+        task=plan.task,
+        confidence=plan.visual_plan.confidence,
+        candidate_tasks=[plan.task],  # type: ignore[list-item]
+        needs_candidate_fallback=False,
+        source="model",
+        reason_codes=reason_codes[:8],
+    )

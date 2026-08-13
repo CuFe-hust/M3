@@ -855,7 +855,7 @@ First-Qwen 视觉工作流配置组（C7，14A2），默认整体禁用：
 ```text
 enabled = False
 prompt_version = "v1"
-catalog_version = "first-qwen-evidence-catalog-v1"
+catalog_version = "first-qwen-evidence-catalog-v2"
 max_rois = 3
 halo_ratio = 0.10
 confidence_threshold = 0.70
@@ -968,6 +968,11 @@ prompts.snapshot/
 保存 Prompt 副本，并在 `manifest.json` 保存 hash。
 
 涉及模型输出行为的 Prompt 修改必须被视为行为变化，而不只是文案修改。
+
+联合模式（doc 15）prompt binding `"joint_plan"` → 版本化
+`joint_qwen_task_visual_plan_v1.md`（v1），与 `"visual_plan"` gate binding
+并存；启用联合模式时只有联合 binding 被消费，两条 prompt 路径同样不同时
+接线。
 
 ---
 
@@ -1234,6 +1239,12 @@ reason_codes
 必须通过合法 `TaskName` Schema。
 
 模型解析需要完整 model cache identity 和 request hash。
+
+联合模式（doc 15，`visual_planning.enabled=True`）下 dataset 与 manual ask
+不走本解析路径：单次联合 Qwen 调用同时产出 task 与视觉计划（见 §36.4 与
+§79.9），模型选定 task 对 routing / materialization / execution 权威，源
+task 只做审计。低置信度候选 fallback 仍是 SampleRunner 的职责，Resolved
+候选不执行 Agent。
 
 ---
 
@@ -1864,6 +1875,17 @@ planner 与 Agent 共享同一样本预算（fallback 不创建新 budget）。
 error_message="VisualPlanError"`，不重试、不 legacy 兜底、不变更
 `sample.task`。门禁关闭或非规划任务时零调用、零产物。
 
+联合模式（doc 15，`visual_planning.enabled=True` 时接线，默认关闭）下
+`run_one` 接收 `joint_plan: JointQwenVisualPlan` 代替独立 resolution：
+联合计划经纯确定性 `joint_plan_to_resolution` 派生 resolution
+（`source="model"`、单一候选、reason codes 透传），并在
+`joint_visual_plan.json` 原子持久化已验证联合 schema。`joint_plan` 与
+`resolution` 互斥、被执行样本必须已携带模型选定 task，违反即失败而非猜测；
+两种模式下 `visual_plan` 与证据绑定都注入 AgentContext（联合模式下
+`joint_bindings` 来自 composition root），gate 与联合规划器绝不同时接线。
+trace 增加 `joint_plan` 布尔审计字段，记录 task 来自单次联合调用而非独立
+文本解析器。
+
 职责：
 
 - 单样本；
@@ -1937,6 +1959,35 @@ fail-fast 后：
 - 已启动任务被正确 cancel/await；
 - 已选择样本最终仍需要有终态记录；
 - summary 计数闭合。
+
+## 36.4 联合模式（doc 15）
+
+`visual_planning.enabled=True` 时，DatasetRunner 在 resume 检查之后、任何
+执行之前，对每条样本先做一次联合 Qwen 调用（缩略图 + 文本 → task + 视觉
+计划，见 §79.9），再以模型选定 task 物化/路由/执行。三条入口统一接线：
+
+```text
+tasks=(...) 显式任务    -> _run_sample_joint：重建成选定 task 后执行
+tasks=None   默认任务    -> 同显式任务（重建成选定 task 后执行）
+auto_task=True + tasks=() -> _run_draft_joint：SampleDraft 直接走 planner
+```
+
+TaskResolver 在联合模式下被旁路（§23.1）；重建成选定 task 失败或所选 task
+与样本图像数不兼容（如单图 change_caption）时稳定失败
+`INCOMPATIBLE_JOINT_TASK`，draft 物化失败（如
+`CHANGE_TASK_NEEDS_TWO_IMAGES`）同样 fail-closed。planner 失败（
+`JOINT_PLAN_FAILED:<CODE>`）与物化失败都以 `task="unknown"` 记录终态。
+联合调用与后续 Agent 共享同一样本 `CallBudget`（`max_qwen_calls` 必填）；
+resume 时 succeeded 样本零模型调用，只补缺失/损坏的确定性评测产物
+（§36.5 补评测）。summary 计数闭合规则不变。
+
+## 36.5 补评测 / evaluation supplement
+
+resume 补评测只补缺失或损坏的确定性 EvaluationRecord 产物
+（`counting_evaluation.json` / `vqa_evaluation.json` /
+`grounding_evaluation.json` / `caption_evaluation.json`，按 `status.task`
+的运行时任务族映射）。补评测异常降级为 skipped，绝不重跑 Agent 或覆盖
+已有记录。
 
 ---
 
@@ -3252,12 +3303,27 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 
 当前工作流 JSONL 并发安全承诺局限于同一 Python 进程。
 
-### 79.4 First-Qwen visual workflow is disabled and uncalibrated
+### 79.4 First-Qwen visual workflow is disabled; runtime policy remains uncalibrated
 
 `visual_planning.enabled` 默认 `False`：门禁不参与运行，调用次数、结果、
-trace、产物与启用前逐字节一致。即使开启，未校准的 detector/segmenter
-能力默认关闭（None），`vqa_evidence.json`、ROI overlay 等为语义占位，
-持久化格式/质量参数未批准（14A2 §5.1）。组合根装配已落地（14A3 C9）：
+trace、产物与启用前逐字节一致。`first-qwen-evidence-catalog-v2` 已根据当前
+DOTA-v2 YOLO 与经验证的 iSAID SegFormer class map 声明并启用以下类别映射：
+
+```text
+vehicle
+aircraft
+watercraft
+sports_facility
+transport_infrastructure
+industrial_facility
+aviation_infrastructure
+```
+
+其中机场、停机坪、集装箱起重机只有 YOLO 映射；其余叶子类别同时具有 YOLO
+与 iSAID SegFormer 映射。OEM SegFormer 仍因 class map 未验证而禁用。类别映射
+已验证不等于运行策略已校准：detector threshold/NMS/max detections 与视觉证据
+SegFormer 的运行绑定仍默认关闭（None），`vqa_evidence.json`、ROI overlay 等为
+语义占位，持久化格式/质量参数未批准（14A2 §5.1）。组合根装配已落地（14A3 C9）：
 `application/bootstrap.py` 按版本绑定检查组装 `VisualPlanningGate` 与
 `VisualPlanBindings`；VQA 证据服务仅在完整校准策略 + 启用检测器时组装，
 grounding 证据 seam 以显式全 None 策略运行；启用 segmenter 而无冻结模型
@@ -3267,6 +3333,12 @@ grounding 证据 seam 以显式全 None 策略运行；启用 segmenter 而无�
 接线 detector。ROI 计划按 14B §6.2：超限（`max_rois`，1–3，默认 3）、越界
 或退化时折叠为唯一整图 ROI，保留已校验类别计划，不截断、不重调；非有限
 坐标与错误 image_id 仍为 SCHEMA_INVALID。live 校准与默认翻转属于后续任务。
+
+doc 15（§79.9）落地后，`visual_planning.enabled=True` 时 composition root
+组装 `JointVisualPlanner`（含 `VisualPlanBindings`）并完全替代
+`VisualPlanningGate`——两条路径绝不同时接线，flag 仍默认 `False`，关闭时
+行为逐字节不变（gate 路径原样保留）。启用时每条样本只有一次联合 Qwen
+调用（见 §35、§36.4），旧 `visual_plan.json` gate 产物不再产生。
 
 ### 79.5 Live validation
 
@@ -3293,6 +3365,41 @@ grounding 证据 seam 以显式全 None 策略运行；启用 segmenter 而无�
 
 SegFormer 输出 semantic region 而非 instance mask。相接实例可能形成一个 component 并
 低估数量；当前不隐藏加入 watershed 或 instance splitting。此限制应在 benchmark 中单列。
+
+### 79.9 Joint task + visual planning（doc 15）
+
+单次 Qwen 调用同时产出 task 与视觉计划（替代 23.1 的独立文本 TaskResolver
+模型路径与 14A/14B 的独立 VisualPlanner gate），flag
+`visual_planning.enabled=True` 时接线，默认关闭。
+
+```text
+joint-qwen-plan-v1
+    version: "joint-qwen-plan-v1"
+    task: 闭合 data.schema.TaskName 集合（extra="forbid"）
+    visual_plan: FirstQwenVisualPlan 子结构
+```
+
+契约要点：
+
+- `extra="forbid"`；模型正文不含 final answer / backend / checkpoint /
+  path / GT；非法输出稳定失败 `JOINT_PLAN_FAILED:CODE`；
+- 模型选定 task 对 routing / materialization / execution 权威，源 task
+  只做审计，GT 只读；
+- `joint_plan_to_resolution` 纯确定性派生 resolution（`source="model"`，
+  单一候选，reason codes 透传），TaskRouter 保持确定性；
+- 每条样本恰好一次联合调用（shared `CallBudget.max_qwen_calls`），resume
+  succeeded 零模型调用（§36.5 只补评测）；
+- request hash 覆盖逻辑模型身份 / revision / generation settings / prompt
+  版本与正文 / catalog / messages / preview digest / client version；
+- 产物 `joint_visual_plan.json`（与 gate 的 `visual_plan.json` 永不冲突），
+  trace 增加 `joint_plan` 审计字段；manual ask 以 placeholder-role
+  SampleDraft 走联合路径（request.json `"joint_plan": true`）；
+- 低置信度候选 fallback 语义不变（SampleRunner 职责，非 Resolver）；
+- prompt binding `"joint_plan"` → `joint_qwen_task_visual_plan_v1.md` v1。
+
+已知限制：联合规划器尚未通过真实 Qwen3-VL checkpoint 的 live 门禁（离线
+约束下无法执行，属后续人工步骤）；flag 保持默认关闭，启用前必须先完成
+live 验证。
 
 ---
 
