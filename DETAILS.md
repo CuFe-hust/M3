@@ -3698,3 +3698,23 @@ scripts/evaluate_vrsbench_counting.py
 `count_deterministic_metrics` / `aggregate_counting` 与生产车辆
 `count_target_hint`；输出 `results.jsonl` + `summary.json` +
 `unsupported_or_error.json`，无 DeepSeek/Judge 参与。
+
+```text
+scripts/prepare_qwen3vl_phase2_sft.py
+```
+
+Phase 2 SFT canonical 数据准备器（只读、离线、确定性，任务文档见
+`docs/train/01_PREPARE_PHASE2_SFT_DATA.md`）：解析
+`data/phase2-train/VRSBench/`（缩进 JSON 块或单行 JSONL 均可）与
+`data/phase2-train/GeoChat/GeoChat_Instruct.json`（流式 JSON 数组），
+导出与 Transformers/PEFT/Qwen template 解耦的 canonical episodes：
+`<output_dir>/{train,validation}.jsonl` + `manifest.json` +
+`rejected.jsonl`。契约要点：VRSBench grounding 每合法 object 一条；
+VQA 有框视图的 input_boxes 只声明为同图 annotation 上下文，不做
+question→object 模糊绑定；train 按 `source_task` 分层、以
+`sha256(seed + parent_episode_id)` 排序取前 `round(0.4*N)` 生成
+self-attention 无框额外副本（不替代有框版，validation 不增广）；
+GeoChat `[refer]`→target 框、`[identify]`→input 框 + 文本、普通对话
+保序，坐标统一 `round(c*999/100)` 转换且转换前后校验，拒绝记录以稳定
+错误码进 `rejected.jsonl`（含闭合计数）。episode_id 全局唯一；输出无
+机器绝对路径；同输入同 seed 字节级稳定。
