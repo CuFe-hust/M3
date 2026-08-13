@@ -3780,3 +3780,37 @@ merger 参数表、optimizer group 拓扑、增强 seed/配置、max_seq_length 
 （5.14.1 Qwen3-VL processor 不支持该参数，manifest 记录
 `image_pixels_applied=false`）。默认 `--local-files-only`；模块 import 不加载
 权重（torch/transformers/peft 惰性导入）。
+
+```text
+scripts/export_qwen3vl_phase2_checkpoint.py
+```
+
+Phase 2 完整模型导出器（任务文档见 `docs/train/04_EXPORT_QWEN3VL_PHASE2_CHECKPOINT.md`）：
+把第三轮复合训练 checkpoint（base + LLM LoRA adapter + 全量训练后的主
+Merger/DeepStack Merger state）导出为可由 `AutoModelForImageTextToText.
+from_pretrained()` 与项目 Qwen3-VL 主流程直接加载的完整部署 checkpoint。
+导出器只恢复、合并、保存和验证模型；不读取训练集、不执行训练、不重新
+解释数据配置；模块 import 不加载权重（torch/transformers/peft 惰性导入）。
+固定顺序：校验训练 manifest → 加载 base → 从 base 枚举预期 merger key →
+三方严格加载 merger（模型枚举 × manifest 参数表 × safetensors 内容；
+missing/unexpected/shape 冲突/非浮点 dtype/数量不符均失败；允许显式记录
+的浮点 dtype 转换）→ 通过 PEFT 官方接口挂 LLM LoRA → 校验 adapter 身份/
+target 集合与 manifest 完全一致、全部 adapter tensor 被消费、无视觉或
+merger LoRA target → `merge_and_unload` → 审计最终模型（无 lora_A/lora_B
+或 PEFT wrapper-only key 残留；merger 张量保持训练值）→ 保存模型与
+processor（`safe_serialization=True`）→ 复制 `save_pretrained` 未产出的辅助
+配置（不覆盖已有文件）→ 从临时目录以 `local_files_only=True` 离线 reload
+验证（AutoConfig/AutoProcessor/AutoModelForImageTextToText、model_type、
+config 身份与 base 一致、merger 数量、无 LoRA 残留模块、最小 image+text
+chat template 渲染、权重分片齐全、全文件 checksum）→ 可选 `--verify-forward`
+（程序生成小图 + 固定短 prompt 的无梯度 forward）→ 写
+`phase2_export_manifest.json`（base 逻辑身份/revision、训练 manifest
+sha256、adapter/merger sha256、LoRA 配置与 target 集合、merger 摘要、
+输出 dtype 与转换、版本、文件 size/sha256、reload/forward 结果、git HEAD）
+→ 同文件系统原子 rename 发布。`output_path` 已存在即拒绝；失败或中断
+（130）不创建最终目录，临时目录安全清理（绝不删除用户给定路径）。
+CLI：`--model-id`（默认 `models/qwen3_vl_8b/weights`）/
+`--checkpoint-path`/`--output-path`/`--torch-dtype`（默认 bfloat16）/
+`--device`（默认 cpu）/`--local-files-only`（默认 true）/
+`--verify-forward`。公共 stderr 只输出稳定阶段与异常类型；导出 manifest
+不记录 secret、机器绝对路径（作为逻辑身份）或原始异常全文。
