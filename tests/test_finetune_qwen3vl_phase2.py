@@ -881,6 +881,33 @@ def test_resume_epoch_augmentation_seed_no_drift(phase2_workspace: dict) -> None
     assert drifted, "augmentation unexpectedly identical across epochs"
 
 
+def test_sampler_provider_uses_transformers_get_train_dataloader() -> None:
+    """Use the Transformers 5.x dataloader method when no cache exists.
+    无缓存时使用 Transformers 5.x 的 dataloader 方法。
+    """
+    class Sampler:
+        pass
+
+    class Loader:
+        sampler = Sampler()
+
+    class Trainer:
+        _train_dataloader = None
+
+        def get_train_dataloader(self):
+            self.called = True
+            return Loader()
+
+        train_dataloader = property(
+            lambda self: (_ for _ in ()).throw(AssertionError("legacy property used"))
+        )
+
+    trainer = Trainer()
+    provider = ft._get_train_sampler(trainer)
+    assert trainer.called is True
+    assert isinstance(provider, Sampler)
+
+
 # ---------------------------------------------------------------------------
 # 14. one small forward/backward: LoRA and merger both get gradients,
 #     frozen parameters get none

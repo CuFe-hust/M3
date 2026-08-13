@@ -2033,6 +2033,25 @@ def _build_training_arguments(
     )
 
 
+def _get_train_sampler(trainer: Any) -> Any:
+    """Return Trainer's sampler across supported Transformers seams.
+    兼容不同 Transformers seam，返回 Trainer 的 sampler。
+    """
+    dataloader = getattr(trainer, "_train_dataloader", None)
+    if dataloader is None:
+        # Transformers 5.x exposes the loader through this method, not a
+        # public ``train_dataloader`` property. / Transformers 5.x 通过
+        # 该方法提供 loader，而不是公开的 ``train_dataloader`` 属性。
+        getter = getattr(trainer, "get_train_dataloader", None)
+        if callable(getter):
+            dataloader = getter()
+        else:
+            # Keep compatibility with older Trainer seams used by tests.
+            # 兼容测试中使用的旧版 Trainer seam。
+            dataloader = getattr(trainer, "train_dataloader", None)
+    return getattr(dataloader, "sampler", None)
+
+
 def _phase2_trainer_class() -> type:
     """Build the concrete Trainer subclass lazily (imports transformers on
     first call). 惰性构造 Trainer 子类（首次调用才 import transformers）。"""
@@ -2248,11 +2267,7 @@ def main() -> None:
     )
 
     def _sampler_provider() -> Any:
-        dataloader = getattr(trainer, "_train_dataloader", None)
-        if dataloader is None:
-            dataloader = trainer.train_dataloader
-        sampler = getattr(dataloader, "sampler", None)
-        return sampler
+        return _get_train_sampler(trainer)
 
     trainer = _phase2_trainer_class()(
         model=peft_model,
