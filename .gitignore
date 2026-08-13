@@ -34,6 +34,8 @@ data/VRSBench-full/
 data/VRSBench-mission-type/
 data/XLRS-Bench/
 data/vrsbench-phase1-train/
+data/phase2-train/
+data/phase2-train-processed/
 
 # Firecrawl crawl cache
 .firecrawl/
