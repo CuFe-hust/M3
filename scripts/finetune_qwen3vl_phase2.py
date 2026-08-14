@@ -1309,6 +1309,53 @@ def load_merger_state_strict(base_model: Any, path: str | Path, merger_names: Se
             parameter.data.copy_(tensor)
 
 
+def load_composite_weights(
+    peft_model: Any,
+    base_model: Any,
+    checkpoint_dir: str | Path,
+    merger_names: Sequence[str],
+) -> None:
+    """Load the persisted LLM LoRA adapter and merger state from a validated
+    composite checkpoint before resuming. transformers' own PEFT checkpoint
+    loading is disabled on the trainer (it would freeze the merger base
+    parameters); this explicit load does not touch requires_grad flags.
+    从校验通过的复合 checkpoint 加载持久化的 LLM LoRA adapter 与 merger
+    状态；transformers 自带加载已禁用（会冻结 merger base 参数）；本显式
+    加载不修改 requires_grad 标志。"""
+    import safetensors.torch  # noqa: PLC0415
+
+    checkpoint_dir = Path(checkpoint_dir)
+    adapter_dir = checkpoint_dir / "adapter"
+    adapter_path = adapter_dir / "adapter_model.safetensors"
+    if not adapter_path.is_file():
+        raise CheckpointError("adapter_files_missing", str(adapter_dir))
+    state = safetensors.torch.load_file(adapter_path)
+    # PEFT persists default-adapter keys without the ".default." segment
+    # ("...lora_A.weight"); the live model names them "...lora_A.default.weight".
+    # 恢复保存时省略的 ".default." 段（保存用 "...lora_A.weight"，模型用
+    # "...lora_A.default.weight"）。
+    mapped: dict[str, Any] = {}
+    for name, tensor in state.items():
+        head, _sep, tail = name.rpartition(".")
+        if head.endswith("lora_A") or head.endswith("lora_B"):
+            mapped[f"{head}.default.{tail}"] = tensor
+        else:
+            mapped[name] = tensor
+    result = peft_model.load_state_dict(mapped, strict=False)
+    # Non-LoRA model keys are legitimately absent from an adapter state dict;
+    # every LoRA key of the live model must be covered, and no unexpected key
+    # may remain. 非 LoRA 模型 key 本就不在 adapter state 中；但模型的所有
+    # LoRA key 必须被覆盖，且不得有意外 key。
+    missing_lora = [key for key in result.missing_keys if "lora_" in key]
+    if missing_lora or result.unexpected_keys:
+        raise CheckpointError(
+            "adapter_state_mismatch",
+            f"missing_lora={missing_lora[:5]} unexpected={result.unexpected_keys[:5]}",
+        )
+    load_merger_state_strict(base_model, checkpoint_dir / MERGER_STATE_FILENAME, merger_names)
+    logger.info("loaded composite weights from checkpoint: %s", checkpoint_dir)
+
+
 def verify_adapter_keys(adapter_dir: str | Path, llm_targets: Sequence[str]) -> dict:
     """Read back the saved adapter and verify every key is an LLM LoRA key
     whose parent module is inside llm_targets (no visual/merger LoRA).
@@ -1809,11 +1856,22 @@ class _Phase2TrainerMixin:
     the base model (verified on peft 0.20.0).
     """
 
+    def _load_from_checkpoint(self, resume_from_checkpoint: str, model: Any | None = None) -> None:
+        """Composite checkpoint weights (LLM LoRA adapter + merger state) are
+        loaded explicitly by the phase-2 script before training starts.
+        transformers' own PEFT adapter loading would freeze every non-adapter
+        parameter (including the merger base parameters we train), so it is
+        disabled. 复合 checkpoint 权重（LLM LoRA adapter + merger 状态）由
+        phase2 脚本在训练前显式加载；transformers 自带的 PEFT adapter 加载
+        会冻结所有非 adapter 参数（包括我们要训练的 merger base 参数），
+        因此禁用它。"""
+        del resume_from_checkpoint, model
+        logger.info("skipping transformers model checkpoint load (composite layout handled by script)")
+
     def __init__(
         self,
         *,
-        model: Any,
-        args: Any,
+        model: Any,        args: Any,
         data_collator: Any,
         train_dataset: Any,
         eval_dataset: Any,
@@ -2383,6 +2441,7 @@ def main() -> None:
     resume_dir = resolve_resume_target(ckpt_args.output_dir, ckpt_args.resume_from_checkpoint)
     if resume_dir is not None:
         validate_resume_checkpoint(resume_dir, context)
+        load_composite_weights(peft_model, base, resume_dir, merger_names)
         logger.info("resuming from validated checkpoint: %s", resume_dir)
 
     training_arguments = _build_training_arguments(

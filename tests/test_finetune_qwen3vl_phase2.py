@@ -923,6 +923,60 @@ def test_manifest_optimizer_groups_keep_initial_lr(phase2_workspace: dict) -> No
         assert group["param_count"] == initial_counts[group["name"]]
 
 
+def test_resume_loads_composite_weights(phase2_workspace: dict) -> None:
+    """Resume must load the persisted LLM LoRA adapter and merger state into
+    a fresh model without freezing the merger base parameters (transformers'
+    own PEFT adapter loading freezes them, which broke resume with
+    optimizer groups [0, 0, N, 0]).
+    resume 必须把持久化的 LLM LoRA adapter 与 merger 状态加载进新模型，且
+    不得冻结 merger base 参数（transformers 自带 PEFT 加载会冻结它们，导致
+    resume 时 optimizer 组变成 [0, 0, N, 0]）。"""
+    import safetensors.torch  # noqa: PLC0415
+
+    output_dir = phase2_workspace["root"] / "composite_resume_run"
+    trainer = _build_trainer(phase2_workspace, output_dir)
+    trainer.train(resume_from_checkpoint=None)
+    trainer.save_model()
+    trainer.finalize_root_checkpoint()
+    checkpoint_dir = output_dir / "checkpoint-1"
+
+    # fresh trainer on the same request: validate, then load composite weights
+    fresh_output = phase2_workspace["root"] / "composite_resume_fresh"
+    fresh = _build_trainer(phase2_workspace, fresh_output)
+    context = fresh._test_context
+    ft.validate_resume_checkpoint(checkpoint_dir, context)
+    fresh_base = ft.unwrap_base(fresh.model)
+    merger_names = fresh._test_merger_names
+    ft.load_composite_weights(fresh.model, fresh_base, checkpoint_dir, merger_names)
+
+    # merger state matches the persisted file
+    saved_merger = safetensors.torch.load_file(checkpoint_dir / "merger_model.safetensors")
+    for name, parameter in fresh_base.named_parameters():
+        if ft._under_any(name, merger_names):
+            assert torch.equal(parameter.detach().cpu().float(), saved_merger[name].float()), name
+
+    # LLM LoRA weights match the persisted adapter (re-apply the same
+    # ".default." key normalization as load_composite_weights)
+    # LLM LoRA 权重与持久化 adapter 一致（与 load_composite_weights 相同的
+    # ".default." key 归一化）。
+    saved_adapter = safetensors.torch.load_file(checkpoint_dir / "adapter" / "adapter_model.safetensors")
+    normalized_adapter: dict[str, torch.Tensor] = {}
+    for name, tensor in saved_adapter.items():
+        head, _sep, tail = name.rpartition(".")
+        if head.endswith("lora_A") or head.endswith("lora_B"):
+            normalized_adapter[f"{head}.default.{tail}"] = tensor
+        else:
+            normalized_adapter[name] = tensor
+    for name, parameter in fresh.model.named_parameters():
+        if "lora_" in name:
+            assert torch.equal(parameter.detach().cpu().float(), normalized_adapter[name].float()), name
+
+    # requires_grad layout is untouched: merger stays trainable
+    for name, parameter in fresh_base.named_parameters():
+        if ft._under_any(name, merger_names):
+            assert parameter.requires_grad, name
+
+
 # ---------------------------------------------------------------------------
 # 11. merger save / read-back: keys, shapes, dtypes consistent
 # ---------------------------------------------------------------------------
