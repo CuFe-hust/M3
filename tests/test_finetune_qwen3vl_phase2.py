@@ -975,6 +975,16 @@ def test_resume_rejects_incompatible_requests(phase2_workspace: dict) -> None:
     # identical request passes
     ft.validate_resume_checkpoint(checkpoint_dir, context)
 
+    # live warmup LR persisted in an older manifest must not block resume
+    # (LR is scheduler runtime state restored from optimizer.pt)
+    # 旧 manifest 中的实时 warmup LR 不得阻止 resume（LR 是调度运行时状态）。
+    manifest_path = checkpoint_dir / "phase2_training_manifest.json"
+    manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    for group in manifest_data["optimizer"]["groups"]:
+        group["lr"] = group["lr"] * 0.5
+    manifest_path.write_text(json.dumps(manifest_data), encoding="utf-8")
+    ft.validate_resume_checkpoint(checkpoint_dir, context)
+
     def _mutate(mutator):
         mutated = json.loads(json.dumps(context))
         mutator(mutated)

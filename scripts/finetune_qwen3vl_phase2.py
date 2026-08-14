@@ -1513,8 +1513,21 @@ def validate_resume_checkpoint(checkpoint_dir: str | Path, context: dict) -> Non
              sorted(lora.get("target_modules") or []), mismatches)
     _compare("merger.parameters", context["merger"]["parameters"],
              manifest.get("merger", {}).get("parameters"), mismatches)
-    _compare("optimizer.groups", context["optimizer"]["groups"],
-             manifest.get("optimizer", {}).get("groups"), mismatches)
+    # The per-group LR is runtime scheduler state restored from
+    # optimizer.pt on resume, not a stable request field; compare the group
+    # topology (name/weight_decay/params) only. This also keeps older
+    # checkpoints saved with the live warmup LR resumable.
+    # 每组 LR 是运行时调度状态（resume 时由 optimizer.pt 恢复），不是稳定
+    # 请求字段；只比较分组拓扑（name/weight_decay/params）。这也使保存了
+    # 实时 warmup LR 的旧 checkpoint 可以 resume。
+    def _strip_lr(groups: Any) -> list:
+        return [
+            {key: value for key, value in group.items() if key != "lr"}
+            for group in groups
+        ]
+
+    _compare("optimizer.groups", _strip_lr(context["optimizer"]["groups"]),
+             _strip_lr(manifest.get("optimizer", {}).get("groups") or []), mismatches)
     _compare("augmentation.seed", context["augmentation"]["seed"],
              manifest.get("augmentation", {}).get("seed"), mismatches)
     _compare("augmentation.config", _jsonable(context["augmentation"]["config"]),
