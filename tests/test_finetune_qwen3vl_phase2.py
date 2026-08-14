@@ -890,6 +890,39 @@ def test_resume_rejects_missing_merger_lora_adapter(phase2_workspace: dict) -> N
     assert any("merger_lora_adapter" in field for field in error.value.fields)
 
 
+def test_manifest_optimizer_groups_keep_initial_lr(phase2_workspace: dict) -> None:
+    """The manifest must persist the configured initial LR, never the live
+    warmup-adjusted LR, otherwise resume validation always rejects a run that
+    saved mid-warmup (regression: resume after checkpoint-1000 failed).
+    manifest 必须持久化配置的初始 LR 而非实时 warmup LR，否则在 warmup 中途
+    保存的 run 永远无法 resume（回归：checkpoint-1000 后 resume 失败）。"""
+    output_dir = phase2_workspace["root"] / "lr_manifest_run"
+    trainer = _build_trainer(phase2_workspace, output_dir)
+    trainer.create_optimizer()
+    trainer.create_scheduler(num_training_steps=100)
+    initial_lrs = {group["name"]: group["lr"] for group in trainer._initial_optimizer_groups}
+
+    # advance the scheduler inside warmup so the live LR diverges from initial
+    for _ in range(2):
+        trainer.lr_scheduler.step()
+    live_lrs = {group["name"]: group["lr"] for group in trainer.optimizer.param_groups}
+    assert any(
+        abs(live_lrs[name] - initial_lrs[name]) > 1e-9 for name in live_lrs
+    ), "test precondition: scheduler must move the live LR during warmup"
+
+    stats = trainer._optimizer_group_stats_for_manifest()
+    assert len(stats) == 4
+    initial_counts = {
+        group["name"]: group["param_count"] for group in trainer._initial_optimizer_groups
+    }
+    for group in stats:
+        assert abs(group["lr"] - initial_lrs[group["name"]]) < 1e-12
+        # llm_lora+no_decay is legitimately empty (lora_bias=none): compare
+        # counts exactly instead of asserting non-empty. llm_lora+no_decay
+        # 组本应为空（lora_bias=none）：精确比较而不是断言非空。
+        assert group["param_count"] == initial_counts[group["name"]]
+
+
 # ---------------------------------------------------------------------------
 # 11. merger save / read-back: keys, shapes, dtypes consistent
 # ---------------------------------------------------------------------------

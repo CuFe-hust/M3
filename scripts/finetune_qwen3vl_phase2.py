@@ -1839,9 +1839,17 @@ class _Phase2TrainerMixin:
         显式四组 AdamW（自定义 optimizer 在 scheduler 之前创建）。"""
         del model
         if self.optimizer is None:
-            groups, _stats = build_optimizer_groups(
+            groups, stats = build_optimizer_groups(
                 self.model, self._merger_names, self._lora_lr, self._merger_lr, self._weight_decay
             )
+            # Remember the initial per-group LR from the independent stats
+            # dicts (AdamW mutates the passed groups in place, so the groups
+            # list itself cannot be reused later). The manifest/resume
+            # comparison must stay on the configured initial values, never
+            # the live warmup LR. 从独立的 stats 记住各组初始 LR（AdamW 会
+            # 原地修改传入的 groups，因此不能复用该列表）；manifest 与 resume
+            # 校验必须基于配置的初始值，而不是实时的 warmup LR。
+            self._initial_optimizer_groups = stats["groups"]
             torch = _torch()
             self.optimizer = torch.optim.AdamW(
                 groups, lr=self._lora_lr, betas=(0.9, 0.999), eps=1e-8
@@ -1872,13 +1880,21 @@ class _Phase2TrainerMixin:
             id(parameter): _strip_peft_prefix(name)
             for name, parameter in self.model.named_parameters()
         }
+        initial_lrs = {
+            group.get("name"): float(group["lr"])
+            for group in getattr(self, "_initial_optimizer_groups", [])
+        }
         stats = []
         for group in self.optimizer.param_groups:
             names = sorted(id_to_name[id(parameter)] for parameter in group["params"])
             stats.append(
                 {
                     "name": group.get("name", "unknown"),
-                    "lr": float(group["lr"]),
+                    # Persist the configured initial LR, not the live (warmup-
+                    # adjusted) value; resume validation compares against the
+                    # initial configuration. 持久化配置的初始 LR 而非实时的
+                    # warmup 值；resume 校验与初始配置比较。
+                    "lr": float(initial_lrs.get(group.get("name"), group["lr"])),
                     "weight_decay": float(group.get("weight_decay", 0.0)),
                     "param_count": len(names),
                     "params": names,
