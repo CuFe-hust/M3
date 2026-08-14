@@ -737,6 +737,159 @@ def test_composite_checkpoint_layout_complete(phase2_workspace: dict) -> None:
     assert not ft.checkpoint_complete(partial_dir)
 
 
+def test_verify_adapter_keys_accepts_peft_short_names(phase2_workspace: dict) -> None:
+    """adapter_config target_modules persisted by PEFT as short projection
+    names (e.g. "q_proj") must pass verification against full-path LLM
+    targets (regression: phase2 run crashed at the first checkpoint save).
+    PEFT 以短投影名持久化的 target_modules 必须通过校验（回归：phase2 运行在
+    首次保存 checkpoint 时崩溃）。"""
+    output_dir = phase2_workspace["root"] / "short_name_run"
+    trainer = _build_trainer(phase2_workspace, output_dir)
+    trainer.train(resume_from_checkpoint=None)
+    trainer.save_model()
+    checkpoint_dir = output_dir / "checkpoint-1"
+    adapter_dir = checkpoint_dir / "adapter"
+    manifest = json.loads(
+        (checkpoint_dir / "phase2_training_manifest.json").read_text(encoding="utf-8")
+    )
+    llm_targets = manifest["lora"]["target_modules"]
+    assert len(llm_targets) >= 7
+
+    config_path = adapter_dir / "adapter_config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    short_names = sorted({name.rsplit(".", 1)[-1] for name in llm_targets})
+    config["target_modules"] = short_names
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+
+    # PEFT-style short names pass; key count still matches 2 keys per target
+    meta = ft.verify_adapter_keys(adapter_dir, llm_targets)
+    assert meta["key_count"] == 2 * len(llm_targets)
+    # target_module_count counts full-path parents (one per llm target)
+    assert meta["target_module_count"] == len(llm_targets)
+
+    # a declared module outside the audited LLM projections is rejected
+    config["target_modules"] = sorted(set(short_names) | {"visual_proj"})
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(CheckpointError) as error:
+        ft.verify_adapter_keys(adapter_dir, llm_targets)
+    assert error.value.code == "adapter_key_violation"
+    assert "exceed" in error.value.detail
+
+    # dropping a real LoRA module from the config is rejected as incomplete
+    config["target_modules"] = short_names[:-1]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    with pytest.raises(CheckpointError) as error:
+        ft.verify_adapter_keys(adapter_dir, llm_targets)
+    assert error.value.code == "adapter_key_violation"
+    assert "miss" in error.value.detail
+
+
+# ---------------------------------------------------------------------------
+# 12b. phase-1 merger LoRA adapter seeding (default launch configuration)
+# ---------------------------------------------------------------------------
+
+
+_MERGER_LORA_TARGETS = [
+    "model.visual.merger.linear_fc1",
+    "model.visual.merger.linear_fc2",
+    "model.visual.deepstack_merger_list.0.linear_fc1",
+    "model.visual.deepstack_merger_list.0.linear_fc2",
+    "model.visual.deepstack_merger_list.1.linear_fc1",
+    "model.visual.deepstack_merger_list.1.linear_fc2",
+    "model.visual.deepstack_merger_list.2.linear_fc1",
+    "model.visual.deepstack_merger_list.2.linear_fc2",
+]
+
+
+def _save_merger_lora_adapter(model: FakeQwen, adapter_dir: Path) -> None:
+    """Attach a tiny LoRA to every merger projection of the fake model and
+    persist it as a PEFT adapter directory (phase-1 product stand-in). LoRA B
+    is perturbed so the merge actually changes weights (untrained LoRA B is
+    zero and would merge to an identity).
+    给 fake 模型的每个 merger projection 挂微型 LoRA 并保存为 PEFT adapter
+    目录（phase1 产物的替身）。扰动 lora_B 使合并真正改变权重（未训练的
+    lora_B 全零，合并结果等于恒等）。"""
+    peft_mod = ft._peft()
+    lora_config = peft_mod.LoraConfig(
+        r=2, lora_alpha=4, target_modules=_MERGER_LORA_TARGETS
+    )
+    peft_model = peft_mod.get_peft_model(model, lora_config)
+    with torch.no_grad():
+        for name, parameter in peft_model.named_parameters():
+            if name.endswith("lora_B.default.weight"):
+                parameter.add_(torch.randn_like(parameter) * 0.1)
+    peft_model.save_pretrained(adapter_dir)
+
+
+def test_apply_merger_lora_adapter_merges_only_merger(tmp_path: Path) -> None:
+    """A phase-1 merger LoRA adapter must change only the merger subtrees;
+    LLM and non-merger vision weights stay byte-identical, and the result is
+    a plain model ready for phase-2 freeze/LoRA injection.
+    phase1 merger LoRA adapter 只改变 merger 子树权重；LLM 与非 merger 视觉
+    权重保持不变，合并结果是可直接进入 phase2 冻结/LoRA 注入的普通模型。"""
+    base_model = FakeQwen()
+    before = {
+        name: param.detach().clone() for name, param in base_model.named_parameters()
+    }
+    adapter_dir = tmp_path / "merger_adapter"
+    _save_merger_lora_adapter(FakeQwen(), adapter_dir)
+
+    merged = ft.apply_merger_lora_adapter(base_model, adapter_dir)
+    after = dict(merged.named_parameters())
+    changed = [name for name in before if not torch.equal(before[name], after[name])]
+    assert changed, "merger LoRA adapter changed nothing"
+    assert all("merger" in name for name in changed), changed
+    for name in before:
+        if "merger" not in name:
+            assert torch.equal(before[name], after[name]), name
+    # merged model is a plain nn.Module (no peft wrapper remains)
+    assert not hasattr(merged, "merge_and_unload")
+
+
+def test_apply_merger_lora_adapter_rejects_non_merger_target(tmp_path: Path) -> None:
+    """An adapter declaring an LLM projection target is a hard error: phase-2
+    attaches its own LLM LoRA afterwards, so any seeded LLM LoRA would corrupt
+    the audit contract. 声明 LLM projection target 的 adapter 是硬错误。"""
+    adapter_dir = tmp_path / "adapter"
+    adapter_dir.mkdir()
+    (adapter_dir / "adapter_config.json").write_text(
+        json.dumps(
+            {
+                "peft_type": "LORA",
+                "target_modules": ["model.language_model.layers.0.self_attn.q_proj"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError) as error:
+        ft.apply_merger_lora_adapter(FakeQwen(), adapter_dir)
+    assert "outside merger" in str(error.value)
+
+
+def test_resume_rejects_missing_merger_lora_adapter(phase2_workspace: dict) -> None:
+    """Resuming a run seeded with a merger LoRA adapter requires the same
+    adapter identity; a request without it is a stable refusal.
+    带 merger LoRA adapter 初始化的 run，resume 必须提供同一 adapter 身份。"""
+    output_dir = phase2_workspace["root"] / "adapter_resume_run"
+    trainer = _build_trainer(phase2_workspace, output_dir)
+    trainer.train(resume_from_checkpoint=None)
+    trainer.save_model()
+    trainer.finalize_root_checkpoint()
+    checkpoint_dir = output_dir / "checkpoint-1"
+    context = trainer._test_context
+    ft.validate_resume_checkpoint(checkpoint_dir, context)
+
+    mutated = json.loads(json.dumps(context))
+    mutated["base_model"]["merger_lora_adapter"] = {
+        "config_sha256": "deadbeef",
+        "weights_sha256": "deadbeef",
+        "target_modules": sorted(_MERGER_LORA_TARGETS),
+    }
+    with pytest.raises(ResumeConflictError) as error:
+        ft.validate_resume_checkpoint(checkpoint_dir, mutated)
+    assert any("merger_lora_adapter" in field for field in error.value.fields)
+
+
 # ---------------------------------------------------------------------------
 # 11. merger save / read-back: keys, shapes, dtypes consistent
 # ---------------------------------------------------------------------------

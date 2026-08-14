@@ -177,6 +177,12 @@ class ModelArguments:
         default="Qwen/Qwen3-VL-8B-Instruct",
         metadata={"help": "Hugging Face id or local checkpoint directory."},
     )
+    merger_lora_adapter: str | None = field(
+        default=None,
+        metadata={"help": "Optional phase-1 merger LoRA adapter directory; the "
+                          "adapter is merged into the base weights before "
+                          "phase-2 training starts."},
+    )
     local_files_only: bool = field(
         default=True,
         metadata={"help": "Refuse network access while loading the checkpoint."},
@@ -458,7 +464,52 @@ def load_base_model(model_args: ModelArguments) -> tuple[Any, Any, Any]:
     processor = transformers_mod.AutoProcessor.from_pretrained(
         model_args.model_id, local_files_only=model_args.local_files_only
     )
+    if model_args.merger_lora_adapter:
+        model = apply_merger_lora_adapter(model, model_args.merger_lora_adapter)
     return model, processor, config
+
+
+def apply_merger_lora_adapter(model: Any, adapter_path: str | Path) -> Any:
+    """Load a phase-1 merger LoRA adapter and merge it into the base weights
+    before phase-2 training. The adapter must target only merger modules; any
+    LLM or vision projection target is a hard error, because phase-2 attaches
+    LLM LoRA and trains merger base parameters afterwards (doc 03 section 5).
+    加载 phase1 merger LoRA adapter 并合并进 base 权重。adapter 必须只作用于
+    merger 模块；任何 LLM/视觉投影 target 都是硬错误（phase2 随后要挂 LLM
+    LoRA 并全参训练 merger base 参数）。"""
+    peft_mod = _peft()
+    config_path = Path(adapter_path) / "adapter_config.json"
+    if not config_path.is_file():
+        raise ConfigurationError(f"merger LoRA adapter config missing: {adapter_path}")
+    adapter_config = json.loads(config_path.read_text(encoding="utf-8"))
+    if adapter_config.get("peft_type") != "LORA":
+        raise ConfigurationError(
+            f"merger LoRA adapter must be a PEFT LORA adapter, got "
+            f"{adapter_config.get('peft_type')!r}"
+        )
+
+    roots = locate_roots(model)
+    merger_names = enumerate_merger_names(roots)
+    merger_leaf_names = {
+        name.rsplit(".", 1)[-1]
+        for name, _module in model.named_modules()
+        if _under_any(name, merger_names)
+    }
+    declared_targets = set(adapter_config.get("target_modules") or [])
+    if not declared_targets:
+        raise ConfigurationError("merger LoRA adapter declares no target_modules")
+    for target in sorted(declared_targets):
+        full = target in merger_names or _under_any(target, merger_names)
+        short = target.rsplit(".", 1)[-1] in merger_leaf_names
+        if not (full or short):
+            raise ConfigurationError(
+                f"merger LoRA target outside merger subtrees: {target}"
+            )
+
+    peft_model = peft_mod.PeftModel.from_pretrained(model, str(adapter_path))
+    merged = peft_model.merge_and_unload()
+    logger.info("merged phase-1 merger LoRA adapter into base weights: %s", adapter_path)
+    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -1272,6 +1323,7 @@ def verify_adapter_keys(adapter_dir: str | Path, llm_targets: Sequence[str]) -> 
     with safetensors.safe_open(weights_path, framework="pt") as handle:
         keys = list(handle.keys())
     violations: list[str] = []
+    weight_parents: set[str] = set()
     for key in keys:
         logical = _strip_peft_prefix(key)
         if not _has_lora_segment(logical):
@@ -1280,10 +1332,22 @@ def verify_adapter_keys(adapter_dir: str | Path, llm_targets: Sequence[str]) -> 
         parent = _lora_parent_module(logical)
         if parent not in llm_targets:
             violations.append(f"adapter key outside LLM targets: {key}")
+        weight_parents.add(parent)
     config = json.loads(config_path.read_text(encoding="utf-8"))
     declared_targets = set(config.get("target_modules") or [])
-    if not declared_targets.issubset(set(llm_targets)):
+    # PEFT persists target_modules as short projection names (e.g. "q_proj")
+    # while llm_targets are full module paths; normalize both sides to short
+    # names before comparing so the strict check works for either format.
+    # PEFT 持久化的 target_modules 是短投影名（如 "q_proj"），而 llm_targets
+    # 是完整路径；比较前统一归一化为短名集合，两种格式都保持严格校验。
+    declared_short = {name.rsplit(".", 1)[-1] for name in declared_targets}
+    weight_short = {parent.rsplit(".", 1)[-1] for parent in weight_parents}
+    if not declared_short.issubset(weight_short):
         violations.append("adapter_config target_modules exceed the audited LLM targets")
+    if not weight_short.issubset(declared_short):
+        violations.append(
+            "adapter_config target_modules miss LoRA modules present in adapter weights"
+        )
     if violations:
         raise CheckpointError("adapter_key_violation", "; ".join(violations[:10]))
     return {
@@ -1428,6 +1492,9 @@ def validate_resume_checkpoint(checkpoint_dir: str | Path, context: dict) -> Non
              manifest.get("base_model", {}).get("fingerprint"), mismatches)
     _compare("base_model.revision", context["base_model"].get("revision"),
              manifest.get("base_model", {}).get("revision"), mismatches)
+    _compare("base_model.merger_lora_adapter",
+             context["base_model"].get("merger_lora_adapter"),
+             manifest.get("base_model", {}).get("merger_lora_adapter"), mismatches)
     _compare("processor.fingerprint", context["processor"]["fingerprint"],
              manifest.get("processor", {}).get("fingerprint"), mismatches)
     _compare("data.train_sha256", context["data"]["train_sha256"],
@@ -1527,6 +1594,29 @@ def model_logical_identity(config: Any) -> dict:
     }
 
 
+def merger_lora_adapter_identity(adapter_path: str | Path) -> dict:
+    """Path-independent identity of the phase-1 merger LoRA adapter used to
+    seed the base weights; resume requires the same adapter (a different
+    adapter silently changes the initial weights, which must not happen).
+    用于初始化 base 权重的 phase1 merger LoRA adapter 的无路径身份；resume
+    必须使用同一 adapter（不同 adapter 会静默改变初始权重，绝不允许）。"""
+    adapter_path = Path(adapter_path)
+    config_path = adapter_path / "adapter_config.json"
+    weights_path = adapter_path / "adapter_model.safetensors"
+    for path in (config_path, weights_path):
+        if not path.is_file():
+            raise ConfigurationError(f"merger LoRA adapter file missing: {path}")
+    try:
+        adapter_config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ConfigurationError(f"merger LoRA adapter config unreadable: {config_path}") from error
+    return {
+        "config_sha256": sha256_file(config_path),
+        "weights_sha256": sha256_file(weights_path),
+        "target_modules": sorted(adapter_config.get("target_modules") or []),
+    }
+
+
 def processor_identity(processor: Any) -> dict:
     """Path-independent processor identity: class + tokenizer fingerprint.
     与路径无关的 processor 身份：类名 + tokenizer 指纹。"""
@@ -1595,8 +1685,13 @@ def build_training_context(
         "attn_implementation": model_args.attn_implementation,
         "local_files_only": bool(model_args.local_files_only),
     }
+    base_identity = model_logical_identity(config)
+    if model_args.merger_lora_adapter:
+        base_identity["merger_lora_adapter"] = merger_lora_adapter_identity(
+            model_args.merger_lora_adapter
+        )
     return {
-        "base_model": model_logical_identity(config),
+        "base_model": base_identity,
         "processor": processor_identity(processor),
         "model_id_as_given": model_args.model_id,
         "data": {

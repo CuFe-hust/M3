@@ -57,6 +57,8 @@ CheckpointArguments
 
 ```text
 --model-id
+--merger-lora-adapter             # 可选：phase1 merger LoRA adapter 目录，
+                                  # 训练前合并进 base 权重（默认启动配置使用）
 --local-files-only                 # 默认 true
 --torch-dtype                      # 默认 bfloat16
 --attn-implementation
