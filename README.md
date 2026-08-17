@@ -135,7 +135,7 @@ python -m pip install -e ".[dev]"
 python -m pip install -e ".[change]"
 ```
 
-Change V2 的 SegFormer auxiliary path 使用独立重依赖 extra；默认 V1、纯数学
+Change V3 的 SegFormer auxiliary path 使用独立重依赖 extra；默认仍保持轻量、纯数学
 测试和 core import 不需要它：
 
 ```bash
@@ -235,9 +235,10 @@ SegFormer 可选依赖：
 python -m pip install -e ".[segformer]"
 ```
 
-Change V2 消融配置位于 `configs/change_ablations/`。这些文件是可直接传给
-`--config` 的 partial YAML，覆盖 legacy、low+semantic、low+feature、三路融合、
-PIF robust 和 local-match radius 对照；它们不扩展 evaluation public contract。
+Change V3 消融配置位于 `configs/change_ablations/`。这些文件是可直接传给
+`--config` 的 partial YAML，覆盖 legacy、registration、三路融合与多尺度特征；
+旧的 low+semantic、low+feature 配置仍保留作为对照。Change V3 配置示例位于
+`configs/change_v3.example.yaml`；这些配置不扩展 evaluation public contract。
 
 调用层：
 
@@ -1061,17 +1062,28 @@ change_qa
 
 输入是有序 T1/T2 图对。
 
-主要模块包括：
+Change V3 的主链路是：
 
 ```text
-pair validation
-harmonization
-difference proposal
-preprocess
-review
+validation
+-> global registration + quality gate
+-> radiometric harmonization
+-> deterministic multi-source perception
+-> proposals
+-> evidence-driven Qwen
 ```
 
-无效时相图对会尽可能在模型调用前失败。
+其中 registration 只负责保守的全局几何配准，harmonization 只负责辐射一致化，
+二者是分离的模块。SegFormer（可选）在一次推理中同时提供 semantic probabilities
+和 intermediate/pyramid features；deterministic perception 将 low-level、feature
+residual 与 semantic difference 融合为候选 proposal。Qwen 使用 raw full T1/T2
+与 proposal-local evidence 确认和解释变化，派生图与 mask 只是辅助证据，不能替代原图。
+
+当前 learned change interface 默认关闭，仓库没有提供任何后训练、ChangeHead 或
+Qwen adapter 训练实现。
+
+无效输入、配准质量不足和不可比较的 pair 会尽可能在模型调用前以稳定状态失败或
+按配置受控回退；registration 失败不会被静默当作成功。
 
 NumPy/OpenCV 相关能力属于：
 

@@ -24,6 +24,10 @@ from agents.change.schema import (
     HarmonizationDecision,
     HarmonizationMetrics,
     PairValidationReport,
+    RegistrationDecision,
+    RegistrationMetrics,
+    RegistrationReport,
+    SemanticTransition,
 )
 from agents.change.settings import (
     AgentChangeSettings,
@@ -326,7 +330,81 @@ def test_run_harmonized_only(tmp_path: Path) -> None:
     asyncio.run(agent.run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
     assert payload["input_mode"] == "harmonized_only"
-    assert _manifest_roles(client) == ["harmonized_t1", "harmonized_t2"]
+    assert _manifest_roles(client) == [
+        "raw_full_t1",
+        "raw_full_t2",
+        "harmonized_t1",
+        "harmonized_t2",
+    ]
+
+
+def test_raw_authority_is_present_even_when_derived_evidence_is_available(
+    tmp_path: Path,
+) -> None:
+    client = _RecordingClient()
+    asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    payload = _last_user_payload(client)
+    assert payload["image_manifest"][0:2] == [
+        {"index": "0", "role": "raw_full_t1"},
+        {"index": "1", "role": "raw_full_t2"},
+    ]
+    assert payload["evidence_audit"]["raw_authority_attached"] is True
+
+
+def test_registered_global_evidence_has_explicit_role(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    preprocess = _stub_preprocess(tmp_path / "artifacts")
+    registered_path = tmp_path / "artifacts" / "change_preprocess" / "registered_t2.png"
+    Image.new("RGB", (32, 32), (2, 3, 4)).save(registered_path)
+    preprocess = preprocess.model_copy(
+        update={
+            "artifact_files": {
+                **preprocess.artifact_files,
+                "registered_t2": "change_preprocess/registered_t2.png",
+            },
+            "registration": RegistrationReport(
+                decision=RegistrationDecision(
+                    version="global_registration_v1",
+                    status="applied",
+                    model="affine",
+                    reason_codes=["REGISTRATION_APPLIED"],
+                    used_for_comparison=True,
+                ),
+                metrics=RegistrationMetrics(
+                    match_count=20,
+                    inlier_count=18,
+                    inlier_ratio=0.9,
+                    median_reprojection_error=1.2,
+                    p95_reprojection_error=2.4,
+                    overlap_ratio=0.95,
+                ),
+                transform_matrix=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+                source_size_t1=[32, 32],
+                source_size_t2=[32, 32],
+                output_size=[32, 32],
+            ),
+        }
+    )
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: preprocess,
+    )
+    client = _RecordingClient()
+    asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    assert _manifest_roles(client)[0:3] == [
+        "raw_full_t1",
+        "raw_full_t2",
+        "registered_t2",
+    ]
+    payload = _last_user_payload(client)
+    assert payload["registration"]["quality"] == {
+        "inlier_ratio": 0.9,
+        "median_reprojection_error": 1.2,
+        "overlap_ratio": 0.95,
+    }
 
 
 def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
@@ -345,8 +423,8 @@ def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
         "harmonized_t1",
         "harmonized_t2",
         "proposal_overlay",
-        "change_000:change_000_raw_t1",
-        "change_000:change_000_raw_t2",
+        "change_000:reference_t1_crop",
+        "change_000:t2_raw_fallback_crop",
     ]
 
 
@@ -377,8 +455,8 @@ def test_rejected_transform_keeps_raw_and_attaches_proposal_evidence(
         "raw_full_t1",
         "raw_full_t2",
         "proposal_overlay",
-        "change_000:change_000_raw_t1",
-        "change_000:change_000_raw_t2",
+        "change_000:reference_t1_crop",
+        "change_000:t2_raw_fallback_crop",
     ]
     assert len(client.calls) == 1
     assert budget.qwen_calls == 1
@@ -402,6 +480,42 @@ def test_manifest_ordering_is_stable_and_indexed(tmp_path: Path, monkeypatch) ->
     assert roles[0] == "raw_full_t1" and roles[1] == "raw_full_t2"
 
 
+def test_proposals_are_ranked_by_score_times_reliability_and_truncated(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = AgentChangeSettings(
+        proposals=ChangeProposalSettings(max_proposals=1)
+    )
+    low_score_high_reliability = _proposal("change_000", 0.9).model_copy(
+        update={"reliability": {"registration": 0.1}}
+    )
+    high_score_low_reliability = _proposal("change_001", 0.8).model_copy(
+        update={"reliability": {"registration": 1.0}}
+    )
+    preprocess = _stub_preprocess(
+        tmp_path / "artifacts",
+        proposals=[low_score_high_reliability, high_score_low_reliability],
+    )
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: preprocess,
+    )
+    client = _RecordingClient()
+    asyncio.run(_agent(client, settings=settings).run(_sample(tmp_path), _context(tmp_path)))
+    roles = _manifest_roles(client)
+    assert "change_001:reference_t1_crop" in roles
+    assert "change_000:reference_t1_crop" not in roles
+    payload = _last_user_payload(client)
+    assert payload["evidence_audit"]["proposal_count_total"] == 2
+    assert payload["evidence_audit"]["proposal_count_attached"] == 1
+    assert {item["proposal_id"] for item in payload["proposals"]} == {
+        "change_000",
+        "change_001",
+    }
+
+
 # ── 载荷 / payload ─────────────────────────────────────────────────────────
 
 
@@ -423,6 +537,54 @@ def test_payload_contract(tmp_path: Path, monkeypatch) -> None:
     assert payload["harmonization"]["used_for_proposal"] is True
     assert payload["proposals"][0]["proposal_id"] == "change_000"
     assert payload["proposals"][0]["score"] == 0.8
+    assert set(payload["registration"]) >= {
+        "registration_status",
+        "registration_model",
+        "quality",
+    }
+    assert "effective_weights" in payload["perception"]
+    assert "semantic_transition_note" in payload
+    serialized = json.dumps(payload, ensure_ascii=False)
+    assert str(tmp_path) not in serialized
+    assert payload["perception"]["training_capture"] == {
+        "enabled": False,
+        "save_dense_features": False,
+        "dense_features_saved": False,
+    }
+
+
+def test_vlm_payload_and_trace_are_compact_json_safe(tmp_path: Path, monkeypatch) -> None:
+    proposal = _proposal().model_copy(
+        update={
+            "semantic_transition": SemanticTransition(
+                from_class="vegetation",
+                from_confidence=0.91,
+                to_class="building",
+                to_confidence=0.88,
+                changed_class="building",
+                support_ratio=0.94,
+                transition_confidence=0.86,
+            ),
+            "component_scores": {"low_level": 0.4, "feature": 0.8},
+            "reliability": {"registration": 0.9, "semantic": 0.8},
+        }
+    )
+    preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[proposal])
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: preprocess,
+    )
+    client = _RecordingClient()
+    execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+
+    payload = _last_user_payload(client)
+    assert payload["proposals"][0]["semantic_transition"]["from_class"] == "vegetation"
+    assert payload["proposals"][0]["semantic_transition"]["to_class"] == "building"
+    trace_json = json.dumps(execution.trace, ensure_ascii=False)
+    assert "base64" not in trace_json.casefold()
+    assert str(tmp_path) not in trace_json
+    assert "numpy" not in trace_json.casefold()
     assert "empty_proposals_instruction" in payload
     # Ground truth never leaks. / ground truth 绝不泄漏。
     assert "ground_truth" not in payload
@@ -508,6 +670,80 @@ def test_model_call_error_propagates_unmasked(tmp_path: Path, monkeypatch) -> No
         asyncio.run(_agent(_BoomClient()).run(_sample(tmp_path), _context(tmp_path)))
 
 
+def test_request_hash_changes_when_proposal_payload_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _stub_preprocess(tmp_path / "first" / "artifacts", proposals=[_proposal(score=0.8)])
+    second = _stub_preprocess(tmp_path / "second" / "artifacts", proposals=[_proposal(score=0.7)])
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: first,
+    )
+    first_client = _RecordingClient()
+    first_root = tmp_path / "first"
+    asyncio.run(_agent(first_client).run(_sample(first_root), _context(first_root)))
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: second,
+    )
+    second_client = _RecordingClient()
+    second_root = tmp_path / "second"
+    asyncio.run(_agent(second_client).run(_sample(second_root), _context(second_root)))
+    assert first_client.calls[0]["request_hash"] != second_client.calls[0]["request_hash"]
+
+
+def test_request_hash_changes_when_registration_payload_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _stub_preprocess(tmp_path / "first" / "artifacts")
+    second_base = _stub_preprocess(tmp_path / "second" / "artifacts")
+    second = second_base.model_copy(
+        update={
+            "registration": RegistrationReport(
+                decision=RegistrationDecision(
+                    version="global_registration_v1",
+                    status="rejected",
+                    model="none",
+                    reason_codes=["REGISTRATION_LOW_INLIER_RATIO"],
+                    used_for_comparison=False,
+                ),
+                metrics=RegistrationMetrics(
+                    match_count=4,
+                    inlier_count=1,
+                    inlier_ratio=0.25,
+                    median_reprojection_error=8.0,
+                    p95_reprojection_error=12.0,
+                    overlap_ratio=0.8,
+                ),
+                source_size_t1=[64, 64],
+                source_size_t2=[64, 64],
+                output_size=[64, 64],
+            )
+        }
+    )
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: first,
+    )
+    first_client = _RecordingClient()
+    first_root = tmp_path / "first"
+    asyncio.run(_agent(first_client).run(_sample(first_root), _context(first_root)))
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: second,
+    )
+    second_client = _RecordingClient()
+    second_root = tmp_path / "second"
+    asyncio.run(_agent(second_client).run(_sample(second_root), _context(second_root)))
+    assert first_client.calls[0]["request_hash"] != second_client.calls[0]["request_hash"]
+
+
 # ── trace 与边界 / trace and boundaries ────────────────────────────────────
 
 
@@ -548,6 +784,8 @@ def test_agent_has_no_judge_evaluation_or_dataset_branch() -> None:
     assert "spacers_agent" not in source
     assert "ground_truth" not in source
     assert "apply_" not in source
+    assert "torch" not in source.casefold()
+    assert "post_training" not in source.casefold()
 
 
 def test_import_agent_does_not_load_legacy_packages() -> None:

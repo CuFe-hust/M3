@@ -51,6 +51,24 @@ def review_result(
     if appearance_only:
         warnings.append("APPEARANCE_CHANGE_NOT_SEMANTIC_EVIDENCE")
     geometry = dict(result.geometry)
+    referenced_ids = geometry.get("proposal_ids")
+    if isinstance(referenced_ids, list):
+        known_ids = {item.proposal_id for item in proposals}
+        unknown_ids = [
+            str(item) for item in referenced_ids if str(item) not in known_ids
+        ]
+        if unknown_ids:
+            warnings.append("EVIDENCE_REFERENCES_UNKNOWN_PROPOSAL")
+    for evidence in result.evidence_items:
+        image_id = evidence.image_id
+        if not isinstance(image_id, str):
+            continue
+        proposal_id = image_id.split(":", 1)[0]
+        if ":" in image_id and proposal_id not in {item.proposal_id for item in proposals}:
+            warnings.append("EVIDENCE_REFERENCES_UNKNOWN_PROPOSAL")
+        if any(token in image_id.casefold() for token in ("invalid", "non_overlap", "non-overlap")):
+            warnings.append("EVIDENCE_REFERENCES_INVALID_OVERLAP")
+    warnings = list(dict.fromkeys(warnings))
     geometry.update(
         {
             "change_review": {

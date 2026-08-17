@@ -1,0 +1,15 @@
+agents:
+  change:
+    registration:
+      enabled: true
+    semantic:
+      enabled: true
+      feature_stages: [1, 2, 3]
+      feature_stage_weights:
+        1: 0.40
+        2: 0.35
+        3: 0.25
+    proposals:
+      fusion_low_level_weight: 0.25
+      fusion_feature_weight: 0.50
+      fusion_semantic_weight: 0.25

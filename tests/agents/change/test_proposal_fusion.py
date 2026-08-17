@@ -9,9 +9,16 @@ import pytest
 import agents.change.proposal_fusion as proposal_fusion_module
 from agents.change.proposal_fusion import (
     PROPOSAL_FUSION_VERSION,
+    compute_reliabilities,
     fuse_change_proposals,
 )
-from agents.change.settings import ChangeProposalSettings
+from agents.change.schema import (
+    HarmonizationDecision,
+    RegistrationDecision,
+    RegistrationMetrics,
+    RegistrationReport,
+)
+from agents.change.settings import ChangeProposalSettings, ChangeReliabilitySettings
 
 
 def _settings(**overrides: object) -> ChangeProposalSettings:
@@ -227,6 +234,85 @@ def test_missing_component_weights_are_renormalized_over_available_maps() -> Non
         {"low_level": 1 / 3, "feature": 2 / 3}
     )
     assert result.diagnostics["fallback_reason"] == "SEMANTIC_UNAVAILABLE"
+
+
+def test_reliability_modulates_base_weights_without_changing_default_weights() -> None:
+    low = np.full((32, 32), 0.2, dtype=np.float32)
+    feature = np.full((32, 32), 0.8, dtype=np.float32)
+    semantic = np.full((32, 32), 0.8, dtype=np.float32)
+
+    result = fuse_change_proposals(
+        low,
+        feature,
+        semantic,
+        np.ones((32, 32), dtype=np.uint8),
+        _settings(),
+        reliability={
+            "low_level": 0.1,
+            "feature": 1.0,
+            "semantic": 1.0,
+            "registration": 0.25,
+        },
+    )
+
+    assert result.diagnostics["reliability"]["registration"] == pytest.approx(0.25)
+    assert result.diagnostics["effective_weights"]["low_level"] < 0.25
+    assert sum(result.diagnostics["effective_weights"].values()) == pytest.approx(1.0)
+
+
+def test_low_quality_registration_reduces_registration_reliability() -> None:
+    report = RegistrationReport(
+        decision=RegistrationDecision(
+            version="global_registration_v1",
+            status="applied",
+            model="affine",
+            reason_codes=["REGISTRATION_APPLIED"],
+            used_for_comparison=True,
+        ),
+        metrics=RegistrationMetrics(
+            match_count=20,
+            inlier_count=4,
+            inlier_ratio=0.20,
+            median_reprojection_error=8.0,
+            overlap_ratio=0.50,
+        ),
+        transform_matrix=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+    )
+    reliability, diagnostics = compute_reliabilities(
+        registration_report=report,
+        feature_diagnostics={"pif_feature_cells": 64, "median_score_pif": 0.0},
+        semantic_diagnostics={"mean_confidence": 0.9},
+        harmonization_decision=None,
+        settings=ChangeReliabilitySettings(),
+    )
+
+    assert reliability["registration"] < reliability["semantic"]
+    assert diagnostics["raw"]["registration"] < 0.5
+
+
+def test_invalid_overlap_is_a_hard_mask_for_threshold_and_components() -> None:
+    low, feature, semantic = _maps(32)
+    low[:, :] = 1.0
+    feature[:, :] = 1.0
+    semantic[:, :] = 1.0
+    valid = np.zeros((32, 32), dtype=bool)
+    valid[8:24, 8:24] = True
+
+    result = fuse_change_proposals(
+        low,
+        feature,
+        semantic,
+        np.ones((32, 32), dtype=np.uint8),
+        _settings(),
+        valid_overlap_mask=valid,
+    )
+
+    assert not bool(np.any(result.binary_change_mask[~valid]))
+    assert result.diagnostics["valid_overlap_ratio"] == pytest.approx(0.25)
+    assert all(
+        valid[proposal.pixel_box[1] : proposal.pixel_box[3], proposal.pixel_box[0] : proposal.pixel_box[2]].any()
+        for proposal in result.proposals
+    )
 
 
 @pytest.mark.parametrize(

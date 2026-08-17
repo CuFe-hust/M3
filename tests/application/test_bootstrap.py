@@ -634,6 +634,17 @@ def test_disabled_change_semantic_ignores_injected_dense_client(tmp_path: Path) 
     assert getattr(change_agent, "_semantic_client") is None
 
 
+def test_learned_change_client_is_composition_root_injection_only(tmp_path: Path) -> None:
+    learned = object()
+    components = _assemble(
+        tmp_path,
+        qwen_client=_FakeQwenClient(),
+        learned_change_client=learned,
+    )
+    change_agent = components.agent_registry.get("change_agent")
+    assert getattr(change_agent, "_learned_change_client") is learned
+
+
 def test_import_application_has_no_side_effects(tmp_path: Path, monkeypatch) -> None:
     """Importing the application package must not create models, read configs,
     or touch the filesystem. 导入 application 包不得创建模型、读取配置或触碰

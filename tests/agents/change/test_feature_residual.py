@@ -12,6 +12,7 @@ import agents.change.feature_residual as feature_residual_module
 from agents.change.feature_residual import (
     FEATURE_RESIDUAL_VERSION,
     compute_feature_residual,
+    compute_multiscale_feature_residual,
 )
 
 
@@ -34,6 +35,46 @@ def test_identical_features_have_near_zero_residual() -> None:
     assert float(np.max(result.score_map)) < 1e-6
     assert result.diagnostics["alignment_status"] == "aligned"
     assert result.diagnostics["version"] == FEATURE_RESIDUAL_VERSION
+
+
+def test_multiscale_residual_is_deterministic_and_reports_stage_diagnostics() -> None:
+    rng = np.random.default_rng(121)
+    first = {
+        1: rng.normal(size=(8, 16, 16)).astype(np.float32),
+        2: rng.normal(size=(12, 8, 8)).astype(np.float32),
+        3: rng.normal(size=(16, 4, 4)).astype(np.float32),
+    }
+    second = {stage: value.copy() for stage, value in first.items()}
+    pif = _full_pif(64, 64)
+    kwargs = {
+        "feature_stages": (1, 2, 3),
+        "feature_stage_weights": {1: 0.4, 2: 0.35, 3: 0.25},
+        "image_size": (64, 64),
+        "min_pif_feature_cells": 4,
+        "local_match_radius": 1,
+    }
+    first_result = compute_multiscale_feature_residual(first, second, pif, **kwargs)
+    second_result = compute_multiscale_feature_residual(first, second, pif, **kwargs)
+
+    np.testing.assert_array_equal(first_result.score_map, second_result.score_map)
+    assert first_result.diagnostics["effective_stages"] == [1, 2, 3]
+    assert first_result.diagnostics["missing_stages"] == []
+    assert [item["stage"] for item in first_result.diagnostics["per_stage"]] == [1, 2, 3]
+
+
+def test_multiscale_residual_reports_missing_stage_without_fabricating_features() -> None:
+    first = {1: _features(shape=(4, 8, 8))}
+    second = {1: first[1].copy()}
+    result = compute_multiscale_feature_residual(
+        first,
+        second,
+        _full_pif(32, 32),
+        feature_stages=(1, 2),
+        image_size=(32, 32),
+        min_pif_feature_cells=4,
+    )
+    assert result.diagnostics["effective_stages"] == [1]
+    assert result.diagnostics["missing_stages"] == [2]
 
 
 def test_per_channel_shift_and_scale_are_removed_by_robust_normalization() -> None:

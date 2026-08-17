@@ -1,6 +1,6 @@
 agents:
   change:
     registration:
-      enabled: false
+      enabled: true
     semantic:
       enabled: false

@@ -26,6 +26,7 @@ class SemanticDifferenceResult:
 
     score_map: Any
     diagnostics: dict[str, object]
+    valid_mask: Any | None = None
 
 
 def compute_semantic_difference(
@@ -34,6 +35,7 @@ def compute_semantic_difference(
     *,
     confidence_floor: float = 0.45,
     epsilon: float = 1e-6,
+    valid_mask: Any | None = None,
 ) -> SemanticDifferenceResult:
     """Compute normalized Jensen-Shannon divergence weighted by confidence."""
 
@@ -77,6 +79,8 @@ def compute_semantic_difference(
     score_map = np.clip(js_divergence * effective_confidence, 0.0, 1.0).astype(
         np.float32
     )
+    comparison_valid_mask = _resize_valid_mask(valid_mask, score_map.shape, np=np)
+    score_map[~comparison_valid_mask] = 0.0
 
     changed_top_class_fraction = float(
         np.mean(np.argmax(first, axis=0) != np.argmax(second, axis=0))
@@ -88,7 +92,35 @@ def compute_semantic_difference(
         "p95_js": float(np.percentile(js_divergence, 95)),
         "version": SEMANTIC_DIFFERENCE_VERSION,
     }
-    return SemanticDifferenceResult(score_map=score_map, diagnostics=diagnostics)
+    if valid_mask is not None:
+        diagnostics.update(
+            {
+                "valid_pixel_fraction": float(np.mean(comparison_valid_mask)),
+                "invalid_pixel_fraction": float(1.0 - np.mean(comparison_valid_mask)),
+            }
+        )
+    return SemanticDifferenceResult(
+        score_map=score_map,
+        diagnostics=diagnostics,
+        valid_mask=comparison_valid_mask,
+    )
+
+
+def _resize_valid_mask(valid_mask: Any | None, shape: tuple[int, int], *, np: Any) -> Any:
+    """Resize an image-grid validity mask with deterministic nearest sampling."""
+
+    height, width = shape
+    if valid_mask is None:
+        return np.ones((height, width), dtype=bool)
+    mask = np.asarray(valid_mask)
+    if mask.ndim != 2 or any(int(value) <= 0 for value in mask.shape):
+        raise ValueError("SEMANTIC_DIFFERENCE_VALID_MASK_SHAPE_INVALID")
+    if mask.shape == (height, width):
+        return mask.astype(bool, copy=False)
+    source_height, source_width = mask.shape
+    rows = np.minimum((np.arange(height) * source_height // height), source_height - 1)
+    columns = np.minimum((np.arange(width) * source_width // width), source_width - 1)
+    return mask.astype(bool, copy=False)[rows[:, None], columns[None, :]]
 
 
 def _validate_probabilities(

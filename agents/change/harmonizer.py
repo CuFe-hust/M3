@@ -76,12 +76,28 @@ class PairHarmonizer:
                 # 无效校准通过 CALIBRATION_NOT_AVAILABLE 保持可见。
                 self.settings = settings.model_copy(update={"calibration_file": None})
 
-    def run(self, t1: np.ndarray, t2: np.ndarray) -> HarmonizationCandidate:
+    def run(
+        self,
+        t1: np.ndarray,
+        t2: np.ndarray,
+        *,
+        valid_mask: np.ndarray | None = None,
+    ) -> HarmonizationCandidate:
         cv2 = _require_cv2()
         np = _require_numpy()
         raw1, raw2 = t1.copy(), t2.copy()
-        mask = estimate_pif_mask(raw1, raw2, self.settings)
-        ratio = float(np.mean(mask > 0))
+        overlap = _normalize_valid_mask(valid_mask, raw1.shape[:2], np=np)
+        if valid_mask is None:
+            mask = estimate_pif_mask(raw1, raw2, self.settings)
+        else:
+            mask = estimate_pif_mask(
+                raw1,
+                raw2,
+                self.settings,
+                valid_mask=overlap,
+            )
+        valid_pixels = int(np.count_nonzero(overlap))
+        ratio = float(np.count_nonzero(mask) / valid_pixels) if valid_pixels else 0.0
         calibration_available = bool(
             self.settings.calibration_file and Path(self.settings.calibration_file).is_file()
         )
@@ -138,9 +154,11 @@ class PairHarmonizer:
             out1[..., channel] = lab1[..., channel] * a1 + b1
             out2[..., channel] = lab2[..., channel] * a2 + b2
 
+        clipped1 = np.any((out1 <= 0) | (out1 >= 255), axis=2)
+        clipped2 = np.any((out2 <= 0) | (out2 >= 255), axis=2)
         clipped_ratio = float(
-            np.mean((out1 <= 0) | (out1 >= 255)) + np.mean((out2 <= 0) | (out2 >= 255))
-        ) * 0.5
+            np.mean(clipped1[overlap]) + np.mean(clipped2[overlap])
+        ) * 0.5 if valid_pixels else 1.0
         color1 = cv2.cvtColor(np.clip(out1, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
         color2 = cv2.cvtColor(np.clip(out2, 0, 255).astype(np.uint8), cv2.COLOR_LAB2RGB)
         (
@@ -151,7 +169,7 @@ class PairHarmonizer:
             sharpness_ratio_before,
             sharpness_ratio_after,
         ) = _match_sharpness(color1, color2, self.settings)
-        metrics = compute_metrics(raw1, raw2, h1, h2, mask)
+        metrics = compute_metrics(raw1, raw2, h1, h2, mask, valid_mask=overlap)
         summary: dict[str, Any] = {
             "lab_transforms": transforms,
             "sharpness_adjustment_used": sharpness_used,
@@ -202,12 +220,16 @@ def estimate_pif_mask(
     t1: np.ndarray,
     t2: np.ndarray,
     settings: ChangeHarmonizationSettings,
+    valid_mask: np.ndarray | None = None,
 ) -> np.ndarray:
     """Estimate PIF once from raw inputs; callers reuse this exact mask.
     仅从原图估计一次 PIF，调用方复用同一掩膜。"""
 
     cv2 = _require_cv2()
     np = _require_numpy()
+    overlap = _normalize_valid_mask(valid_mask, t1.shape[:2], np=np)
+    if not bool(np.any(overlap)):
+        return np.zeros(t1.shape[:2], dtype=np.uint8)
     g1 = cv2.cvtColor(t1, cv2.COLOR_RGB2GRAY).astype(np.float32)
     g2 = cv2.cvtColor(t2, cv2.COLOR_RGB2GRAY).astype(np.float32)
     ksize = settings.pif_blur_ksize | 1
@@ -221,13 +243,21 @@ def estimate_pif_mask(
         cv2.Sobel(g2, cv2.CV_32F, 1, 0), cv2.Sobel(g2, cv2.CV_32F, 0, 1)
     )
     grad_diff = np.abs(grad1 - grad2)
-    low_thr = float(np.median(low_diff) + settings.pif_diff_k * _robust_mad(low_diff))
-    grad_thr = float(np.median(grad_diff) + settings.pif_grad_k * _robust_mad(grad_diff))
+    low_values = low_diff[overlap]
+    grad_values = grad_diff[overlap]
+    low_thr = float(np.median(low_values) + settings.pif_diff_k * _robust_mad(low_values))
+    grad_thr = float(np.median(grad_values) + settings.pif_grad_k * _robust_mad(grad_values))
     valid = (g1 > 10) & (g1 < 245) & (g2 > 10) & (g2 < 245)
-    mask = ((low_diff <= low_thr) & (grad_diff <= grad_thr) & valid).astype(np.uint8) * 255
+    mask = (
+        (low_diff <= low_thr)
+        & (grad_diff <= grad_thr)
+        & valid
+        & overlap
+    ).astype(np.uint8) * 255
     kernel = np.ones((3, 3), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    return cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    return (mask * overlap.astype(np.uint8)).astype(np.uint8)
 
 
 def compute_metrics(
@@ -236,6 +266,7 @@ def compute_metrics(
     out1: np.ndarray,
     out2: np.ndarray,
     mask: np.ndarray,
+    valid_mask: np.ndarray | None = None,
 ) -> HarmonizationMetrics:
     """Compute before/after metrics with the same raw-derived PIF mask.
     使用同一个原图 PIF 掩膜计算前后指标。"""
@@ -243,23 +274,34 @@ def compute_metrics(
     np = _require_numpy()
     a, b = _gray(raw1), _gray(raw2)
     x, y = _gray(out1), _gray(out2)
-    selected = mask > 0
+    valid = _normalize_valid_mask(valid_mask, mask.shape, np=np)
+    selected = (mask > 0) & valid
+    valid_pixels = int(np.count_nonzero(valid))
+    pif_pixels = int(np.count_nonzero(selected))
+    valid_a = a[valid]
+    valid_b = b[valid]
+    valid_x = x[valid]
+    valid_y = y[valid]
+    pif_a = a[selected]
+    pif_b = b[selected]
+    pif_x = x[selected]
+    pif_y = y[selected]
     return HarmonizationMetrics(
-        pif_ratio=float(selected.mean()),
-        mad_full_before=float(np.mean(np.abs(a - b))),
-        mad_full_after=float(np.mean(np.abs(x - y))),
-        mad_pif_before=float(np.mean(np.abs(a[selected] - b[selected]))),
-        mad_pif_after=float(np.mean(np.abs(x[selected] - y[selected]))),
-        corr_full_before=_corr(a, b),
-        corr_full_after=_corr(x, y),
-        corr_pif_before=_corr(a[selected], b[selected]),
-        corr_pif_after=_corr(x[selected], y[selected]),
-        pct_diff_gt20_before=float(np.mean(np.abs(a - b) > 20)),
-        pct_diff_gt20_after=float(np.mean(np.abs(x - y) > 20)),
-        lapvar_t1_before=_lapvar(raw1),
-        lapvar_t2_before=_lapvar(raw2),
-        lapvar_t1_after=_lapvar(out1),
-        lapvar_t2_after=_lapvar(out2),
+        pif_ratio=float(pif_pixels / valid_pixels) if valid_pixels else 0.0,
+        mad_full_before=float(np.mean(np.abs(valid_a - valid_b))) if valid_pixels else 0.0,
+        mad_full_after=float(np.mean(np.abs(valid_x - valid_y))) if valid_pixels else 0.0,
+        mad_pif_before=float(np.mean(np.abs(pif_a - pif_b))) if pif_pixels else 0.0,
+        mad_pif_after=float(np.mean(np.abs(pif_x - pif_y))) if pif_pixels else 0.0,
+        corr_full_before=_corr(valid_a, valid_b),
+        corr_full_after=_corr(valid_x, valid_y),
+        corr_pif_before=_corr(pif_a, pif_b),
+        corr_pif_after=_corr(pif_x, pif_y),
+        pct_diff_gt20_before=float(np.mean(np.abs(valid_a - valid_b) > 20)) if valid_pixels else 0.0,
+        pct_diff_gt20_after=float(np.mean(np.abs(valid_x - valid_y) > 20)) if valid_pixels else 0.0,
+        lapvar_t1_before=_lapvar(raw1, valid_mask=valid),
+        lapvar_t2_before=_lapvar(raw2, valid_mask=valid),
+        lapvar_t1_after=_lapvar(out1, valid_mask=valid),
+        lapvar_t2_after=_lapvar(out2, valid_mask=valid),
     )
 
 
@@ -312,15 +354,29 @@ def _gray(image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(image, cv2.COLOR_RGB2GRAY).astype(np.float32)
 
 
-def _lapvar(image: np.ndarray) -> float:
+def _lapvar(image: np.ndarray, *, valid_mask: np.ndarray | None = None) -> float:
     cv2 = _require_cv2()
-    return float(cv2.Laplacian(_gray(image), cv2.CV_32F).var())
+    np = _require_numpy()
+    values = cv2.Laplacian(_gray(image), cv2.CV_32F)
+    if valid_mask is not None:
+        selected = _normalize_valid_mask(valid_mask, values.shape, np=np)
+        values = values[selected]
+    return float(values.var()) if values.size else 0.0
 
 
 def _robust_mad(values: np.ndarray) -> float:
     np = _require_numpy()
     median = np.median(values)
     return float(np.median(np.abs(values - median)) + 1e-6)
+
+
+def _normalize_valid_mask(value: np.ndarray | None, shape: tuple[int, int], *, np: Any) -> np.ndarray:
+    if value is None:
+        return np.ones(shape, dtype=bool)
+    mask = np.asarray(value)
+    if mask.ndim != 2 or mask.shape != shape:
+        raise ValueError("registration valid mask shape does not match image")
+    return mask != 0
 
 
 def _corr(first: np.ndarray, second: np.ndarray) -> float | None:

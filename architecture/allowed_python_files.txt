@@ -84,12 +84,14 @@ agents/change/schema.py
 agents/change/settings.py
 agents/change/agent.py
 agents/change/pair_validator.py
+agents/change/registration.py
 agents/change/harmonizer.py
 agents/change/difference_proposal.py
 agents/change/preprocess.py
 agents/change/reviewer.py
 agents/change/feature_residual.py
 agents/change/semantic_difference.py
+agents/change/semantic_transition.py
 agents/change/proposal_fusion.py
 agents/change/perception.py
 agents/grounding/__init__.py

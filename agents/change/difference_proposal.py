@@ -43,6 +43,7 @@ def propose_changes(
     t1: Any,
     t2: Any,
     settings: ChangeProposalSettings,
+    valid_mask: Any | None = None,
 ) -> tuple[Any, list[ChangeProposal]]:
     """Return normalized scores and connected-component proposals.
     返回归一化得分与连通域候选。"""
@@ -66,6 +67,9 @@ def propose_changes(
         + settings.structure_weight * structure
     ) / weights
     score = np.clip(score, 0.0, 1.0).astype(np.float32)
+    comparison_valid = _resize_valid_mask(valid_mask, score.shape, np=np)
+    if comparison_valid is not None:
+        score[~comparison_valid] = 0.0
     if float(score.max()) <= 1e-8:
         return score, []
     threshold = float(np.quantile(score, settings.threshold_quantile))
@@ -73,6 +77,8 @@ def propose_changes(
         return score, []
     binary = (score >= threshold).astype(np.uint8) * 255
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    if comparison_valid is not None:
+        binary[~comparison_valid] = 0
     count, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     height, width = score.shape
     image_area = float(width * height)
@@ -110,6 +116,21 @@ def propose_changes(
             )
         )
     return score, proposals
+
+
+def _resize_valid_mask(value: Any | None, shape: tuple[int, int], *, np: Any) -> Any | None:
+    if value is None:
+        return None
+    mask = np.asarray(value)
+    if mask.ndim != 2 or any(int(dimension) <= 0 for dimension in mask.shape):
+        raise ValueError("CHANGE_PROPOSAL_VALID_MASK_INVALID")
+    if mask.shape == shape:
+        return mask.astype(bool, copy=False)
+    rows = np.minimum(np.arange(shape[0]) * mask.shape[0] // shape[0], mask.shape[0] - 1)
+    columns = np.minimum(
+        np.arange(shape[1]) * mask.shape[1] // shape[1], mask.shape[1] - 1
+    )
+    return mask.astype(bool, copy=False)[rows[:, None], columns[None, :]]
 
 
 def render_overlay(image: Any, proposals: list[ChangeProposal]) -> Any:

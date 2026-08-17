@@ -18,7 +18,7 @@ _BINDINGS: dict[str, tuple[str, str]] = {
     "count_localize": ("count_localize_v1.md", "v1"),
     "target": ("target_parse_v1.md", "v1"),
     "zero_review": ("missing_point_review_v3.md", "v3"),
-    "change": ("change_dual_path_v2.md", "v2"),
+    "change": ("change_dual_path_v3.md", "v3"),
     "general": ("general_vqa_v3.md", "v3"),
     "grounding": ("general_vqa_v3.md", "v3"),
     "caption": ("caption_v1.md", "v1"),

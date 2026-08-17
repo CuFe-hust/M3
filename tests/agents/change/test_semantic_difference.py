@@ -11,6 +11,7 @@ from agents.change.semantic_difference import (
     SEMANTIC_DIFFERENCE_VERSION,
     compute_semantic_difference,
 )
+from agents.change.semantic_transition import infer_semantic_transition
 
 
 def _probability_grid(values: list[float], *, height: int = 3, width: int = 4) -> np.ndarray:
@@ -43,6 +44,82 @@ def test_confident_class_switch_has_high_difference() -> None:
     assert float(np.min(result.score_map)) > 0.6
     assert result.diagnostics["changed_top_class_fraction"] == 1.0
     assert float(result.diagnostics["median_js"]) > 0.7
+
+
+def test_invalid_registration_overlap_is_zeroed_and_audited() -> None:
+    first = _probability_grid([0.95, 0.05], height=4, width=4)
+    second = _probability_grid([0.05, 0.95], height=4, width=4)
+    valid = np.ones((4, 4), dtype=bool)
+    valid[0, :] = False
+
+    result = compute_semantic_difference(first, second, valid_mask=valid)
+
+    assert bool(np.all(result.score_map[0] == 0.0))
+    assert float(np.max(result.score_map[1:])) > 0.6
+    assert result.valid_mask is not None
+    assert result.diagnostics["invalid_pixel_fraction"] == pytest.approx(0.25)
+
+
+def test_semantic_transition_aggregates_a_clear_class_change() -> None:
+    first = _probability_grid([0.90, 0.08, 0.02], height=4, width=4)
+    second = _probability_grid([0.05, 0.90, 0.05], height=4, width=4)
+
+    result = infer_semantic_transition(
+        first,
+        second,
+        np.ones((4, 4), dtype=np.uint8),
+        ("vegetation", "building", "road"),
+    )
+
+    assert result.from_class == "vegetation"
+    assert result.to_class == "building"
+    assert result.changed_class == "building"
+    assert result.support_ratio == pytest.approx(1.0)
+    assert result.transition_confidence > 0.8
+
+
+def test_semantic_transition_clear_no_change_has_no_changed_class() -> None:
+    probabilities = _probability_grid([0.90, 0.08, 0.02], height=4, width=4)
+
+    result = infer_semantic_transition(
+        probabilities,
+        probabilities.copy(),
+        np.ones((4, 4), dtype=np.uint8),
+        ("vegetation", "building", "road"),
+    )
+
+    assert result.from_class == result.to_class == "vegetation"
+    assert result.changed_class is None
+
+
+def test_semantic_transition_low_confidence_is_unknown() -> None:
+    first = _probability_grid([0.34, 0.33, 0.33], height=4, width=4)
+    second = _probability_grid([0.33, 0.34, 0.33], height=4, width=4)
+
+    result = infer_semantic_transition(
+        first,
+        second,
+        np.ones((4, 4), dtype=np.uint8),
+        ("vegetation", "building", "road"),
+    )
+
+    assert result.from_class == "unknown"
+    assert result.to_class == "unknown"
+    assert result.changed_class == "unknown"
+
+
+def test_semantic_transition_empty_component_is_unknown() -> None:
+    probabilities = _probability_grid([0.8, 0.2], height=4, width=4)
+
+    result = infer_semantic_transition(
+        probabilities,
+        probabilities.copy(),
+        np.zeros((4, 4), dtype=np.uint8),
+        ("unchanged", "changed"),
+    )
+
+    assert result.from_class == result.to_class == result.changed_class == "unknown"
+    assert result.support_ratio == 0.0
 
 
 def test_uncertain_argmax_switch_is_strongly_suppressed() -> None:

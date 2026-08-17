@@ -19,6 +19,7 @@ from PIL import Image
 
 from models.base import (
     DenseSemanticOutput,
+    DenseSemanticPyramidOutput,
     ModelAssetHashMismatchError,
     ModelAssetMissingError,
 )
@@ -666,6 +667,45 @@ def test_tiled_dense_inference_averages_without_holes_and_normalizes(
     assert result.feature_stride == (7 / 2, 5.0)
     assert result.diagnostics["tile_count"] == 4
     assert result.weights_sha256 == settings.weights_sha256
+
+
+def test_tiled_dense_pyramid_uses_one_runner_call_per_tile_and_keeps_real_grids(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[int, ...]] = []
+
+    def pyramid_runner(model, processor, tile, device, stages, channels):
+        calls.append(tuple(stages))
+        probabilities = np.full((2, 2, 2), 0.5, dtype=np.float32)
+        features = {
+            1: np.full((3, 2, 2), 1.0, dtype=np.float32),
+            2: np.full((5, 1, 1), 2.0, dtype=np.float32),
+        }
+        return probabilities, features
+
+    settings = _settings(tmp_path / "checkpoint")
+    client = SegFormerTransformersClient(
+        settings,
+        _CLASS_MAP,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        dense_pyramid_tile_runner=pyramid_runner,
+    )
+    result = client.infer_pyramid(
+        Image.new("RGB", (7, 5)),
+        tile_size=4,
+        tile_overlap=1,
+        feature_stages=(1, 2),
+    )
+
+    assert isinstance(result, DenseSemanticPyramidOutput)
+    assert calls == [(1, 2)] * 4
+    assert result.probabilities.dtype == np.float32
+    assert result.features_by_stage[1].dtype == np.float32
+    assert result.features_by_stage[2].dtype == np.float32
+    assert result.features_by_stage[1].shape == (3, 2, 4)
+    assert result.features_by_stage[2].shape == (5, 1, 2)
+    assert result.feature_strides_by_stage == {1: (7 / 4, 5 / 2), 2: (7 / 2, 5.0)}
+    assert result.diagnostics["feature_stages"] == [1, 2]
 
 
 def test_classes_file_is_authoritative_and_oem_placeholders_are_not_exposed(

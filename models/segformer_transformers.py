@@ -20,6 +20,7 @@ from PIL import Image
 
 from models.base import (
     DenseSemanticOutput,
+    DenseSemanticPyramidOutput,
     ModelCacheIdentity,
     validate_local_model_asset,
 )
@@ -141,6 +142,10 @@ class _CheckpointMetadata:
 RuntimeLoader = Callable[[SegFormerSettings], tuple[Any, Any, str]]
 InferenceRunner = Callable[[Any, Any, Image.Image, str, int], Any]
 DenseTileRunner = Callable[[Any, Any, Image.Image, str, int, int], tuple[Any, Any]]
+DensePyramidTileRunner = Callable[
+    [Any, Any, Image.Image, str, tuple[int, ...], int],
+    tuple[Any, Mapping[int, Any]],
+]
 
 _PLACEHOLDER_LABEL = re.compile(r"^LABEL_\d+$", re.IGNORECASE)
 _SHARED_RUNTIMES: dict[tuple[object, ...], tuple[Any, Any, str, bool]] = {}
@@ -797,7 +802,28 @@ def _run_dense_transformers_tile(
     feature_stage: int,
     expected_channels: int,
 ) -> tuple[Any, Any]:
-    """Return one tile's native-grid probabilities and hidden features."""
+    """Return one tile's native-grid probabilities and one hidden feature stage."""
+
+    probabilities, features_by_stage = _run_dense_transformers_pyramid_tile(
+        model,
+        processor,
+        tile,
+        device,
+        (feature_stage,),
+        expected_channels,
+    )
+    return probabilities, features_by_stage[feature_stage]
+
+
+def _run_dense_transformers_pyramid_tile(
+    model: Any,
+    processor: Any,
+    tile: Image.Image,
+    device: str,
+    feature_stages: tuple[int, ...],
+    expected_channels: int,
+) -> tuple[Any, Mapping[int, Any]]:
+    """Run one forward pass and return all proven requested BCHW stages."""
 
     try:
         import torch
@@ -823,17 +849,21 @@ def _run_dense_transformers_tile(
             or int(shape[3]) <= 0
         ):
             raise SegFormerInferenceError("SEGFORMER_LOGITS_SHAPE_INVALID")
-        features = _extract_feature_grid(
-            getattr(outputs, "hidden_states", None),
-            feature_stage,
-        )
+        hidden_states = getattr(outputs, "hidden_states", None)
+        features = {
+            stage: _extract_feature_grid(hidden_states, stage)
+            for stage in feature_stages
+        }
         probabilities = torch.softmax(logits, dim=1)[0]
 
     def cpu_float32(value: Any) -> Any:
         detached = value.detach() if hasattr(value, "detach") else value
         return detached.to("cpu").float().numpy()
 
-    return cpu_float32(probabilities), cpu_float32(features)
+    return (
+        cpu_float32(probabilities),
+        {stage: cpu_float32(features[stage]) for stage in feature_stages},
+    )
 
 
 def _float32_chw(value: Any, *, name: str) -> Any:
@@ -930,11 +960,13 @@ class SegFormerTransformersClient(SegFormerRuntime):
         loader: RuntimeLoader | None = None,
         inference_runner: InferenceRunner | None = None,
         dense_tile_runner: DenseTileRunner | None = None,
+        dense_pyramid_tile_runner: DensePyramidTileRunner | None = None,
     ) -> None:
         self._authoritative_labels = (
             _verified_external_labels(id_to_label) if id_to_label is not None else None
         )
         self._dense_tile_runner = dense_tile_runner
+        self._dense_pyramid_tile_runner = dense_pyramid_tile_runner
         self._cache_identity = ModelCacheIdentity(
             model=settings.logical_model_id,
             generation={
@@ -1067,6 +1099,165 @@ class SegFormerTransformersClient(SegFormerRuntime):
                 "tile_overlap": tile_overlap,
                 "feature_stage": feature_stage,
                 "device": self._resolved_device,
+            },
+            weights_sha256=self._actual_weights_sha256,
+        )
+
+    def infer_pyramid(
+        self,
+        image: Any,
+        *,
+        tile_size: int,
+        tile_overlap: int,
+        feature_stages: tuple[int, ...],
+    ) -> DenseSemanticPyramidOutput:
+        """Infer probabilities and requested native feature stages in one pass/tile."""
+
+        normalized = (
+            read_normalized_image(image)
+            if isinstance(image, Path)
+            else image.convert("RGB")
+            if isinstance(image, Image.Image)
+            else None
+        )
+        if normalized is None:
+            raise TypeError("image must be a PIL image or pathlib.Path")
+        stages = tuple(dict.fromkeys(feature_stages))
+        if not stages or any(
+            isinstance(stage, bool) or not isinstance(stage, int) or stage < 0
+            for stage in stages
+        ):
+            raise SegFormerInferenceError("SEGFORMER_FEATURE_STAGES_INVALID")
+        coordinates = _tile_grid(
+            normalized.width,
+            normalized.height,
+            tile_size=tile_size,
+            tile_overlap=tile_overlap,
+        )
+        self.load()
+        assert self._model is not None
+        assert self._processor is not None
+        assert self._metadata is not None
+        assert self._resolved_device is not None
+        expected_channels = len(self._metadata.labels)
+        pyramid_runner = self._dense_pyramid_tile_runner
+        if pyramid_runner is None and len(stages) == 1 and self._dense_tile_runner is not None:
+            # An injected V2 runner can serve a one-stage compatibility request;
+            # it must not be looped over to counterfeit a pyramid.
+            def compatibility_runner(
+                model: Any,
+                processor: Any,
+                tile: Image.Image,
+                device: str,
+                requested_stages: tuple[int, ...],
+                channels: int,
+            ) -> tuple[Any, Mapping[int, Any]]:
+                probabilities, features = self._dense_tile_runner(
+                    model,
+                    processor,
+                    tile,
+                    device,
+                    requested_stages[0],
+                    channels,
+                )
+                return probabilities, {requested_stages[0]: features}
+
+            pyramid_runner = compatibility_runner
+        if pyramid_runner is None:
+            pyramid_runner = _run_dense_transformers_pyramid_tile
+
+        probability_tiles: list[tuple[tuple[int, int, int, int], Any]] = []
+        feature_tiles: dict[int, list[tuple[tuple[int, int, int, int], Any]]] = {
+            stage: [] for stage in stages
+        }
+        for box in coordinates:
+            tile = normalized.crop(box)
+            try:
+                probabilities, features_by_stage = pyramid_runner(
+                    self._model,
+                    self._processor,
+                    tile,
+                    self._resolved_device,
+                    stages,
+                    expected_channels,
+                )
+            except SegFormerError:
+                raise
+            except Exception as error:
+                raise SegFormerInferenceError(
+                    f"SegFormer dense pyramid tile inference failed: {type(error).__name__}"
+                ) from None
+            if not isinstance(features_by_stage, Mapping):
+                raise SegFormerInferenceError("SEGFORMER_PYRAMID_FEATURES_INVALID")
+            if any(stage not in features_by_stage for stage in stages):
+                raise SegFormerInferenceError("SEGFORMER_PYRAMID_STAGE_MISSING")
+            probability_tiles.append((box, probabilities))
+            for stage in stages:
+                feature_tiles[stage].append((box, features_by_stage[stage]))
+
+        probabilities = _stitch_dense_tiles(
+            probability_tiles,
+            image_width=normalized.width,
+            image_height=normalized.height,
+            name="PROBABILITIES",
+        )
+        if int(probabilities.shape[0]) != expected_channels:
+            raise SegFormerInferenceError("SEGFORMER_PROBABILITIES_CHANNEL_MISMATCH")
+        features_by_stage = {
+            stage: _stitch_dense_tiles(
+                feature_tiles[stage],
+                image_width=normalized.width,
+                image_height=normalized.height,
+                name=f"FEATURES_STAGE_{stage}",
+            )
+            for stage in stages
+        }
+        import numpy as np
+
+        if np.any(probabilities < -1e-6):
+            raise SegFormerInferenceError("SEGFORMER_PROBABILITIES_NEGATIVE")
+        probabilities = np.maximum(probabilities, 0.0).astype(np.float32, copy=False)
+        class_sum = probabilities.sum(axis=0, keepdims=True)
+        if not np.isfinite(class_sum).all() or np.any(class_sum <= 0):
+            raise SegFormerInferenceError("SEGFORMER_PROBABILITIES_INVALID_SUM")
+        probabilities = np.ascontiguousarray(probabilities / class_sum, dtype=np.float32)
+
+        if self._authoritative_labels is not None:
+            class_names = self._authoritative_labels
+        elif self.settings.classes_filename is not None:
+            class_names = self._metadata.labels
+        else:
+            class_names = ()
+        if class_names and len(class_names) != int(probabilities.shape[0]):
+            raise SegFormerMetadataError(
+                "authoritative class count differs from probability channels"
+            )
+        assert self._actual_weights_sha256 is not None
+        strides = {
+            stage: (
+                normalized.width / int(features_by_stage[stage].shape[2]),
+                normalized.height / int(features_by_stage[stage].shape[1]),
+            )
+            for stage in stages
+        }
+        return DenseSemanticPyramidOutput(
+            probabilities=probabilities,
+            features_by_stage=features_by_stage,
+            semantic_stride=(
+                normalized.width / int(probabilities.shape[2]),
+                normalized.height / int(probabilities.shape[1]),
+            ),
+            feature_strides_by_stage=strides,
+            original_size=normalized.size,
+            class_names=class_names,
+            diagnostics={
+                "backend": "segformer_transformers",
+                "tile_count": len(coordinates),
+                "tile_size": tile_size,
+                "tile_overlap": tile_overlap,
+                "feature_stages": list(stages),
+                "device": self._resolved_device,
+                "pyramid_status": "native_hidden_states",
             },
             weights_sha256=self._actual_weights_sha256,
         )

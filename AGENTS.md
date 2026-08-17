@@ -618,6 +618,20 @@ request hash 必须继续覆盖影响结果的关键输入，例如：
 
 不得通过减少 hash 输入制造错误 cache hit。
 
+### 10.4 Change Agent 专项护栏
+
+Change pipeline 必须保持以下边界：
+
+- 不按 dataset name 写特殊分支；行为只能由输入 metadata、图像、settings 与模型能力决定；
+- registration 只允许受质量门控的 global identity/similarity/affine/homography，不得引入
+  dense optical flow、TPS、elastic 或其他高自由度 non-rigid over-registration；
+- registration 负责几何配准，harmonization 负责辐射一致化，二者不得互相偷偷估计对方的变换；
+- raw T1/T2 永远保留并作为最终语义 authority，派生图、mask 和 proposal 只是辅助证据；
+- 新的 semantic、change head 或其他模型能力必须通过 `models` protocol，并由
+  `application` composition root 注入，Agent 不知道 checkpoint 路径或具体 backend；
+- `agents/` 不得 import `post_training/`，本轮不实现训练、loss、optimizer、Trainer 或 LoRA 代码；
+- core import 与 offline tests 不得强制安装或加载 torch/transformers 等可选重依赖。
+
 ---
 
 ## 11. 网络、下载与外部服务

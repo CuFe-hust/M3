@@ -20,10 +20,17 @@ from agents.change.settings import (
     AgentChangeSettings,
     ChangeHarmonizationSettings,
     ChangeProposalSettings,
+    ChangeLearnedChangeSettings,
     ChangeSemanticSettings,
 )
 from agents.errors import OptionalDependencyMissingError
-from models.base import DenseSemanticOutput, ModelAssetMissingError, ModelCacheIdentity
+from models.base import (
+    DenseSemanticOutput,
+    DenseSemanticPyramidOutput,
+    LearnedChangeOutput,
+    ModelAssetMissingError,
+    ModelCacheIdentity,
+)
 
 
 def _prepared() -> ChangePreparedPair:
@@ -133,6 +140,48 @@ class _RaisingDenseClient(_DenseClient):
         raise self.error
 
 
+class _PyramidClient(_DenseClient):
+    def infer_pyramid(self, image: Any, **kwargs: Any) -> DenseSemanticPyramidOutput:
+        self.calls.append({"image": image, **kwargs})
+        output = self.outputs[len(self.calls) - 1]
+        return DenseSemanticPyramidOutput(
+            probabilities=output.probabilities,
+            features_by_stage={1: output.features, 2: output.features.copy()},
+            semantic_stride=output.semantic_stride,
+            feature_strides_by_stage={1: output.feature_stride, 2: output.feature_stride},
+            original_size=output.original_size,
+            class_names=output.class_names,
+            diagnostics={"pyramid": True},
+            weights_sha256=output.weights_sha256,
+        )
+
+
+class _LearnedClient:
+    def __init__(self, score_map: np.ndarray | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.score_map = score_map if score_map is not None else np.full(
+            (16, 16), 0.2, dtype=np.float32
+        )
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return ModelCacheIdentity(
+            model="learned-change-head-test",
+            generation={"backend": "fake"},
+            client_version="head-v1",
+            revision="adapter-0",
+        )
+
+    def infer(self, *, first, second, valid_mask) -> LearnedChangeOutput:
+        self.calls.append(
+            {"first": first, "second": second, "valid_mask": valid_mask}
+        )
+        return LearnedChangeOutput(
+            score_map=self.score_map,
+            diagnostics={"head": "frozen-feature-test"},
+        )
+
+
 class SegFormerInferenceError(RuntimeError):
     """Concrete-backend-shaped fake without importing the concrete backend."""
 
@@ -179,6 +228,21 @@ def test_enabled_pipeline_calls_two_frames_and_returns_v2_proposals() -> None:
         "semantic",
         "fused",
     }
+
+
+def test_multiscale_pipeline_uses_pyramid_contract_and_records_stages() -> None:
+    settings = _settings()
+    settings.semantic.feature_stages = (1, 2)
+    settings.semantic.feature_stage_weights = {1: 0.6, 2: 0.4}
+    client = _PyramidClient()
+
+    result = ChangePerceptionPipeline(client, settings).run(_prepared())
+
+    assert len(client.calls) == 2
+    assert all(call["feature_stages"] == (1, 2) for call in client.calls)
+    assert result.diagnostics["multiscale_enabled"] is True
+    assert result.diagnostics["feature_stages"] == [1, 2]
+    assert result.diagnostics["feature_residual"]["effective_stages"] == [1, 2]
     assert result.component_masks
 
 
@@ -190,6 +254,64 @@ def test_client_missing_falls_back_to_legacy_with_stable_reason() -> None:
     assert result.diagnostics["proposal_source"] == "difference_map_v1"
     assert result.diagnostics["pif_used_for_feature_alignment"] is False
     assert result.diagnostics["pif_used_for_threshold"] is False
+
+
+def test_learned_change_is_disabled_without_a_client() -> None:
+    client = _DenseClient()
+
+    result = ChangePerceptionPipeline(client, _settings()).run(_prepared())
+
+    assert result.diagnostics["learned_change"]["status"] == "disabled"
+    assert result.diagnostics["learned_change"]["available"] is False
+    assert "learned" not in result.diagnostics.get("fusion", {}).get(
+        "available_components", []
+    )
+
+
+def test_enabled_learned_change_without_client_falls_back_to_rule_branch() -> None:
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(enabled=True, fusion_weight=0.2)
+
+    result = ChangePerceptionPipeline(_DenseClient(), settings).run(_prepared())
+
+    assert result.diagnostics["semantic_status"] == "success"
+    assert result.diagnostics["learned_change"] == {
+        "enabled": True,
+        "status": "fallback",
+        "available": False,
+        "reason_codes": ["LEARNED_CHANGE_CLIENT_MISSING"],
+        "fusion_weight": 0.2,
+    }
+    assert "learned" in result.diagnostics["fusion"]["missing_components"]
+
+
+def test_enabled_learned_change_client_is_injected_without_training_runtime() -> None:
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(enabled=True, fusion_weight=0.2)
+    learned = _LearnedClient()
+
+    result = ChangePerceptionPipeline(
+        _DenseClient(), settings, learned_change_client=learned
+    ).run(_prepared())
+
+    assert len(learned.calls) == 1
+    assert isinstance(learned.calls[0]["first"], DenseSemanticPyramidOutput)
+    assert learned.calls[0]["first"].features_by_stage[1].shape == (8, 16, 16)
+    assert result.diagnostics["learned_change"]["status"] == "available"
+    assert result.diagnostics["learned_change"]["model"] == "learned-change-head-test"
+    assert "learned" in result.diagnostics["fusion"]["available_components"]
+
+
+def test_enabled_learned_change_fail_policy_is_strict() -> None:
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(
+        enabled=True,
+        fusion_weight=0.2,
+        failure_policy="fail",
+    )
+
+    with pytest.raises(ChangePerceptionError, match="LEARNED_CHANGE_CLIENT_MISSING"):
+        ChangePerceptionPipeline(_DenseClient(), settings).run(_prepared())
 
 
 def test_invalid_pif_falls_back_before_dense_inference() -> None:

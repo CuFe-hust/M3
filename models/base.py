@@ -439,6 +439,38 @@ class DenseSemanticOutput:
     weights_sha256: str | None = None
 
 
+@dataclass(frozen=True)
+class DenseSemanticPyramidOutput:
+    """Dense semantics plus the native feature grids requested by the caller.
+
+    This extends the V2 dense contract without changing it.  Feature stages
+    are keyed by their model hidden-state index and remain CPU-side values so
+    callers can combine deterministic evidence without importing a backend.
+    """
+
+    probabilities: Any
+    features_by_stage: Mapping[int, Any]
+    semantic_stride: tuple[float, float]
+    feature_strides_by_stage: Mapping[int, tuple[float, float]]
+    original_size: tuple[int, int]
+    class_names: tuple[str, ...]
+    diagnostics: Mapping[str, Any]
+    weights_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class LearnedChangeOutput:
+    """Optional learned-change score output.
+
+    The contract intentionally carries only an inference score map and small
+    JSON-safe diagnostics.  A concrete future head owns its runtime and
+    weights; this shared module imports neither torch nor a training stack.
+    """
+
+    score_map: Any
+    diagnostics: Mapping[str, Any]
+
+
 class DenseSemanticClient(Protocol):
     """Abstract image-to-dense-semantics model contract."""
 
@@ -453,6 +485,37 @@ class DenseSemanticClient(Protocol):
         tile_overlap: int,
         feature_stage: int,
     ) -> DenseSemanticOutput: ...
+
+
+class DenseSemanticPyramidClient(Protocol):
+    """Optional multi-stage dense-semantic client contract."""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity: ...
+
+    def infer_pyramid(
+        self,
+        image: Any,
+        *,
+        tile_size: int,
+        tile_overlap: int,
+        feature_stages: tuple[int, ...],
+    ) -> DenseSemanticPyramidOutput: ...
+
+
+class LearnedChangeClient(Protocol):
+    """Optional frozen-feature change-head inference contract."""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity: ...
+
+    def infer(
+        self,
+        *,
+        first: DenseSemanticPyramidOutput,
+        second: DenseSemanticPyramidOutput,
+        valid_mask: Any,
+    ) -> LearnedChangeOutput: ...
 
 
 class SemanticSegmentationOutput(Protocol):

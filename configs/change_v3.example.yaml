@@ -1,0 +1,16 @@
+# Change V3 example overlay. Merge this partial YAML over the normal AppSettings.
+# Registration is conservative global geometry only; raw T1/T2 remain untouched.
+agents:
+  change:
+    registration:
+      enabled: true
+      quality_policy: fallback_raw
+    harmonization:
+      enabled: true
+    semantic:
+      enabled: false
+      feature_stages: [1, 2, 3]
+    learned_change:
+      enabled: false
+      fusion_weight: 0.0
+      failure_policy: fallback_rule

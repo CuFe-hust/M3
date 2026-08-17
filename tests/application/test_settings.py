@@ -272,7 +272,8 @@ def test_snapshot_preserves_host_paths_with_forward_slashes() -> None:
 @pytest.mark.parametrize(
     ("filename", "expected"),
     [
-        ("legacy.yaml", {"enabled": False}),
+        ("legacy.yaml", {"enabled": False, "registration": False}),
+        ("registration_only.yaml", {"enabled": False, "registration": True}),
         (
             "low_semantic.yaml",
             {"enabled": True, "feature_weight": 0.0, "semantic_weight": 0.5},
@@ -284,6 +285,14 @@ def test_snapshot_preserves_host_paths_with_forward_slashes() -> None:
         (
             "three_source.yaml",
             {"enabled": True, "feature_weight": 0.5, "semantic_weight": 0.25},
+        ),
+        (
+            "registered_three_source.yaml",
+            {"enabled": True, "registration": True, "feature_weight": 0.5, "semantic_weight": 0.25},
+        ),
+        (
+            "multiscale_registered.yaml",
+            {"enabled": True, "registration": True, "feature_stages": (1, 2, 3)},
         ),
         ("pif_robust.yaml", {"enabled": True, "threshold_mode": "pif_robust"}),
         ("local_match_r0.yaml", {"enabled": True, "radius": 0}),
@@ -300,6 +309,8 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
     )
 
     assert settings.agents.change.semantic.enabled is expected["enabled"]
+    if "registration" in expected:
+        assert settings.agents.change.registration.enabled is expected["registration"]
     if "feature_weight" in expected:
         assert settings.agents.change.proposals.fusion_feature_weight == pytest.approx(
             expected["feature_weight"]
@@ -315,6 +326,8 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
         )
     if "radius" in expected:
         assert settings.agents.change.semantic.local_match_radius == expected["radius"]
+    if "feature_stages" in expected:
+        assert settings.agents.change.semantic.feature_stages == expected["feature_stages"]
 
 
 # ── visual planning group (C7, 14A2) / 视觉规划配置组 ─────────────────────

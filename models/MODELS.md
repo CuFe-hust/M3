@@ -30,3 +30,25 @@ Change V2 is calibration-qualified with Transformers 5.14.1. The SegFormer
 extras constrain Transformers to `>=5.14.1,<5.15`; other releases are not
 calibration-qualified. Hidden-state geometry remains fail-closed: an
 unresolvable token sequence is never reshaped by guessing a square grid.
+
+## Change V3 semantic runtime contract
+
+The SegFormer runtime is an optional deterministic evidence provider. Its logical
+model identity, revision and verified weights SHA256 remain the cache/audit
+identity; physical checkpoint paths are supplied by application configuration and
+must not be written into public trace payloads.
+
+When the backend supports the requested hidden states, the runtime can expose a
+`DenseSemanticPyramidClient` result containing:
+
+- class probabilities in the same class order for T1 and T2;
+- `features_by_stage` for the explicitly configured feature stages;
+- the real probability and feature grid strides;
+- original image size, class names and JSON-safe diagnostics.
+
+The existing `DenseSemanticClient.infer()` contract remains supported for legacy
+callers. A requested stage that is unavailable is reported as missing/fallback; the
+runtime must not fabricate a feature grid or silently claim multi-scale success.
+No SegFormer weights listed here have been trained or fine-tuned for this project's
+Change task. The current ChangeHead interface is disabled by default and no
+post-training implementation is included.

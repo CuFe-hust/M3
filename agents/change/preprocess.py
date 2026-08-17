@@ -18,11 +18,13 @@ from PIL import Image
 from agents.change.difference_proposal import propose_changes, render_overlay
 from agents.change.harmonizer import PairHarmonizer
 from agents.change.pair_validator import PairValidator
+from agents.change.registration import RegisteredPair, RegistrationError, register_pair
 from agents.change.schema import (
     ChangePreprocessResult,
     ChangeProposal,
     HarmonizationDecision,
     PairValidationReport,
+    RegistrationReport,
 )
 from agents.change.settings import AgentChangeSettings
 from agents.errors import OptionalDependencyMissingError
@@ -59,6 +61,10 @@ class ChangePreparedPair:
     validation: PairValidationReport
     decision: HarmonizationDecision
     transform_summary: dict[str, object]
+    registered_t1: Any = None
+    registered_t2: Any = None
+    registration_valid_mask: Any = None
+    registration_report: RegistrationReport | None = None
 
 
 def prepare_pair(
@@ -73,7 +79,11 @@ def prepare_pair(
     np = _require_numpy()
     output = artifact_dir / "change_preprocess"
     output.mkdir(parents=True, exist_ok=True)
-    validated = PairValidator().validate(sample, data_root=data_root)
+    validated = PairValidator().validate(
+        sample,
+        data_root=data_root,
+        registration_enabled=settings.registration.enabled,
+    )
     _write_json(
         output / "validation_report.json",
         validated.report.model_dump(mode="json"),
@@ -95,52 +105,145 @@ def prepare_pair(
                 used_for_proposal=False,
             ),
             transform_summary={},
+            registered_t1=None,
+            registered_t2=None,
+            registration_valid_mask=np.zeros((0, 0), dtype=bool),
+            registration_report=None,
         )
         _publish_preparation_audit(prepared, output)
         return prepared
 
     raw1 = validated.t1.copy()
     raw2 = validated.t2.copy()
-    transform_summary: dict[str, object] = {}
-    if settings.harmonization.enabled:
-        try:
-            candidate = PairHarmonizer(settings.harmonization).run(raw1, raw2)
-            decision = candidate.decision
-            comparison1 = (
-                candidate.t1.copy() if decision.status == "applied" else raw1.copy()
+    try:
+        registered: RegisteredPair = register_pair(
+            raw1,
+            raw2,
+            metadata=sample.metadata,
+            settings=settings.registration,
+        )
+    except RegistrationError:
+        # ``quality_policy=fail`` is intentionally not converted into a
+        # successful raw fallback. The agent boundary turns this stable code
+        # into an AgentExecutionError before any VLM call.
+        raise
+
+    registration_report = registered.report
+    if settings.registration.save_artifacts:
+        _write_json(
+            output / "registration_report.json",
+            registration_report.model_dump(mode="json"),
+        )
+    if (
+        registration_report.decision.used_for_comparison
+        and registered.t1.shape == registered.t2.shape == raw1.shape
+    ):
+        geometry_t1 = registered.t1.copy()
+        geometry_t2 = registered.t2.copy()
+        registration_mask = registered.valid_overlap_mask.copy()
+        geometry_comparable = True
+    elif raw1.shape == raw2.shape:
+        # Same-size raw fallback preserves the legacy proposal path, but the
+        # zero mask makes it impossible for PIF/feature gates to claim the
+        # unregistered border is valid evidence.
+        geometry_t1 = raw1.copy()
+        geometry_t2 = raw2.copy()
+        registration_mask = np.zeros(raw1.shape[:2], dtype=bool)
+        geometry_comparable = True
+    else:
+        geometry_t1 = None
+        geometry_t2 = None
+        registration_mask = np.zeros(raw1.shape[:2], dtype=bool)
+        geometry_comparable = False
+
+    transform_summary: dict[str, object] = {
+        "registration_status": registration_report.decision.status,
+        "registration_model": registration_report.decision.model,
+        "registration_used_for_comparison": registration_report.decision.used_for_comparison,
+        "registration_reason_codes": list(registration_report.decision.reason_codes),
+        "registration_artifacts_saved": settings.registration.save_artifacts,
+    }
+    if geometry_comparable and settings.harmonization.enabled:
+        if registration_report.decision.used_for_comparison:
+            harmonization_mask = registration_mask
+        else:
+            # The legacy same-size path is comparable but deliberately has no
+            # registration quality mask; use the complete raw canvas only
+            # when registration is explicitly disabled.
+            harmonization_mask = (
+                np.ones(raw1.shape[:2], dtype=bool)
+                if not settings.registration.enabled
+                else np.zeros(raw1.shape[:2], dtype=bool)
             )
-            comparison2 = (
-                candidate.t2.copy() if decision.status == "applied" else raw2.copy()
-            )
-            pif_mask = candidate.pif_mask.copy()
-            pif_valid = candidate.pif_valid
-            transform_summary = dict(candidate.transform_summary)
-        except Exception as error:
-            comparison1, comparison2 = raw1.copy(), raw2.copy()
+        if np.any(harmonization_mask):
+            try:
+                harmonizer = PairHarmonizer(settings.harmonization)
+                if bool(np.all(harmonization_mask)):
+                    candidate = harmonizer.run(geometry_t1, geometry_t2)
+                else:
+                    candidate = harmonizer.run(
+                        geometry_t1,
+                        geometry_t2,
+                        valid_mask=harmonization_mask,
+                    )
+                decision = candidate.decision
+                comparison1 = candidate.t1.copy()
+                comparison2 = candidate.t2.copy()
+                pif_mask = candidate.pif_mask.copy()
+                pif_valid = candidate.pif_valid
+                transform_summary.update(dict(candidate.transform_summary))
+            except Exception as error:
+                comparison1, comparison2 = geometry_t1.copy(), geometry_t2.copy()
+                pif_mask = np.zeros(raw1.shape[:2], dtype=np.uint8)
+                pif_valid = False
+                decision = HarmonizationDecision(
+                    version=settings.harmonization.version,
+                    status="failed",
+                    reason_codes=["FAILED_HARMONIZATION_EXCEPTION", "RAW_FALLBACK_USED"],
+                    metrics=None,
+                    used_for_proposal=False,
+                )
+                transform_summary.update(
+                    {"error_type": type(error).__name__, "sharpness_adjustment_used": False}
+                )
+        else:
+            comparison1, comparison2 = geometry_t1.copy(), geometry_t2.copy()
             pif_mask = np.zeros(raw1.shape[:2], dtype=np.uint8)
             pif_valid = False
             decision = HarmonizationDecision(
                 version=settings.harmonization.version,
-                status="failed",
-                reason_codes=[
-                    "FAILED_HARMONIZATION_EXCEPTION",
-                    "RAW_FALLBACK_USED",
-                ],
+                status="skipped",
+                reason_codes=["SKIPPED_REGISTRATION_UNUSABLE", "RAW_FALLBACK_USED"],
                 metrics=None,
                 used_for_proposal=False,
             )
-            transform_summary = {
-                "error_type": type(error).__name__,
-                "sharpness_adjustment_used": False,
-            }
-    else:
-        comparison1, comparison2 = raw1.copy(), raw2.copy()
+    elif geometry_comparable:
+        comparison1, comparison2 = geometry_t1.copy(), geometry_t2.copy()
         pif_mask = np.zeros(raw1.shape[:2], dtype=np.uint8)
         pif_valid = False
         decision = HarmonizationDecision(
             version=settings.harmonization.version,
             status="skipped",
-            reason_codes=["SKIPPED_DISABLED", "RAW_FALLBACK_USED"],
+            reason_codes=[
+                "SKIPPED_DISABLED",
+                *([] if settings.registration.enabled else ["REGISTRATION_DISABLED"]),
+                "RAW_FALLBACK_USED",
+            ],
+            metrics=None,
+            used_for_proposal=False,
+        )
+    else:
+        comparison1, comparison2 = None, None
+        pif_mask = np.zeros(raw1.shape[:2], dtype=np.uint8)
+        pif_valid = False
+        decision = HarmonizationDecision(
+            version=settings.harmonization.version,
+            status="skipped",
+            reason_codes=[
+                *(["SKIPPED_INVALID_PAIR"] if not validated.report.same_size else []),
+                "SKIPPED_REGISTRATION_UNUSABLE",
+                "RAW_FALLBACK_USED",
+            ],
             metrics=None,
             used_for_proposal=False,
         )
@@ -155,9 +258,38 @@ def prepare_pair(
         validation=validated.report,
         decision=decision,
         transform_summary=transform_summary,
+        registered_t1=geometry_t1,
+        registered_t2=geometry_t2,
+        registration_valid_mask=registration_mask,
+        registration_report=registration_report,
     )
+    _publish_registration_artifacts(prepared, output, settings=settings)
     _publish_preparation_audit(prepared, output)
     return prepared
+
+
+def _publish_registration_artifacts(
+    prepared: ChangePreparedPair,
+    output: Path,
+    *,
+    settings: AgentChangeSettings,
+) -> None:
+    """Publish registration-only artifacts without exposing raw replacements."""
+
+    if prepared.registration_report is None or not settings.registration.save_artifacts:
+        return
+    np = _require_numpy()
+    report = prepared.registration_report
+    if (
+        report.decision.used_for_comparison
+        and report.decision.model != "identity"
+        and prepared.registered_t2 is not None
+    ):
+        _write_image(output / "registered_t2.png", prepared.registered_t2)
+        _write_image(
+            output / "registration_overlap_mask.png",
+            prepared.registration_valid_mask.astype(np.uint8) * 255,
+        )
 
 
 def preprocess_pair(
@@ -171,7 +303,12 @@ def preprocess_pair(
 
     np = _require_numpy()
     prepared = prepare_pair(sample, settings, artifact_dir, data_root=data_root)
-    if prepared.raw_t1 is None or prepared.raw_t2 is None:
+    if (
+        prepared.raw_t1 is None
+        or prepared.raw_t2 is None
+        or prepared.comparison_t1 is None
+        or prepared.comparison_t2 is None
+    ):
         return _preparation_result(prepared)
 
     proposals: list[ChangeProposal] = []
@@ -181,6 +318,7 @@ def preprocess_pair(
             prepared.comparison_t1,
             prepared.comparison_t2,
             settings.proposals,
+            valid_mask=prepared.registration_valid_mask,
         )
     return publish_change_proposals(
         prepared,
@@ -209,7 +347,7 @@ def publish_change_proposals(
     np = _require_numpy()
     output = artifact_dir / "change_preprocess"
     output.mkdir(parents=True, exist_ok=True)
-    files = _audit_files()
+    files = _audit_files(prepared)
     is_v2 = component_maps is not None or component_masks is not None or any(
         proposal.source == "fused_change_v2" for proposal in proposals
     )
@@ -260,7 +398,13 @@ def publish_change_proposals(
         x1, y1, x2, y2 = proposal.pixel_box
         evidence: list[str] = []
         raw_t2_crop = prepared.raw_t2[y1:y2, x1:x2]
-        for label, image in (("raw_t1", prepared.raw_t1), ("raw_t2", prepared.raw_t2)):
+        registered_t2 = _registered_t2_for_evidence(prepared)
+        crop_images = [("raw_t1", prepared.raw_t1)]
+        if registered_t2 is not None:
+            crop_images.append(("registered_t2", registered_t2))
+        else:
+            crop_images.append(("raw_t2", prepared.raw_t2))
+        for label, image in crop_images:
             filename = f"{proposal.proposal_id}_{label}.png"
             _write_image(crops / filename, image[y1:y2, x1:x2])
             evidence.append(f"change_preprocess/crops/{filename}")
@@ -282,7 +426,12 @@ def publish_change_proposals(
             overlay_filename = f"{proposal.proposal_id}_mask_overlay.png"
             _write_image(
                 crops / overlay_filename,
-                _render_change_mask_overlay(raw_t2_crop, component_mask),
+                _render_change_mask_overlay(
+                    registered_t2[y1:y2, x1:x2]
+                    if registered_t2 is not None
+                    else raw_t2_crop,
+                    component_mask,
+                ),
             )
             published_mask_filename = f"change_preprocess/crops/{mask_basename}"
             overlay_relative = f"change_preprocess/crops/{overlay_filename}"
@@ -319,16 +468,31 @@ def publish_change_proposals(
         artifact_files=files,
         transform_summary=prepared.transform_summary,
         diagnostics=diagnostics,
+        registration=prepared.registration_report,
     )
     _write_json(output / "harmonization_report.json", result.model_dump(mode="json"))
     return result
 
 
-def _audit_files() -> dict[str, str]:
-    return {
+def _audit_files(prepared: ChangePreparedPair | None = None) -> dict[str, str]:
+    files = {
         "validation_report": "change_preprocess/validation_report.json",
         "harmonization_report": "change_preprocess/harmonization_report.json",
     }
+    report = prepared.registration_report if prepared is not None else None
+    if (
+        report is not None
+        and report.decision.status != "skipped"
+        and prepared is not None
+        and prepared.transform_summary.get("registration_artifacts_saved", True)
+    ):
+        files["registration_report"] = "change_preprocess/registration_report.json"
+        if report.decision.used_for_comparison and report.decision.model != "identity":
+            files["registered_t2"] = "change_preprocess/registered_t2.png"
+            files["registration_overlap_mask"] = (
+                "change_preprocess/registration_overlap_mask.png"
+            )
+    return files
 
 
 def _preparation_result(prepared: ChangePreparedPair) -> ChangePreprocessResult:
@@ -336,9 +500,10 @@ def _preparation_result(prepared: ChangePreparedPair) -> ChangePreprocessResult:
         validation=prepared.validation,
         decision=prepared.decision,
         proposals=[],
-        artifact_files=_audit_files(),
+        artifact_files=_audit_files(prepared),
         transform_summary=prepared.transform_summary,
         diagnostics={"pif_valid": prepared.pif_valid},
+        registration=prepared.registration_report,
     )
 
 
@@ -347,6 +512,18 @@ def _publish_preparation_audit(prepared: ChangePreparedPair, output: Path) -> No
         output / "harmonization_report.json",
         _preparation_result(prepared).model_dump(mode="json"),
     )
+
+
+def _registered_t2_for_evidence(prepared: ChangePreparedPair) -> Any | None:
+    report = prepared.registration_report
+    if (
+        report is None
+        or not report.decision.used_for_comparison
+        or report.decision.model == "identity"
+        or prepared.registered_t2 is None
+    ):
+        return None
+    return prepared.registered_t2
 
 
 def _map_artifact(value: Any) -> Any:

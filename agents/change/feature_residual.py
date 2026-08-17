@@ -7,6 +7,7 @@ does not load models, publish artifacts, or make network/model calls.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any
 
 from agents.errors import OptionalDependencyMissingError
@@ -137,6 +138,150 @@ def compute_feature_residual(
         score_map=score_map,
         valid_mask=valid_mask,
         diagnostics=diagnostics,
+    )
+
+
+def compute_multiscale_feature_residual(
+    features_t1_by_stage: Mapping[int, Any],
+    features_t2_by_stage: Mapping[int, Any],
+    pif_mask: Any,
+    *,
+    feature_stages: tuple[int, ...],
+    feature_stage_weights: Mapping[int, float] | None = None,
+    feature_strides_by_stage: Mapping[int, tuple[float, float]] | None = None,
+    image_size: tuple[int, int] | None = None,
+    local_match_radius: int = 1,
+    min_pif_feature_cells: int = 32,
+    feature_scale_epsilon: float = 1e-3,
+) -> FeatureResidualResult:
+    """Fuse deterministic local-cosine residuals from several feature grids.
+
+    Each stage is normalized from the same PIF mask independently.  Scores are
+    then resized to one canonical grid before weighted fusion, so a coarse
+    stage cannot silently change the meaning of a pixel merely because its
+    native stride differs.  Missing requested stages are reported explicitly;
+    no stage is fabricated by resizing another feature tensor.
+    """
+
+    np = _require_numpy()
+    cv2 = _require_cv2()
+    stages = tuple(dict.fromkeys(feature_stages))
+    if not stages:
+        raise ValueError("FEATURE_RESIDUAL_STAGES_EMPTY")
+    missing_stages = [
+        stage
+        for stage in stages
+        if stage not in features_t1_by_stage or stage not in features_t2_by_stage
+    ]
+    effective_stages = [stage for stage in stages if stage not in missing_stages]
+    if image_size is None:
+        if not effective_stages:
+            raise ValueError("FEATURE_RESIDUAL_STAGE_MISSING")
+        first_stage = effective_stages[0]
+        first = np.asarray(features_t1_by_stage.get(first_stage))
+        if first.ndim != 3:
+            raise ValueError("FEATURE_RESIDUAL_CANONICAL_SIZE_MISSING")
+        canonical_height, canonical_width = int(first.shape[1]), int(first.shape[2])
+    else:
+        if len(image_size) != 2 or image_size[0] <= 0 or image_size[1] <= 0:
+            raise ValueError("FEATURE_RESIDUAL_CANONICAL_SIZE_INVALID")
+        canonical_width, canonical_height = int(image_size[0]), int(image_size[1])
+
+    weights = {
+        int(stage): float((feature_stage_weights or {}).get(stage, 1.0))
+        for stage in stages
+    }
+    if any(value <= 0.0 or not np.isfinite(value) for value in weights.values()):
+        raise ValueError("FEATURE_RESIDUAL_STAGE_WEIGHT_INVALID")
+
+    if not effective_stages:
+        raise ValueError("FEATURE_RESIDUAL_STAGE_MISSING")
+
+    score_accumulator = np.zeros((canonical_height, canonical_width), dtype=np.float32)
+    valid_accumulator = np.zeros((canonical_height, canonical_width), dtype=bool)
+    total_weight = sum(weights[stage] for stage in effective_stages)
+    per_stage: list[dict[str, object]] = []
+    stage_statuses: list[object] = []
+    for stage in effective_stages:
+        result = compute_feature_residual(
+            features_t1_by_stage[stage],
+            features_t2_by_stage[stage],
+            pif_mask,
+            local_match_radius=local_match_radius,
+            min_pif_feature_cells=min_pif_feature_cells,
+            feature_scale_epsilon=feature_scale_epsilon,
+        )
+        score = np.asarray(result.score_map, dtype=np.float32)
+        valid = np.asarray(result.valid_mask, dtype=bool)
+        resized_score = cv2.resize(
+            score,
+            (canonical_width, canonical_height),
+            interpolation=cv2.INTER_LINEAR,
+        ).astype(np.float32, copy=False)
+        resized_valid = cv2.resize(
+            valid.astype(np.uint8),
+            (canonical_width, canonical_height),
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(bool, copy=False)
+        normalized_weight = float(weights[stage] / total_weight)
+        score_accumulator += resized_score * np.float32(normalized_weight)
+        valid_accumulator |= resized_valid
+        stride = None
+        if feature_strides_by_stage is not None:
+            stride = feature_strides_by_stage.get(stage)
+        per_stage.append(
+            {
+                "stage": int(stage),
+                "shape": [int(value) for value in np.asarray(features_t1_by_stage[stage]).shape],
+                "stride": (
+                    [float(stride[0]), float(stride[1])]
+                    if stride is not None and len(stride) == 2
+                    else None
+                ),
+                "pif_feature_cells": int(result.diagnostics["pif_feature_cells"]),
+                "median_score_pif": float(result.diagnostics["median_score_pif"]),
+                "median_score_full": float(result.diagnostics["median_score_full"]),
+                "p95": float(result.diagnostics["p95_score_full"]),
+                "alignment_status": result.diagnostics["alignment_status"],
+                "weight": normalized_weight,
+            }
+        )
+        stage_statuses.append(result.diagnostics["alignment_status"])
+
+    canonical_pif = cv2.resize(
+        (np.asarray(pif_mask) != 0).astype(np.uint8),
+        (canonical_width, canonical_height),
+        interpolation=cv2.INTER_NEAREST,
+    ).astype(bool, copy=False)
+    valid_accumulator &= canonical_pif
+    score_accumulator[~valid_accumulator] = 0.0
+    return FeatureResidualResult(
+        score_map=np.ascontiguousarray(score_accumulator, dtype=np.float32),
+        valid_mask=np.ascontiguousarray(valid_accumulator, dtype=bool),
+        diagnostics={
+            "version": FEATURE_RESIDUAL_VERSION,
+            "multiscale": True,
+            "per_stage": per_stage,
+            "effective_stages": [int(stage) for stage in effective_stages],
+            "missing_stages": [int(stage) for stage in missing_stages],
+            "canonical_size": [canonical_width, canonical_height],
+            "local_match_radius": local_match_radius,
+            "alignment_status": (
+                "aligned"
+                if all(status == "aligned" for status in stage_statuses)
+                else "insufficient_pif"
+            ),
+            "pif_feature_cells": int(np.count_nonzero(canonical_pif)),
+            "median_score_pif": float(np.median(score_accumulator[canonical_pif]))
+            if np.any(canonical_pif)
+            else 0.0,
+            "median_score_full": float(np.median(score_accumulator[valid_accumulator]))
+            if np.any(valid_accumulator)
+            else 0.0,
+            "p95_score_full": float(np.percentile(score_accumulator[valid_accumulator], 95))
+            if np.any(valid_accumulator)
+            else 0.0,
+        },
     )
 
 
@@ -276,4 +421,5 @@ __all__ = [
     "FEATURE_RESIDUAL_VERSION",
     "FeatureResidualResult",
     "compute_feature_residual",
+    "compute_multiscale_feature_residual",
 ]

@@ -146,6 +146,21 @@ def test_estimate_pif_mask_shape_and_dtype() -> None:
     assert set(np.unique(mask)).issubset({0, 255})
 
 
+def test_registration_invalid_overlap_is_excluded_from_pif_and_metrics() -> None:
+    t1 = _rgb(11, size=(48, 48))
+    t2 = np.clip(t1.astype(np.int16) + 5, 0, 255).astype(np.uint8)
+    t2[:12, :] = 255
+    valid = np.ones((48, 48), dtype=bool)
+    valid[:12, :] = False
+
+    mask = estimate_pif_mask(t1, t2, _settings(), valid_mask=valid)
+    metrics = compute_metrics(t1, t2, t1, t2, mask, valid_mask=valid)
+
+    assert np.count_nonzero(mask[:12, :]) == 0
+    assert metrics.mad_full_before < 10.0
+    assert metrics.pct_diff_gt20_before == pytest.approx(0.0)
+
+
 def test_compute_metrics_identical_outputs() -> None:
     t1, t2 = _similar_pair(10)
     mask = estimate_pif_mask(t1, t2, _settings())

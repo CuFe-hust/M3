@@ -43,7 +43,13 @@ class PairValidator:
     """Validate temporal roles, files, decoding, size, and alignment evidence.
     校验时相角色、文件、解码、尺寸与配准证据。"""
 
-    def validate(self, sample: UnifiedSample, *, data_root: Path) -> ValidatedPair:
+    def validate(
+        self,
+        sample: UnifiedSample,
+        *,
+        data_root: Path,
+        registration_enabled: bool = False,
+    ) -> ValidatedPair:
         np = _require_numpy()
         warnings: list[IssueRecord] = []
         roles = [image.role for image in sample.images]
@@ -91,7 +97,9 @@ class PairValidator:
         if metadata_aligned and same_size:
             alignment = "metadata_aligned"
         elif same_size:
-            alignment = "weakly_aligned"
+            alignment = (
+                "same_size_unverified" if registration_enabled else "weakly_aligned"
+            )
             warnings.append(
                 IssueRecord(
                     code="ALIGNMENT_ONLY_SIZE_MATCH",
@@ -99,9 +107,14 @@ class PairValidator:
                 )
             )
         else:
-            alignment = "unreliable"
+            alignment = "registration_required" if registration_enabled else "unreliable"
 
-        valid = roles_valid and same_size and alignment != "unreliable"
+        # Structural validity is independent of geometric comparability. A
+        # decoded, role-valid pair may proceed to registration even when the
+        # canvases differ; downstream preparation owns the controlled failure
+        # or fallback decision if no common comparison canvas can be built.
+        registration_eligible = roles_valid
+        valid = roles_valid
         report = PairValidationReport(
             valid=valid,
             temporal_roles_valid=roles_valid,
@@ -109,6 +122,11 @@ class PairValidator:
             alignment_status=alignment,
             original_sizes=sizes,
             warnings=warnings,
+            registration_eligible=registration_eligible,
+            strong_alignment_evidence=metadata_aligned and same_size,
+            registration_required=registration_enabled and not (
+                metadata_aligned and same_size
+            ),
         )
         return ValidatedPair(decoded[0], decoded[1], report)
 
@@ -125,6 +143,9 @@ class PairValidator:
             alignment_status="unreliable",
             original_sizes=sizes or [],
             warnings=warnings,
+            registration_eligible=False,
+            strong_alignment_evidence=False,
+            registration_required=False,
         )
         return ValidatedPair(None, None, report)
 

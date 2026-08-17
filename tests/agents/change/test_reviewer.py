@@ -155,6 +155,30 @@ def test_geometry_records_raw_full_when_no_proposals() -> None:
     assert reviewed.geometry["evidence_path_types"] == ["raw_full"]
 
 
+def test_unknown_proposal_reference_is_warned() -> None:
+    result = _result(geometry={"proposal_ids": ["missing"]})
+    _, warnings = review_result(
+        result, [_proposal("p1")], ChangeReviewSettings()
+    )
+    assert "EVIDENCE_REFERENCES_UNKNOWN_PROPOSAL" in warnings
+
+
+def test_invalid_overlap_evidence_reference_is_warned() -> None:
+    result = _result(
+        evidence_items=[
+            VisualEvidence(
+                label="candidate",
+                image_id="p1:non_overlap_crop",
+                box=[100, 100, 200, 200],
+            )
+        ]
+    )
+    _, warnings = review_result(
+        result, [_proposal("p1")], ChangeReviewSettings()
+    )
+    assert "EVIDENCE_REFERENCES_INVALID_OVERLAP" in warnings
+
+
 def test_reviewer_never_calls_models_or_dataset_logic() -> None:
     source = (Path(__file__).resolve().parents[3] / "agents" / "change" / "reviewer.py").read_text(
         encoding="utf-8"

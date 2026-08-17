@@ -305,19 +305,16 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
         "proposal_overlay",
     ]
     crop_roles = roles[5:]
-    assert "change_000:change_000_raw_t1" in crop_roles
-    assert "change_000:change_000_raw_t2" in crop_roles
-    assert "change_000:change_000_mask_overlay" in crop_roles
-    assert crop_roles.index("change_000:change_000_raw_t1") < crop_roles.index(
-        "change_000:change_000_raw_t2"
-    ) < crop_roles.index("change_000:change_000_mask_overlay")
-    assert (
-        sum(
-            role.endswith("_raw_t1") or role.endswith("_raw_t2")
-            for role in crop_roles
-        )
-        >= 2
-    )
+    assert "change_000:reference_t1_crop" in crop_roles
+    assert "change_000:t2_registered_crop" in crop_roles
+    assert "change_000:mask_overlay" in crop_roles
+    assert crop_roles.index("change_000:reference_t1_crop") < crop_roles.index(
+        "change_000:t2_registered_crop"
+    ) < crop_roles.index("change_000:mask_overlay")
+    assert {
+        "change_000:reference_t1_crop",
+        "change_000:t2_registered_crop",
+    }.issubset(crop_roles)
 
     proposal_box = payload["proposals"][0]["box"]
     expected_change_box = [250, 250, 500, 500]

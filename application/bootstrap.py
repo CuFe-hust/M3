@@ -55,6 +55,7 @@ from data.registry import build_default_registry
 from evaluation.judges.deepseek import DeepSeekJudgeClient
 from models.base import (
     DenseSemanticClient,
+    LearnedChangeClient,
     ModelCacheIdentity,
     ObjectDetectionOutput,
     RuntimeObjectDetectionClient,
@@ -120,6 +121,7 @@ def assemble_runtime(
     project_root: Path,
     qwen_client: VisionLanguageClient | None = None,
     semantic_client: DenseSemanticClient | None = None,
+    learned_change_client: LearnedChangeClient | None = None,
     api_key: str | None = None,
     prompts_root: Path | None = None,
 ) -> RuntimeComponents:
@@ -191,6 +193,7 @@ def assemble_runtime(
         catalog,
         qwen_client,
         semantic_client,
+        learned_change_client=learned_change_client,
         expert_catalog=expert_catalog,
         segformer_clients=segformer_clients,
         project_root=asset_root,
@@ -287,6 +290,7 @@ def _build_agent_registry(
     catalog: PromptCatalog,
     qwen_client: VisionLanguageClient,
     semantic_client: DenseSemanticClient | None = None,
+    learned_change_client: LearnedChangeClient | None = None,
     *,
     expert_catalog: ExpertCatalog | None = None,
     segformer_clients: dict[str, Any] | None = None,
@@ -323,6 +327,7 @@ def _build_agent_registry(
     change_agent = ChangeAgent(
         qwen_client,
         semantic_client=semantic_client,
+        learned_change_client=learned_change_client,
         prompt=PromptBinding(
             text=catalog["change"], version=catalog.version("change")
         ),

@@ -317,11 +317,15 @@ def test_semantic_settings_default_disabled_and_validate_geometry() -> None:
     settings = AgentChangeSettings()
     assert settings.semantic.enabled is False
     assert settings.semantic.feature_stage == 1
+    assert settings.semantic.feature_stages == (1,)
+    assert settings.semantic.feature_stage_weights == {1: 1.0}
     assert settings.semantic.tile_size == 768
     assert settings.semantic.tile_overlap == 64
     assert settings.proposals.pif_threshold_k == 4.5
     with pytest.raises(ValueError, match="tile_overlap"):
         ChangeSemanticSettings(tile_size=128, tile_overlap=128)
+    with pytest.raises(ValueError, match="feature_stages"):
+        ChangeSemanticSettings(feature_stages=(1, 5))
 
 
 def test_fusion_settings_validate_major_branch_weights_and_kernel() -> None:

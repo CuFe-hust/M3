@@ -19,6 +19,7 @@ from agents.change.perception import (
     ChangePerceptionPipeline,
 )
 from agents.change.preprocess import prepare_pair, publish_change_proposals
+from agents.change.registration import RegistrationError
 from agents.change.reviewer import review_result
 from agents.change.schema import ChangePreprocessResult
 from agents.change.settings import AgentChangeSettings
@@ -28,6 +29,7 @@ from agents.visual_base import PromptBinding
 from data.schema import UnifiedSample
 from models.base import (
     DenseSemanticClient,
+    LearnedChangeClient,
     ModelCacheIdentity,
     RequestMeta,
     VisionLanguageClient,
@@ -66,11 +68,13 @@ class ChangeAgent:
         client: VisionLanguageClient,
         *,
         semantic_client: DenseSemanticClient | None = None,
+        learned_change_client: LearnedChangeClient | None = None,
         prompt: PromptBinding | None = None,
         settings: AgentChangeSettings | None = None,
     ) -> None:
         self._client = client
         self._semantic_client = semantic_client
+        self._learned_change_client = learned_change_client
         if prompt is None:
             raise ValueError("ChangeAgent requires an injected PromptBinding")
         self._prompt = prompt
@@ -131,6 +135,7 @@ class ChangeAgent:
                 "reason_codes": preprocess.decision.reason_codes,
                 "used_for_proposal": preprocess.decision.used_for_proposal,
             },
+            "registration": _registration_payload(preprocess),
             "perception": perception_audit,
             "proposals": [
                 {
@@ -142,9 +147,21 @@ class ChangeAgent:
                         name: round(score, 6)
                         for name, score in item.component_scores.items()
                     },
+                    "semantic_transition": (
+                        item.semantic_transition.model_dump(mode="json")
+                        if item.semantic_transition is not None
+                        else None
+                    ),
+                    "effective_weights": item.effective_weights,
+                    "reliability": item.reliability,
+                    "registration_confidence": item.registration_confidence,
                 }
                 for item in preprocess.proposals
             ],
+            "semantic_transition_note": (
+                "Semantic transitions are auxiliary model evidence, not ground truth; "
+                "inspect raw T1/T2 evidence before confirming or explaining change."
+            ),
             "empty_proposals_instruction": (
                 "Inspect raw full T1/T2; do not infer no change from an empty proposal list."
             ),
@@ -155,6 +172,8 @@ class ChangeAgent:
             + "\n\nReturn valid JSON only. Set agent_name to 'change_agent'; "
             "put the concise final answer in answer, retain relevant labeled boxes "
             "in evidence_items and boxes, use concise factual evidence strings, "
+            "treat semantic_transition as auxiliary evidence rather than ground truth "
+            "and verify it against raw T1/T2 crops, "
             "record proposal ids and evidence path types in geometry, and set "
             "status to 'completed'."
         )
@@ -207,6 +226,7 @@ class ChangeAgent:
             "harmonization_version": preprocess.decision.version,
             "harmonization_status": preprocess.decision.status,
             "harmonization_reason_codes": preprocess.decision.reason_codes,
+            **_registration_payload(preprocess),
             "pif_ratio": metrics.pif_ratio if metrics else None,
             "mad_pif_before": metrics.mad_pif_before if metrics else None,
             "mad_pif_after": metrics.mad_pif_after if metrics else None,
@@ -242,12 +262,19 @@ class ChangeAgent:
 
         settings = self._settings
         assert context.data_root is not None
-        prepared = prepare_pair(
-            sample,
-            settings,
-            context.artifact_dir,
-            data_root=context.data_root,
-        )
+        try:
+            prepared = prepare_pair(
+                sample,
+                settings,
+                context.artifact_dir,
+                data_root=context.data_root,
+            )
+        except RegistrationError as error:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause=error.reason_code,
+            ) from error
         if not prepared.validation.valid:
             raise AgentExecutionError(
                 self.name,
@@ -258,8 +285,15 @@ class ChangeAgent:
             perception = ChangePerceptionPipeline(
                 self._semantic_client,
                 settings,
+                learned_change_client=self._learned_change_client,
             ).run(prepared)
         except ChangePerceptionError as error:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause=error.reason_code,
+            ) from error
+        except RegistrationError as error:
             raise AgentExecutionError(
                 self.name,
                 sample.sample_id,
@@ -301,17 +335,29 @@ class ChangeAgent:
             relative = preprocess.artifact_files.get(key)
             if relative:
                 harmonized.append((key, context.artifact_dir / relative, "artifact"))
+        registered: list[tuple[str, Path, str]] = []
+        relative_registered_t2 = preprocess.artifact_files.get("registered_t2")
+        if relative_registered_t2:
+            registered.append(
+                (
+                    "registered_t2",
+                    context.artifact_dir / relative_registered_t2,
+                    "artifact",
+                )
+            )
         # Select base comparison evidence independently from proposal
         # attention evidence. A rejected transform legitimately degrades a
         # dual path to the authoritative raw pair. / base comparison evidence
         # 与 proposal attention evidence 独立选择。transform rejected 时，
         # dual path 合法降级为 authoritative raw pair。
+        # Raw global authority is unconditional.  Derived evidence can be
+        # absent, rejected, or stale; the VLM must still see the source pair.
+        raw_authority_required = True
+        paths.extend(raw)
         if mode == "raw_only":
-            paths.extend(raw)
-        elif mode == "harmonized_only":
-            paths.extend(harmonized if harmonized else raw)
-        else:  # dual_path / 双路径
-            paths.extend(raw)
+            pass
+        else:
+            paths.extend(registered)
             paths.extend(harmonized)
 
         proposal_evidence_count = 0
@@ -325,11 +371,15 @@ class ChangeAgent:
                 ("proposal_overlay", context.artifact_dir / overlay, "artifact")
             )
             proposal_evidence_count += 1
-        for proposal in preprocess.proposals[: self._settings.proposals.max_proposals]:
+        selected_proposals = sorted(
+            preprocess.proposals,
+            key=_proposal_priority,
+        )[: self._settings.proposals.max_proposals]
+        for proposal in selected_proposals:
             for relative in proposal.evidence_filenames:
                 paths.append(
                     (
-                        f"{proposal.proposal_id}:{Path(relative).stem}",
+                        _proposal_manifest_role(proposal, relative, preprocess),
                         context.artifact_dir / relative,
                         "artifact",
                     )
@@ -352,10 +402,19 @@ class ChangeAgent:
             hashes.append(hashlib.sha256(data).hexdigest())
             manifest.append({"index": str(index), "role": role})
         evidence_audit: dict[str, object] = {
+            "raw_authority_required": raw_authority_required,
+            "raw_authority_attached": bool(
+                raw_authority_required
+                and [item[0] for item in paths[:2]] == ["raw_full_t1", "raw_full_t2"]
+            ),
             "harmonized_evidence_available": bool(harmonized),
             "harmonized_evidence_count": len(harmonized),
+            "registered_evidence_available": bool(registered),
+            "registered_evidence_count": len(registered),
             "proposal_evidence_attached": proposal_evidence_count > 0,
             "proposal_evidence_count": proposal_evidence_count,
+            "proposal_count_total": len(preprocess.proposals),
+            "proposal_count_attached": len(selected_proposals),
             "image_manifest_roles": [item["role"] for item in manifest],
         }
         return content, hashes, manifest, evidence_audit
@@ -409,6 +468,8 @@ def _perception_audit(
     diagnostics = preprocess.diagnostics
     fusion = diagnostics.get("fusion")
     fusion_data = fusion if isinstance(fusion, dict) else {}
+    reliability = diagnostics.get("reliability")
+    reliability_data = reliability if isinstance(reliability, dict) else {}
     feature = diagnostics.get("feature_residual")
     feature_data = feature if isinstance(feature, dict) else {}
     reason_codes = diagnostics.get("semantic_reason_codes")
@@ -416,6 +477,7 @@ def _perception_audit(
         reason = diagnostics.get("semantic_reason_code")
         reason_codes = [reason] if isinstance(reason, str) and reason else []
     return {
+        "mode": diagnostics.get("perception_mode", "legacy"),
         "perception_mode": diagnostics.get("perception_mode", "legacy"),
         "perception_version": diagnostics.get("perception_version"),
         "semantic_enabled": bool(
@@ -429,6 +491,21 @@ def _perception_audit(
         "semantic_weights_sha256": diagnostics.get("semantic_weights_sha256"),
         "feature_stage": diagnostics.get(
             "feature_stage", settings.semantic.feature_stage
+        ),
+        "feature_stages": diagnostics.get(
+            "feature_stages", list(settings.semantic.feature_stages)
+        ),
+        "feature_stage_weights": diagnostics.get(
+            "feature_stage_weights",
+            {
+                str(stage): float(weight)
+                for stage, weight in settings.semantic.feature_stage_weights.items()
+            },
+        ),
+        "multiscale_enabled": bool(
+            diagnostics.get(
+                "multiscale_enabled", len(settings.semantic.feature_stages) > 1
+            )
         ),
         "tile_size": diagnostics.get("tile_size", settings.semantic.tile_size),
         "tile_overlap": diagnostics.get(
@@ -456,6 +533,13 @@ def _perception_audit(
         ),
         "fusion_version": diagnostics.get("fusion_version"),
         "fusion_effective_weights": fusion_data.get("effective_weights", {}),
+        "effective_weights": fusion_data.get("effective_weights", {}),
+        "available_components": fusion_data.get("available_components", []),
+        "missing_components": fusion_data.get("missing_components", []),
+        "reliability": reliability_data.get("reliability", {}),
+        "reliability_raw": reliability_data.get("raw", {}),
+        "registration_confidence": fusion_data.get("registration_confidence"),
+        "semantic_transition_note": diagnostics.get("semantic_transition_note"),
         "threshold_mode": fusion_data.get("threshold_mode"),
         "threshold_value": fusion_data.get("threshold"),
         "threshold_floor": diagnostics.get(
@@ -481,5 +565,135 @@ def _perception_audit(
         ),
         "proposal_count": len(preprocess.proposals),
         "proposal_source": diagnostics.get("proposal_source", "difference_map_v1"),
+        "proposal_metadata": [
+            {
+                "proposal_id": proposal.proposal_id,
+                "box": proposal.box,
+                "score": round(proposal.score, 6),
+                "component_scores": {
+                    name: round(score, 6)
+                    for name, score in proposal.component_scores.items()
+                },
+                "semantic_transition": (
+                    proposal.semantic_transition.model_dump(mode="json")
+                    if proposal.semantic_transition is not None
+                    else None
+                ),
+                "effective_weights": proposal.effective_weights,
+                "reliability": proposal.reliability,
+            }
+            for proposal in preprocess.proposals
+        ],
+        "learned_change": diagnostics.get(
+            "learned_change",
+            {
+                "enabled": settings.learned_change.enabled,
+                "status": "unavailable"
+                if settings.learned_change.enabled
+                else "disabled",
+                "available": False,
+                "reason_codes": [],
+                "fusion_weight": settings.learned_change.fusion_weight,
+            },
+        ),
+        "training_capture": {
+            "enabled": False,
+            "save_dense_features": False,
+            "dense_features_saved": False,
+        },
         "score_maps": diagnostics.get("score_maps", {}),
+    }
+
+
+def _proposal_priority(proposal: Any) -> tuple[float, str]:
+    """Rank attachment candidates by score multiplied by evidence reliability."""
+
+    reliability = proposal.reliability or {}
+    values = [
+        float(value)
+        for value in reliability.values()
+    ]
+    confidence = sum(values) / len(values) if values else 1.0
+    return (-float(proposal.score) * confidence, str(proposal.proposal_id))
+
+
+def _proposal_manifest_role(
+    proposal: Any,
+    relative: str,
+    preprocess: ChangePreprocessResult,
+) -> str:
+    """Map artifact filenames to explicit Level-C evidence roles."""
+
+    stem = Path(relative).stem
+    prefix = f"{proposal.proposal_id}_"
+    suffix = stem[len(prefix) :] if stem.startswith(prefix) else stem
+    if suffix == "raw_t1":
+        role = "reference_t1_crop"
+    elif suffix == "registered_t2":
+        role = "t2_registered_crop"
+    elif suffix == "raw_t2":
+        report = preprocess.registration
+        identity_aligned = bool(
+            report is not None
+            and report.decision.used_for_comparison
+            and report.decision.model == "identity"
+        )
+        role = "t2_registered_crop" if identity_aligned else "t2_raw_fallback_crop"
+    elif suffix == "mask_overlay":
+        role = "mask_overlay"
+    elif suffix == "mask":
+        role = "mask_attention_prior"
+    elif suffix == "harmonized_t1":
+        role = "harmonized_t1_crop"
+    elif suffix == "harmonized_t2":
+        role = "harmonized_t2_crop"
+    else:
+        role = suffix
+    return f"{proposal.proposal_id}:{role}"
+
+
+def _registration_payload(preprocess: ChangePreprocessResult) -> dict[str, object]:
+    """Flatten registration decisions into stable payload/trace fields."""
+
+    report = preprocess.registration
+    if report is None:
+        return {
+            "registration_version": None,
+            "registration_status": None,
+            "registration_model": None,
+            "registration_reason_codes": [],
+            "registration_match_count": None,
+            "registration_inlier_count": None,
+            "registration_inlier_ratio": None,
+            "registration_median_reprojection_error": None,
+            "registration_overlap_ratio": None,
+            "registration_used_for_comparison": False,
+            "quality": {
+                "inlier_ratio": None,
+                "median_reprojection_error": None,
+                "overlap_ratio": None,
+            },
+        }
+    metrics = report.metrics
+    quality = {
+        "inlier_ratio": metrics.inlier_ratio if metrics else None,
+        "median_reprojection_error": (
+            metrics.median_reprojection_error if metrics else None
+        ),
+        "overlap_ratio": metrics.overlap_ratio if metrics else None,
+    }
+    return {
+        "registration_version": report.decision.version,
+        "registration_status": report.decision.status,
+        "registration_model": report.decision.model,
+        "registration_reason_codes": list(report.decision.reason_codes),
+        "registration_match_count": metrics.match_count if metrics else None,
+        "registration_inlier_count": metrics.inlier_count if metrics else None,
+        "registration_inlier_ratio": metrics.inlier_ratio if metrics else None,
+        "registration_median_reprojection_error": (
+            metrics.median_reprojection_error if metrics else None
+        ),
+        "registration_overlap_ratio": metrics.overlap_ratio if metrics else None,
+        "registration_used_for_comparison": report.decision.used_for_comparison,
+        "quality": quality,
     }

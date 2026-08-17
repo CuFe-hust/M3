@@ -1,4 +1,4 @@
-# Change V2 offline ablations
+# Change V3 offline ablations
 
 These partial YAML files are merged over the built-in `AppSettings` defaults.
 They do not add runtime switches or evaluation metrics.
@@ -11,6 +11,18 @@ They do not add runtime switches or evaluation metrics.
 | D | `three_source.yaml` | low-level + feature + semantic |
 | E | `pif_robust.yaml` | production robust PIF normalization and threshold settings |
 | F0/F1 | `local_match_r0.yaml`, `local_match_r1.yaml` | exact versus one-cell local match |
+
+V3 registered variants:
+
+| Variant | File | Comparison |
+|---|---|---|
+| R | `registration_only.yaml` | registration plus legacy deterministic perception |
+| RS | `registered_three_source.yaml` | registration plus low-level/feature/semantic fusion |
+| RMS | `multiscale_registered.yaml` | registration plus stages 1/2/3 feature evidence |
+
+`legacy.yaml` explicitly disables registration and semantic inference so it
+remains the compatibility baseline. All files are partial YAML overlays over
+the built-in `AppSettings` defaults.
 
 Variant E's non-robust comparator intentionally remains an analysis/test
 baseline. Production always uses robust alignment; no public runtime bypass is

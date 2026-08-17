@@ -1126,9 +1126,51 @@ change_caption
 change_qa
 ```
 
-处理有序时相图对，包含 pair validation、单次 harmonization、proposal perception、artifact publish 与 rule-only review。默认关闭 semantic auxiliary path，保持 V1 difference proposal；启用时由 bootstrap 单独构造并注入抽象 `DenseSemanticClient`，按 low-level、PIF feature residual、confidence-weighted semantic difference 和 robust fusion 生成 V2 proposal。PIF validity 与 harmonization transform validity 是独立事实：PIF 同时满足原始 pixel-count/ratio gate 才可用于 feature normalization 与 robust threshold；transform 即使被拒绝，valid raw-derived PIF 仍可与 raw comparison pair 进入 V2。Proposal attention evidence 的附加不依赖 harmonized artifacts：rejected transform 的成功 V2 run 向 Qwen 发送 raw full T1/T2 与 proposal evidence，并省略不存在的 harmonized images。每个 V2 proposal 发布三路 score、融合图、二值 mask、crop-local mask/overlay 与相对路径清单；V2 实际消费 PIF 时，无论 `harmonization.save_artifacts` 如何设置，都必须发布 mandatory `pif_mask.png`，该开关只控制 optional harmonized artifacts。trace 记录实际 evidence roles/count、阈值来源、fallback、组件有效权重、PIF validity/usage、SegFormer logical identity、verified weight SHA 与算法设置，绝不记录 checkpoint 绝对路径或完整 feature/probability tensor。SegFormer 不消耗 Qwen budget；失败按显式策略稳定降级或在 Qwen 调用前终止。raw T1/T2 始终是语义事实依据，harmonized 图、SegFormer 输出和 proposal mask 仅用于注意力引导。Change runtime prompt 由 bootstrap 从 `PromptCatalog` 注入，运行时文本、版本、request hash 与 run prompt snapshot 共享同一权威资产。
+处理有序时相图对，完整流程为：
 
-2026-08-10 NVIDIA GB10 离线校准后，semantic path 的基准配置为 MiT-B2 iSAID、`feature_stage=1`（stride 8）、`tile_size=768`、`tile_overlap=64`、`local_match_radius=1`、`pif_threshold_k=4.5`，三路融合权重保持 `0.25/0.50/0.25`。该选择来自 stage/tile、20 对 LEVIR-CC、5×4 threshold/fusion 联合矩阵与 iSAID/OEM 对照；不是通用 benchmark 结论。`semantic.enabled` 仍默认关闭，live 校准不会改变 V1 行为。
+```text
+UnifiedSample
+ -> PairValidator
+ -> PairRegistrar
+ -> PairHarmonizer
+ -> ChangePerceptionPipeline
+ -> proposal publisher
+ -> ChangeAgent evidence builder
+ -> Qwen
+ -> review_result
+```
+
+PairValidator 只确认 temporal roles、文件与 decode 等结构条件；尺寸不同的、但
+结构有效的 pair 进入 registration，而不是直接判 invalid。PairRegistrar 只做保守
+的 identity/similarity/affine/homography 全局几何配准并经过 quality gate；它不使用
+dense optical flow、TPS 或 elastic warp。PairHarmonizer 只做 PIF/LAB 辐射一致化，
+不得重新估计几何变换。默认关闭 semantic auxiliary path，仍可退化到 legacy
+deterministic perception；启用时由 bootstrap 注入抽象 `DenseSemanticClient` 或
+`DenseSemanticPyramidClient`，SegFormer 同时服务 semantic probabilities 与
+intermediate/pyramid features。最终 proposal 由 low-level、feature residual、
+semantic difference 和 reliability-aware fusion 确定性地产生。
+
+proposal coordinate frame 永远是 T1 reference canvas，normalized box 使用
+`0..999` 的 top-left 坐标。所有 dense difference、threshold 统计和 proposal mask
+都必须先受 `registration_valid_mask` 约束；无效 warp border 不得进入 PIF、semantic
+score 或 proposal。每个 proposal 的 semantic transition 是辅助模型证据，不是
+ground truth。
+
+Qwen 是 proposal-driven semantic confirmer：raw full T1/T2 始终是最终语义 authority，
+registered/harmonized 图和 mask 仅是辅助证据。raw T2 不能在未做 inverse transform
+时伪造为 T1 坐标 crop。每个 proposal 发布三路 score、有效权重、可靠性、semantic
+transition、二值 mask、crop-local mask/overlay 与相对路径清单；trace 记录实际
+evidence roles/count、registration quality、阈值来源、fallback、SegFormer logical
+identity、verified weight SHA 与算法设置，绝不记录 checkpoint 绝对路径或完整
+feature/probability tensor。Change runtime prompt 由 bootstrap 从 `PromptCatalog`
+注入，运行时文本、版本、request hash 与 run prompt snapshot 共享同一权威资产。
+
+2026-08-10 NVIDIA GB10 离线校准后，semantic path 的基准配置为 MiT-B2 iSAID、
+`feature_stage=1`（stride 8）、`tile_size=768`、`tile_overlap=64`、
+`local_match_radius=1`、`pif_threshold_k=4.5`，三路融合权重保持 `0.25/0.50/0.25`。
+Change V3 额外支持显式的 `feature_stages` pyramid 配置；旧的单 stage 配置仍兼容。
+该选择来自既有离线校准，不是通用 benchmark 结论。`semantic.enabled` 仍默认关闭，
+live 校准不会强制所有运行加载 SegFormer。
 
 ---
 
@@ -1484,8 +1526,15 @@ agents/change/
 
 ```text
 pair_validator
+registration
+registration_quality
 harmonizer
 difference_proposal
+feature_residual
+semantic_difference
+proposal_fusion
+perception
+semantic_transition
 preprocess
 reviewer
 agent
