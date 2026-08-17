@@ -148,6 +148,26 @@ def test_catalog_rejects_invalid_structure_and_alias_conflicts() -> None:
     with pytest.raises(CatalogCategoryError, match="ALIAS_TARGET_UNKNOWN"):
         EvidenceCatalog(data)
 
+    data = _data()
+    data["parents"] = {"vehicle": ["small-vehicle", "small-vehicle"]}
+    with pytest.raises(CatalogCategoryError, match="PARENT_TARGETS_DUPLICATED"):
+        EvidenceCatalog(data)
+
+
+def test_enabled_capability_requires_a_verified_raw_label() -> None:
+    data = _data()
+    data["leaves"]["plane"]["yolo_labels"] = []
+    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
+        EvidenceCatalog(data)
+
+
+def test_unknown_leaf_capability_queries_fail_closed() -> None:
+    catalog = _catalog()
+    with pytest.raises(CatalogCategoryError):
+        catalog.leaf_yolo_labels("unknown-object")
+    with pytest.raises(CatalogCategoryError):
+        catalog.capability_enabled("unknown-object", "yolo")
+
 
 def test_catalog_rejects_background_placeholder_and_bad_model_labels() -> None:
     for leaf in ("background", "label-0"):

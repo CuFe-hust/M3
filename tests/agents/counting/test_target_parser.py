@@ -1,5 +1,6 @@
 """Contract tests for deterministic count-target reconciliation."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -36,6 +37,36 @@ def test_scenario_a_narrows_approved_vehicle_scope(resolver) -> None:
     assert result.target.canonical_label == "small-vehicle"
     assert result.executable_leaf_categories == ("small-vehicle",)
     assert result.validation_status == "planner_scope_broadened_corrected"
+
+
+def test_specificity_guard_handles_only_approved_vehicle_variants(resolver) -> None:
+    large = _resolve(
+        resolver, question="How many large vehicals are visible?",
+        count_target_hint="vehicle",
+    )
+    assert large.target.canonical_label == "large-vehicle"
+    assert large.executable_leaf_categories == ("large-vehicle",)
+
+    unknown_typo = _resolve(
+        resolver, question="How many tiny vehicals are visible?",
+        count_target_hint="vehicle",
+    )
+    assert unknown_typo.target.canonical_label == "vehicle"
+    assert unknown_typo.executable_leaf_categories == (
+        "small-vehicle", "large-vehicle"
+    )
+
+
+def test_specificity_guard_never_widens_a_leaf_verifier(resolver) -> None:
+    result = _resolve(
+        resolver, question="How many vehicles are visible?",
+        planner_target="small-vehicle",
+        planner_object_categories=("small-vehicle",),
+        count_target_hint="small-vehicle",
+    )
+    assert result.target.canonical_label == "small-vehicle"
+    assert result.executable_leaf_categories == ("small-vehicle",)
+    assert result.validation_status == "matched"
 
 
 def test_scenario_b_repairs_incomplete_parent_expansion(resolver) -> None:
@@ -148,3 +179,50 @@ def test_resolver_has_zero_model_or_async_dependencies() -> None:
         "async def", "TargetParser =",
     )
     assert all(token not in source for token in forbidden)
+
+
+def test_final_small_vehicle_typo_acceptance_payload(resolver) -> None:
+    result = _resolve(
+        resolver,
+        question="How many small vehicals are visible?",
+        planner_target="vehicle",
+        planner_object_categories=("small-vehicle", "large-vehicle"),
+        count_target_hint="vehicle",
+    )
+    acceptance = {
+        "target": result.target.canonical_label,
+        "planner_target": result.planner_target,
+        "planner_object_categories": list(result.planner_object_categories),
+        "executable_leaf_categories": list(result.executable_leaf_categories),
+        "target_validation": result.validation_status,
+        "target_qwen_calls": 0,
+    }
+    assert acceptance == {
+        "target": "small-vehicle",
+        "planner_target": "vehicle",
+        "planner_object_categories": ["small-vehicle", "large-vehicle"],
+        "executable_leaf_categories": ["small-vehicle"],
+        "target_validation": "planner_scope_broadened_corrected",
+        "target_qwen_calls": 0,
+    }
+
+
+def test_active_production_has_no_target_qwen_wiring() -> None:
+    forbidden_patterns = (
+        "target_parse_v1", "_parse_via_qwen", "target_prompt",
+        "target_prompt_version", "artifact_dir.+target_parse",
+        "request_id=.*:target",
+    )
+    production_roots = (
+        REPO_ROOT / "agents", REPO_ROOT / "application",
+        REPO_ROOT / "workflows", REPO_ROOT / "evaluation",
+    )
+    production_text = "\n".join(
+        path.read_text(encoding="utf-8")
+        for root in production_roots
+        for path in root.rglob("*.py")
+    )
+    assert all(
+        re.search(pattern, production_text) is None
+        for pattern in forbidden_patterns
+    )

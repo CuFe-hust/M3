@@ -311,6 +311,8 @@ class VisualTaskPlan(BaseModel):
                 raise ValueError(f"invalid object category: {category!r}")
             if "/" in category or "\\" in category:
                 raise ValueError(f"object category must not be path-like: {category!r}")
+        if len(set(self.object_categories)) != len(self.object_categories):
+            raise ValueError("object_categories must not contain duplicates")
         if self.task in _COUNTING_TASKS:
             if self.count_target is None or not self.count_target.strip():
                 raise ValueError("counting task requires count_target")

@@ -78,6 +78,8 @@ def test_visual_task_plan_v4_schema_has_count_target_linkage_and_no_confidence()
     assert counting.count_target == "small-vehicle"
     with pytest.raises(ValidationError, match="requires count_target"):
         _plan(task="counting", count_target=None)
+    with pytest.raises(ValidationError, match="requires count_target"):
+        _plan(task="fine_grained_counting", count_target=None)
     with pytest.raises(ValidationError, match="non-counting"):
         _plan(count_target="small-vehicle")
 
@@ -93,6 +95,8 @@ def test_visual_task_plan_v4_allows_at_most_eight_leaf_categories() -> None:
     assert _plan(object_categories=categories).object_categories == categories
     with pytest.raises(ValidationError):
         _plan(object_categories=[*categories, "leaf-8"])
+    with pytest.raises(ValidationError, match="duplicates"):
+        _plan(object_categories=["small-vehicle", "small-vehicle"])
 
 
 def test_materialized_view_is_exact_source_pixel_geometry() -> None:
