@@ -1,6 +1,10 @@
-"""Grounding evidence seam (C6, 14A2) — per 14C, not wired to GroundingAgent yet.
+"""Grounding evidence executor with the doc-16 materialized-view seam.
 
-Grounding 证据 seam（C6，14A2）——只遵守 14C，尚未接入 GroundingAgent。
+The v2 path is wired to ``GroundingAgent`` and uses the exact planner crop
+without halo expansion.
+
+Grounding 证据执行器带有 v2 物化视图 seam。v2 路径已接入
+``GroundingAgent``，使用规划器精确裁片且不扩张 halo。
 
 Flow / 流程:
 
@@ -57,7 +61,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from agents.base import CallBudget
 from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
-from agents.schema import FirstQwenVisualPlan, RoiRegion
+from agents.schema import (
+    MaterializedVisualView,
+    VisualTaskPlan,
+)
 from agents.visual_base import PromptBinding
 from data.schema import UnifiedSample
 from models.base import (
@@ -69,17 +76,7 @@ from models.base import (
     build_request_hash,
     require_model_cache_identity,
 )
-from models.images import crop_image_region, image_to_data_url, image_sha256
-
-# Frozen 14B geometry constants mirrored locally: the canonical copies live in
-# the VQA evidence subpackage, which Grounding must never import.
-# 14B 冻结几何常量本地镜像：规范副本位于 VQA evidence 子包，Grounding 绝不
-# 导入该子包。
-HALO_RATIO = 0.10
-MAX_MODEL_SIDE = 1080
-
-# Frozen ROI coordinate frame. / 冻结 ROI 坐标制式。
-_ROI_FRAME = "normalized_0_1_top_left"
+from models.images import crop_image_box, image_to_data_url, image_sha256
 # Existing whole-image Grounding output frame. / 现有整图 Grounding 输出制式。
 _FINAL_FRAME = "normalized_0_999_top_left"
 _MAX_999 = 999
@@ -109,13 +106,8 @@ class GroundingEvidenceError(ValueError):
 
 
 class GroundingRoiRecord(BaseModel):
-    """One ROI mapped to the frozen pixel records: core is the floor/ceil
-    mapped box, expanded is core plus the per-side halo fraction clamped to
-    the image, crop_size is the expanded extent. The math mirrors
-    crop_image_region exactly so rendered crops can be verified with zero
-    drift. 一条映射到冻结像素记录的 ROI：core 是 floor/ceil 映射框，expanded
-    是 core 加每边 halo 比例并 clamp 到图像，crop_size 是 expanded 范围。
-    数学与 crop_image_region 完全一致，使渲染裁切可零漂移验证。"""
+    """One exact source-pixel geometry record for a materialized view.
+    一条物化视图对应的精确源像素几何记录。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -297,94 +289,6 @@ class GroundingEvidencePolicy:
         return self.confidence_threshold is not None
 
 
-# ── pure geometry / 纯几何 ───────────────────────────────────────────────
-
-
-def map_grounding_roi(
-    region: RoiRegion,
-    source_size: tuple[int, int],
-    *,
-    halo_ratio: float = HALO_RATIO,
-) -> GroundingRoiRecord:
-    """Map one normalized [0,1] ROI to the frozen pixel records; the math
-    mirrors crop_image_region exactly so rendered crops can be verified with
-    zero drift. 将一个归一化 [0,1] ROI 映射为冻结像素记录；数学与
-    crop_image_region 完全一致，使渲染裁切可零漂移验证。"""
-    width, height = source_size
-    if width <= 0 or height <= 0:
-        raise ValueError(f"source size must be positive, got {source_size!r}")
-    x0, y0, x1, y1 = region.xyxy
-    x0_px = x0 / 1.0 * width
-    y0_px = y0 / 1.0 * height
-    x1_px = x1 / 1.0 * width
-    y1_px = y1 / 1.0 * height
-    core = (
-        math.floor(x0_px),
-        math.floor(y0_px),
-        math.ceil(x1_px),
-        math.ceil(y1_px),
-    )
-    halo_x = (x1_px - x0_px) * halo_ratio
-    halo_y = (y1_px - y0_px) * halo_ratio
-    expanded = (
-        max(0, min(width, math.floor(x0_px - halo_x))),
-        max(0, min(height, math.floor(y0_px - halo_y))),
-        max(0, min(width, math.ceil(x1_px + halo_x))),
-        max(0, min(height, math.ceil(y1_px + halo_y))),
-    )
-    return GroundingRoiRecord(
-        roi_id=region.roi_id,
-        image_id=region.image_id,
-        source_size=(width, height),
-        core_xyxy=core,
-        expanded_xyxy=expanded,
-        crop_size=(expanded[2] - expanded[0], expanded[3] - expanded[1]),
-    )
-
-
-def full_image_grounding_roi(
-    image_id: str,
-    source_size: tuple[int, int],
-) -> GroundingRoiRecord:
-    """The unique full-image ROI: a plan without a reliable spatial constraint
-    maps to this single ROI, never to a truncated or guessed region.
-    唯一整图 ROI：“无可靠空间约束”的计划映射到该唯一 ROI，绝不截断或猜测。"""
-    width, height = source_size
-    return GroundingRoiRecord(
-        roi_id="full",
-        image_id=image_id,
-        source_size=(width, height),
-        core_xyxy=(0, 0, width, height),
-        expanded_xyxy=(0, 0, width, height),
-        crop_size=(width, height),
-    )
-
-
-def resolve_grounding_rois(
-    plan: FirstQwenVisualPlan,
-    sizes: Mapping[str, tuple[int, int]],
-    *,
-    fallback_image_id: str,
-    halo_ratio: float = HALO_RATIO,
-) -> list[GroundingRoiRecord]:
-    """Frozen ROI resolution: a plan with no spatial constraint falls back to
-    the unique full-image ROI of the fallback image; a valid non-empty plan
-    maps directly. An unknown image_id fails with a stable error instead of
-    guessing a size. 冻结 ROI 解析：无空间约束的计划回退为 fallback 图的唯一
-    整图 ROI；合法非空计划直接映射。未知 image_id 以稳定错误失败而非猜测
-    尺寸。"""
-    if not plan.roi_plan.rois:
-        if fallback_image_id not in sizes:
-            raise ValueError(f"fallback image_id {fallback_image_id!r} has no size")
-        return [full_image_grounding_roi(fallback_image_id, sizes[fallback_image_id])]
-    records: list[GroundingRoiRecord] = []
-    for region in plan.roi_plan.rois:
-        if region.image_id not in sizes:
-            raise ValueError(f"plan references unknown image_id {region.image_id!r}")
-        records.append(map_grounding_roi(region, sizes[region.image_id], halo_ratio=halo_ratio))
-    return records
-
-
 def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
     """Pure-python intersection over union of two axis-aligned boxes.
     两个轴对齐框交并比的纯 Python 实现。"""
@@ -510,8 +414,6 @@ class GroundingEvidenceExecutor:
         yolo_client: ObjectDetectionClient | None = None,
         yolo_device: str | None = None,
         yolo_image_size: int | None = None,
-        halo_ratio: float = HALO_RATIO,
-        max_side: int = MAX_MODEL_SIDE,
     ) -> None:
         """prompt carries the final-Grounding prompt binding (text + version);
         the final prompt itself is deferred (14C §13 item 6) and is therefore
@@ -520,10 +422,6 @@ class GroundingEvidenceExecutor:
         prompt 携带最终 Grounding prompt 绑定（text + version）；最终 prompt
         本身被延期（14C §13 第 6 项），因此注入而非在此默认。YOLO 阶段启用时
         必须提供 yolo_image_size；能力关闭时该值无关。"""
-        if not math.isfinite(halo_ratio) or halo_ratio < 0.0:
-            raise ValueError(f"halo_ratio must be finite and >= 0, got {halo_ratio!r}")
-        if max_side <= 0:
-            raise ValueError("max_side must be positive")
         if yolo_image_size is not None and yolo_image_size <= 0:
             raise ValueError("yolo_image_size must be positive when set")
         if policy.yolo_enabled and yolo_image_size is None:
@@ -535,20 +433,19 @@ class GroundingEvidenceExecutor:
         self._yolo_client = yolo_client
         self._yolo_device = yolo_device
         self._yolo_image_size = yolo_image_size
-        self._halo_ratio = halo_ratio
-        self._max_side = max_side
 
     # ── main entry / 主入口 ─────────────────────────────────────────────
 
     async def run(
         self,
-        plan: FirstQwenVisualPlan,
+        plan: VisualTaskPlan,
         sample: UnifiedSample,
         images: Mapping[str, Image.Image],
         *,
         fallback_image_id: str,
         artifact_dir: Path,
         budget: CallBudget | None = None,
+        materialized_views: tuple[MaterializedVisualView, ...],
     ) -> GroundingEvidenceResult:
         """Run the 14C flow over one plan and one sample. The plan must carry
         a validated evidence request; all accumulated state is re-created per
@@ -556,30 +453,24 @@ class GroundingEvidenceExecutor:
         对一个计划与一条样本运行 14C 流程。计划必须携带已校验 evidence
         request；所有累积状态在每次调用时重新创建，一个执行器可服务多个计划
         而无跨计划泄漏。"""
-        if plan.evidence_request is None:
-            raise GroundingEvidenceError("PLAN_WITHOUT_EVIDENCE_REQUEST")
         if not sample.images:
             raise GroundingEvidenceError("SAMPLE_WITHOUT_IMAGES")
         try:
-            leaves = self._catalog.expand_composites(
-                plan.evidence_request.composite_categories
-            )
+            if not plan.needs_visual_assistance:
+                raise GroundingEvidenceError("PLAN_WITHOUT_VISUAL_ASSISTANCE")
+            if not materialized_views:
+                raise GroundingEvidenceError("MATERIALIZED_VIEWS_MISSING")
+            leaves = self._catalog.expand_composites(plan.object_categories)
         except CatalogCategoryError as exc:
             raise GroundingEvidenceError("PLAN_INVALID") from exc
         sizes = {image_id: image.size for image_id, image in images.items()}
-        regions = self._regions(plan, fallback_image_id)
         try:
-            records = resolve_grounding_rois(
-                plan,
-                sizes,
-                fallback_image_id=fallback_image_id,
-                halo_ratio=self._halo_ratio,
-            )
+            records = self._materialized_regions(materialized_views, sizes)
         except ValueError as exc:
             raise GroundingEvidenceError("PLAN_INVALID") from exc
 
         detections, outcomes, audits, dropped = self._yolo_phase(
-            images, regions, records, leaves
+            images, records, leaves
         )
         candidates = self._assign_box_ids(detections)
         leaf_states, missing_leaves = self._aggregate_leaves(
@@ -589,7 +480,6 @@ class GroundingEvidenceExecutor:
         response, audits = await self._final_qwen(
             sample,
             images,
-            regions,
             records,
             candidates,
             missing_leaves,
@@ -613,31 +503,44 @@ class GroundingEvidenceExecutor:
             raise GroundingEvidenceError("NO_VALID_BOXES")
         return result
 
-    # ── helpers / 辅助 ──────────────────────────────────────────────────
-
-    def _regions(
+    def _materialized_regions(
         self,
-        plan: FirstQwenVisualPlan,
-        fallback_image_id: str,
-    ) -> list[RoiRegion]:
-        """Plan ROIs in order, or the unique full-image ROI for an empty plan.
-        按顺序返回计划 ROI；空计划返回唯一整图 ROI。"""
-        if plan.roi_plan.rois:
-            return list(plan.roi_plan.rois)
-        return [
-            RoiRegion(
-                roi_id="full",
-                image_id=fallback_image_id,
-                xyxy=(0.0, 0.0, 1.0, 1.0),
+        views: tuple[MaterializedVisualView, ...],
+        sizes: Mapping[str, tuple[int, int]],
+    ) -> list[GroundingRoiRecord]:
+        """Build exact fixed/full ROI records from v2 materialized views.
+        从 v2 物化视图构建精确的固定/整图 ROI 记录。"""
+        if not views:
+            raise ValueError("materialized views must not be empty")
+        records: list[GroundingRoiRecord] = []
+        for index, view in enumerate(views):
+            size = sizes.get(view.image_id)
+            if size != view.source_size:
+                raise ValueError("materialized view source size does not match image")
+            roi_id = (
+                "full"
+                if len(views) == 1 and view.view_mode == "full_image"
+                else f"{view.view_mode}-{index}"
             )
-        ]
+            records.append(
+                GroundingRoiRecord(
+                    roi_id=roi_id,
+                    image_id=view.image_id,
+                    source_size=view.source_size,
+                    core_xyxy=view.crop_xyxy,
+                    expanded_xyxy=view.crop_xyxy,
+                    crop_size=view.crop_size,
+                )
+            )
+        return records
+
+    # ── helpers / 辅助 ──────────────────────────────────────────────────
 
     # ── YOLO phase / YOLO 阶段 ──────────────────────────────────────────
 
     def _yolo_phase(
         self,
         images: Mapping[str, Image.Image],
-        regions: list[RoiRegion],
         records: list[GroundingRoiRecord],
         leaves: tuple[str, ...],
     ) -> tuple[
@@ -660,8 +563,8 @@ class GroundingEvidenceExecutor:
         yolo_active = (
             self._yolo_client is not None and self._policy.yolo_enabled
         )
-        for region, record in zip(regions, records):
-            crop = self._render_crop(images[record.image_id], region, record)
+        for record in records:
+            crop = self._render_crop(images[record.image_id], record)
             outputs: list[ObjectDetectionOutput] | None = None
             failed_code: str | None = None
             if yolo_active:
@@ -691,7 +594,7 @@ class GroundingEvidenceExecutor:
                 audits.append(
                     GroundingCallAudit(
                         layer="yolo",
-                        roi_id=region.roi_id,
+                        roi_id=record.roi_id,
                         input_size=crop.size,
                         logical_model_id=logical_model_id,
                         weights_sha256=digest,
@@ -702,19 +605,19 @@ class GroundingEvidenceExecutor:
             left, top = record.expanded_xyxy[0], record.expanded_xyxy[1]
             for leaf in leaves:
                 if not self._catalog.capability_enabled(leaf, "yolo"):
-                    outcomes.append((region.roi_id, leaf, "unsupported", None))
+                    outcomes.append((record.roi_id, leaf, "unsupported", None))
                     continue
                 if not yolo_active:
-                    outcomes.append((region.roi_id, leaf, "unavailable", None))
+                    outcomes.append((record.roi_id, leaf, "unavailable", None))
                     continue
                 if failed_code is not None:
-                    outcomes.append((region.roi_id, leaf, "error", failed_code))
+                    outcomes.append((record.roi_id, leaf, "error", failed_code))
                     continue
                 assert outputs is not None
                 leaf_labels = set(self._catalog.leaf_yolo_labels(leaf))
                 leaf_outputs = [o for o in outputs if o.label in leaf_labels]
                 if not leaf_outputs:
-                    outcomes.append((region.roi_id, leaf, "missing", None))
+                    outcomes.append((record.roi_id, leaf, "missing", None))
                     continue
                 retained = sorted(
                     leaf_outputs, key=lambda o: o.confidence, reverse=True
@@ -734,7 +637,7 @@ class GroundingEvidenceExecutor:
                         _RawDetection(
                             confidence=detection.confidence,
                             leaf_category=leaf,
-                            roi_id=region.roi_id,
+                            roi_id=record.roi_id,
                             local_normalized_xyxy=box,
                             global_xyxy=(
                                 detection.xyxy[0] + left,
@@ -745,9 +648,9 @@ class GroundingEvidenceExecutor:
                         )
                     )
                 if normalized:
-                    outcomes.append((region.roi_id, leaf, "hit", None))
+                    outcomes.append((record.roi_id, leaf, "hit", None))
                 else:
-                    outcomes.append((region.roi_id, leaf, "missing", None))
+                    outcomes.append((record.roi_id, leaf, "missing", None))
         deduped = self._dedup_cross_roi(raw)
         return deduped, outcomes, audits, dropped
 
@@ -804,19 +707,12 @@ class GroundingEvidenceExecutor:
     def _render_crop(
         self,
         image: Image.Image,
-        region: RoiRegion,
         record: GroundingRoiRecord,
     ) -> Image.Image:
-        """Crop one ROI through the shared crop_image_region primitive and
-        verify the rendered size matches the geometry record — zero-drift guard
-        between the two layers. 通过共享 crop_image_region 原语裁切一个 ROI，
-        并验证渲染尺寸与几何记录一致——两层之间的零漂移守卫。"""
-        crop = crop_image_region(
-            image,
-            region.xyxy,
-            coordinate_frame=_ROI_FRAME,  # type: ignore[arg-type]
-            halo_ratio=self._halo_ratio,
-        )
+        """Crop the exact source-pixel box from the v2 materialized view.
+        按 v2 物化视图的精确源像素框裁切图像。"""
+
+        crop = crop_image_box(image, record.expanded_xyxy)
         if crop.size != record.crop_size:
             raise GroundingEvidenceError("ROI_CROP_DRIFT")
         return crop
@@ -859,7 +755,6 @@ class GroundingEvidenceExecutor:
         self,
         sample: UnifiedSample,
         images: Mapping[str, Image.Image],
-        regions: list[RoiRegion],
         records: list[GroundingRoiRecord],
         candidates: list[GroundingCandidateRecord],
         missing_leaves: list[str],
@@ -885,12 +780,11 @@ class GroundingEvidenceExecutor:
         data_urls: list[str] = []
         image_digests: list[str] = []
         preview_sizes: list[tuple[int, int]] = []
-        for region, record in zip(regions, records):
-            crop = self._render_crop(images[record.image_id], region, record)
-            preview = self._qwen_sized(crop)
-            preview_sizes.append(preview.size)
+        for record in records:
+            crop = self._render_crop(images[record.image_id], record)
+            preview_sizes.append(crop.size)
             buffer = io.BytesIO()
-            preview.save(buffer, format="PNG")
+            crop.save(buffer, format="PNG")
             data = buffer.getvalue()
             data_urls.append(image_to_data_url(data, "image/png"))
             image_digests.append(image_sha256(data))
@@ -980,18 +874,6 @@ class GroundingEvidenceExecutor:
                 )
             )
         return response, audits
-
-    def _qwen_sized(self, image: Image.Image) -> Image.Image:
-        """Shrink the image only when its longest side exceeds max_side; never
-        upscale (frozen 14B resolution rule). 仅当最长边超过 max_side 时缩小；
-        绝不放大（冻结 14B 分辨率规则）。"""
-        width, height = image.size
-        longest = max(width, height)
-        if longest <= self._max_side:
-            return image
-        scale = self._max_side / longest
-        target = (max(1, round(width * scale)), max(1, round(height * scale)))
-        return image.resize(target, resample=Image.Resampling.LANCZOS)
 
     # ── deterministic postprocess / 确定性后处理 ─────────────────────────
 

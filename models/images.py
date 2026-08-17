@@ -41,6 +41,63 @@ CoordinateFrame = Literal[
     "normalized_0_999_top_left",
 ]
 
+
+def materialize_fixed_roi(
+    source_size: tuple[int, int],
+    focus_xy_norm: Sequence[float],
+    *,
+    roi_size: int = 1024,
+) -> tuple[int, int, int, int]:
+    """Return the deterministic fixed-size ROI centered on a normalized focus.
+    按归一化焦点返回确定性的固定尺寸 ROI。"""
+    width, height = source_size
+    if width <= roi_size or height <= roi_size:
+        raise ValueError("fixed ROI requires both source dimensions to exceed roi_size")
+    if roi_size <= 0:
+        raise ValueError("roi_size must be positive")
+    if len(focus_xy_norm) != 2:
+        raise ValueError("focus_xy_norm must contain exactly two values")
+    try:
+        focus_x, focus_y = (float(value) for value in focus_xy_norm)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("focus_xy_norm must be numeric") from exc
+    if not all(math.isfinite(value) for value in (focus_x, focus_y)):
+        raise ValueError("focus_xy_norm must be finite")
+    if not all(0.0 <= value <= 1.0 for value in (focus_x, focus_y)):
+        raise ValueError("focus_xy_norm must be within [0, 1]")
+
+    center_x = round(focus_x * width)
+    center_y = round(focus_y * height)
+    x0 = max(0, min(center_x - roi_size // 2, width - roi_size))
+    y0 = max(0, min(center_y - roi_size // 2, height - roi_size))
+    return (x0, y0, x0 + roi_size, y0 + roi_size)
+
+
+def crop_image_box(
+    image: Path | Image.Image,
+    box: Sequence[int],
+) -> Image.Image:
+    """Crop an exact integer half-open box from a normalized RGB image.
+    从规范化 RGB 图像按整数半开区间精确裁切，并返回独立图像。"""
+    values = tuple(box)
+    if len(values) != 4 or not all(isinstance(value, int) for value in values):
+        raise ValueError("box must contain four integer coordinates")
+    x0, y0, x1, y1 = values
+    if x0 < 0 or y0 < 0 or x1 <= x0 or y1 <= y0:
+        raise ValueError("box must be a positive half-open rectangle")
+    if isinstance(image, Path):
+        normalized = read_normalized_image(image)
+    elif isinstance(image, Image.Image):
+        normalized = ImageOps.exif_transpose(image).convert("RGB")
+    else:
+        raise TypeError(
+            f"image must be a Path or PIL.Image.Image, got {type(image).__name__}"
+        )
+    width, height = normalized.size
+    if x1 > width or y1 > height:
+        raise ValueError("box must be inside the image")
+    return normalized.crop((x0, y0, x1, y1))
+
 # Max normalized coordinate per frame; the image edge maps to this value.
 # 每种坐标制式允许的最大归一化坐标，图片边缘对应此值。
 _FRAME_UPPER_BOUND: dict[str, float] = {

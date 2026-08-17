@@ -75,36 +75,22 @@ class AgentsSettings(BaseModel):
     change: AgentChangeSettings = Field(default_factory=AgentChangeSettings)
 
 
-class VisualPlannerFailureSettings(BaseModel):
-    """Frozen planner failure policy (14A2 approved gate: strict failure).
-    Only "fail" is a supported value — any future relaxation requires a new
-    approval. 冻结规划器失败策略（14A2 批准门禁：严格失败）。只支持 "fail"——
-    未来任何放宽都需新批准。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    on_low_confidence: Literal["fail"] = "fail"
-    on_planner_error: Literal["fail"] = "fail"
-
-
 class VisualPlannerSettings(BaseModel):
-    """First-Qwen planner runtime parameters (C7, 14A2). The catalog/prompt
-    versions bind the planner prompt and the closed evidence catalog to one
-    versioned pair. 第一 Qwen 规划器运行时参数（C7，14A2）。catalog/prompt
-    版本把规划 prompt 与封闭证据目录绑定到单一版本对。"""
+    """Canonical v3 visual-only planner parameters.
+    规范 v3 纯视觉规划器参数。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    prompt_version: str = "v1"
     # Must equal the version declared by agents/evidence_catalog.json; the
-    # composition root verifies the binding when the feature is enabled.
-    # 必须等于 agents/evidence_catalog.json 声明的版本；启用时组合根校验该绑定。
+    # composition root verifies this binding for every fresh runtime.
+    # 必须等于 agents/evidence_catalog.json 声明的版本；每次新鲜运行均由组合根校验。
     catalog_version: str = "first-qwen-evidence-catalog-v2"
-    max_rois: int = Field(default=3, ge=1, le=3)
-    halo_ratio: float = Field(default=0.10, ge=0.0, le=1.0)
-    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
-    failure: VisualPlannerFailureSettings = Field(
-        default_factory=VisualPlannerFailureSettings
+    task_prompt_version: str = "v3"
+    planning_mode: Literal["visual-task-plan-v3"] = "visual-task-plan-v3"
+    preview_max_side: int = Field(default=1080, gt=0)
+    roi_size: int = Field(default=1024, gt=0)
+    large_image_policy: Literal["both-dimensions-strictly-greater-than-1024"] = (
+        "both-dimensions-strictly-greater-than-1024"
     )
 
 
@@ -164,19 +150,17 @@ class VisualSegmenterSettings(BaseModel):
 
 
 class VisualPlanningSettings(BaseModel):
-    """Feature-flagged first-Qwen visual workflow configuration group (C7,
-    14A2). Everything defaults to the frozen disabled state; the flag off
-    keeps all existing behaviour byte-identical. 特性开关式第一 Qwen 视觉工作
-    流配置组（C7，14A2）。全部默认即冻结的禁用状态；flag off 完全保持现有
-    行为。"""
+    """Visual-only planner and evidence capability configuration.
+    纯视觉规划器与视觉证据能力配置。
+
+    Fresh execution is always planner-first. / 新鲜执行始终先规划。
+    """
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
     planner: VisualPlannerSettings = Field(default_factory=VisualPlannerSettings)
     detectors: dict[str, VisualDetectorSettings] = Field(default_factory=dict)
     segmenters: dict[str, VisualSegmenterSettings] = Field(default_factory=dict)
-    roi_partial_failure: Literal["continue"] = "continue"
 
 
 class AppSettings(BaseModel):

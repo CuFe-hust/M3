@@ -17,17 +17,16 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 from agents.general_vqa.evidence.geometry import (
-    HALO_RATIO,
     MAX_MODEL_SIDE,
     compute_preview_size,
 )
 from agents.general_vqa.evidence.schema import RoiEvidenceRecord
-from agents.schema import RoiRegion
 from models.images import (
-    crop_image_region,
+    crop_image_box,
     image_to_data_url,
     image_sha256,
     read_normalized_image,
+    materialize_fixed_roi as _materialize_fixed_roi,
 )
 
 # Internal overlay transparency; the frozen palette/persistence parameters are
@@ -37,27 +36,39 @@ from models.images import (
 _OVERLAY_ALPHA = 0.40
 
 
+def normalized_image_size(path: Path) -> tuple[int, int]:
+    """Return the EXIF/RGB-normalized source size for planner geometry.
+    返回规划器几何所需的 EXIF/RGB 规范化源尺寸。"""
+    return read_normalized_image(path).size
+
+
+def materialize_fixed_roi(
+    source_size: tuple[int, int],
+    focus_xy_norm: tuple[float, float],
+    *,
+    roi_size: int = 1024,
+) -> tuple[int, int, int, int]:
+    """Expose the shared fixed-ROI primitive through the agents seam.
+    通过 agents seam 暴露共享的固定 ROI 原语。"""
+    return _materialize_fixed_roi(
+        source_size,
+        focus_xy_norm,
+        roi_size=roi_size,
+    )
+
+
 def render_roi_crop(
     image: Image.Image,
-    region: RoiRegion,
     record: RoiEvidenceRecord,
-    *,
-    halo_ratio: float = HALO_RATIO,
 ) -> Image.Image:
-    """Crop one ROI through the shared crop_image_region (never copied) and
-    verify the rendered size matches the geometry record — zero-drift guard
-    between the two layers. 通过共享 crop_image_region（绝不复制）裁切一个
-    ROI，并验证渲染尺寸与几何记录一致——两层之间的零漂移守卫。"""
-    crop = crop_image_region(
-        image,
-        region.xyxy,
-        coordinate_frame="normalized_0_1_top_left",
-        halo_ratio=halo_ratio,
-    )
+    """Render the exact source-pixel box recorded by the v3 planner.
+    按 v3 规划器记录的精确源像素框渲染图像。"""
+
+    crop = crop_image_box(image, record.expanded_xyxy)
     if crop.size != record.crop_size:
         raise ValueError(
             f"ROI crop drift: geometry predicts {record.crop_size!r} but "
-            f"crop_image_region rendered {crop.size!r}"
+            f"pixel crop rendered {crop.size!r}"
         )
     return crop
 

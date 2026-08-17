@@ -35,11 +35,27 @@ from reporting.adapters import (
     load_model_calls,
     load_payload,
 )
-from reporting.builder import build_report
+from reporting.builder import _execution_path, build_report
 from reporting.exporters import write_csv, write_json
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
+
+
+def test_reporting_recognizes_historical_v2_and_current_v3_planner_traces(
+    tmp_path: Path,
+) -> None:
+    for mode in ("visual-task-plan-v2", "visual-task-plan-v3"):
+        path = _execution_path(
+            tmp_path,
+            run_task="general_vqa",
+            task="general_vqa",
+            trace={"planning_mode": mode},
+            model_calls=[],
+            structured_artifacts=[],
+            evaluation=None,
+        )
+        assert "workflows.visual_planner.VisualTaskPlanner" in path
 
 
 def _v2_point(

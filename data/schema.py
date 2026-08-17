@@ -15,9 +15,17 @@ import hashlib
 import math
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import TypeAliasType
 
 # Public task names accepted by the runtime. / 运行时接受的公开任务名。
@@ -362,10 +370,10 @@ class SampleDraft(BaseModel):
     """Pre-sample contract for datasets without an explicit per-sample task.
     No task-specific roles validation happens here: image roles are
     placeholder 'image' and are rebuilt when the draft is materialized after
-    task resolution. UnifiedSample.task stays mandatory — the draft exists
-    only before resolution. 无显式逐样本 task 数据集的样本前契约。此处不做
-    task 相关角色校验：图像角色为占位 'image'，在任务解析后物化样本时重建。
-    UnifiedSample.task 保持必填——draft 只存在于解析之前。"""
+    visual planning. UnifiedSample.task stays mandatory — the draft exists
+    only before materialization. 无显式逐样本 task 数据集的样本前契约。此处不做
+    task 相关角色校验：图像角色为占位 'image'，在视觉规划后物化样本时重建。
+    UnifiedSample.task 保持必填——draft 只存在于物化之前。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -386,6 +394,56 @@ class SampleDraft(BaseModel):
         if isinstance(value, dict):
             _assert_json_safe(value, "metadata")
         return value
+
+
+_ALL_TASK_NAMES = frozenset(get_args(TaskName))
+
+
+class SampleMaterializationError(ValueError):
+    """Stable error for draft-to-sample materialization failures.
+    draft 到样本物化失败时只暴露稳定错误码。"""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(f"SAMPLE_MATERIALIZATION_FAILED:{code}")
+        self.code = code
+
+
+def materialize_sample(draft: SampleDraft, task: str) -> UnifiedSample:
+    """Materialize a draft into the canonical UnifiedSample contract.
+    将 SampleDraft 物化为 canonical UnifiedSample 契约。
+
+    The task is supplied by the active visual planner or an explicit dataset
+    task; this boundary never guesses a task. Image roles are rebuilt here so
+    all downstream code receives a complete sample contract.
+    task 由现役视觉规划器或数据集显式任务提供；此边界绝不猜任务。图像角色
+    在此重建，确保下游始终收到完整样本契约。
+    """
+
+    if task not in _ALL_TASK_NAMES:
+        raise SampleMaterializationError("UNKNOWN_TASK")
+    change_task = task in CHANGE_TASKS
+    if change_task and len(draft.images) < 2:
+        raise SampleMaterializationError("CHANGE_TASK_NEEDS_TWO_IMAGES")
+    roles = ["t1", "t2"] if change_task else ["image"]
+    roles.extend("context" for _ in range(len(draft.images) - len(roles)))
+    images = [
+        image.model_copy(update={"role": role})
+        for image, role in zip(draft.images, roles)
+    ]
+    try:
+        return UnifiedSample(
+            sample_id=draft.sample_id,
+            dataset=draft.dataset,
+            split=draft.split,
+            task=task,  # type: ignore[arg-type]
+            images=images,
+            question=draft.question,
+            ground_truth=draft.ground_truth,
+            metadata=draft.metadata,
+            normalization=None,
+        )
+    except ValidationError as exc:
+        raise SampleMaterializationError("SAMPLE_CONTRACT_VIOLATION") from exc
 
 
 

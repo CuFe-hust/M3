@@ -19,9 +19,12 @@ from data import __all__ as data_exports
 from data.schema import (
     GroundTruth,
     ImageRef,
+    SampleDraft,
+    SampleMaterializationError,
     TaskNormalization,
     UnifiedSample,
     ValidationIssue,
+    materialize_sample,
     stable_sample_id,
 )
 
@@ -277,6 +280,39 @@ def test_non_change_tasks_reject_temporal_roles() -> None:
     _sample(task="general_vqa", images=[_image("image"), _image("context")])
     with pytest.raises(ValidationError, match="start with an image"):
         _sample(task="general_vqa", images=[_image("t1")])
+
+
+def test_materialize_sample_assigns_canonical_roles() -> None:
+    draft = SampleDraft(
+        sample_id="draft-1",
+        dataset="demo",
+        split="val",
+        images=[
+            ImageRef(image_id="a", path="a.png", role="image"),
+            ImageRef(image_id="b", path="b.png", role="image"),
+            ImageRef(image_id="c", path="c.png", role="image"),
+        ],
+        question="What changed?",
+    )
+    change = materialize_sample(draft, "change_qa")
+    assert [item.role for item in change.images] == ["t1", "t2", "context"]
+
+    single = materialize_sample(draft.model_copy(update={"images": draft.images[:1]}), "general_vqa")
+    assert [item.role for item in single.images] == ["image"]
+
+
+def test_materialize_sample_fails_closed_for_unknown_or_invalid_task() -> None:
+    draft = SampleDraft(
+        sample_id="draft-1",
+        dataset="demo",
+        split="val",
+        images=[ImageRef(image_id="a", path="a.png", role="image")],
+        question="How many?",
+    )
+    with pytest.raises(SampleMaterializationError, match="UNKNOWN_TASK"):
+        materialize_sample(draft, "not-a-task")
+    with pytest.raises(SampleMaterializationError, match="CHANGE_TASK_NEEDS_TWO_IMAGES"):
+        materialize_sample(draft, "change_qa")
     with pytest.raises(ValidationError, match="start with an image"):
         _sample(task="counting", images=[_image("t1"), _image("t2")])
     with pytest.raises(ValidationError, match="only context"):
