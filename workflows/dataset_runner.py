@@ -782,11 +782,18 @@ class DatasetRunner:
             if evaluation is None:
                 return  # fail closed: coordinate/geometry/reference mismatch
             self.artifact_writer.write_evaluation(sample_dir, evaluation, filename=filename)
-        if evaluation_task_for_runtime_task(task) == "general_vqa":
+        evaluation_family = evaluation_task_for_runtime_task(task)
+        judge_caption = task == "change_caption"
+        if evaluation_family == "general_vqa" or judge_caption:
             judge_service = self.sample_runner.judge_service
             if judge_service is not None and self._judge_policy_for(sample.sample_id) != "none":
+                judge_method = (
+                    judge_service.judge_caption_resume
+                    if judge_caption
+                    else judge_service.judge_vqa_resume
+                )
                 evaluation = await asyncio.to_thread(
-                    judge_service.judge_vqa_resume,
+                    judge_method,
                     sample=sample,
                     candidate_answer="",
                     sample_dir=sample_dir,
@@ -796,7 +803,7 @@ class DatasetRunner:
                 self.artifact_writer.write_evaluation(
                     sample_dir,
                     evaluation,
-                    filename=EVALUATION_FILENAME_BY_TASK["general_vqa"],
+                    filename=EVALUATION_FILENAME_BY_TASK[evaluation_family],
                 )
 
     def _load_persisted_payload(

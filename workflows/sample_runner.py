@@ -626,14 +626,21 @@ class SampleRunner:
         evaluation, filename = build_deterministic_evaluation(
             sample=sample, execution_payload=execution.payload
         )
+        evaluation_family = evaluation_task_for_runtime_task(task)
+        judge_caption = task == "change_caption"
         if (
-            evaluation_task_for_runtime_task(task) == "general_vqa"
+            (evaluation_family == "general_vqa" or judge_caption)
             and self.judge_service is not None
         ):
             candidate_answer = str(getattr(execution.payload, "answer", ""))
             try:
+                judge_method = (
+                    self.judge_service.judge_caption
+                    if judge_caption
+                    else self.judge_service.judge_vqa
+                )
                 evaluation = await asyncio.to_thread(
-                    self.judge_service.judge_vqa,
+                    judge_method,
                     sample=sample,
                     candidate_answer=candidate_answer,
                     sample_dir=sample_dir,

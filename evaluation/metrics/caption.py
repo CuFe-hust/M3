@@ -66,6 +66,41 @@ def evaluate_caption(
     return results
 
 
+def merge_caption_evaluation(
+    *,
+    sample_id: str,
+    references: Sequence[str],
+    candidate: str,
+    judge_parsed: Any | None = None,
+    judge_error: str | None = None,
+) -> EvaluationRecord:
+    """Merge deterministic caption evidence with an optional text judge.
+
+    The judge is auxiliary and never replaces the caption metrics.
+    将 caption 的确定性指标与可选文本 judge 合并；judge 仅为辅助证据，
+    绝不替换 caption 确定性指标。
+    """
+
+    metrics = CaptionDeterministicMetrics(
+        candidate=str(candidate),
+        references=list(references),
+    )
+    if judge_error is not None:
+        status = "failed"
+    elif judge_parsed is None:
+        status = "not_requested"
+    else:
+        status = "succeeded"
+    return EvaluationRecord(
+        sample_id=sample_id,
+        task="caption",
+        deterministic_metrics=metrics,
+        judge_status=status,
+        judge_parsed=judge_parsed,
+        judge_error=judge_error,
+    )
+
+
 def aggregate_caption(records: Sequence[EvaluationRecord]) -> dict[str, Any]:
     """Collect per-sample candidates and references from unified caption
     records and compute the corpus-level caption metrics.

@@ -130,7 +130,7 @@ class DatasetRunOptions:
     sample_concurrency: int = 1
     sample_ids: set[str] | None = None
     evaluate: bool = False
-    judge_policy: str = "none"
+    judge_policy: str = "all"
     judge_sample_rate: float | None = None
     render_errors: bool = False
     fail_fast: bool = False
@@ -187,7 +187,7 @@ class RunRequest(BaseModel):
     shard_count: int = Field(default=1, ge=1)
     sample_concurrency: int = Field(default=1, ge=1)
     evaluate: bool = True
-    judge_policy: str = "none"
+    judge_policy: str = "all"
     judge_sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     render_errors: bool = False
     fail_fast: bool = False

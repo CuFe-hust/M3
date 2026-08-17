@@ -30,7 +30,7 @@ def test_parser_run_dataset_defaults() -> None:
     )
     assert args.command == "run-dataset"
     assert args.evaluate is True  # deterministic evaluation on by default
-    assert args.judge_policy == "none"  # external DeepSeek off by default
+    assert args.judge_policy == "all"  # DeepSeek verification on by default
     assert args.auto_task is False
     assert args.resume is False
     assert args.limit is None
@@ -184,7 +184,7 @@ def test_main_maps_args_to_options_and_prints_summary(capsys, monkeypatch) -> No
     assert options.shard_count == 2
     assert options.sample_concurrency == 3
     assert options.evaluate is True
-    assert options.judge_policy == "none"
+    assert options.judge_policy == "all"
     assert options.fail_fast is True
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "ok"

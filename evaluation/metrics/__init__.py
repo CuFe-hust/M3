@@ -2,7 +2,11 @@
 确定性评估指标导出。"""
 
 from evaluation.metrics.aggregate import aggregate
-from evaluation.metrics.caption import aggregate_caption, evaluate_caption
+from evaluation.metrics.caption import (
+    aggregate_caption,
+    evaluate_caption,
+    merge_caption_evaluation,
+)
 from evaluation.metrics.counting import (
     aggregate_counting,
     count_deterministic_metrics,
@@ -33,6 +37,7 @@ __all__ = [
     "box_iou",
     "count_deterministic_metrics",
     "evaluate_caption",
+    "merge_caption_evaluation",
     "exact_match",
     "grounding_deterministic_metrics",
     "merge_count_evaluation",

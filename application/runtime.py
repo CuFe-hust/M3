@@ -67,7 +67,7 @@ def build_dataset_run_options(
     sample_concurrency: int = 1,
     sample_ids: set[str] | None = None,
     evaluate: bool = True,
-    judge_policy: str = "none",
+    judge_policy: str = "all",
     judge_sample_rate: float | None = None,
     render_errors: bool = False,
     fail_fast: bool = False,

@@ -25,6 +25,7 @@ from evaluation.judges.base import (
     stable_error_label,
 )
 from evaluation.metrics.counting import merge_count_evaluation
+from evaluation.metrics.caption import merge_caption_evaluation
 from evaluation.metrics.vqa import merge_vqa_evaluation, to_evaluation_record
 from evaluation.records import (
     EVALUATION_FILENAME_BY_TASK,
@@ -204,6 +205,74 @@ class JudgeService:
             judge_parsed=verdict,
         )
 
+    def judge_caption(
+        self,
+        *,
+        sample: UnifiedSample,
+        candidate_answer: str,
+        sample_dir: Path,
+        judge_policy: str = "all",
+        call_budget: CallBudget | None = None,
+    ) -> EvaluationRecord:
+        """Judge a caption answer with the same text-only answer contract as
+        VQA while preserving the caption evaluation task and metrics.
+        使用与 VQA 相同的纯文本答案审核契约，但保留 caption 任务和指标。
+        """
+
+        references = (
+            list(sample.ground_truth.answers)
+            if sample.ground_truth is not None
+            else []
+        )
+        initial = merge_caption_evaluation(
+            sample_id=sample.sample_id,
+            references=references,
+            candidate=candidate_answer,
+        )
+        client = self.judge_client
+        if client is None or judge_policy == "none":
+            return initial
+        payload = build_vqa_judge_payload(
+            question=sample.question,
+            reference_answers=references,
+            candidate_answer=candidate_answer,
+        )
+        try:
+            if call_budget is not None:
+                call_budget.reserve_deepseek()
+            verdict = client.judge_json(
+                payload,
+                response_model=VQAAnswerJudgeResult,
+                request_meta=RequestMeta(
+                    request_id=f"{sample.sample_id}:deepseek-caption",
+                    request_hash=build_judge_request_hash(
+                        model=self._model_id,
+                        prompt_text=self._vqa_judge_prompt,
+                        prompt_version=self._vqa_judge_prompt_version,
+                        sample_id=sample.sample_id,
+                        payload=payload,
+                        response_schema=VQAAnswerJudgeResult.model_json_schema(),
+                    ),
+                    prompt_version=self._vqa_judge_prompt_version,
+                    sample_id=sample.sample_id,
+                    artifact_dir=sample_dir / "deepseek_caption_judge",
+                ),
+                system_prompt=self._vqa_judge_prompt,
+            )
+        except Exception as error:
+            return merge_caption_evaluation(
+                sample_id=sample.sample_id,
+                references=references,
+                candidate=candidate_answer,
+                judge_error=stable_error_label(error),
+            )
+        return merge_caption_evaluation(
+            sample_id=sample.sample_id,
+            references=references,
+            candidate=candidate_answer,
+            judge_parsed=verdict,
+        )
+
     def judge_vqa_resume(
         self,
         *,
@@ -234,6 +303,47 @@ class JudgeService:
         result = json.loads(result_path.read_text(encoding="utf-8"))
         saved_answer = str(result.get("answer", ""))
         return self.judge_vqa(
+            sample=sample,
+            candidate_answer=saved_answer or candidate_answer,
+            sample_dir=sample_dir,
+            judge_policy=judge_policy,
+            call_budget=call_budget,
+        )
+
+    def judge_caption_resume(
+        self,
+        *,
+        sample: UnifiedSample,
+        candidate_answer: str,
+        sample_dir: Path,
+        judge_policy: str = "all",
+        call_budget: CallBudget | None = None,
+    ) -> EvaluationRecord:
+        """Resume a caption judge only when its persisted record is missing
+        or failed. 已持久化成功的 caption judge 不重复调用。"""
+
+        evaluation_path = sample_dir / EVALUATION_FILENAME_BY_TASK["caption"]
+        if evaluation_path.is_file():
+            try:
+                existing = EvaluationRecord.model_validate(
+                    json.loads(evaluation_path.read_text(encoding="utf-8"))
+                )
+            except (json.JSONDecodeError, UnicodeDecodeError, OSError, ValueError):
+                existing = None
+            if (
+                existing is not None
+                and existing.task == "caption"
+                and existing.judge_status == "succeeded"
+            ):
+                return existing
+        result_path = sample_dir / "agent_result.json"
+        if not result_path.is_file():
+            raise FileNotFoundError(
+                f"agent_result.json missing for resume judge: {sample_dir}"
+            )
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        saved_answer = str(result.get("answer", ""))
+        return self.judge_caption(
             sample=sample,
             candidate_answer=saved_answer or candidate_answer,
             sample_dir=sample_dir,

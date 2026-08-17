@@ -50,6 +50,9 @@ def build_html(report: Report) -> str:
         '<span class="green">● Prediction / accepted</span><span class="red">● Rejected</span>'
         '<span class="cyan">● GT / ground truth</span><span class="amber">● Unresolved</span>'
         '<span class="purple">● Reviewer</span></div></section>',
+        '<div id="image-modal" class="image-modal" hidden role="dialog" aria-modal="true" '
+        'aria-label="Image preview"><button type="button" class="image-modal-close" '
+        'aria-label="关闭图片预览">×</button><img id="image-modal-img" alt=""></div>',
         f"<script>{_JS}</script>",
         "</main></body></html>",
     ])
@@ -155,6 +158,7 @@ def _samples_section(report: Report) -> str:
 
 def _sample_card(sample: ReportSample) -> str:
     quality = _effective_quality(sample)
+    judge_kind, judge_label, judge_score = _judge_view(sample)
     target = sample.task_detail.target if isinstance(sample.task_detail, CountingReportDetail) else None
     ground_truth = _ground_truth_text(sample)
     search = " ".join(filter(None, [
@@ -164,14 +168,15 @@ def _sample_card(sample: ReportSample) -> str:
     attrs = (
         f'data-search="{_attr(search)}" data-task="{_attr(sample.task)}" '
         f'data-state="{_attr(sample.state)}" data-quality="{_attr(quality)}" '
+        f'data-judge="{_attr(judge_kind)}" '
         f'data-backend="{_attr(sample.routing.final_backend or "")}" '
         f'data-error="{_attr(sample.error_code or "")}" '
         f'data-fallback="{"yes" if sample.fallback_used else "no"}" '
         f'data-warning="{"yes" if sample.warnings else "no"}"'
     )
     badges = (
-        f'<span class="badge {_attr(sample.state)}">{_esc(sample.state)}</span>'
-        f'<span class="badge quality-{_attr(quality)}">{_esc(_quality_label(quality))}</span>'
+        f'<span class="badge state-{_attr(sample.state)}">{_esc(_state_label(sample.state))}</span>'
+        f'<span class="badge judge-{_attr(judge_kind)}">{_esc(judge_label)}</span>'
         + ('<span class="badge fallback">fallback</span>' if sample.fallback_used else "")
     )
     return (
@@ -184,7 +189,8 @@ def _sample_card(sample: ReportSample) -> str:
         + _answer_cell("模型答案 / Prediction", sample.prediction)
         + _answer_cell("标准答案 / Ground Truth", ground_truth)
         + '</span><span class="sample-result-row">'
-        + f'<strong>{_esc(_quality_label(quality))}</strong>'
+        + f'<strong>{_esc(judge_label)}{f" (score={judge_score})" if judge_score is not None else ""}</strong>'
+        + f'<span>执行状态: {_esc(_state_label(sample.state))}</span>'
         + f'<span>Final backend: {_esc(sample.routing.final_backend or "—")}</span>'
         + f'<span>Fallback: {"Yes" if sample.fallback_used else "No"}</span>'
         + f'<span>Latency: {_esc(_seconds(sample.inference_seconds))}</span>'
@@ -197,17 +203,22 @@ def _sample_card(sample: ReportSample) -> str:
 
 def _common_detail(sample: ReportSample) -> str:
     quality = _effective_quality(sample)
+    judge_kind, judge_label, judge_score = _judge_view(sample)
+    rationale = _judge_rationale(sample)
     return (
         '<div class="detail-block answer-panel"><h4>样本信息 / Sample</h4><dl>'
         + _dl("题目 / Question", sample.question)
         + _dl("模型答案 / Prediction", sample.prediction)
         + _dl("标准答案 / Ground Truth", _ground_truth_text(sample))
-        + _dl("结果 / Result", _quality_label(quality))
+        + _dl("执行状态 / Execution", _state_label(sample.state))
+        + _dl("结果 / Result", judge_label)
         + _dl("Agent", sample.execution_agent)
         + _dl("Final backend", sample.routing.final_backend)
         + _dl("Latency", _seconds(sample.inference_seconds))
         + _dl("Run task", sample.run_task) + _dl("Resolved task", sample.resolved_task)
-        + _dl("Judge", sample.judge_status)
+        + _dl("DeepSeek 核对 / Judge", judge_label)
+        + _dl("Judge score", judge_score)
+        + _dl("Judge rationale", rationale)
         + _dl("Persisted metric", _sample_metric_text(sample))
         + _dl("Error code", sample.error_code) + _dl("Warnings", ", ".join(sample.warnings))
         + "</dl></div>"
@@ -235,6 +246,48 @@ def _quality_label(value: str) -> str:
     }.get(value, value)
 
 
+def _state_label(value: str | None) -> str:
+    return {
+        "succeeded": "执行成功 / Executed",
+        "partial": "部分完成 / Partial",
+        "failed": "执行失败 / Failed",
+        "skipped": "已跳过 / Skipped",
+    }.get(value or "", value or "—")
+
+
+def _judge_view(sample: ReportSample) -> tuple[str, str, int | None]:
+    """Return a stable visual outcome for the sample row.
+
+    A DeepSeek score is authoritative when present. Samples without a judge
+    result remain amber so an absent judge is not confused with correctness.
+    For legacy non-caption reports, deterministic quality is retained when no
+    judge was requested.
+    """
+
+    evaluation = sample.evaluation
+    score = _sample_judge_score(evaluation)
+    if score == 1:
+        return "correct", "DeepSeek: 正确 / Correct", score
+    if score == 0:
+        return "incorrect", "DeepSeek: 错误 / Incorrect", score
+    if sample.judge_status not in {"not_requested", ""} or getattr(evaluation, "judge_status", "not_requested") not in {"not_requested", ""}:
+        return "partial", "DeepSeek: 核对失败 / Judge failed", None
+    if sample.task not in {"caption", "change_caption"}:
+        quality = _effective_quality(sample)
+        if quality == "correct":
+            return "correct", _quality_label("correct"), None
+        if quality == "incorrect":
+            return "incorrect", _quality_label("incorrect"), None
+    return "partial", "待核对 / Not checked", None
+
+
+def _judge_rationale(sample: ReportSample) -> str | None:
+    parsed = getattr(sample.evaluation, "judge_parsed", None)
+    if isinstance(parsed, dict):
+        return parsed.get("concise_rationale") or parsed.get("rationale")
+    return getattr(parsed, "concise_rationale", None) or getattr(parsed, "rationale", None)
+
+
 def _ground_truth_text(sample: ReportSample) -> str:
     gt = sample.ground_truth
     if gt is None:
@@ -259,18 +312,18 @@ def _sample_thumbnail(sample: ReportSample) -> str:
 
 
 def _summary_visuals(sample: ReportSample) -> str:
-    """Show the original and rendered views before the sample is expanded."""
-    visual = sample.visuals[0] if sample.visuals else None
-    if visual is None:
+    """Show both temporal thumbnails before the sample is expanded."""
+    if not sample.visuals:
         return _sample_thumbnail(sample)
     items: list[str] = []
-    for label, asset in (("Original", visual.original_asset), ("Rendered", visual.overlay_asset)):
-        safe = _safe_asset(asset)
+    for visual in sample.visuals[:2]:
+        safe = _safe_asset(visual.original_asset)
         if safe:
+            role = (visual.role or visual.image_id or "image").split("·", 1)[0].strip()
             items.append(
                 f'<span class="summary-visual"><img class="sample-thumb" loading="lazy" '
-                f'src="{_attr(safe)}" alt="{label.lower()} {_attr(sample.sample_id)}">'
-                f'<small>{label}</small></span>'
+                f'src="{_attr(safe)}" alt="{_attr(role)} {_attr(sample.sample_id)}">'
+                f'<small>{_esc(role)}</small></span>'
             )
     return '<span class="sample-thumbnails">' + "".join(items) + '</span>' if items else _sample_thumbnail(sample)
 
@@ -463,12 +516,20 @@ def _visuals(sample: ReportSample) -> str:
         original = _safe_asset(visual.original_asset)
         overlay = _safe_asset(visual.overlay_asset)
         if original:
-            images.append(f'<figure><img loading="lazy" src="{_attr(original)}" alt="original {_attr(visual.image_id)}"><figcaption>Original</figcaption></figure>')
+            images.append(_image_button(original, f"{visual.role} {visual.image_id}"))
         if overlay:
-            images.append(f'<figure><img loading="lazy" src="{_attr(overlay)}" alt="overlay {_attr(visual.image_id)}"><figcaption>Overlay</figcaption></figure>')
+            images.append(_image_button(overlay, f"overlay {visual.image_id}"))
         status_note = '<p>Visual asset omitted by report budget.</p>' if visual.status == "omitted_by_budget" else ""
         figures.append(f'<article class="visual"><h5>{_esc(visual.role)} · {_esc(visual.image_id)} · {_esc(visual.status)}</h5>{status_note}<div class="image-grid">{"".join(images)}</div></article>')
     return '<div class="detail-block visuals"><h4>Visuals</h4>' + "".join(figures) + "</div>"
+
+
+def _image_button(asset: str, alt: str) -> str:
+    return (
+        f'<button type="button" class="image-button" data-lightbox-src="{_attr(asset)}" '
+        f'data-lightbox-alt="{_attr(alt)}" aria-label="点击放大 {_attr(alt)}">'
+        f'<img class="detail-thumb" loading="lazy" src="{_attr(asset)}" alt="{_attr(alt)}"></button>'
+    )
 
 
 def _failures_section(report: Report) -> str:
@@ -529,8 +590,11 @@ def _judge_metrics_html(judge_metrics: dict[str, Any]) -> str:
 
 def _sample_metric_text(sample: ReportSample) -> str:
     evaluation = sample.evaluation
-    if evaluation is None or evaluation.deterministic_metrics is None:
+    if evaluation is None:
         return ""
+    if evaluation.deterministic_metrics is None:
+        score = _sample_judge_score(evaluation)
+        return f"judge_score={score}" if score is not None else ""
     metrics = evaluation.deterministic_metrics
     if evaluation.task == "general_vqa":
         exact = f"exact_match={getattr(metrics, 'exact_match', None)}"
@@ -540,7 +604,10 @@ def _sample_metric_text(sample: ReportSample) -> str:
         return f"predicted={getattr(metrics, 'predicted_count', None)} gold={getattr(metrics, 'gold_count', None)} exact_match={getattr(metrics, 'exact_match', None)}"
     if evaluation.task == "grounding":
         return f"iou={getattr(metrics, 'iou', None)} iou_at_0_5={getattr(metrics, 'iou_at_0_5', None)}"
-    return "caption record" if evaluation.task == "caption" else ""
+    if evaluation.task == "caption":
+        score = _sample_judge_score(evaluation)
+        return f"caption record judge_score={score}" if score is not None else f"caption record judge_status={evaluation.judge_status}"
+    return ""
 
 
 def _sample_judge_score(evaluation: Any) -> int | None:
@@ -652,16 +719,16 @@ _CSS = """
 header{display:flex;justify-content:space-between;align-items:flex-start;padding:18px 22px;background:#0f172a;color:#fff;border-radius:12px}h1{margin:.1rem 0;font-size:1.8rem}h2{font-size:1.25rem;margin-top:0}h3{font-size:1.05rem}.eyebrow,.schema{letter-spacing:0;font-size:.72rem;color:#93c5fd}.schema{border:1px solid #475569;padding:8px;border-radius:6px}
 nav{display:flex;gap:18px;position:sticky;top:0;z-index:2;background:rgba(243,246,250,.96);padding:14px 4px}nav a{color:#334155;text-decoration:none;font-weight:650}section{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin:14px 0;padding:20px}.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(135px,1fr));gap:10px}.card{border-left:3px solid var(--blue);background:#f8fafc;padding:13px}.card span{display:block;color:var(--muted);font-size:.78rem}.card strong{font-size:1.35rem}
 table{width:100%;border-collapse:collapse;margin:.5rem 0 1rem}th,td{border-bottom:1px solid var(--line);padding:7px;text-align:left;vertical-align:top}th{font-size:.75rem;text-transform:uppercase;color:var(--muted)}.two-col,.three-col{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}.paneltask{border-top:1px solid var(--line);padding:14px 0}.filters{display:grid;grid-template-columns:2fr repeat(6,1fr);gap:8px;margin-bottom:12px}.filters label{font-size:.72rem;color:var(--muted)}input,select{width:100%;padding:8px;border:1px solid var(--line);border-radius:6px;background:#fff}
-.sample{border:1px solid var(--line);border-radius:8px;margin:7px 0;background:#fff}.sample summary{display:grid;grid-template-columns:minmax(160px,1fr) 140px repeat(3,max-content) minmax(160px,1fr);gap:10px;align-items:center;cursor:pointer;padding:11px}.sample summary.sample-preview{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start;padding:10px}.sample-id{font-family:ui-monospace,monospace;font-weight:700}.backend{text-align:right;color:var(--muted)}.badge{font-size:.7rem;border-radius:999px;padding:3px 7px;background:#e2e8f0}.failed,.quality-incorrect{background:#fee2e2;color:#991b1b}.partial,.fallback{background:#fef3c7;color:#92400e}.succeeded,.quality-correct{background:#dcfce7;color:#166534}.sample.result-correct{border-left:5px solid #16a34a;background:#f0fdf4}.sample.result-incorrect{border-left:5px solid #dc2626;background:#fff1f2}.sample.result-unknown{border-left:5px solid #d97706;background:#fffbeb}.sample.result-correct .sample-result-row{color:#166534}.sample.result-incorrect .sample-result-row{color:#991b1b}.sample.result-unknown .sample-result-row{color:#92400e}.sample-result-row strong{font-size:1rem}.sample-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-top:1px solid var(--line);padding:12px}.detail-block{background:#f8fafc;border-radius:7px;padding:12px;overflow:auto}.visuals{grid-column:1/-1}.sample-thumbnails{display:flex;gap:6px;align-items:flex-start}.summary-visual{display:grid;gap:2px;justify-items:center}.summary-visual small{font-size:.65rem;color:var(--muted)}dl{display:grid;grid-template-columns:minmax(130px,.4fr) 1fr;gap:4px 12px;margin:.4rem 0}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.image-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}figure{margin:0}img{display:block;width:100%;max-height:620px;object-fit:contain;background:#e2e8f0}figcaption{text-align:center;color:var(--muted)}.legend{display:flex;gap:22px}.green{color:#22c55e}.red{color:#ef4444}.cyan{color:#38bdf8}.amber{color:#f59e0b}.purple{color:#a855f7}
+.sample{border:1px solid var(--line);border-radius:8px;margin:7px 0;background:#fff}.sample summary{display:grid;grid-template-columns:minmax(160px,1fr) 140px repeat(3,max-content) minmax(160px,1fr);gap:10px;align-items:center;cursor:pointer;padding:11px}.sample summary.sample-preview{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start;padding:10px}.sample-id{font-family:ui-monospace,monospace;font-weight:700}.backend{text-align:right;color:var(--muted)}.badge{font-size:.7rem;border-radius:999px;padding:3px 7px;background:#e2e8f0}.failed,.judge-incorrect{background:#fee2e2;color:#991b1b}.partial,.fallback,.judge-partial{background:#fef3c7;color:#92400e}.succeeded,.judge-correct{background:#dcfce7;color:#166534}.sample.result-correct{border-left:5px solid #16a34a;background:#f0fdf4}.sample.result-incorrect{border-left:5px solid #dc2626;background:#fff1f2}.sample.result-unknown{border-left:5px solid #d97706;background:#fffbeb}.sample[data-judge="correct"]{border-left:5px solid #16a34a;background:#f0fdf4}.sample[data-judge="incorrect"]{border-left:5px solid #dc2626;background:#fff1f2}.sample[data-judge="partial"]{border-left:5px solid #d97706;background:#fffbeb}.sample[data-judge="correct"] .sample-result-row{color:#166534}.sample[data-judge="incorrect"] .sample-result-row{color:#991b1b}.sample[data-judge="partial"] .sample-result-row{color:#92400e}.sample-result-row strong{font-size:1rem}.sample-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-top:1px solid var(--line);padding:12px}.detail-block{background:#f8fafc;border-radius:7px;padding:12px;overflow:auto}.visuals{grid-column:1/-1}.sample-thumbnails{display:flex;gap:6px;align-items:flex-start}.summary-visual{display:grid;gap:2px;justify-items:center;width:112px}.summary-visual small{font-size:.65rem;color:var(--muted);text-transform:uppercase}.sample-thumbnails .sample-thumb{flex:0 0 112px}dl{display:grid;grid-template-columns:minmax(130px,.4fr) 1fr;gap:4px 12px;margin:.4rem 0}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.image-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.image-button{display:block;width:100%;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:zoom-in;overflow:hidden}.image-button:hover{border-color:#2563eb;box-shadow:0 0 0 2px #bfdbfe}.detail-thumb{display:block;width:100%;height:240px;object-fit:contain;background:#e2e8f0}figure{margin:0}img{display:block;width:100%;max-height:620px;object-fit:contain;background:#e2e8f0}figcaption{text-align:center;color:var(--muted)}.legend{display:flex;gap:22px}.green{color:#22c55e}.red{color:#ef4444}.cyan{color:#38bdf8}.amber{color:#f59e0b}.purple{color:#a855f7}
 .bar-row{display:grid;grid-template-columns:minmax(140px,1fr) 3fr 45px;gap:8px;align-items:center;margin:7px 0}.bar-row i{display:block;height:8px;background:#e2e8f0;border-radius:99px;overflow:hidden}.bar-row b{display:block;height:100%;background:#2563eb}
 .code-buttons{display:flex;flex-wrap:wrap;gap:6px}.code-buttons button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 9px;cursor:pointer}
 .run-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-width:720px}.run-meta-item{min-width:0}.run-meta-item span{display:block;color:#cbd5e1;font-size:.72rem}.run-meta-value{display:block;overflow-wrap:anywhere;word-break:break-word}.mono{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.aggregate-panel{background:transparent;border:0;margin:14px 0;padding:0}.aggregate-panel>summary{cursor:pointer;font-weight:700;padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.sample-preview{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;align-items:start;min-width:0;cursor:pointer;padding:12px}.sample-thumb{width:112px;height:112px;object-fit:cover;background:#e2e8f0;border-radius:4px}.sample-thumb-empty{display:grid;place-items:center;color:var(--muted);font-size:.75rem;text-align:center}.sample-summary-main{display:grid;gap:8px;min-width:0}.sample-summary-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}.sample-question{font-size:.95rem;overflow-wrap:anywhere}.answer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}.answer-cell{display:grid;gap:3px;min-width:0;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.answer-cell small{color:var(--muted)}.answer-cell strong{overflow-wrap:anywhere;word-break:break-word}.sample-result-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);overflow-wrap:anywhere}.sample-result-row strong{color:var(--ink)}.sample-body{display:block;border-top:1px solid var(--line);padding:12px}.sample-hero{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(0,1.05fr);gap:12px;min-width:0}.sample-hero>*{min-width:0}.hero-visual,.hero-answer{min-width:0}.execution-process,.model-calls{margin-top:12px}.stage,.model-call{border-top:1px solid var(--line);padding:10px 0;min-width:0}.stage h4,.model-call h4{margin:.1rem 0 .5rem;overflow-wrap:anywhere}.technical-details{margin-top:12px}.technical-details>summary{cursor:pointer;font-weight:650}.table-scroll{width:100%;overflow-x:auto}.table-scroll table{min-width:640px}
 @media(max-width:900px){main{padding:10px}.filters{grid-template-columns:1fr 1fr}.sample summary.sample-preview{grid-template-columns:160px minmax(0,1fr)}.sample-thumb{width:76px;height:76px}.answer-grid{grid-template-columns:1fr}.sample-hero{grid-template-columns:1fr}.sample-body{grid-template-columns:1fr}.visuals{grid-column:auto}}
 @media(max-width:560px){header{display:block}.schema{display:inline-block;margin-top:12px}.filters{grid-template-columns:1fr}.sample summary.sample-preview{grid-template-columns:1fr}.sample-thumbnails{width:100%}.summary-visual{width:calc(50% - 3px)}.summary-visual .sample-thumb{width:100%;height:auto;aspect-ratio:1}.sample-result-row{gap:8px}}
-.execution-path{margin-top:12px}.execution-path ol{margin:.5rem 0 0;padding-left:1.5rem}.execution-path code{font-size:.85rem;overflow-wrap:anywhere;word-break:break-word}
+.execution-path{margin-top:12px}.execution-path ol{margin:.5rem 0 0;padding-left:1.5rem}.execution-path code{font-size:.85rem;overflow-wrap:anywhere;word-break:break-word}.image-modal{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:5vh 5vw;background:rgba(15,23,42,.86)}.image-modal[hidden]{display:none}.image-modal img{max-width:94vw;max-height:88vh;width:auto;height:auto;object-fit:contain;background:#fff;box-shadow:0 12px 50px rgba(0,0,0,.45)}.image-modal-close{position:fixed;top:18px;right:24px;width:40px;height:40px;border:0;border-radius:999px;background:#fff;color:#0f172a;font-size:28px;line-height:1;cursor:pointer}.modal-open{overflow:hidden}
 """
 
 
 _JS = """
-(()=>{const ids=['search','task','state','quality','backend','fallback','warning'];const controls=ids.map(id=>document.getElementById(id));const cards=[...document.querySelectorAll('.sample')];let error='';function apply(){const v=Object.fromEntries(ids.map((id,i)=>[id,controls[i].value.toLowerCase()]));for(const card of cards){const ok=(!v.search||card.dataset.search.includes(v.search))&&(!v.task||card.dataset.task===v.task)&&(!v.state||card.dataset.state===v.state)&&(!v.quality||card.dataset.quality===v.quality)&&(!v.backend||card.dataset.backend===v.backend)&&(!v.fallback||card.dataset.fallback===v.fallback)&&(!v.warning||card.dataset.warning===v.warning)&&(!error||card.dataset.error===error);card.hidden=!ok}}controls.forEach(c=>c.addEventListener(c.type==='search'?'input':'change',apply));document.querySelectorAll('[data-filter-error]').forEach(button=>button.addEventListener('click',()=>{error=button.dataset.filterError;location.hash='samples';apply()}));})();
+(()=>{const ids=['search','task','state','quality','backend','fallback','warning'];const controls=ids.map(id=>document.getElementById(id)).filter(Boolean);const cards=[...document.querySelectorAll('.sample')];let error='';function apply(){const v=Object.fromEntries(ids.map(id=>[id,(document.getElementById(id)?.value||'').toLowerCase()]));for(const card of cards){const ok=(!v.search||card.dataset.search.includes(v.search))&&(!v.task||card.dataset.task===v.task)&&(!v.state||card.dataset.state===v.state)&&(!v.quality||card.dataset.quality===v.quality)&&(!v.backend||card.dataset.backend===v.backend)&&(!v.fallback||card.dataset.fallback===v.fallback)&&(!v.warning||card.dataset.warning===v.warning)&&(!error||card.dataset.error===error);card.hidden=!ok}}controls.forEach(c=>c.addEventListener(c.type==='search'?'input':'change',apply));document.querySelectorAll('[data-filter-error]').forEach(button=>button.addEventListener('click',()=>{error=button.dataset.filterError;location.hash='samples';apply()}));const modal=document.getElementById('image-modal');const modalImage=document.getElementById('image-modal-img');const close=()=>{if(!modal)return;modal.hidden=true;modalImage.removeAttribute('src');document.body.classList.remove('modal-open')};document.querySelectorAll('.image-button').forEach(button=>button.addEventListener('click',()=>{if(!modal)return;modalImage.src=button.dataset.lightboxSrc||'';modalImage.alt=button.dataset.lightboxAlt||'';modal.hidden=false;document.body.classList.add('modal-open')}));modal?.addEventListener('click',event=>{if(event.target===modal)close()});document.querySelector('.image-modal-close')?.addEventListener('click',close);document.addEventListener('keydown',event=>{if(event.key==='Escape')close()});})();
 """
