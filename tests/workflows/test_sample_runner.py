@@ -1,7 +1,7 @@
-"""Contract tests for the v3-only SampleRunner execution kernel.
+"""Contract tests for the v4 SampleRunner execution kernel.
 
-SampleRunner 契约测试：它只消费已物化 v3 计划/视图，保留确定性 TaskRouter
-primary/fallback、artifact basename、确定性评测与稳定失败状态。
+SampleRunner 契约测试：它消费已物化的 VisualTaskPlan v4 与 visual views，
+验证确定性路由、fallback、artifact basename、稳定错误码和评测行为。
 """
 
 from __future__ import annotations
@@ -134,7 +134,7 @@ def _run(
     )
 
 
-def test_v3_success_writes_only_canonical_plan_artifact(tmp_path: Path) -> None:
+def test_v4_success_writes_only_canonical_plan_artifact(tmp_path: Path) -> None:
     agent = _FakeAgent("general_vqa_agent", ("general_vqa",), answer="ok")
     runner = _runner([agent])
     sample_dir = tmp_path / "sample"
@@ -154,7 +154,7 @@ def test_v3_success_writes_only_canonical_plan_artifact(tmp_path: Path) -> None:
     assert agent.calls[0][1].visual_views == (_view(),)
 
 
-def test_v3_plan_task_mismatch_fails_before_execution(tmp_path: Path) -> None:
+def test_v4_plan_task_mismatch_fails_before_execution(tmp_path: Path) -> None:
     agent = _FakeAgent("general_vqa_agent", ("general_vqa",))
     with pytest.raises(ValueError, match="must equal"):
         _run(
