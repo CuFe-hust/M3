@@ -440,3 +440,65 @@ def test_report_v2_grounding_prediction_and_gt_are_thin_distinct_outlines(
     assert any(overlay.getpixel((x, y)) == cyan for x in range(58, 82) for y in range(58, 82))
     assert overlay.getpixel((20, 20)) == white
     assert overlay.getpixel((70, 70)) == white
+
+
+def test_report_v2_grounding_renders_official_normalized_polygon_gt(
+    tmp_path: Path,
+) -> None:
+    """The official VRSBench referring polygon is rendered in its declared
+    [0, 1] frame without converting it to xyxy in the sample contract.
+    官方 VRSBench referring polygon 按声明的 [0, 1] 坐标系渲染，不在样本
+    契约中静默转换为 xyxy。"""
+
+    dataset_root = tmp_path / "official-grounding-images"
+    dataset_root.mkdir()
+    Image.new("RGB", (100, 100), "white").save(dataset_root / "source.png")
+    run_dir = tmp_path / "official-grounding-run"
+    run_dir.mkdir()
+    request = RunRequest(
+        dataset="VRSBench", dataset_root=dataset_root.as_posix(), split="val",
+        task_mode="explicit", tasks=["grounding"],
+    )
+    (run_dir / "run_request.json").write_text(request.model_dump_json(), encoding="utf-8")
+    sample = UnifiedSample(
+        sample_id="official-grounding",
+        dataset="VRSBench",
+        split="validation",
+        task="grounding",
+        images=[ImageRef(image_id="i0", path="source.png", role="image")],
+        question="The object.",
+        ground_truth=GroundTruth(
+            boxes=[[0.60, 0.60, 0.80, 0.60, 0.80, 0.80, 0.60, 0.80]],
+            coordinate_frame="normalized_0_1_top_left",
+        ),
+    )
+    key = hashlib.sha256(sample.sample_id.encode()).hexdigest()[:24]
+    sample_dir = run_dir / "tasks" / "grounding" / "samples" / key
+    ArtifactWriter().write_sample(sample_dir, sample)
+    result = AgentResult(
+        agent_name="grounding_agent", answer="located", boxes=[[100, 100, 300, 300]]
+    )
+    (sample_dir / "agent_result.json").write_text(result.model_dump_json(), encoding="utf-8")
+    report = Report(
+        run_id="official-grounding-run", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[ReportSample(
+            sample_id="official-grounding", run_task="grounding", task="grounding", state="succeeded",
+            visuals=[VisualAssetView(image_id="i0", role="image")],
+        )],
+    )
+
+    updated = materialize_report_assets(run_dir, report, run_dir / "report")
+    visual = updated.samples[0].visuals[0]
+    overlay = Image.open(run_dir / "report" / str(visual.overlay_asset))
+
+    assert visual.status == "available"
+    assert any(
+        overlay.getpixel((x, y)) == (56, 189, 248)
+        for x in range(58, 83)
+        for y in range(58, 83)
+    )
+    assert any(
+        overlay.getpixel((x, y)) == (34, 197, 94)
+        for x in range(8, 33)
+        for y in range(8, 33)
+    )

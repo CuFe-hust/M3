@@ -34,6 +34,7 @@ from reporting.adapters import (
     load_run_manifest,
     load_sample,
     load_status,
+    load_structured_artifacts,
     load_trace,
     prediction_text,
     read_json,
@@ -126,6 +127,9 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         counting_audit = None
     routing_decision = load_routing_decision(sample_dir) if sample_dir is not None else None
     model_calls = load_model_calls(sample_dir) if sample_dir is not None else []
+    structured_artifacts = (
+        load_structured_artifacts(sample_dir) if sample_dir is not None else []
+    )
     evaluation = _safe_evaluation(evaluation)
     routing = _routing(trace)
     judge_status = _judge_status(evaluation, trace)
@@ -158,9 +162,19 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         evaluation=evaluation,
         result_quality=_result_quality(evaluation, task_detail),
         routing=routing,
+        execution_path=_execution_path(
+            run_dir,
+            run_task=str(row.get("run_task", "")),
+            task=task,
+            trace=trace,
+            model_calls=model_calls,
+            structured_artifacts=structured_artifacts,
+            evaluation=evaluation,
+        ),
         routing_decision=routing_decision,
         backend_stages=_backend_stages(counting_audit),
         model_calls=model_calls,
+        structured_artifacts=structured_artifacts,
         warnings=warnings,
         visuals=[
             VisualAssetView(
@@ -173,6 +187,71 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         ],
         task_detail=task_detail,
     )
+
+
+def _execution_path(
+    run_dir: Path,
+    *,
+    run_task: str,
+    task: str,
+    trace: dict[str, Any] | None,
+    model_calls: list[Any],
+    structured_artifacts: list[Any],
+    evaluation: EvaluationRecord | None,
+) -> list[str]:
+    """Project persisted runtime facts into a concise top-level module path.
+    将已持久化运行事实投影为简洁的顶层模块路径。
+
+    This is a read-only presentation projection: it never infers a different
+    task or claims that an unrecorded backend ran. The HTML path makes the
+    sample-level hand-off auditable without exposing prompt bodies or paths.
+    这是只读展示投影：绝不推断其他 task，也不声称未记录的后端曾运行。
+    HTML 中的路径用于审计样本级交接，同时不暴露 prompt 正文或物理路径。
+    """
+
+    current = trace or {}
+    path = [
+        "application.commands.run_dataset",
+        "data.registry.DatasetRegistry",
+    ]
+    metadata = load_run_manifest(run_dir)
+    if metadata is not None and metadata.dataset == "VRSBench":
+        path.append("data.adapters.vrsbench.adapter.VRSBenchAdapter.iter_samples")
+    else:
+        path.append("data.adapters.base.DatasetAdapter.iter_samples")
+    path.extend([
+        "workflows.dataset_runner.DatasetRunner",
+        "workflows.sample_runner.SampleRunner",
+    ])
+    resolution_source = _value_str(current.get("resolution_source"))
+    if current.get("joint_plan") is True:
+        path.append("workflows.visual_planner.JointVisualPlanner")
+    elif resolution_source == "model":
+        path.append("workflows.task_resolver.TaskResolver")
+    path.append("routing.router.TaskRouter.route")
+
+    agent_class = _value_str(current.get("agent_class"))
+    if agent_class is not None:
+        path.append(agent_class)
+    else:
+        agent_by_task = {
+            "caption": "agents.caption.agent.CaptionAgent",
+            "grounding": "agents.grounding.agent.GroundingAgent",
+            "general_vqa": "agents.general_vqa.agent.GeneralVQAAgent",
+        }
+        path.append(agent_by_task.get(task, f"agents.registry.AgentRegistry[{task}]"))
+
+    filenames = {item.filename for item in structured_artifacts}
+    if "vqa_evidence.json" in filenames:
+        path.append("agents.general_vqa.evidence.executor.ObjectEvidenceExecutor")
+    if "grounding_evidence.json" in filenames:
+        path.append("agents.grounding.evidence.GroundingEvidenceExecutor")
+    if model_calls:
+        path.append("models.qwen_transformers.QwenTransformersClient.complete_json")
+    if evaluation is not None:
+        path.append("evaluation.records.EvaluationRecord")
+    path.append("reporting.builder.build_report")
+    return list(dict.fromkeys(path))
 
 
 def _safe_evaluation(record: EvaluationRecord | None) -> EvaluationRecord | None:
@@ -409,7 +488,7 @@ def _task_detail(
         gt_boxes = (
             [list(box) for box in sample.ground_truth.boxes]
             if sample is not None and sample.ground_truth is not None
-            and sample.ground_truth.coordinate_frame == "normalized_0_999_top_left"
+            and len(sample.images) == 1
             else []
         )
         return GroundingReportDetail(
@@ -417,6 +496,11 @@ def _task_detail(
             reference=references,
             predicted_boxes=[list(box) for box in payload.boxes],
             ground_truth_boxes=gt_boxes,
+            ground_truth_coordinate_frame=(
+                sample.ground_truth.coordinate_frame
+                if sample is not None and sample.ground_truth is not None
+                else None
+            ),
             iou=grounding.iou if grounding else None,
             iou_at_0_5=grounding.iou_at_0_5 if grounding else None,
             geometry_repair_severity=severity,

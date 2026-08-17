@@ -138,7 +138,7 @@ def test_trace_contains_stable_class_route_and_prompt_version(tmp_path: Path) ->
     execution = asyncio.run(agent.run(_sample(tmp_path), _context(tmp_path)))
     assert execution.trace["agent_class"] == "agents.grounding.agent.GroundingAgent"
     assert execution.trace["route"].startswith("GroundingAgent.run -> VisualAgentBase.run")
-    assert execution.trace["prompt_version"] == "general_vqa_v2"
+    assert execution.trace["prompt_version"] == "general_vqa_v3"
     assert execution.trace["model"] == "fake-model"
 
 

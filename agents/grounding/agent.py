@@ -25,22 +25,22 @@ from data.schema import UnifiedSample
 from models.base import VisionLanguageClient
 
 # Grounding reuses the neutral VQA instruction (the baseline catalog mapped
-# grounding to general_vqa_v2); the base class appends the shared JSON output
+# grounding to general_vqa_v3); the base class appends the shared JSON output
 # contract and enforces 0..999 evidence coordinates.
-# 定位复用中性 VQA 指令（基线目录将 grounding 映射到 general_vqa_v2）；
+# 定位复用中性 VQA 指令（基线目录将 grounding 映射到 general_vqa_v3）；
 # JSON 输出契约由基类附加，0..999 证据坐标由基类强制。
 _DEFAULT_PROMPT_TEXT = (
     "Answer the question concisely from the image. Preserve up to four "
     "representative relevant localized objects as labeled evidence_items; "
     "copy all evidence-item boxes into boxes in the same order. Coordinates "
-    "are whole-image 0..999 raster coordinates with the origin at the "
+    "are integer whole-image 0..999 raster coordinates in JSON with the origin at the "
     "top-left, positive x to the right, and positive y downward. A box is one "
     "flat array [x1,y1,x2,y2], never a pair of corner arrays. Use an empty "
     "evidence list only when the answer genuinely has no localizable visual "
     "support. Do not include hidden reasoning."
 )
 
-_DEFAULT_PROMPT_VERSION = "general_vqa_v2"
+_DEFAULT_PROMPT_VERSION = "general_vqa_v3"
 
 # Semantic placeholder for the persisted grounding evidence bundle (C7, 14A2
 # §4.3); the final owned basename set is frozen by C8 §5.1.

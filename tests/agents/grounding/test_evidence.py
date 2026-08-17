@@ -433,6 +433,15 @@ def test_hit_leaves_selected_via_box_ids_and_converted(tmp_path: Path) -> None:
     # The request hash covers the messages and the final prompt version.
     # request hash 覆盖消息与最终 prompt 版本。
     assert qwen.calls[0]["request_meta"].prompt_version == "grounding_v1"
+    qwen_payload = json.loads(qwen.calls[0]["messages"][1]["content"][-1]["text"])
+    assert qwen_payload["coordinate_frame"] == "roi_normalized_0_999_top_left"
+    assert qwen_payload["box_format"] == "integer_xyxy_json"
+    assert qwen_payload["candidates"][0]["xyxy"] == [166, 166, 333, 333]
+    assert all(
+        isinstance(value, int)
+        for candidate in qwen_payload["candidates"]
+        for value in candidate["xyxy"]
+    )
 
 
 def test_missing_leaf_free_box_authority(tmp_path: Path) -> None:
@@ -448,12 +457,12 @@ def test_missing_leaf_free_box_authority(tmp_path: Path) -> None:
                 {
                     "leaf_category": "large_vehicle",
                     "roi_id": "roi-1",
-                    "bbox": [0.5, 0.5, 0.6, 0.6],
+                    "xyxy": [500, 500, 600, 600],
                 },
                 {
                     "leaf_category": "building_outline",
                     "roi_id": "roi-1",
-                    "bbox": [0.1, 0.1, 0.2, 0.2],
+                    "xyxy": [100, 100, 200, 200],
                 },
             ],
         }
@@ -475,19 +484,19 @@ def test_missing_leaf_free_box_authority(tmp_path: Path) -> None:
         {
             "leaf_category": "large_vehicle",
             "roi_id": "roi-1",
-            "bbox": (0.5, 0.5, 0.6, 0.6),
+            "bbox": (500 / 999, 500 / 999, 600 / 999, 600 / 999),
         },
         {
             "leaf_category": "building_outline",
             "roi_id": "roi-1",
-            "bbox": (0.1, 0.1, 0.2, 0.2),
+            "bbox": (100 / 999, 100 / 999, 200 / 999, 200 / 999),
         },
     ]
     # Selected candidates first, then fallback boxes in response order.
     # 已选候选在前，自由框按响应顺序在后。
     assert [(box.label, box.box) for box in result.whole_image_boxes] == [
         ("small_vehicle", (300, 300, 400, 400)),
-        ("large_vehicle", (500, 500, 559, 559)),
+        ("large_vehicle", (500, 500, 560, 560)),
         ("building_outline", (260, 260, 320, 320)),
     ]
     assert bundle.dropped == {}
@@ -507,7 +516,7 @@ def test_yolo_disabled_capability_off_all_leaves_fallback(tmp_path: Path) -> Non
                 {
                     "leaf_category": "small_vehicle",
                     "roi_id": "roi-1",
-                    "bbox": [0.1, 0.1, 0.2, 0.2],
+                    "xyxy": [100, 100, 200, 200],
                 }
             ],
         }
@@ -592,25 +601,25 @@ def test_postprocess_drops_every_out_of_authority_item(tmp_path: Path) -> None:
                 {
                     "leaf_category": "small_vehicle",
                     "roi_id": "roi-1",
-                    "bbox": [0.3, 0.3, 0.4, 0.4],
+                    "xyxy": [300, 300, 400, 400],
                 },
                 # Leaf never requested. / 从未请求的叶子。
                 {
                     "leaf_category": "airplane",
                     "roi_id": "roi-1",
-                    "bbox": [0.3, 0.3, 0.4, 0.4],
+                    "xyxy": [300, 300, 400, 400],
                 },
                 # ROI never mapped. / 未映射的 ROI。
                 {
                     "leaf_category": "large_vehicle",
                     "roi_id": "ghost",
-                    "bbox": [0.3, 0.3, 0.4, 0.4],
+                    "xyxy": [300, 300, 400, 400],
                 },
                 # Degenerate box. / 退化框。
                 {
                     "leaf_category": "large_vehicle",
                     "roi_id": "roi-1",
-                    "bbox": [0.5, 0.5, 0.5, 0.6],
+                    "xyxy": [500, 500, 500, 600],
                 },
             ],
         }
@@ -689,7 +698,7 @@ def test_yolo_error_is_stable_code_never_raw_exception(tmp_path: Path) -> None:
                 {
                     "leaf_category": "small_vehicle",
                     "roi_id": "roi-1",
-                    "bbox": [0.1, 0.1, 0.2, 0.2],
+                    "xyxy": [100, 100, 200, 200],
                 }
             ],
         }

@@ -1059,7 +1059,7 @@ multiple_choice_vqa
 spatial_relation
 ```
 
-`spatial_relation` 复用 general_vqa_v2 Prompt 与单次 Qwen 调用，输出
+`spatial_relation` 复用 general_vqa_v3 Prompt 与单次 Qwen 调用，输出
 `agent_result.json`；保留 `requires_tiling=False` 与 VQA 确定性评测/Judge 族。
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
@@ -1070,10 +1070,11 @@ GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
 `VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜），按 14B §10 契约
 组装唯一一次 final Qwen 调用：clean ROI 图在前、逐 ROI 掩膜 overlay 按
 `roi_id` 序在后，文本证据含 question、answer constraints、图像尺寸、
-ROI 裁切几何、YOLO 文本记录（local+global 坐标）与 SegFormer 颜色叶子
+ROI 裁切几何、YOLO 文本记录（ROI 局部 `0..999` 整数 `xyxy` JSON）与 SegFormer 颜色叶子
 图例；绝不携带 confidence、绝不使用画框图。`vqa_evidence.json` 作为
 additional result 持久化 bundle（严格 JSON-safe，无掩膜数组/无 secret）。
-`execution_family == "direct_vqa"` 或无 plan 时走既有 legacy 路径。
+`execution_family == "direct_vqa"` 或无 plan 时走既有 legacy 路径。模型侧框统一使用
+`0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
 禁止组合（如 scene_classification + object evidence）以
 `object_evidence_plan_forbidden_for_task` 稳定失败；兼容矩阵见 14A2 §4.4。
 
@@ -1102,7 +1103,8 @@ GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
 返回确定性整图框 `WholeImageBox`。`AgentResult.answer` 为
 `, `.join(labels) 文本；final Qwen 绝不产出自由文本坐标（14C §8）。
 `direct_vqa` 或无 plan 时走既有 legacy 路径。服务缺失/失败以
-`grounding_evidence_failed:<CODE>` 稳定失败。
+`grounding_evidence_failed:<CODE>` 稳定失败。最终 Grounding Qwen 接收和输出的
+ROI 局部框统一为 `0..999` 整数 `xyxy` JSON，确定性后处理再转换为整图坐标。
 
 ## 21.4 CountingAgent
 
@@ -1465,7 +1467,7 @@ review、evidence merge 或 deterministic geometry 专用实现。
 `spatial_relation` 仍保留为公开 task，`TaskNormalization.spatial_query` 与
 VRSBench normalization 规则不变，评测仍走 VQA 确定性族与可选 Judge。执行
 语义变化：原先最多两次 Qwen 调用（候选 + review）并可能做确定性几何改写，
-现为单次 general_vqa_v2 Prompt 调用，输出 `agent_result.json`；历史空间 run
+现为单次 general_vqa_v3 Prompt 调用，输出 `agent_result.json`；历史空间 run
 结果不直接可比。
 
 ---
@@ -2378,10 +2380,14 @@ Reporting 从持久化的 caption records 调用 `aggregate_caption()`：
 ```text
 pycocoevalcap available -> metric_status=ok + corpus metrics
 pycocoevalcap missing   -> metric_status=dependency_missing + record_count
+Java/METEOR missing     -> metric_status=partial + not_computed=["METEOR"];
+                          BLEU/ROUGE_L/CIDEr remain independently reported
 ```
 
 可选依赖保持惰性导入；无 caption record 时不导入，缺失时也不阻断 report。
-这些本地 corpus 指标不等同于 benchmark official score。
+METEOR 还需要 Java；缺少 Java 时只标记 METEOR 未计算，不影响其他已成功
+scorer。CHAIR2 当前没有经批准的 scorer，始终明确标记为未计算。这些本地
+corpus 指标不等同于 benchmark official score。
 
 ---
 
@@ -2616,8 +2622,10 @@ judge_status
 inference_seconds
 evaluation
 routing_decision
+execution_path
 backend_stages
 model_calls
+structured_artifacts
 ```
 
 `task` 表示 execution task。
@@ -2628,6 +2636,10 @@ points、labels 与 coordinate_frame。`backend_stages` 只来自持久化的
 空列表，不从 final result 或 trace 反推中间阶段。`model_calls` 只读取当前
 sample 目录内已有的 request/raw/parsed/validation 产物，raw response 最多
 8000 字符，且不暴露 artifact_dir、绝对路径、Base64 或 credential。
+`execution_path` 是从已持久化 trace、任务与模型调用投影出的顶层模块交接链，
+仅用于 HTML 审计，不重新推理。`structured_artifacts` 只读取允许列表中的
+`vqa_evidence.json`、`grounding_evidence.json`、`visual_plan.json` 与
+`joint_visual_plan.json`，用于展示已落盘的结构化子模型状态。
 
 ## `TaskSummary`
 
@@ -2690,6 +2702,12 @@ external_standard -> official/external evaluator
 
 Reporting 只读取持久化产物并聚合，不发网络、不调用模型，也不回写 sample、
 status 或 evaluation。
+
+官方 VRSBench grounding 适配同时识别 `VRSBench_EVAL_referring.json` 与
+派生的 `VRSBench_EVAL_Det.json`。前者保留官方 8 点 polygon，并显式标记
+`normalized_0_1_top_left`；HTML 会按该坐标系叠加 GT 与模型框。当前通用
+deterministic IoU 仍对不兼容 polygon fail-closed，不把可视化叠加冒充官方
+oriented-box 分数。
 
 ### JSON
 
@@ -3698,3 +3716,119 @@ scripts/evaluate_vrsbench_counting.py
 `count_deterministic_metrics` / `aggregate_counting` 与生产车辆
 `count_target_hint`；输出 `results.jsonl` + `summary.json` +
 `unsupported_or_error.json`，无 DeepSeek/Judge 参与。
+
+```text
+scripts/prepare_qwen3vl_phase2_sft.py
+```
+
+Phase 2 SFT canonical 数据准备器（只读、离线、确定性，任务文档见
+`docs/train/01_PREPARE_PHASE2_SFT_DATA.md`）：解析
+`data/phase2-train/VRSBench/`（缩进 JSON 块或单行 JSONL 均可）与
+`data/phase2-train/GeoChat/GeoChat_Instruct.json`（流式 JSON 数组），
+导出与 Transformers/PEFT/Qwen template 解耦的 canonical episodes：
+`<output_dir>/{train,validation}.jsonl` + `manifest.json` +
+`rejected.jsonl`。契约要点：VRSBench grounding 每合法 object 一条；
+VQA 有框视图的 input_boxes 只声明为同图 annotation 上下文，不做
+question→object 模糊绑定；train 按 `source_task` 分层、以
+`sha256(seed + parent_episode_id)` 排序取前 `round(0.4*N)` 生成
+self-attention 无框额外副本（不替代有框版，validation 不增广）；
+GeoChat `[refer]`→target 框、`[identify]`→input 框 + 文本、普通对话
+保序，坐标统一 `round(c*999/100)` 转换且转换前后校验，拒绝记录以稳定
+错误码进 `rejected.jsonl`（含闭合计数）。episode_id 全局唯一；输出无
+机器绝对路径；同输入同 seed 字节级稳定。
+
+```text
+scripts/qwen3vl_phase2_data.py
+```
+
+Phase 2 数据管线（任务文档见 `docs/train/02_QWEN3VL_PHASE2_DATA_PIPELINE.md`）：
+公开 `Phase2EpisodeDataset` / `Phase2DataCollator` / `AugmentationConfig` /
+`DatasetRootConfig`，供训练脚本消费，不解析原始标注、不加载主模型。
+要点：图片路径经 `image_source -> root` 映射安全解析（拒绝绝对路径/盘符/
+UNC/`.`/`..`/符号链接逃逸，错误只带相对路径）；在线增强 seed 为
+`sha256(seed|epoch|parent_episode_id)`，成对有框/无框 VQA 同 epoch 图像完全
+一致；几何（90°旋转/仿射/透视）与成像退化（对比度/亮度/暗角/失焦或运动
+模糊/噪声/JPEG）用独立随机子流，退化不移动坐标；任一必需框未过质量门禁
+则整条 episode 回退 identity；`orientation_locked` 永不做几何增强但允许成像
+退化；对话渲染统一（grounding/refer 输出 JSON 框、VQA 有框版声明
+`Available annotated regions`、无框版不含任何坐标）；labels 来自 chat-template
+assistant mask（5.14.1 键 `assistant_masks`，4.x `assistant_tokens_mask`，
+不支持时逐 turn 边界编码回退），图像 token 展开按长度差 delta 对齐；截断
+只按完整 turn pair、单对超长抛 `episode_too_long`；collator 右填充并返回
+`(batch, meta)`，视觉张量沿 dim0 拼接。processor 契约已对照 M3 环境
+transformers 5.14.1 验证（pixel_values (G,1176)、image_grid_thw (1,3)、
+mm_token_type_ids 默认开启）。
+
+```text
+scripts/finetune_qwen3vl_phase2.py
+```
+
+Phase 2 Qwen3-VL-8B SFT 训练脚本（任务文档见
+`docs/train/03_FINETUNE_QWEN3VL_PHASE2.md`）。策略：Vision Encoder 冻结；
+主 `model.visual.merger` 与全部 `deepstack_merger_list.*` 全量训练
+（`--merger-lr`，不挂 LoRA）；LLM base 冻结，每层
+`self_attn.{q,k,v,o}_proj` 与 `mlp.{gate,up,down}_proj` 挂 LoRA
+（`--lora-lr`）。结构定位不依赖模糊字符串匹配：按属性识别视觉根
+（merger + deepstack_merger_list）与文本根（layers + embed_tokens），已对照
+transformers 5.14.1（视觉根 `model.visual`、文本根 `model.language_model`）。
+启动时硬审计：LoRA target 全路径、trainable/冻结计数、可训练参数精确分类为
+`merger_base`/`llm_lora` 且两集合不重叠，审计 JSON 写入
+`output_dir/parameter_audit.json`。optimizer 显式四组（merger/lora ×
+decay/no_decay），cosine + warmup（默认 0.03）使用同一 lambda 保持两套 LR
+比值；DeepSpeed/FSDP 被稳定拒绝（四组 optimizer 契约与复合保存要求全量
+权重，CLI 传入即报错）。数据只消费 `scripts/qwen3vl_phase2_data.py` 的
+`Phase2EpisodeDataset`/`Phase2DataCollator`/`AugmentationConfig`/
+`DatasetRootConfig`，不复制数据语义、增强或 prompt 逻辑；支持确定性 group
+repeat weight（默认 1；按 episode JSONL 的 group key 稳定展开，每 epoch 至少
+遍历全部 Episode 一次；配置与实际 group 计数进 manifest）。唯一产物是可
+resume 的复合 checkpoint：`checkpoint-N/{adapter/,
+merger_model.safetensors, processor/, phase2_training_manifest.json,
+trainer_state.json, optimizer.pt, scheduler.pt, rng_state.pth}`；
+manifest 最后写作为完成标记（含 base/processor 逻辑身份与 revision、
+train/eval Episode checksum 与上游 manifest checksum、LoRA 配置与完整
+target 列表、merger 参数 name/shape/dtype/numel 表、adapter/merger 文件
+sha256、optimizer group 摘要与两套 LR、增强 seed 与配置、训练参数、
+git HEAD 与 transformers/torch/peft 版本）。resume 按 manifest 与当前显式
+请求逐项校验（base/processor 身份、数据 checksum、LoRA rank/alpha/target、
+merger 参数表、optimizer group 拓扑、增强 seed/配置、max_seq_length 与图像
+像素设置），冲突稳定拒绝；默认自动 resume 最新完整 checkpoint，半成品目录
+不视为成功且拒绝覆盖。`--smoke-gradients` 在训练前做小型 forward/backward
+梯度检查（peft 将 lora_B 初始化为零，首步 lora_A 梯度按设计为零，检查先做
+一步 warm-up 更新）；`--image-min/max-pixels` 仅在处理器声明支持时注入
+（5.14.1 Qwen3-VL processor 不支持该参数，manifest 记录
+`image_pixels_applied=false`）。默认 `--local-files-only`；模块 import 不加载
+权重（torch/transformers/peft 惰性导入）。
+
+```text
+scripts/export_qwen3vl_phase2_checkpoint.py
+```
+
+Phase 2 完整模型导出器（任务文档见 `docs/train/04_EXPORT_QWEN3VL_PHASE2_CHECKPOINT.md`）：
+把第三轮复合训练 checkpoint（base + LLM LoRA adapter + 全量训练后的主
+Merger/DeepStack Merger state）导出为可由 `AutoModelForImageTextToText.
+from_pretrained()` 与项目 Qwen3-VL 主流程直接加载的完整部署 checkpoint。
+导出器只恢复、合并、保存和验证模型；不读取训练集、不执行训练、不重新
+解释数据配置；模块 import 不加载权重（torch/transformers/peft 惰性导入）。
+固定顺序：校验训练 manifest → 加载 base → 从 base 枚举预期 merger key →
+三方严格加载 merger（模型枚举 × manifest 参数表 × safetensors 内容；
+missing/unexpected/shape 冲突/非浮点 dtype/数量不符均失败；允许显式记录
+的浮点 dtype 转换）→ 通过 PEFT 官方接口挂 LLM LoRA → 校验 adapter 身份/
+target 集合与 manifest 完全一致、全部 adapter tensor 被消费、无视觉或
+merger LoRA target → `merge_and_unload` → 审计最终模型（无 lora_A/lora_B
+或 PEFT wrapper-only key 残留；merger 张量保持训练值）→ 保存模型与
+processor（`safe_serialization=True`）→ 复制 `save_pretrained` 未产出的辅助
+配置（不覆盖已有文件）→ 从临时目录以 `local_files_only=True` 离线 reload
+验证（AutoConfig/AutoProcessor/AutoModelForImageTextToText、model_type、
+config 身份与 base 一致、merger 数量、无 LoRA 残留模块、最小 image+text
+chat template 渲染、权重分片齐全、全文件 checksum）→ 可选 `--verify-forward`
+（程序生成小图 + 固定短 prompt 的无梯度 forward）→ 写
+`phase2_export_manifest.json`（base 逻辑身份/revision、训练 manifest
+sha256、adapter/merger sha256、LoRA 配置与 target 集合、merger 摘要、
+输出 dtype 与转换、版本、文件 size/sha256、reload/forward 结果、git HEAD）
+→ 同文件系统原子 rename 发布。`output_path` 已存在即拒绝；失败或中断
+（130）不创建最终目录，临时目录安全清理（绝不删除用户给定路径）。
+CLI：`--model-id`（默认 `models/qwen3_vl_8b/weights`）/
+`--checkpoint-path`/`--output-path`/`--torch-dtype`（默认 bfloat16）/
+`--device`（默认 cpu）/`--local-files-only`（默认 true）/
+`--verify-forward`。公共 stderr 只输出稳定阶段与异常类型；导出 manifest
+不记录 secret、机器绝对路径（作为逻辑身份）或原始异常全文。

@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -41,9 +42,27 @@ def evaluate_caption(
     bleu, _ = Bleu(4).compute_score(references, candidates)
     for index, score in enumerate(bleu, start=1):
         results[f"BLEU_{index}"] = score
-    for name, scorer in (("METEOR", Meteor()), ("ROUGE_L", Rouge()), ("CIDEr", Cider())):
+
+    not_computed: list[str] = []
+    if shutil.which("java") is None:
+        not_computed.append("METEOR")
+    else:
+        try:
+            score, _ = Meteor().compute_score(references, candidates)
+            results["METEOR"] = score
+        except OSError:
+            not_computed.append("METEOR")
+
+    for name, scorer in (("ROUGE_L", Rouge()), ("CIDEr", Cider())):
         score, _ = scorer.compute_score(references, candidates)
         results[name] = score
+    if not_computed:
+        # Keep independent scorers useful when one optional external runtime is
+        # absent; never substitute or estimate the missing metric.
+        # 一个可选外部运行时缺失时仍保留独立 scorer 的真实结果；绝不替换或
+        # 估算缺失指标。
+        results["metric_status"] = "partial"
+        results["not_computed"] = not_computed
     return results
 
 

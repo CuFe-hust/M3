@@ -172,10 +172,10 @@ def test_all_supported_tasks_run(task: str, tmp_path: Path) -> None:
 
 def test_spatial_relation_uses_general_prompt_single_call_and_general_agent(tmp_path: Path) -> None:
     """A spatial_relation sample runs through the generic single-call VQA path:
-    one Qwen call, the default general_vqa_v2 prompt, agent_result.json, and
+    one Qwen call, the default general_vqa_v3 prompt, agent_result.json, and
     the general_vqa_agent identity — no spatial candidate review or geometry
     rewrite. spatial_relation 样本走通用单次调用 VQA 路径：恰好一次 Qwen 调用、
-    默认 general_vqa_v2 Prompt、agent_result.json 与 general_vqa_agent 身份——
+    默认 general_vqa_v3 Prompt、agent_result.json 与 general_vqa_agent 身份——
     无 spatial 候选复核或几何改写。"""
     client = _RecordingClient()
     budget = _FakeBudget()
@@ -185,7 +185,7 @@ def test_spatial_relation_uses_general_prompt_single_call_and_general_agent(tmp_
     assert execution.agent_name == "general_vqa_agent"
     assert execution.payload.agent_name == "general_vqa_agent"
     assert execution.result_filename == "agent_result.json"
-    assert execution.trace["prompt_version"] == "general_vqa_v2"
+    assert execution.trace["prompt_version"] == "general_vqa_v3"
     assert len(client.calls) == 1
     assert budget.qwen_calls == 1
     payload = _last_user_payload(client)
@@ -597,7 +597,8 @@ def test_object_evidence_text_payload_is_safe_and_complete(tmp_path: Path) -> No
     payload = _text_payload(client)
     assert payload["question"] == "What is in the image?"
     assert payload["task"] == "general_vqa"
-    assert payload["coordinate_frame"] == "normalized_0_999_top_left"
+    assert payload["coordinate_frame"] == "roi_normalized_0_999_top_left"
+    assert payload["box_format"] == "integer_xyxy_json"
     assert payload["images"] == [{"image_id": "i1", "width": 200, "height": 160}]
     assert payload["rois"] == [
         {
@@ -612,10 +613,13 @@ def test_object_evidence_text_payload_is_safe_and_complete(tmp_path: Path) -> No
         {
             "leaf_category": "small_vehicle",
             "roi_id": "full",
-            "local_xyxy": [10.0, 10.0, 50.0, 40.0],
-            "global_xyxy": [10.0, 10.0, 50.0, 40.0],
+            "xyxy": [50, 62, 250, 250],
         }
     ]
+    assert all(
+        isinstance(value, int)
+        for value in payload["yolo_detections"][0]["xyxy"]
+    )
     assert payload["segformer_hits"] == [
         {"roi_id": "full", "leaf_category": "building_outline"}
     ]

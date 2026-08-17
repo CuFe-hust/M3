@@ -26,7 +26,7 @@ from evaluation.records import (
     evaluation_filename_for_runtime_task,
     evaluation_task_for_runtime_task,
 )
-from reporting.schema import ModelCallAuditView, RunMetadata
+from reporting.schema import ModelCallAuditView, RunMetadata, StructuredArtifactView
 from routing.schema import RoutingDecision
 from workflows.schema import RunRequest, SampleRunStatus
 
@@ -346,6 +346,40 @@ def load_model_calls(sample_dir: Path) -> list[ModelCallAuditView]:
 
 
 load_model_call_artifacts = load_model_calls
+
+
+_STRUCTURED_ARTIFACT_FILENAMES = (
+    "vqa_evidence.json",
+    "grounding_evidence.json",
+    "visual_plan.json",
+    "joint_visual_plan.json",
+)
+
+
+def load_structured_artifacts(sample_dir: Path) -> list[StructuredArtifactView]:
+    """Load allowlisted structured submodel artifacts for the HTML audit.
+    为 HTML 审计加载允许列表内的结构化子模型产物。
+
+    The payload is passed through the same depth/secret/path sanitizer as
+    model-call views. This exposes detector/evidence state without granting
+    reporting arbitrary file access or persisting credentials.
+    载荷复用模型调用视图的深度/敏感信息/路径清洗；既展示检测器/证据状态，
+    又不向 reporting 开放任意文件读取或持久化凭据。
+    """
+
+    result: list[StructuredArtifactView] = []
+    for filename in _STRUCTURED_ARTIFACT_FILENAMES:
+        raw = read_json(sample_dir / filename)
+        if raw is None:
+            continue
+        safe = _safe_json(raw)
+        if safe is None:
+            continue
+        try:
+            result.append(StructuredArtifactView(filename=filename, payload=safe))
+        except ValueError:
+            continue
+    return result
 
 
 def load_evaluation(sample_dir: Path, task: str) -> EvaluationRecord | None:

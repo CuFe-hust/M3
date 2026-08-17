@@ -26,6 +26,7 @@ from reporting.schema import (
     ReportSample,
     RoutingAttemptView,
     RoutingView,
+    StructuredArtifactView,
     TaskSummary,
     VisualAssetView,
 )
@@ -141,6 +142,53 @@ def test_html_contains_stable_fields_only(tmp_path: Path) -> None:
     assert "evil-1" in document
     assert "general_vqa_agent" in document
     assert "exact_match=True" in document
+
+
+def test_html_displays_execution_path_and_submodel_outputs() -> None:
+    report = Report(
+        run_id="audit-run",
+        total=1,
+        succeeded=1,
+        partial=0,
+        failed=0,
+        skipped=0,
+        samples=[
+            ReportSample(
+                sample_id="audit-1",
+                run_task="general_vqa",
+                task="general_vqa",
+                state="succeeded",
+                execution_path=[
+                    "workflows.task_resolver.TaskResolver",
+                    "routing.router.TaskRouter.route",
+                    "agents.general_vqa.agent.GeneralVQAAgent",
+                ],
+                model_calls=[
+                    ModelCallAuditView(
+                        request_id="audit-1:qwen",
+                        prompt_version="v1",
+                        raw_response='{"answer":"red"}',
+                        parsed_response='{"answer":"red"}',
+                    )
+                ],
+                structured_artifacts=[
+                    StructuredArtifactView(
+                        filename="vqa_evidence.json",
+                        payload={"detector": "yolo", "boxes": [[1, 2, 3, 4]]},
+                    )
+                ],
+            )
+        ],
+    )
+
+    document = build_html(report)
+
+    assert "Top-level execution path / 顶层执行路径" in document
+    assert "workflows.task_resolver.TaskResolver" in document
+    assert "All model/submodel outputs / 全部模型/子模型输出" in document
+    assert "vqa_evidence.json" in document
+    assert "&quot;answer&quot;" in document
+    assert "red" in document
 
 
 def _semantic_report(*, complete: bool) -> Report:
