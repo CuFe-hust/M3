@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import json
 import re
 from pathlib import PurePosixPath
 from typing import Any
@@ -189,6 +190,7 @@ def _sample_card(sample: ReportSample) -> str:
         + f'<span>Latency: {_esc(_seconds(sample.inference_seconds))}</span>'
         + '</span></span></summary><div class="sample-body">'
         + _sample_hero(sample) + _execution_process(sample) + _model_calls(sample)
+        + _execution_path_html(sample)
         + _technical_details(sample) + "</div></details></article>"
     )
 
@@ -320,7 +322,7 @@ def _execution_process(sample: ReportSample) -> str:
 
 
 def _model_calls(sample: ReportSample) -> str:
-    if not sample.model_calls:
+    if not sample.model_calls and not sample.structured_artifacts:
         return ""
     calls = []
     for index, call in enumerate(sample.model_calls, start=1):
@@ -338,7 +340,40 @@ def _model_calls(sample: ReportSample) -> str:
             + '</pre></details><details><summary>Parsed model output</summary><pre>' + parsed
             + '</pre></details></article>'
         )
-    return '<section class="detail-block model-calls"><h4>Model Calls / 模型调用</h4>' + "".join(calls) + '</section>'
+    structured = []
+    for artifact in sample.structured_artifacts:
+        structured.append(
+            '<article class="model-call"><h4>Structured submodel output · '
+            + _esc(artifact.filename)
+            + '</h4><pre>'
+            + _esc(_json_text(artifact.payload))
+            + '</pre></article>'
+        )
+    return (
+        '<section class="detail-block model-calls"><h4>All model/submodel outputs / '
+        '全部模型/子模型输出</h4>'
+        + "".join(calls)
+        + "".join(structured)
+        + '</section>'
+    )
+
+
+def _execution_path_html(sample: ReportSample) -> str:
+    """Render the persisted top-level module hand-off path.
+    渲染已持久化的顶层模块交接路径。"""
+
+    if not sample.execution_path:
+        return (
+            '<section class="detail-block execution-path"><h4>Top-level '
+            'execution path / 顶层执行路径</h4><p>not recorded</p></section>'
+        )
+    items = "".join(f"<li><code>{_esc(item)}</code></li>" for item in sample.execution_path)
+    return (
+        '<section class="detail-block execution-path"><h4>Top-level execution '
+        'path / 顶层执行路径</h4><ol>'
+        + items
+        + '</ol></section>'
+    )
 
 
 def _technical_details(sample: ReportSample) -> str:
@@ -401,7 +436,8 @@ def _task_detail(sample: ReportSample) -> str:
     if isinstance(detail, GroundingReportDetail):
         return '<div class="detail-block"><h4>Grounding detail</h4><dl>' + "".join([
             _dl("Prediction", detail.prediction), _dl("Reference", "; ".join(detail.reference)),
-            _dl("Predicted evidence boxes", len(detail.predicted_boxes)), _dl("Ground-truth boxes", len(detail.ground_truth_boxes)),
+            _dl("Predicted evidence boxes", detail.predicted_boxes), _dl("Ground-truth boxes", detail.ground_truth_boxes),
+            _dl("Ground-truth coordinate frame", detail.ground_truth_coordinate_frame),
             _dl("IoU", detail.iou), _dl("IoU@0.5", detail.iou_at_0_5),
             _dl("Geometry Repair Severity", detail.geometry_repair_severity),
         ]) + "</dl></div>"
@@ -460,7 +496,11 @@ def _metrics_html(metrics: dict[str, Any]) -> str:
         if not isinstance(payload, dict):
             continue
         exact = f'<p>Exact-match accuracy: {_esc(_format_number(payload["score"]))}</p>' if family == "general_vqa" and "score" in payload else ""
-        blocks.append(f'<h4>Metrics: {_esc(family)}</h4>{exact}<table><tbody>' + "".join(
+        note = (
+            '<p>CHAIR2: not configured; no approved scorer is persisted for this run.</p>'
+            if family == "caption" else ""
+        )
+        blocks.append(f'<h4>Metrics: {_esc(family)}</h4>{exact}{note}<table><tbody>' + "".join(
             f'<tr>{_cells(key, _format_number(value))}</tr>' for key, value in sorted(payload.items())
         ) + "</tbody></table>")
     return "".join(blocks)
@@ -547,6 +587,16 @@ def _dl(label: str, value: Any) -> str:
     return f'<dt>{_esc(label)}</dt><dd>{_esc(shown)}</dd>'
 
 
+def _json_text(value: Any) -> str:
+    """Render a bounded JSON-safe value for a preformatted audit block.
+    将有界 JSON-safe 值渲染为预格式化审计块。"""
+
+    try:
+        return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def _cells(*values: Any) -> str:
     return "".join(f'<td>{_esc(value)}</td>' for value in values)
 
@@ -608,6 +658,7 @@ table{width:100%;border-collapse:collapse;margin:.5rem 0 1rem}th,td{border-botto
 .run-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-width:720px}.run-meta-item{min-width:0}.run-meta-item span{display:block;color:#cbd5e1;font-size:.72rem}.run-meta-value{display:block;overflow-wrap:anywhere;word-break:break-word}.mono{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.aggregate-panel{background:transparent;border:0;margin:14px 0;padding:0}.aggregate-panel>summary{cursor:pointer;font-weight:700;padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.sample-preview{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;align-items:start;min-width:0;cursor:pointer;padding:12px}.sample-thumb{width:112px;height:112px;object-fit:cover;background:#e2e8f0;border-radius:4px}.sample-thumb-empty{display:grid;place-items:center;color:var(--muted);font-size:.75rem;text-align:center}.sample-summary-main{display:grid;gap:8px;min-width:0}.sample-summary-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}.sample-question{font-size:.95rem;overflow-wrap:anywhere}.answer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}.answer-cell{display:grid;gap:3px;min-width:0;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.answer-cell small{color:var(--muted)}.answer-cell strong{overflow-wrap:anywhere;word-break:break-word}.sample-result-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);overflow-wrap:anywhere}.sample-result-row strong{color:var(--ink)}.sample-body{display:block;border-top:1px solid var(--line);padding:12px}.sample-hero{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(0,1.05fr);gap:12px;min-width:0}.sample-hero>*{min-width:0}.hero-visual,.hero-answer{min-width:0}.execution-process,.model-calls{margin-top:12px}.stage,.model-call{border-top:1px solid var(--line);padding:10px 0;min-width:0}.stage h4,.model-call h4{margin:.1rem 0 .5rem;overflow-wrap:anywhere}.technical-details{margin-top:12px}.technical-details>summary{cursor:pointer;font-weight:650}.table-scroll{width:100%;overflow-x:auto}.table-scroll table{min-width:640px}
 @media(max-width:900px){main{padding:10px}.filters{grid-template-columns:1fr 1fr}.sample summary.sample-preview{grid-template-columns:160px minmax(0,1fr)}.sample-thumb{width:76px;height:76px}.answer-grid{grid-template-columns:1fr}.sample-hero{grid-template-columns:1fr}.sample-body{grid-template-columns:1fr}.visuals{grid-column:auto}}
 @media(max-width:560px){header{display:block}.schema{display:inline-block;margin-top:12px}.filters{grid-template-columns:1fr}.sample summary.sample-preview{grid-template-columns:1fr}.sample-thumbnails{width:100%}.summary-visual{width:calc(50% - 3px)}.summary-visual .sample-thumb{width:100%;height:auto;aspect-ratio:1}.sample-result-row{gap:8px}}
+.execution-path{margin-top:12px}.execution-path ol{margin:.5rem 0 0;padding-left:1.5rem}.execution-path code{font-size:.85rem;overflow-wrap:anywhere;word-break:break-word}
 """
 
 

@@ -143,6 +143,14 @@ class ModelCallAuditView(_ViewModel):
     request_summary: str | None = None
 
 
+class StructuredArtifactView(_ViewModel):
+    """Safe view of one persisted structured submodel artifact.
+    一份已持久化结构化子模型产物的安全视图。"""
+
+    filename: str
+    payload: JsonValue
+
+
 VisualStatus = Literal[
     "available", "not_materialized", "omitted_by_budget", "missing_source",
     "invalid_source", "dimension_mismatch", "unsupported_geometry",
@@ -217,6 +225,7 @@ class GroundingReportDetail(_ViewModel):
     reference: list[str] = Field(default_factory=list)
     predicted_boxes: list[list[float]] = Field(default_factory=list)
     ground_truth_boxes: list[list[float]] = Field(default_factory=list)
+    ground_truth_coordinate_frame: str | None = None
     iou: float | None = None
     iou_at_0_5: bool | None = None
     geometry_repair_severity: str | None = None
@@ -277,9 +286,11 @@ class ReportSample(_ViewModel):
     evaluation: EvaluationRecord | None = None
     result_quality: Literal["correct", "incorrect", "unknown", "not_applicable"] = "unknown"
     routing: RoutingView = Field(default_factory=RoutingView)
+    execution_path: list[str] = Field(default_factory=list)
     routing_decision: dict[str, JsonValue] | None = None
     backend_stages: list[BackendStageView] = Field(default_factory=list)
     model_calls: list[ModelCallAuditView] = Field(default_factory=list)
+    structured_artifacts: list[StructuredArtifactView] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     visuals: list[VisualAssetView] = Field(default_factory=list)
     task_detail: TaskDetail | None = None

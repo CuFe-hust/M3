@@ -88,6 +88,7 @@ class VisualAgentBase:
             "question": sample.question,
             "task": sample.task,
             "coordinate_frame": "normalized_0_999_top_left",
+            "box_format": "integer_xyxy_json",
             "answer_constraints": {},
         }
         if sample.normalization is not None:
@@ -157,7 +158,9 @@ class VisualAgentBase:
             + f"\n\nReturn valid JSON only. Set agent_name to {self.name!r}; "
             "put the concise final answer in answer, retain relevant labeled boxes or points "
             "in evidence_items, copy evidence boxes into boxes, use concise factual evidence "
-            "strings, and set status to 'completed'."
+            "strings, and set status to 'completed'. When boxes are returned, use integer "
+            "0..999 whole-image xyxy coordinates in JSON, with each box as a flat "
+            "[x1,y1,x2,y2] array."
         )
 
         messages: list[dict[str, Any]] = [

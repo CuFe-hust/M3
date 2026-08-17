@@ -180,7 +180,7 @@ def _materialize_visual(
             if len(sample.images) == 1
             else []
         )
-        gt = _safe_ground_truth(sample, visual.image_id)
+        gt, gt_frame = _safe_ground_truth(sample, visual.image_id)
         if not evidence and not top_level_boxes and not gt:
             visual.status = "unsupported_geometry"
             return
@@ -191,7 +191,14 @@ def _materialize_visual(
         for box in top_level_boxes:
             _draw_geometry(draw, [float(value) for value in box], canvas.size, _ACCEPTED_COLOR)
         for geometry in gt:
-            _draw_geometry(draw, geometry, canvas.size, _GT_COLOR)
+            _draw_geometry(
+                draw,
+                geometry,
+                canvas.size,
+                _GT_COLOR,
+                coordinate_frame=gt_frame,
+                source_size=image.size,
+            )
         canvas.save(assets_dir / Path(overlay_rel).name, format="PNG", optimize=False)
         visual.overlay_asset = overlay_rel
         visual.status = "available"
@@ -262,12 +269,24 @@ def _evidence_for_image(
             yield item
 
 
-def _safe_ground_truth(sample: UnifiedSample, image_id: str) -> list[list[float]]:
+def _safe_ground_truth(
+    sample: UnifiedSample, image_id: str
+) -> tuple[list[list[float]], str | None]:
     if sample.ground_truth is None or sample.ground_truth.coordinate_frame != "normalized_0_999_top_left":
-        return []
+        if sample.ground_truth is None:
+            return [], None
+        if sample.ground_truth.coordinate_frame not in {
+            "normalized_0_1_top_left",
+            "source_pixels_top_left",
+        }:
+            return [], None
     if len(sample.images) != 1 or sample.images[0].image_id != image_id:
-        return []
-    return [list(box) for box in sample.ground_truth.boxes] + [list(point) for point in sample.ground_truth.points]
+        return [], None
+    return (
+        [list(box) for box in sample.ground_truth.boxes]
+        + [list(point) for point in sample.ground_truth.points],
+        sample.ground_truth.coordinate_frame,
+    )
 
 
 def _draw_normalized(
@@ -279,12 +298,43 @@ def _draw_normalized(
 
 
 def _draw_geometry(
-    draw: ImageDraw.ImageDraw, geometry: list[float], size: tuple[int, int], color: tuple[int, int, int],
+    draw: ImageDraw.ImageDraw,
+    geometry: list[float],
+    size: tuple[int, int],
+    color: tuple[int, int, int],
+    *,
+    coordinate_frame: str | None = "normalized_0_999_top_left",
+    source_size: tuple[int, int] | None = None,
 ) -> None:
     width, height = size
     line_width = _line_width(width, height)
-    points = [(geometry[index] / 999 * (width - 1), geometry[index + 1] / 999 * (height - 1))
-              for index in range(0, len(geometry), 2)]
+    if coordinate_frame == "normalized_0_999_top_left":
+        x_scale = y_scale = 999.0
+        points = [
+            (
+                geometry[index] / x_scale * (width - 1),
+                geometry[index + 1] / y_scale * (height - 1),
+            )
+            for index in range(0, len(geometry), 2)
+        ]
+    elif coordinate_frame == "normalized_0_1_top_left":
+        points = [
+            (geometry[index] * (width - 1), geometry[index + 1] * (height - 1))
+            for index in range(0, len(geometry), 2)
+        ]
+    elif coordinate_frame == "source_pixels_top_left":
+        source_width, source_height = source_size or size
+        if source_width <= 0 or source_height <= 0:
+            return
+        points = [
+            (
+                geometry[index] / source_width * (width - 1),
+                geometry[index + 1] / source_height * (height - 1),
+            )
+            for index in range(0, len(geometry), 2)
+        ]
+    else:
+        return
     if len(points) == 1:
         x, y = points[0]
         radius = max(3, line_width * 3)

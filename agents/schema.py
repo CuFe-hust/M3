@@ -64,7 +64,11 @@ class AgentResult(BaseModel):
 
     agent_name: AgentName
     answer: str
-    boxes: list[list[float]] = Field(default_factory=list)
+    # Model-facing boxes use the same integer 0..999 xyxy JSON geometry as
+    # Phase 2 SFT; runtime consumers still receive the canonical list form.
+    # 模型侧框与 Phase 2 SFT 使用相同的 0..999 整数 xyxy JSON 几何；运行时
+    # 消费者仍接收统一的列表形式。
+    boxes: list[list[int]] = Field(default_factory=list)
     evidence: list[str] = Field(default_factory=list, max_length=12)
     evidence_items: list[VisualEvidence] = Field(default_factory=list, max_length=200)
     geometry: dict[str, Any] = Field(default_factory=dict)

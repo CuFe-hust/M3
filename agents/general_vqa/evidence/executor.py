@@ -75,6 +75,27 @@ from models.base import (
 SEGFORMER_CLASS_MAP_MISMATCH = "SEGFORMER_CLASS_MAP_MISMATCH"
 
 
+def _pixel_xyxy_to_999(
+    xyxy: tuple[float, float, float, float],
+    size: tuple[int, int],
+) -> list[int]:
+    """Serialize crop-pixel xyxy in the Phase 2 0..999 integer JSON frame.
+    将裁切图像素 xyxy 序列化为 Phase 2 的 0..999 整数 JSON 坐标。"""
+    width, height = size
+    values = (
+        round(xyxy[0] / width * 999),
+        round(xyxy[1] / height * 999),
+        round(xyxy[2] / width * 999),
+        round(xyxy[3] / height * 999),
+    )
+    return [
+        max(0, min(999, int(values[0]))),
+        max(0, min(999, int(values[1]))),
+        max(0, min(999, int(values[2]))),
+        max(0, min(999, int(values[3]))),
+    ]
+
+
 @dataclass(frozen=True)
 class EvidencePolicy:
     """Inject-only policy for executor parameters whose values are not yet

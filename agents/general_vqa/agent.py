@@ -24,7 +24,10 @@ from agents.base import (
     VqaEvidenceService,
 )
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
-from agents.general_vqa.evidence.executor import EvidenceExecution
+from agents.general_vqa.evidence.executor import (
+    EvidenceExecution,
+    _pixel_xyxy_to_999,
+)
 from agents.general_vqa.evidence.rendering import (
     make_preview,
     overlay_mask,
@@ -46,23 +49,23 @@ from models.images import (
     image_sha256,
 )
 
-# Neutral default prompt text (English mirror of the baseline general_vqa_v2
+# Neutral default prompt text (English mirror of the baseline general_vqa_v3
 # prompt). The repository prompt file is intentionally not read by agents;
 # the version string stays aligned with the baseline asset name.
-# 中性默认提示文本（基线 general_vqa_v2 prompt 的英文镜像）。Agent 有意不
+# 中性默认提示文本（基线 general_vqa_v3 prompt 的英文镜像）。Agent 有意不
 # 读取仓库 Prompt 文件；版本字符串与基线资产名保持一致。
 _DEFAULT_PROMPT_TEXT = (
     "Answer the question concisely from the image. Preserve up to four "
     "representative relevant localized objects as labeled evidence_items; "
     "copy all evidence-item boxes into boxes in the same order. Coordinates "
-    "are whole-image 0..999 raster coordinates with the origin at the "
+    "are integer whole-image 0..999 raster coordinates in JSON with the origin at the "
     "top-left, positive x to the right, and positive y downward. A box is one "
     "flat array [x1,y1,x2,y2], never a pair of corner arrays. Use an empty "
     "evidence list only when the answer genuinely has no localizable visual "
     "support. Do not include hidden reasoning."
 )
 
-_DEFAULT_PROMPT_VERSION = "general_vqa_v2"
+_DEFAULT_PROMPT_VERSION = "general_vqa_v3"
 
 # Compatibility matrix (14A2 gate 1): only general_vqa may run the
 # object_evidence_vqa family; the other VQA-family tasks are direct_vqa only
@@ -365,6 +368,12 @@ class GeneralVQAAgent(VisualAgentBase):
                 )
                 content.append(self._image_block(overlay, final_hashes))
         payload = dict(self.build_user_payload(sample))
+        # The final Qwen receives ROI crops, so detection geometry is local to
+        # those crops while retaining the SFT integer 0..999 JSON convention.
+        # 最终 Qwen 接收的是 ROI 裁切图，因此检测框相对于裁切图局部定义，同时
+        # 保持 SFT 的 0..999 整数 JSON 约定。
+        payload["coordinate_frame"] = "roi_normalized_0_999_top_left"
+        payload["box_format"] = "integer_xyxy_json"
         payload["images"] = [
             {
                 "image_id": image_ref.image_id,
@@ -378,8 +387,13 @@ class GeneralVQAAgent(VisualAgentBase):
             {
                 "leaf_category": record.leaf_category,
                 "roi_id": record.roi_id,
-                "local_xyxy": list(record.local_xyxy),
-                "global_xyxy": list(record.global_xyxy),
+                # The final Qwen sees an ROI crop, so expose only its local
+                # geometry in the same integer 0..999 JSON frame as SFT.
+                # 最终 Qwen 看到的是 ROI 裁切图，因此只暴露局部几何，并统一为
+                # 与 SFT 相同的 0..999 整数 JSON 坐标。
+                "xyxy": _pixel_xyxy_to_999(
+                    record.local_xyxy, record.local_roi_size
+                ),
             }
             for record in bundle.detections
         ]

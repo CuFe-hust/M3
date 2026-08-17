@@ -123,6 +123,55 @@ def test_grounding_release_loads_one_sample_per_object(tmp_path: Path) -> None:
     assert samples[0].ground_truth.labels == ["small-vehicle"]
 
 
+def test_official_referring_release_preserves_normalized_polygon(tmp_path: Path) -> None:
+    """Load the official VRSBench referring release without flattening its
+    four-corner polygon into an unlabelled xyxy box.
+    加载官方 VRSBench referring 发布，并保留四角 polygon，不把它静默压成
+    无标签 xyxy 框。"""
+
+    root = tmp_path / "vrsbench_referring"
+    _make_image(root / "Images_val" / "img_1.png")
+    _write_json(root / "VRSBench_EVAL_referring.json", [
+        {
+            "image_id": "img_1.png",
+            "question": "The vehicle near the road.",
+            "question_id": 7,
+            "ground_truth": "{<25><40><33><60>}",
+            "obj_corner": [0.10, 0.20, 0.30, 0.20, 0.30, 0.40, 0.10, 0.40],
+            "obj_cls": "vehicle",
+            "type": "ref",
+        }
+    ])
+
+    samples = list(VRSBenchAdapter().iter_samples(root, "val", "grounding"))
+
+    assert len(samples) == 1
+    sample = samples[0]
+    assert sample.ground_truth is not None
+    assert sample.ground_truth.coordinate_frame == "normalized_0_1_top_left"
+    assert sample.ground_truth.boxes == [[0.10, 0.20, 0.30, 0.20, 0.30, 0.40, 0.10, 0.40]]
+    assert sample.ground_truth.labels == ["vehicle"]
+    assert sample.ground_truth.raw["coordinate_frame"] == "normalized_0_1_top_left"
+
+
+def test_probe_discovers_official_referring_grounding_file(tmp_path: Path) -> None:
+    root = tmp_path / "vrsbench_referring_probe"
+    _make_image(root / "Images_val" / "img_1.png")
+    _write_json(root / "VRSBench_EVAL_referring.json", [
+        {
+            "image_id": "img_1.png",
+            "question": "The vehicle.",
+            "obj_corner": [0.1, 0.2, 0.3, 0.2, 0.3, 0.4, 0.1, 0.4],
+            "obj_cls": "vehicle",
+        }
+    ])
+
+    probe = VRSBenchAdapter().probe(root, task="grounding")
+
+    assert probe.sample_count == 1
+    assert probe.sample_file.name == "VRSBench_EVAL_referring.json"
+
+
 def test_source_order_is_preserved(tmp_path: Path) -> None:
     root = _build_vqa_root(tmp_path)
     sample_ids = [sample.sample_id for sample in VRSBenchAdapter().iter_samples(root, "validation", "general_vqa")]

@@ -602,6 +602,30 @@ python main.py --config /path/to/local.yaml run-dataset \
   --run-id levir-change-caption-v1
 ```
 
+### VRSBench 三任务系统测试
+
+官方 validation 发布按本项目约定作为 `val`/test 输入时，可直接运行：
+
+```bash
+bash scripts/run_vrsbench_system_test.sh
+```
+
+脚本通过公开 `run-dataset` 输入入口和 `VRSBenchAdapter` 依次执行
+`caption,grounding,general_vqa`，并在 `outputs/runs/<run_id>/` 生成：
+
+```text
+predictions.jsonl
+command_result.json
+report/report.json
+report/samples.jsonl
+report/report.html
+```
+
+可用环境变量 `PYTHON`、`M3_CONFIG`、`VRSBENCH_ROOT`、`VRSBENCH_RUN_ID`、
+`VRSBENCH_LIMIT`、`VRSBENCH_SAMPLE_CONCURRENCY`、`VRSBENCH_SHARD_INDEX` 与
+`VRSBENCH_SHARD_COUNT` 覆盖运行参数。HTML 样本页展示 grounding 的原图叠加、
+顶层模块执行路径和已持久化的模型 raw/parsed 输出。
+
 ---
 
 ## 12. Auto-task Dataset Mode
@@ -749,6 +773,10 @@ references
 ```
 
 语料级 BLEU / METEOR / ROUGE / CIDEr 由 aggregate/标准 evaluator 路径负责，不把逐样本记录伪装成完整 corpus metric。
+当前运行未配置经批准的 CHAIR2 scorer；系统会在 `command_result.json` 与
+HTML caption metrics 区域明确标记 `CHAIR2` 未计算，不会伪造分数。METEOR
+需要 Java；缺少 Java 时只将 METEOR 标为未计算，BLEU/ROUGE_L/CIDEr 仍独立
+报告。
 
 ---
 

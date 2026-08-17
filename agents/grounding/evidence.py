@@ -130,10 +130,12 @@ class GroundingRoiRecord(BaseModel):
 class GroundingCandidateRecord(BaseModel):
     """One YOLO candidate offered to the final Qwen: a stable box_id, the
     concrete leaf category, the source ROI, and the box in ROI-local [0,1]
-    coordinates. Confidence is never persisted here — it exists only in the
-    private postprocess. 提供给最终 Qwen 的一条 YOLO 候选：稳定 box_id、具体
-    叶子类别、来源 ROI 与 ROI-local [0,1] 坐标。置信度绝不在此持久化——只
-    存在于私有后处理。"""
+    coordinates. The model-facing serialization is derived as integer 0..999
+    xyxy JSON, while this record keeps the precise internal geometry. Confidence
+    is never persisted here — it exists only in the private postprocess.
+    提供给最终 Qwen 的一条 YOLO 候选：稳定 box_id、具体叶子类别、来源 ROI
+    与 ROI-local [0,1] 坐标。模型侧序列化时派生为 0..999 整数 xyxy JSON，
+    但此记录保留精确内部几何。置信度绝不在此持久化——只存在于私有后处理。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -144,18 +146,28 @@ class GroundingCandidateRecord(BaseModel):
 
 
 class GroundingFallbackBox(BaseModel):
-    """A free box emitted by the final Qwen for a still-missing leaf. The box
-    is ROI-local [0,1] xyxy; semantic checks (range, degeneracy, authority)
-    happen in the deterministic postprocess where invalid items are dropped,
-    never in this schema. 最终 Qwen 为仍缺失叶子输出的自由框。坐标为
-    ROI-local [0,1] xyxy；语义检查（范围、退化、权限）发生在确定性后处理，
-    非法项在那里被丢弃，绝不在本 schema。"""
+    """Persisted internal free-box geometry in ROI-local [0,1] coordinates.
+    The model-facing response uses GroundingModelFallbackBox and is converted
+    into this stable artifact shape after validation. 持久化的内部自由框使用
+    ROI-local [0,1] 坐标；模型侧响应由 GroundingModelFallbackBox 表示，并在
+    校验后转换为这个稳定产物形态。"""
 
     model_config = ConfigDict(extra="forbid")
 
     leaf_category: str = Field(min_length=1)
     roi_id: str = Field(min_length=1, pattern=_ROI_ID_PATTERN)
     bbox: tuple[float, float, float, float]
+
+
+class GroundingModelFallbackBox(BaseModel):
+    """Model-facing free box in the Phase 2 integer 0..999 xyxy JSON frame.
+    模型侧自由框使用 Phase 2 的 0..999 整数 xyxy JSON 坐标。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    leaf_category: str = Field(min_length=1)
+    roi_id: str = Field(min_length=1, pattern=_ROI_ID_PATTERN)
+    xyxy: tuple[int, int, int, int]
 
 
 class GroundingQwenResponse(BaseModel):
@@ -169,7 +181,7 @@ class GroundingQwenResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     selected_box_ids: list[str] = Field(default_factory=list)
-    fallback_boxes: list[GroundingFallbackBox] = Field(default_factory=list)
+    fallback_boxes: list[GroundingModelFallbackBox] = Field(default_factory=list)
 
 
 class GroundingCallAudit(BaseModel):
@@ -412,12 +424,30 @@ def _normalize_local(
     return box
 
 
-def _valid_fallback_bbox(bbox: tuple[float, float, float, float]) -> bool:
-    """A free box must be finite, within [0,1], and non-degenerate.
-    自由框必须有限、位于 [0,1] 且非退化。"""
-    if not all(math.isfinite(value) for value in bbox):
+def _normalized_box_to_999(
+    box: tuple[float, float, float, float],
+) -> list[int]:
+    """Serialize ROI-local [0,1] xyxy as integer 0..999 JSON geometry.
+    将 ROI-local [0,1] xyxy 序列化为 0..999 整数 JSON 几何。"""
+    return [
+        max(0, min(_MAX_999, round(value * _MAX_999))) for value in box
+    ]
+
+
+def _fallback_box_to_normalized(
+    box: tuple[int, int, int, int],
+) -> tuple[float, float, float, float]:
+    """Convert model-facing integer 0..999 xyxy back to ROI-local [0,1].
+    将模型侧 0..999 整数 xyxy 转回 ROI-local [0,1]。"""
+    return tuple(value / _MAX_999 for value in box)  # type: ignore[return-value]
+
+
+def _valid_fallback_bbox(bbox: tuple[int, int, int, int]) -> bool:
+    """A free box must be integer, within 0..999, and non-degenerate.
+    自由框必须是整数、位于 0..999 且非退化。"""
+    if not all(isinstance(value, int) and not isinstance(value, bool) for value in bbox):
         return False
-    if not all(0.0 <= value <= 1.0 for value in bbox):
+    if not all(0 <= value <= _MAX_999 for value in bbox):
         return False
     return bbox[0] < bbox[2] and bbox[1] < bbox[3]
 
@@ -868,7 +898,8 @@ class GroundingEvidenceExecutor:
         user_payload = {
             "question": sample.question,
             "catalog_version": self._catalog.catalog_version,
-            "coordinate_frame": "roi_normalized_0_1_top_left",
+            "coordinate_frame": "roi_normalized_0_999_top_left",
+            "box_format": "integer_xyxy_json",
             "rois": [
                 {
                     "roi_id": record.roi_id,
@@ -883,7 +914,7 @@ class GroundingEvidenceExecutor:
                     "box_id": candidate.box_id,
                     "leaf_category": candidate.leaf_category,
                     "roi_id": candidate.roi_id,
-                    "roi_normalized_xyxy": list(candidate.roi_normalized_xyxy),
+                    "xyxy": _normalized_box_to_999(candidate.roi_normalized_xyxy),
                 }
                 for candidate in candidates
             ],
@@ -1018,12 +1049,18 @@ class GroundingEvidenceExecutor:
                     dropped.get("free_box_unknown_roi", 0) + 1
                 )
                 continue
-            if not _valid_fallback_bbox(box.bbox):
+            if not _valid_fallback_bbox(box.xyxy):
                 dropped["free_box_invalid_coordinates"] = (
                     dropped.get("free_box_invalid_coordinates", 0) + 1
                 )
                 continue
-            fallbacks.append(box)
+            fallbacks.append(
+                GroundingFallbackBox(
+                    leaf_category=box.leaf_category,
+                    roi_id=box.roi_id,
+                    bbox=_fallback_box_to_normalized(box.xyxy),
+                )
+            )
 
         return GroundingEvidenceBundle(
             catalog_version=self._catalog.catalog_version,
@@ -1057,7 +1094,13 @@ class GroundingEvidenceExecutor:
             merged.append((candidate.leaf_category, candidate.roi_normalized_xyxy, record))
         for box in bundle.fallback_boxes:
             record = records_by_id[box.roi_id]
-            merged.append((box.leaf_category, box.bbox, record))
+            merged.append(
+                (
+                    box.leaf_category,
+                    box.bbox,
+                    record,
+                )
+            )
 
         converted: list[tuple[str, tuple[int, int, int, int]]] = []
         for label, roi_normalized, record in merged:

@@ -58,6 +58,9 @@ def _inject_fake_caption_modules(monkeypatch) -> None:
     inside evaluate_caption resolves to them.
     向 sys.modules 注入 fake pycocoevalcap 模块，使 evaluate_caption 内的
     惰性导入解析到它们。"""
+    monkeypatch.setattr(
+        "evaluation.metrics.caption.shutil.which", lambda _name: "/usr/bin/java"
+    )
     package = types.ModuleType("pycocoevalcap")
     monkeypatch.setitem(sys.modules, "pycocoevalcap", package)
     for parent, child in (("pycocoevalcap", "bleu"), ("pycocoevalcap", "cider"),
@@ -84,6 +87,22 @@ def test_evaluate_caption_with_fake_scorers(monkeypatch) -> None:
     assert results["BLEU_3"] == 0.3
     assert results["BLEU_4"] == 0.2
     assert results["METEOR"] == 0.42
+    assert results["ROUGE_L"] == 0.42
+    assert results["CIDEr"] == 0.42
+
+
+def test_missing_caption_runtime_is_scoped_to_meteor(monkeypatch) -> None:
+    _inject_fake_caption_modules(monkeypatch)
+
+    class _MissingMeteor:
+        def __init__(self) -> None:
+            raise FileNotFoundError("java")
+
+    sys.modules["pycocoevalcap.meteor.meteor"].Meteor = _MissingMeteor
+    results = evaluate_caption(_REFERENCES, _CANDIDATES)
+    assert results["metric_status"] == "partial"
+    assert results["not_computed"] == ["METEOR"]
+    assert results["BLEU_1"] == 0.5
     assert results["ROUGE_L"] == 0.42
     assert results["CIDEr"] == 0.42
 

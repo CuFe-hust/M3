@@ -1059,7 +1059,7 @@ multiple_choice_vqa
 spatial_relation
 ```
 
-`spatial_relation` 复用 general_vqa_v2 Prompt 与单次 Qwen 调用，输出
+`spatial_relation` 复用 general_vqa_v3 Prompt 与单次 Qwen 调用，输出
 `agent_result.json`；保留 `requires_tiling=False` 与 VQA 确定性评测/Judge 族。
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
@@ -1070,10 +1070,11 @@ GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
 `VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜），按 14B §10 契约
 组装唯一一次 final Qwen 调用：clean ROI 图在前、逐 ROI 掩膜 overlay 按
 `roi_id` 序在后，文本证据含 question、answer constraints、图像尺寸、
-ROI 裁切几何、YOLO 文本记录（local+global 坐标）与 SegFormer 颜色叶子
+ROI 裁切几何、YOLO 文本记录（ROI 局部 `0..999` 整数 `xyxy` JSON）与 SegFormer 颜色叶子
 图例；绝不携带 confidence、绝不使用画框图。`vqa_evidence.json` 作为
 additional result 持久化 bundle（严格 JSON-safe，无掩膜数组/无 secret）。
-`execution_family == "direct_vqa"` 或无 plan 时走既有 legacy 路径。
+`execution_family == "direct_vqa"` 或无 plan 时走既有 legacy 路径。模型侧框统一使用
+`0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
 禁止组合（如 scene_classification + object evidence）以
 `object_evidence_plan_forbidden_for_task` 稳定失败；兼容矩阵见 14A2 §4.4。
 
@@ -1102,7 +1103,8 @@ GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
 返回确定性整图框 `WholeImageBox`。`AgentResult.answer` 为
 `, `.join(labels) 文本；final Qwen 绝不产出自由文本坐标（14C §8）。
 `direct_vqa` 或无 plan 时走既有 legacy 路径。服务缺失/失败以
-`grounding_evidence_failed:<CODE>` 稳定失败。
+`grounding_evidence_failed:<CODE>` 稳定失败。最终 Grounding Qwen 接收和输出的
+ROI 局部框统一为 `0..999` 整数 `xyxy` JSON，确定性后处理再转换为整图坐标。
 
 ## 21.4 CountingAgent
 
@@ -1465,7 +1467,7 @@ review、evidence merge 或 deterministic geometry 专用实现。
 `spatial_relation` 仍保留为公开 task，`TaskNormalization.spatial_query` 与
 VRSBench normalization 规则不变，评测仍走 VQA 确定性族与可选 Judge。执行
 语义变化：原先最多两次 Qwen 调用（候选 + review）并可能做确定性几何改写，
-现为单次 general_vqa_v2 Prompt 调用，输出 `agent_result.json`；历史空间 run
+现为单次 general_vqa_v3 Prompt 调用，输出 `agent_result.json`；历史空间 run
 结果不直接可比。
 
 ---
@@ -2378,10 +2380,14 @@ Reporting 从持久化的 caption records 调用 `aggregate_caption()`：
 ```text
 pycocoevalcap available -> metric_status=ok + corpus metrics
 pycocoevalcap missing   -> metric_status=dependency_missing + record_count
+Java/METEOR missing     -> metric_status=partial + not_computed=["METEOR"];
+                          BLEU/ROUGE_L/CIDEr remain independently reported
 ```
 
 可选依赖保持惰性导入；无 caption record 时不导入，缺失时也不阻断 report。
-这些本地 corpus 指标不等同于 benchmark official score。
+METEOR 还需要 Java；缺少 Java 时只标记 METEOR 未计算，不影响其他已成功
+scorer。CHAIR2 当前没有经批准的 scorer，始终明确标记为未计算。这些本地
+corpus 指标不等同于 benchmark official score。
 
 ---
 
@@ -2616,8 +2622,10 @@ judge_status
 inference_seconds
 evaluation
 routing_decision
+execution_path
 backend_stages
 model_calls
+structured_artifacts
 ```
 
 `task` 表示 execution task。
@@ -2628,6 +2636,10 @@ points、labels 与 coordinate_frame。`backend_stages` 只来自持久化的
 空列表，不从 final result 或 trace 反推中间阶段。`model_calls` 只读取当前
 sample 目录内已有的 request/raw/parsed/validation 产物，raw response 最多
 8000 字符，且不暴露 artifact_dir、绝对路径、Base64 或 credential。
+`execution_path` 是从已持久化 trace、任务与模型调用投影出的顶层模块交接链，
+仅用于 HTML 审计，不重新推理。`structured_artifacts` 只读取允许列表中的
+`vqa_evidence.json`、`grounding_evidence.json`、`visual_plan.json` 与
+`joint_visual_plan.json`，用于展示已落盘的结构化子模型状态。
 
 ## `TaskSummary`
 
@@ -2690,6 +2702,12 @@ external_standard -> official/external evaluator
 
 Reporting 只读取持久化产物并聚合，不发网络、不调用模型，也不回写 sample、
 status 或 evaluation。
+
+官方 VRSBench grounding 适配同时识别 `VRSBench_EVAL_referring.json` 与
+派生的 `VRSBench_EVAL_Det.json`。前者保留官方 8 点 polygon，并显式标记
+`normalized_0_1_top_left`；HTML 会按该坐标系叠加 GT 与模型框。当前通用
+deterministic IoU 仍对不兼容 polygon fail-closed，不把可视化叠加冒充官方
+oriented-box 分数。
 
 ### JSON
 

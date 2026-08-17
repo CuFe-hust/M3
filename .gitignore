@@ -19,6 +19,7 @@ tmp/
 # Runtime outputs and run artifacts (never commit)
 outputs/
 runs/
+local_outputs/
 
 # Local environment and secret files
 .env

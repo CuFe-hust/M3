@@ -25,7 +25,13 @@ SUPPORTED_TASKS = frozenset({"general_vqa", "caption", "grounding"})
 ANNOTATION_FILENAMES = {
     "general_vqa": ("VRSBench_EVAL_vqa.json",),
     "caption": ("VRSBench_EVAL_Cap.json",),
-    "grounding": ("VRSBench_EVAL_Det.json",),
+    # The repository's official release calls the referring-grounding file
+    # ``VRSBench_EVAL_referring.json``; keep the audited Det name for existing
+    # normalized fixtures and derived releases.
+    # 官方发布将 referring grounding 文件命名为
+    # ``VRSBench_EVAL_referring.json``；保留已审计的 Det 名称以兼容现有
+    # 规范化 fixture 与派生发布。
+    "grounding": ("VRSBench_EVAL_referring.json", "VRSBench_EVAL_Det.json"),
 }
 # Field groups; at least one key per group must be present in each row.
 # 字段组；每行每组至少存在一个键。
@@ -49,7 +55,7 @@ _CAPTION_ANSWER_KEYS = ("caption", "text", "answer", "description", "ground_trut
 _CAPTION_TEXT_KEYS = ("raw", "caption", "text", "sentence")
 _IMAGE_FIELD_KEYS = ("image_id", "image", "image_path", "file_name", "filename")
 _GROUNDING_TEXT_KEYS = ("ref", "referring", "question", "text", "name")
-_GROUNDING_BOX_KEYS = ("bbox", "box", "boxes", "polygon", "ground_truth", "obj_corner")
+_GROUNDING_BOX_KEYS = ("bbox", "box", "boxes", "polygon", "obj_corner", "ground_truth")
 _GROUNDING_CLASS_KEYS = ("name", "label", "class", "category", "obj_cls")
 
 
@@ -194,8 +200,15 @@ class VRSBenchAdapter:
                 yield self._caption_sample(root, canonical_split, row, image_path, index,
                                            source_image_ref=source_image_ref)
             else:
-                yield from self._grounding_samples(root, canonical_split, row, image_path, index,
-                                                   source_image_ref=source_image_ref)
+                yield from self._grounding_samples(
+                    root,
+                    canonical_split,
+                    row,
+                    image_path,
+                    index,
+                    source_image_ref=source_image_ref,
+                    annotation=annotation,
+                )
 
     # ── per-task mapping / 分任务映射 ───────────────────────────────────────
 
@@ -304,8 +317,10 @@ class VRSBenchAdapter:
         index: int,
         *,
         source_image_ref: str,
+        annotation: Path,
     ) -> Iterator[UnifiedSample]:
         image_id = _image_id_for_row(row, source_image_ref, index)
+        coordinate_frame = _grounding_coordinate_frame(annotation)
         if "objects" in row:
             items = row["objects"]
             text_keys = ("referring", "question", "text")
@@ -366,13 +381,14 @@ class VRSBenchAdapter:
                         boxes=[box],
                         labels=[label] if label else [],
                         label_binding="boxes" if label else None,
-                        coordinate_frame="source_pixels_top_left",
+                        coordinate_frame=coordinate_frame,
                         raw={
                             "adapter_version": ADAPTER_VERSION,
                             "image_id": image_id,
                             "question_id": question_id,
                             "object_index": object_index,
                             "box_source_field": _box_source_field(obj),
+                            "coordinate_frame": coordinate_frame,
                             "source_row": dict(row),
                         },
                     ),
@@ -381,6 +397,7 @@ class VRSBenchAdapter:
                         "source_index": index,
                         "object_index": object_index,
                         "adapter_version": ADAPTER_VERSION,
+                        "coordinate_frame": coordinate_frame,
                     },
                 )
 
@@ -478,3 +495,21 @@ def _box_source_field(obj: dict[str, Any]) -> str | None:
         if key in obj and obj[key] not in (None, ""):
             return key
     return None
+
+
+def _grounding_coordinate_frame(annotation: Path) -> str:
+    """Declare the audited coordinate frame for each official release.
+    为每个官方发布显式声明经过审计的坐标系。
+
+    ``obj_corner`` in the official referring release is a four-corner polygon
+    normalized to [0, 1]; the legacy/derived Det release stores pixel
+    coordinates. The adapter preserves the polygon and never converts it to
+    xyxy while claiming metric equivalence.
+    官方 referring 发布中的 ``obj_corner`` 是 [0, 1] 归一化四角 polygon；
+    legacy/派生 Det 发布保存像素坐标。适配器保留 polygon，绝不把它转换成
+    xyxy 后声称与官方指标等价。
+    """
+
+    if annotation.name == "VRSBench_EVAL_referring.json":
+        return "normalized_0_1_top_left"
+    return "source_pixels_top_left"
