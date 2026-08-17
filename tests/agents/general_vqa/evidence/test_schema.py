@@ -26,10 +26,11 @@ from agents.schema import (
 
 def _plan(**overrides) -> VisualTaskPlan:
     data = {
-        "version": "visual-task-plan-v3",
+        "version": "visual-task-plan-v4",
         "task": "general_vqa",
         "needs_visual_assistance": True,
-        "object_categories": ["vehicle"],
+        "object_categories": ["small-vehicle"],
+        "count_target": None,
         "region_request": {
             "explicit": True,
             "image_index": 0,
@@ -43,13 +44,13 @@ def _plan(**overrides) -> VisualTaskPlan:
 
 def test_visual_task_plan_validates_assistance_linkage() -> None:
     plan = _plan()
-    assert plan.version == "visual-task-plan-v3"
+    assert plan.version == "visual-task-plan-v4"
     assert plan.task == "general_vqa"
-    assert plan.object_categories == ["vehicle"]
+    assert plan.object_categories == ["small-vehicle"]
     with pytest.raises(ValidationError, match="requires object_categories"):
         _plan(needs_visual_assistance=True, object_categories=[])
     with pytest.raises(ValidationError, match="require visual assistance"):
-        _plan(needs_visual_assistance=False, object_categories=["vehicle"])
+        _plan(needs_visual_assistance=False, object_categories=["small-vehicle"])
 
 
 def test_visual_task_plan_rejects_unknown_or_path_like_fields() -> None:
@@ -63,12 +64,35 @@ def test_visual_task_plan_rejects_unknown_or_path_like_fields() -> None:
         _plan(version="visual-task-plan-v2")
 
 
-def test_visual_task_plan_v3_schema_has_no_confidence_and_forbids_extra_score() -> None:
+def test_visual_task_plan_v4_schema_has_count_target_linkage_and_no_confidence() -> None:
     schema = VisualTaskPlan.model_json_schema()
     assert "confidence" not in schema["properties"]
     assert "confidence" not in schema.get("required", [])
     with pytest.raises(ValidationError):
         _plan(confidence=0.9)
+    counting = _plan(
+        task="counting",
+        count_target="small-vehicle",
+        object_categories=["small-vehicle"],
+    )
+    assert counting.count_target == "small-vehicle"
+    with pytest.raises(ValidationError, match="requires count_target"):
+        _plan(task="counting", count_target=None)
+    with pytest.raises(ValidationError, match="non-counting"):
+        _plan(count_target="small-vehicle")
+
+
+@pytest.mark.parametrize("target", ["", " vehicle", "vehicle ", "../vehicle", "3", "ship\n"])
+def test_visual_task_plan_v4_rejects_unsafe_count_target(target: str) -> None:
+    with pytest.raises(ValidationError):
+        _plan(task="counting", count_target=target)
+
+
+def test_visual_task_plan_v4_allows_at_most_eight_leaf_categories() -> None:
+    categories = [f"leaf-{index}" for index in range(8)]
+    assert _plan(object_categories=categories).object_categories == categories
+    with pytest.raises(ValidationError):
+        _plan(object_categories=[*categories, "leaf-8"])
 
 
 def test_materialized_view_is_exact_source_pixel_geometry() -> None:

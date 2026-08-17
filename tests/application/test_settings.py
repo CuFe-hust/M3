@@ -372,14 +372,14 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
 # ── visual planning group (C7, 14A2) / 视觉规划配置组 ─────────────────────
 
 
-def test_visual_planning_defaults_to_v3_planner_state() -> None:
-    """Fresh execution defaults to the canonical v3 planner configuration.
-    新鲜执行默认使用规范 v3 规划器配置。"""
+def test_visual_planning_defaults_to_v4_planner_state() -> None:
+    """Fresh execution defaults to the canonical v4 planner configuration.
+    新鲜执行默认使用规范 v4 规划器配置。"""
     settings = AppSettings()
     planner = settings.visual_planning.planner
     assert not hasattr(settings.visual_planning, "enabled")
-    assert planner.planning_mode == "visual-task-plan-v3"
-    assert planner.task_prompt_version == "v3"
+    assert planner.planning_mode == "visual-task-plan-v4"
+    assert planner.task_prompt_version == "v4"
     assert (
         planner.catalog_version
         == "first-qwen-evidence-catalog-v2"

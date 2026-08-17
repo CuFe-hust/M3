@@ -1,6 +1,6 @@
-"""Contract tests for the v3 visual-only planner.
+"""Contract tests for the v4 visual-only planner.
 
-v3 纯视觉规划器契约测试：验证单次调用、请求身份、能力闭集、确定性视图
+v4 纯视觉规划器契约测试：验证单次调用、请求身份、能力闭集、确定性视图
 物化以及不会把 GT 或物理路径带入规划请求。
 """
 
@@ -140,13 +140,15 @@ def _response(
     explicit_region: bool = False,
     image_index: int | None = None,
     focus: tuple[float, float] | None = None,
+    count_target: str | None = None,
     **overrides,
 ) -> dict:
     data = {
-        "version": "visual-task-plan-v3",
+        "version": "visual-task-plan-v4",
         "task": task,
         "needs_visual_assistance": assistance,
         "object_categories": list(categories),
+        "count_target": count_target,
         "region_request": {
             "explicit": explicit_region,
             "image_index": image_index,
@@ -162,7 +164,7 @@ def _planner(client: _FakeClient, **kwargs) -> VisualTaskPlanner:
     return VisualTaskPlanner(
         client,
         system_prompt="You are the visual-only planner.",
-        prompt_version="v3",
+        prompt_version="v4",
         catalog=kwargs.pop("catalog", _catalog()),
         executable_categories=kwargs.pop("executable_categories", ("vehicle",)),
         **kwargs,
@@ -232,17 +234,17 @@ def test_planner_budget_and_request_identity_are_deterministic(tmp_path: Path) -
     _run(_planner(client), _sample(tmp_path), tmp_path, budget=budget)
     assert budget.qwen_calls_used == 1
     meta = client.calls[0]["request_meta"]
-    assert meta.prompt_version == "v3"
+    assert meta.prompt_version == "v4"
     assert meta.image_sha256 == image_sha256(_preview_bytes(client.calls[0]))
     assert len(meta.request_hash) == 64
 
 
-def test_planner_materializes_fixed_roi_from_v3_focus(tmp_path: Path) -> None:
+def test_planner_materializes_fixed_roi_from_v4_focus(tmp_path: Path) -> None:
     client = _FakeClient(
         identity=_identity(),
         response=_response(
             assistance=True,
-            categories=("vehicle",),
+            categories=("small-vehicle",),
             explicit_region=True,
             image_index=0,
             focus=(0.9, 0.8),
@@ -280,13 +282,13 @@ def test_planner_requires_both_source_dimensions_above_roi_size(
 def test_planner_accepts_schema_valid_plan_without_subjective_score(tmp_path: Path) -> None:
     client = _FakeClient(identity=_identity(), response=_response())
     plan, _views = _run(_planner(client), _sample(tmp_path), tmp_path)
-    assert plan.version == "visual-task-plan-v3"
+    assert plan.version == "visual-task-plan-v4"
     with pytest.raises(TypeError):
         _planner(client, confidence_threshold=0.7)
 
     unavailable = _FakeClient(
         identity=_identity(),
-        response=_response(assistance=True, categories=("vehicle",)),
+        response=_response(assistance=True, categories=("small-vehicle",)),
     )
     with pytest.raises(VisualTaskPlanError, match="CAPABILITY_UNAVAILABLE"):
         _run(_planner(unavailable, executable_categories=()), _sample(tmp_path), tmp_path)
@@ -305,12 +307,72 @@ def test_planner_schema_and_image_index_fail_closed(tmp_path: Path) -> None:
         _run(_planner(bad_index), _sample(tmp_path), tmp_path)
 
 
-def test_planner_prompt_snapshot_and_artifact_payload_are_v3_only() -> None:
+def test_planner_prompt_snapshot_and_artifact_payload_are_v4_only() -> None:
     client = _FakeClient(identity=_identity(), response=_response())
     planner = _planner(client)
-    assert planner.prompt_snapshot_filename == "visual_task_plan_v3.runtime.md"
-    assert planner.planning_parameters["planning_mode"] == "visual-task-plan-v3"
-    assert PromptCatalog(REPO_ROOT / "prompts").version("visual_task_plan") == "v3"
+    assert planner.prompt_snapshot_filename == "visual_task_plan_v4.runtime.md"
+    assert planner.planning_parameters["planning_mode"] == "visual-task-plan-v4"
+    assert PromptCatalog(REPO_ROOT / "prompts").version("visual_task_plan") == "v4"
+
+
+def test_counting_plan_requires_target_and_exact_leaf_expansion(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_response(
+            task="counting",
+            assistance=True,
+            categories=("small-vehicle", "large-vehicle"),
+            count_target="vehicle",
+        ),
+    )
+    plan, _views = _run(_planner(client), _sample(tmp_path), tmp_path)
+    assert plan.count_target == "vehicle"
+    assert plan.object_categories == ["small-vehicle", "large-vehicle"]
+
+    incomplete = _FakeClient(
+        identity=_identity(),
+        response=_response(
+            task="counting",
+            assistance=True,
+            categories=("small-vehicle",),
+            count_target="vehicle",
+        ),
+    )
+    with pytest.raises(VisualTaskPlanError, match="SCHEMA_INVALID"):
+        _run(_planner(incomplete), _sample(tmp_path), tmp_path)
+
+
+def test_counting_unknown_target_uses_generic_backend_contract(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_response(task="counting", count_target="building"),
+    )
+    plan, _views = _run(_planner(client), _sample(tmp_path), tmp_path)
+    assert plan.count_target == "building"
+    assert plan.needs_visual_assistance is False
+    assert plan.object_categories == []
+
+
+def test_planner_binding_and_post_validation_are_leaf_only(tmp_path: Path) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_response(assistance=True, categories=("vehicle",)),
+    )
+    planner = _planner(client)
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    assert binding["planning_mode"] == "visual-task-plan-v4"
+    assert binding["canonical_leaf_categories"] == [
+        "building-outline",
+        "large-vehicle",
+        "small-vehicle",
+    ]
+    assert binding["parent_expansions"]["vehicle"] == [
+        "small-vehicle",
+        "large-vehicle",
+    ]
+    assert "vehicle" not in binding["task_executable_categories"]["counting"]
+    with pytest.raises(VisualTaskPlanError, match="SCHEMA_INVALID"):
+        _run(planner, _sample(tmp_path), tmp_path)
 
 
 def test_planner_scope_has_no_subjective_gate() -> None:

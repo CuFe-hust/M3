@@ -246,13 +246,14 @@ def _repair_severity(normalizations: list[str]) -> str:
     return "none"
 
 
-# ── Visual-only task planning contract (doc 18) ───────────────────────────
-# The v3 planner receives only normalized image previews and the raw question.
+# ── Visual-only task planning contract (doc 19) ───────────────────────────
+# The v4 planner receives only normalized image previews and the raw question.
 # Its output contains task/assistance intent, never an answer or implementation
-# choice or subjective confidence. v3 规划器只接收规范化图像预览与原始问题；
+# choice or subjective confidence. v4 规划器只接收规范化图像预览与原始问题；
 # 输出只表达任务和辅助意图，绝不携带答案、实现选择或主观置信度。
 
-VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v3"
+VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v4"
+_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
 
 class RegionRequest(BaseModel):
@@ -291,7 +292,8 @@ class VisualTaskPlan(BaseModel):
     version: Literal[VISUAL_TASK_PLAN_SCHEMA_VERSION]  # type: ignore[valid-type]
     task: TaskName
     needs_visual_assistance: bool = False
-    object_categories: list[str] = Field(default_factory=list, max_length=3)
+    object_categories: list[str] = Field(default_factory=list, max_length=8)
+    count_target: str | None = Field(default=None, max_length=80)
     region_request: RegionRequest = Field(default_factory=RegionRequest)
     reason_codes: list[str] = Field(default_factory=list, max_length=8)
 
@@ -309,6 +311,22 @@ class VisualTaskPlan(BaseModel):
                 raise ValueError(f"invalid object category: {category!r}")
             if "/" in category or "\\" in category:
                 raise ValueError(f"object category must not be path-like: {category!r}")
+        if self.task in _COUNTING_TASKS:
+            if self.count_target is None or not self.count_target.strip():
+                raise ValueError("counting task requires count_target")
+        elif self.count_target is not None:
+            raise ValueError("non-counting task must not carry count_target")
+        if self.count_target is not None:
+            target = self.count_target
+            if target.strip() != target:
+                raise ValueError("count_target must not have surrounding whitespace")
+            if any(ord(character) < 32 or ord(character) == 127 for character in target):
+                raise ValueError("count_target must not contain control characters")
+            if "/" in target or "\\" in target or target in {".", ".."}:
+                raise ValueError("count_target must not be path-like")
+            compact_number = target.replace(",", "").replace(".", "", 1)
+            if compact_number.isdigit():
+                raise ValueError("count_target must describe a semantic target")
         for reason_code in self.reason_codes:
             if (
                 not reason_code
