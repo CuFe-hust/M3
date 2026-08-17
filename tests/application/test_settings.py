@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from application.settings import AppSettings, load_settings
+from application.settings import AppSettings, load_dotenv, load_settings
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -217,6 +217,42 @@ def test_invalid_yaml_fails_stable(tmp_path: Path) -> None:
     path = _yaml_path(tmp_path, "models: [unclosed")
     with pytest.raises(ValueError, match="settings YAML"):
         load_settings(path, environ={})
+
+
+def test_load_dotenv_fills_missing_environment_without_overriding_existing_values(
+    tmp_path: Path,
+) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "# comment\n"
+        "export QWEN_MODEL=from-dotenv\n"
+        "DEEPSEEK_BASE_URL=\"https://example.test/v1\"\n"
+        "DEEPSEEK_API_KEY='secret-value'\n"
+        "IGNORED_LINE\n",
+        encoding="utf-8",
+    )
+    environ = {"QWEN_MODEL": "from-process"}
+
+    loaded = load_dotenv(dotenv, environ=environ)
+
+    assert loaded == dotenv
+    assert environ == {
+        "QWEN_MODEL": "from-process",
+        "DEEPSEEK_BASE_URL": "https://example.test/v1",
+        "DEEPSEEK_API_KEY": "secret-value",
+    }
+
+
+def test_load_dotenv_secret_does_not_enter_settings_snapshot(tmp_path: Path) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("DEEPSEEK_API_KEY=secret-value\n", encoding="utf-8")
+    environ: dict[str, str] = {}
+
+    load_dotenv(dotenv, environ=environ)
+    settings = load_settings(environ=environ)
+
+    assert environ["DEEPSEEK_API_KEY"] == "secret-value"
+    assert "secret-value" not in json.dumps(settings.safe_snapshot())
 
 
 def test_safe_snapshot_is_json_safe_and_secret_free(tmp_path: Path) -> None:

@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Any, Literal, Mapping, MutableMapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -281,6 +282,58 @@ _ENV_OVERRIDES = {
     "DATASET_ROOT": ("paths", "dataset_root"),
     "OUTPUT_ROOT": ("runs", "root"),
 }
+
+_DOTENV_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def load_dotenv(
+    path: Path | None = None,
+    environ: MutableMapping[str, str] | None = None,
+) -> Path | None:
+    """Load a project ``.env`` file without overriding exported variables.
+
+    The project deliberately avoids a runtime dependency on ``python-dotenv``.
+    This small parser supports the dotenv forms used by the application,
+    including comments, ``export KEY=value``, and quoted values.  Existing
+    process environment variables win over values from the file.
+
+    Secret values are placed only in the process environment; they are not
+    copied into :class:`AppSettings` or any settings snapshot.
+    """
+
+    target = environ if environ is not None else os.environ
+    dotenv_path = path or (Path(__file__).resolve().parents[1] / ".env")
+    if not dotenv_path.is_file():
+        return None
+
+    try:
+        lines = dotenv_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+
+    for raw_line in lines:
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[7:].lstrip()
+        if "=" not in line:
+            continue
+        key, raw_value = line.split("=", 1)
+        key = key.strip()
+        if not _DOTENV_KEY.fullmatch(key) or key in target:
+            continue
+        target[key] = _parse_dotenv_value(raw_value.strip())
+    return dotenv_path
+
+
+def _parse_dotenv_value(value: str) -> str:
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1]
+        return value.replace(r"\n", "\n").replace(r"\r", "\r").replace(
+            r"\t", "\t"
+        ).replace(r'\"', '"').replace(r"\\", "\\")
+    return value
 
 
 def load_settings(

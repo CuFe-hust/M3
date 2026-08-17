@@ -31,6 +31,7 @@ from application.commands.serve import run_serve
 from application.commands.smoke_qwen import run_smoke_qwen
 from application.commands.standard_evaluate import run_standard_evaluate
 from application.commands.summarize_evaluations import run_summarize_evaluations
+from application.settings import load_dotenv
 
 EXIT_ARGUMENT = 2
 
@@ -199,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     """Run the requested command and return the process exit code.
     运行请求的命令并返回进程退出码。"""
 
+    # Load code/.env before command handlers read os.environ.  Explicitly
+    # exported variables still take precedence; secrets are never committed.
+    load_dotenv()
     args = build_parser().parse_args(argv)
     if args.command == "serve":
         return run_serve(args)

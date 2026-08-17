@@ -38,6 +38,15 @@ def test_parser_run_dataset_defaults() -> None:
     assert args.fail_fast is False
 
 
+def test_main_loads_project_dotenv_before_dispatch(monkeypatch) -> None:
+    loaded = []
+    monkeypatch.setattr(main_module, "load_dotenv", lambda: loaded.append(True))
+    monkeypatch.setattr(main_module, "run_list_datasets", lambda args: 0)
+
+    assert main_module.main(["list-datasets"]) == 0
+    assert loaded == [True]
+
+
 def test_parser_rejects_unknown_judge_policy() -> None:
     import pytest
 
