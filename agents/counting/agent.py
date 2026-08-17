@@ -31,7 +31,6 @@ from agents.counting.schema import (
     CountingExecutionAudit,
     CountingResult,
 )
-from agents.counting.target_parser import CountTargetParser
 from agents.errors import (
     AgentExecutionError,
     AgentTaskMismatchError,
@@ -225,6 +224,10 @@ class CountingAgent:
         """Resolve the target: normalization hint first, legacy metadata
         second, frozen Qwen contract last. 解析目标：优先 normalization
         hint，其次 legacy metadata，最后冻结 Qwen 契约。"""
+        # Temporary local import keeps module discovery working while the
+        # resolver-to-agent wiring is migrated in the next implementation step.
+        from agents.counting.target_parser import CountTargetParser
+
         normalization_hint = (
             sample.normalization.count_target_hint
             if sample.normalization is not None

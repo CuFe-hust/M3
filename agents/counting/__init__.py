@@ -1,7 +1,6 @@
 """Counting-domain contracts and settings exports.
 计数域契约与配置导出。"""
 
-from agents.counting.agent import CountingAgent
 from agents.counting.schema import (
     CountTargetSpec,
     CountingDraft,
@@ -20,6 +19,15 @@ from agents.counting.settings import (
     YoloCountingSettings,
     YoloDetectorSettings,
 )
+
+
+def __getattr__(name: str):
+    """Keep the public CountingAgent export without eagerly loading wiring."""
+    if name == "CountingAgent":
+        from agents.counting.agent import CountingAgent
+
+        return CountingAgent
+    raise AttributeError(name)
 
 __all__ = [
     "AgentCountingSettings",
