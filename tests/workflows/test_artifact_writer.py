@@ -101,7 +101,7 @@ def test_write_visual_task_plan_persists_validated_v3_schema(tmp_path: Path) -> 
     from agents.schema import MaterializedVisualView, VisualTaskPlan
 
     plan = VisualTaskPlan(
-        version="visual-task-plan-v3",
+        version="visual-task-plan-v4",
         task="general_vqa",
         needs_visual_assistance=True,
         object_categories=["vehicle"],
@@ -123,7 +123,7 @@ def test_write_visual_task_plan_persists_validated_v3_schema(tmp_path: Path) -> 
     written = writer.write_visual_task_plan(tmp_path, plan, materialized_views=(view,))
     assert written == tmp_path / VISUAL_TASK_PLAN_FILENAME
     stored = json.loads((tmp_path / VISUAL_TASK_PLAN_FILENAME).read_text(encoding="utf-8"))
-    assert stored["version"] == "visual-task-plan-v3"
+    assert stored["version"] == "visual-task-plan-v4"
     assert "confidence" not in stored
     assert stored["task"] == "general_vqa"
     assert stored["materialized_views"][0]["crop_xyxy"] == [0, 0, 100, 80]

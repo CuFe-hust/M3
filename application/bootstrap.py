@@ -221,7 +221,7 @@ def assemble_runtime(
         judge_policy: str,
         judge_sample_rate: float | None = None,
         data_root: Path,
-        planning_mode: str = "visual-task-plan-v3",
+        planning_mode: str = "visual-task-plan-v4",
     ) -> DatasetRunner:
         return DatasetRunner(
             adapter,

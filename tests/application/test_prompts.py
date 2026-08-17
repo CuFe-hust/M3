@@ -17,10 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 13
+    assert len(catalog.all_keys()) == 12
     for key in (
         "count_tile",
-        "target",
         "change",
         "general",
         "grounding",
@@ -58,7 +57,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 12  # 13 keys, general_vqa_v3 shared by two keys
+    assert len(paths) == 11  # 12 keys, general_vqa_v3 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 

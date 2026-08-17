@@ -57,7 +57,7 @@ class _FakePlanner:
         size = Image.open(data_root / ref.path).size
         return (
             VisualTaskPlan(
-                version="visual-task-plan-v3",
+                version="visual-task-plan-v4",
                 task="general_vqa",
                 reason_codes=["test"],
             ),
@@ -143,7 +143,7 @@ def _setup(
     tmp_path: Path,
     *,
     client_status: str = "completed",
-    planning_mode: str = "visual-task-plan-v3",
+    planning_mode: str = "visual-task-plan-v4",
     adapter=None,
 ):
     root = tmp_path / "data"

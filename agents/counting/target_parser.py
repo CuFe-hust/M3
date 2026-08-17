@@ -111,7 +111,7 @@ class CountTargetResolver:
                 final_target, None if verifier is None else verifier.spec
             ),
             executable_leaf_categories=self._expand_semantic_target(final_target),
-            target_source="planner", validation_status=status,
+            target_source="visual_task_plan", validation_status=status,
             verifier_source=None if verifier is None else verifier.source,
             planner_target=planner, planner_object_categories=planner_leaves,
         )
@@ -123,11 +123,12 @@ class CountTargetResolver:
     ) -> _Verifier | None:
         if count_target_hint is not None:
             return self._verifier_from_hint(
-                count_target_hint, source="normalization", question=question
+                count_target_hint, source="normalization.count_target_hint", question=question
             )
         if isinstance(legacy_metadata, dict) and "count_target_hint" in legacy_metadata:
             return self._verifier_from_hint(
-                legacy_metadata["count_target_hint"], source="legacy_metadata",
+                legacy_metadata["count_target_hint"],
+                source="legacy_metadata.count_target_hint",
                 question=question,
             )
         return None

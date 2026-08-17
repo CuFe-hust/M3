@@ -139,8 +139,8 @@ class DatasetRunOptions:
     # never reconstructs it from current defaults.
     # 新鲜数据集运行在此冻结规范规划器身份，使 resume 绝不从当前默认值猜测。
     planning_mode: Literal[
-        "visual-task-plan-v3", "visual-task-plan-v2", "legacy"
-    ] = "visual-task-plan-v3"
+        "visual-task-plan-v4", "visual-task-plan-v3", "visual-task-plan-v2", "direct", "legacy"
+    ] = "visual-task-plan-v4"
     preview_max_side: int = 1080
     roi_size: int = 1024
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
@@ -208,8 +208,8 @@ class RunRequest(BaseModel):
     # Frozen visual-only planner identity for fresh dataset runs.
     # 新鲜数据集运行冻结的纯视觉规划器身份。
     planning_mode: Literal[
-        "visual-task-plan-v3", "visual-task-plan-v2", "legacy"
-    ] = "visual-task-plan-v3"
+        "visual-task-plan-v4", "visual-task-plan-v3", "visual-task-plan-v2", "direct", "legacy"
+    ] = "visual-task-plan-v4"
     preview_max_side: int = Field(default=1080, gt=0)
     roi_size: int = Field(default=1024, gt=0)
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"

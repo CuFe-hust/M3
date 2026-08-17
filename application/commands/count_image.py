@@ -53,6 +53,14 @@ _COUNTING_RESULT_FILENAME = "counting_result.json"
 _OVERLAY_FILENAME = "overlay.png"
 
 
+class CountImageCommandError(ValueError):
+    """Stable public count-image failure."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 def run_count_image(args: argparse.Namespace) -> int:
     """Run one counting request and always emit a final JSON summary.
     运行一次计数请求并始终输出最终 JSON 摘要。"""
@@ -65,7 +73,10 @@ def run_count_image(args: argparse.Namespace) -> int:
         # Public output never carries raw exception text or secrets.
         # 公共输出绝不携带原始异常文本或密钥。
         print(
-            json.dumps({"status": "failed", "error": f"{type(error).__name__}"}),
+            json.dumps({
+                "status": "failed",
+                "error": getattr(error, "code", type(error).__name__),
+            }),
             file=sys.stderr,
         )
         return EXIT_RUNTIME
@@ -257,9 +268,25 @@ async def _run(args: argparse.Namespace) -> int:
         metadata=metadata,
     )
     runner = runtime.components.sample_runner_factory(data_root=image_path.parent)
+    visual_task_plan = None
+    visual_views = ()
+    if effective_target_spec is None:
+        planner = runtime.components.visual_task_planner
+        if planner is None:
+            raise CountImageCommandError("COUNT_IMAGE_PLANNER_NOT_ASSEMBLED")
+        visual_task_plan, visual_views = await planner.plan_with_views(
+            sample,
+            data_root=image_path.parent,
+            artifact_dir=sample_dir,
+            budget=budget,
+        )
+        if visual_task_plan.task != "counting":
+            raise CountImageCommandError("COUNT_IMAGE_PLANNER_TASK_MISMATCH")
     outcome = await runner.run_one(
         sample,
         sample_dir,
+        visual_task_plan=visual_task_plan,
+        visual_views=visual_views,
         judge_policy="none",
         budget=budget,
         evaluate=effective_evaluate,
@@ -352,6 +379,9 @@ def _count_image_request(
         count_max_qwen_calls=max_qwen_calls,
         count_max_deepseek_calls=max_deepseek_calls,
         count_render=render,
+        planning_mode=(
+            "direct" if target_spec is not None else "visual-task-plan-v4"
+        ),
     )
 
 

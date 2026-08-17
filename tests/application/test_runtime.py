@@ -64,7 +64,7 @@ class _FakeQwenClient:
                 task = {1: "caption", 2: "change_caption"}.get(image_count, task)
             return response_model.model_validate(
                 {
-                    "version": "visual-task-plan-v3",
+                    "version": "visual-task-plan-v4",
                     "task": task,
                     "needs_visual_assistance": False,
                     "object_categories": [],
@@ -150,7 +150,7 @@ def test_runtime_run_dataset_delegates_to_dataset_runner(tmp_path: Path) -> None
     RunManifest.model_validate_json((run_dir / "manifest.json").read_text(encoding="utf-8"))
     snapshot = json.loads((run_dir / "config.snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["runs"]["root"] == (tmp_path / "runs").as_posix()
-    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v3.runtime.md").is_file()
+    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v4.runtime.md").is_file()
     assert (run_dir / "tasks" / "auto" / "dataset_probe.json").is_file()
     assert (run_dir / "predictions.jsonl").is_file()
 
@@ -159,7 +159,7 @@ def test_fresh_v2_planning_mode_is_rejected_before_run_creation(tmp_path: Path) 
     data_root = tmp_path / "data"
     _make_dataset(data_root)
     runtime = _runtime(tmp_path)
-    with pytest.raises(ValueError, match="visual-task-plan-v3"):
+    with pytest.raises(ValueError, match="visual-task-plan-v4"):
         _run(
             runtime,
             DatasetRunOptions(
@@ -686,7 +686,7 @@ def test_ask_v3_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
     visual_plan = json.loads(
         (request_dir / "visual_task_plan.json").read_text(encoding="utf-8")
     )
-    assert visual_plan["version"] == "visual-task-plan-v3"
+    assert visual_plan["version"] == "visual-task-plan-v4"
     assert "confidence" not in visual_plan
     assert visual_plan["task"] == "general_vqa"
 
@@ -1657,8 +1657,9 @@ class _FakeCountClient:
     """Fake Qwen client for the counting pipeline: target spec, tile points.
     计数管线的 fake Qwen 客户端：目标规格与切片点。"""
 
-    def __init__(self) -> None:
+    def __init__(self, planned_task: str = "counting") -> None:
         self.calls: list[str] = []
+        self.planned_task = planned_task
 
     @property
     def cache_identity(self) -> ModelCacheIdentity:
@@ -1669,6 +1670,21 @@ class _FakeCountClient:
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         name = response_model.__name__
         self.calls.append(name)
+        if name == "VisualTaskPlan":
+            counting = self.planned_task == "counting"
+            return response_model.model_validate(
+                {
+                    "version": "visual-task-plan-v4",
+                    "task": self.planned_task,
+                    "needs_visual_assistance": counting,
+                    "object_categories": (
+                        ["small-vehicle", "large-vehicle"] if counting else []
+                    ),
+                    "count_target": "vehicle" if counting else None,
+                    "region_request": {"explicit": False},
+                    "reason_codes": ["fake_count_plan"],
+                }
+            )
         if name == "CountTargetSpec":
             return response_model.model_validate(
                 {
@@ -1681,7 +1697,7 @@ class _FakeCountClient:
         if name == "TileCountResponse":
             return response_model.model_validate(
                 {
-                    "target": "vehicles",
+                    "target": "vehicle",
                     "tile_id": request_meta.tile_id,
                     "points": [
                         {
@@ -1781,6 +1797,13 @@ def test_count_image_produces_current_artifacts_and_overlay(
     names = {entry.name for entry in sample_dir.iterdir()}
     assert {"sample.json", "status.json", "routing_decision.json",
             "counting_result.json", "agent_trace.json", "overlay.png"} <= names
+    assert "target_parse" not in names
+    trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
+    assert trace["planning_mode"] == "visual-task-plan-v4"
+    assert trace["target_source"] == "visual_task_plan"
+    assert trace["planner_target"] == "vehicle"
+    assert trace["planner_object_categories"] == ["small-vehicle", "large-vehicle"]
+    assert trace["executable_leaf_categories"] == ["small-vehicle", "large-vehicle"]
     status = json.loads((sample_dir / "status.json").read_text(encoding="utf-8"))
     assert status["state"] == "succeeded"
     assert status["result_path"] == "counting_result.json"  # plain basename
@@ -1789,10 +1812,32 @@ def test_count_image_produces_current_artifacts_and_overlay(
         sample_dir / "status.json"
     ).read_text(encoding="utf-8")
     assert client.calls == [
-        "CountTargetSpec",
+        "VisualTaskPlan",
         "_CountProposalResult",
         "TileCountResponse",
     ]
+
+
+def test_count_image_rejects_non_counting_planner_task(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    runtime = _count_image_runtime(tmp_path, _FakeCountClient(planned_task="caption"))
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(
+            tmp_path, image=tmp_path / "imgs" / "img.png", run_id="mismatch-run"
+        )
+    )
+    assert code == 1
+    error = json.loads(capsys.readouterr().err)
+    assert error["error"] == "COUNT_IMAGE_PLANNER_TASK_MISMATCH"
 
 
 def test_count_image_resume_succeeded_zero_qwen_calls(

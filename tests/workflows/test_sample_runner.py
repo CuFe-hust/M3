@@ -81,7 +81,7 @@ def _sample(*, task: str = "general_vqa", sample_id: str = "s1") -> UnifiedSampl
 
 def _plan(task: str = "general_vqa") -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v3",
+        version="visual-task-plan-v4",
         task=task,  # type: ignore[arg-type]
         reason_codes=["test"],
     )
@@ -145,11 +145,11 @@ def test_v3_success_writes_only_canonical_plan_artifact(tmp_path: Path) -> None:
     assert not (sample_dir / "visual_plan.json").exists()
     assert not (sample_dir / "joint_visual_plan.json").exists()
     trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
-    assert trace["planning_mode"] == "visual-task-plan-v3"
-    assert trace["resolution_source"] == "visual-task-plan-v3"
+    assert trace["planning_mode"] == "visual-task-plan-v4"
+    assert trace["resolution_source"] == "visual-task-plan-v4"
     assert "low_confidence" not in trace
     assert trace["candidate_tasks"] == ["general_vqa"]
-    assert agent.calls[0][1].visual_task_plan.version == "visual-task-plan-v3"
+    assert agent.calls[0][1].visual_task_plan.version == "visual-task-plan-v4"
     assert agent.calls[0][1].visual_views == (_view(),)
 
 

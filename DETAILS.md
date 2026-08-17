@@ -66,7 +66,7 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 
 第一次规划调用的 user content 严格为按源顺序排列的内存图像 block，随后是未经
 包装的原始 question 文本。输出 schema 是 `VisualTaskPlan`，版本为
-`visual-task-plan-v3`，只表达 task、视觉辅助类别和显式焦点，不携带答案、GT、
+`visual-task-plan-v4`，表达 task、canonical leaf、计数语义目标和显式焦点，不携带答案、GT、
 路径、backend、checkpoint、device、secret 或 planner confidence。v2/legacy 只用于
 读取历史 run request；历史非终态需要重新推理时稳定拒绝。
 
@@ -893,7 +893,7 @@ visual_planning
 v3 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag：
 
 ```text
-planning_mode = "visual-task-plan-v3"
+planning_mode = "visual-task-plan-v4"
 task_prompt_version = "v3"
 catalog_version = "first-qwen-evidence-catalog-v2"
 preview_max_side = 1080
@@ -1955,7 +1955,7 @@ append execution index
 ```
 
 所有 fresh 样本都由 `VisualTaskPlanner` 先消费一次共享 Qwen budget，产出
-`visual-task-plan-v3`，再由纯转换生成 routing decision。planner 失败稳定写入
+`visual-task-plan-v4`，再由纯转换生成 routing decision。planner 失败稳定写入
 `state=failed`，不重试、不 legacy 回退；模型 task 在物化后成为执行 task。
 
 `visual_task_plan.json` 保存已校验计划与 `MaterializedVisualView` 几何；

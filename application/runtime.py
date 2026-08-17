@@ -78,7 +78,7 @@ def build_dataset_run_options(
     judge_sample_rate: float | None = None,
     render_errors: bool = False,
     fail_fast: bool = False,
-    planning_mode: str = "visual-task-plan-v3",
+    planning_mode: str = "visual-task-plan-v4",
     preview_max_side: int = 1080,
     roi_size: int = 1024,
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
@@ -459,7 +459,8 @@ def _validate_resume_match(
         raise ValueError("resume sample concurrency mismatch")
     if supplied.evaluate != persisted.evaluate:
         raise ValueError("resume evaluate mismatch")
-    if supplied.judge_policy != persisted.judge_policy:
+    supplied_judge_policy = supplied.judge_policy if supplied.evaluate else "none"
+    if supplied_judge_policy != persisted.judge_policy:
         raise ValueError("resume judge policy mismatch")
     if supplied.judge_sample_rate != persisted.judge_sample_rate:
         raise ValueError("resume judge sample rate mismatch")
@@ -468,7 +469,7 @@ def _validate_resume_match(
     if supplied.fail_fast != persisted.fail_fast:
         raise ValueError("resume fail fast mismatch")
     if supplied.planning_mode not in (
-        "visual-task-plan-v3",
+        "visual-task-plan-v4",
         persisted.planning_mode,
     ):
         raise ValueError("resume planning mode mismatch")
@@ -599,8 +600,8 @@ class Runtime:
             root=options.root.expanduser().resolve(),
         )
         if not options.resume:
-            if options.planning_mode != "visual-task-plan-v3":
-                raise ValueError("fresh dataset runs require visual-task-plan-v3")
+            if options.planning_mode != "visual-task-plan-v4":
+                raise ValueError("fresh dataset runs require visual-task-plan-v4")
             planner_settings = self.settings.visual_planning.planner
             options = dataclasses.replace(
                 options,
@@ -630,7 +631,7 @@ class Runtime:
             _validate_resume_match(options, persisted)
             options = persisted
             self._validate_existing_run(run_dir, options, run_id)
-        if options.planning_mode == "visual-task-plan-v3":
+        if options.planning_mode == "visual-task-plan-v4":
             planner = self.components.visual_task_planner
             if planner is None or planner.planning_parameters != {
                 "planning_mode": options.planning_mode,
@@ -956,7 +957,7 @@ class Runtime:
             "question": question,
             "requested_task": task,
             "resolved_task": resolved_task,
-            "planning_mode": "visual-task-plan-v3",
+            "planning_mode": "visual-task-plan-v4",
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)

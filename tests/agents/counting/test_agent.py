@@ -263,7 +263,7 @@ def test_run_returns_counting_result_payload(tmp_path: Path) -> None:
     assert execution.trace["executable_leaf_categories"] == ["small-vehicle"]
     assert execution.trace["target_classes"] == ["small-vehicle"]
     assert execution.trace["target_validation"] == "explicit_hint"
-    assert execution.trace["verifier_source"] == "legacy_metadata"
+    assert execution.trace["verifier_source"] == "legacy_metadata.count_target_hint"
     assert "s1:target" not in client.calls
 
 

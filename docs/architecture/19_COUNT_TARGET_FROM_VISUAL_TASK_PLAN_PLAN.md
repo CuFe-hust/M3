@@ -1,8 +1,8 @@
 # 19 — Counting Target from VisualTaskPlan（讨论后修订 Plan）
 
-> Status: **revised draft after category-pool review; no production implementation has been performed**
+> Status: **implemented through entrypoint/resume/artifact plumbing**
 
-> 状态：**已按类别池讨论修订，仍待最终评审；本文不代表已经修改生产代码或权重**
+> 状态：**已完成入口、resume、artifact 与 trace 接线；后续阶段按实施包继续验证**
 
 ## 1. 背景与当前问题
 

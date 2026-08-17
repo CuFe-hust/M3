@@ -118,7 +118,7 @@ def test_legacy_hint_is_used_only_when_normalization_hint_is_absent(resolver) ->
         count_target_hint=None, legacy_metadata={"count_target_hint": "ships"},
     )
     assert result.target.canonical_label == "ship"
-    assert result.verifier_source == "legacy_metadata"
+    assert result.verifier_source == "legacy_metadata.count_target_hint"
 
 
 def test_unknown_planner_target_without_verifier_is_preserved(resolver) -> None:

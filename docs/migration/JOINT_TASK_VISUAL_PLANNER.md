@@ -7,12 +7,12 @@
 planner，也不静默改用 v2 或 v3。
 
 doc 18 further supersedes the active v2 response shape: fresh execution uses
-`visual-task-plan-v3` and removes planner confidence. v2 remains a historical,
+`visual-task-plan-v4`, removes planner confidence, and adds the counting target. v2/v3 remain historical,
 confidence-bearing artifact/resume identity only; reporting may display it but never
 rewrites or re-executes it.
 
 doc 18 进一步替代现役 v2 response shape：新鲜执行使用
-`visual-task-plan-v3` 并删除 planner confidence。v2 仅作为带 confidence 的历史
+`visual-task-plan-v4`，删除 planner confidence 并增加计数目标。v2/v3 仅作为历史
 artifact/resume 身份保留；reporting 可以展示，但绝不改写或重新执行。
 
 ## 任务权威来源变化
@@ -37,7 +37,7 @@ VisualTaskPlanner 调用 -> `visual-task-plan-v2` -> materialized view + task
       -> TaskRouter(确定性) -> Agent(注入 v2 plan/view)
 
 当前（doc 18）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
-VisualTaskPlanner 调用 -> `visual-task-plan-v3` -> materialized view + task
+VisualTaskPlanner 调用 -> `visual-task-plan-v4` -> materialized view + task/count target
       -> TaskRouter(确定性) -> Agent(注入 v3 plan/view)
 ```
 
@@ -55,6 +55,6 @@ VisualTaskPlanner 调用 -> `visual-task-plan-v3` -> materialized view + task
 ## 影响范围
 
 - doc 18 后所有 fresh manual/dataset 入口均统一为一次 v3 规划调用，
-  trace 增加 `planning_mode=visual-task-plan-v3`；
+  trace 增加 `planning_mode=visual-task-plan-v4`；
 - 历史 doc 15 run 保留既有 artifact 与 report 语义，但不再获得旧推理能力；
 - 不新增第二套 Prediction/全局 sample schema；`UnifiedSample` 契约不变。

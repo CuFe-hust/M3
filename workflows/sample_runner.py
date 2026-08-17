@@ -287,7 +287,7 @@ class SampleRunner:
                 sample=sample,
                 sample_dir=sample_dir,
                 base_task=base_task,
-                planning_mode="visual-task-plan-v3" if visual_task_plan is not None else "direct",
+                planning_mode="visual-task-plan-v4" if visual_task_plan is not None else "direct",
                 started_at=started_at,
                 attempts=[],
                 skipped=skipped,
@@ -349,7 +349,7 @@ class SampleRunner:
                 sample=sample,
                 sample_dir=sample_dir,
                 base_task=base_task,
-                planning_mode="visual-task-plan-v3" if visual_task_plan is not None else "direct",
+                planning_mode="visual-task-plan-v4" if visual_task_plan is not None else "direct",
                 started_at=started_at,
                 attempts=attempts,
                 skipped=skipped,
@@ -376,7 +376,7 @@ class SampleRunner:
             execution,
             executed_attempt,
             executed_task=executed_agent_attempt.task,
-            planning_mode="visual-task-plan-v3" if visual_task_plan is not None else "direct",
+            planning_mode="visual-task-plan-v4" if visual_task_plan is not None else "direct",
             resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
             evaluation=evaluation,
@@ -387,7 +387,7 @@ class SampleRunner:
             failure_code=None,
         )
         if visual_task_plan is not None:
-            trace["planning_mode"] = "visual-task-plan-v3"
+            trace["planning_mode"] = "visual-task-plan-v4"
             trace["visual_task_plan_version"] = visual_task_plan.version
         self.artifact_writer.write_trace(sample_dir, trace)
         # result_path is the sample-relative result artifact (the declared

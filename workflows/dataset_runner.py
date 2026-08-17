@@ -138,7 +138,7 @@ class DatasetRunner:
         judge_sample_rate: float | None = None,
         call_budget_factory: CallBudgetFactory | None = None,
         visual_task_planner: VisualTaskPlanner | None = None,
-        planning_mode: str = "visual-task-plan-v3",
+        planning_mode: str = "visual-task-plan-v4",
         data_root: Path | None = None,
     ) -> None:
         self.adapter = adapter
@@ -181,8 +181,8 @@ class DatasetRunner:
             raise ValueError("shard_index must be within [0, shard_count)")
         if sample_concurrency < 1:
             raise ValueError("sample_concurrency must be >= 1")
-        if not resume and self.planning_mode != "visual-task-plan-v3":
-            raise ValueError("fresh dataset runs require visual-task-plan-v3")
+        if not resume and self.planning_mode != "visual-task-plan-v4":
+            raise ValueError("fresh dataset runs require visual-task-plan-v4")
         if not resume and (
             self.call_budget_factory is None
             or self.visual_task_planner is None
@@ -404,7 +404,7 @@ class DatasetRunner:
                 # Supplement by persisted execution task; this path never
                 # calls a model. 按持久化执行 task 补判；此路径绝不调用模型。
                 return await self._resume_supplement(sample, sample_dir, persisted.task)
-            if self.planning_mode != "visual-task-plan-v3":
+            if self.planning_mode != "visual-task-plan-v4":
                 return self._write_planning_resume_failure(
                     sample,
                     sample_dir,
@@ -493,7 +493,7 @@ class DatasetRunner:
                     return await self._resume_supplement(
                         persisted_sample, sample_dir, persisted.task
                     )
-            if self.planning_mode != "visual-task-plan-v3":
+            if self.planning_mode != "visual-task-plan-v4":
                 return self._write_planning_resume_failure(
                     draft,
                     sample_dir,

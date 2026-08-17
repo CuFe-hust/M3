@@ -439,7 +439,7 @@ normalized image previews + raw question
     -> deterministic TaskRouter
 ```
 
-规划输出版本为 `visual-task-plan-v3`。显式 CLI/dataset task 只作审计，不发送给
+规划输出版本为 `visual-task-plan-v4`。显式 CLI/dataset task 只作审计，不发送给
 第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域只在目标图像
 宽高都大于 1024 时生成一个固定 1024×1024 ROI。
 
@@ -999,7 +999,7 @@ review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset
 ```text
 normalization.count_target_hint
     -> legacy metadata count_target_hint
-    -> Qwen target parser
+    -> deterministic CountTargetResolver
 ```
 
 无效 hint 显式失败，不静默吞掉。

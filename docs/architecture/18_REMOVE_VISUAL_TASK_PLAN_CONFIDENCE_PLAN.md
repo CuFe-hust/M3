@@ -4,6 +4,9 @@
 >
 > 状态：已实施；fresh planner 与历史 resume 语义已完成接线。
 >
+> Doc 19 已将 fresh identity 升级为 `visual-task-plan-v4`；v3 仅作为可读取的
+> 历史 resume 格式保留。
+>
 > Baseline inspected: `2191ac6aa60eff4aab5a4a5381622681ed81afdb` plus the
 > uncommitted doc-16/doc-17 implementation present in the workspace on 2026-08-17.
 > The implementation agent must re-run preflight checks and preserve all unrelated
