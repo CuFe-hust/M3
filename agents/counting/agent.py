@@ -27,10 +27,10 @@ from agents.counting.executor import (
     CountingPlanExecutor,
 )
 from agents.counting.schema import (
-    CountTargetSpec,
     CountingExecutionAudit,
     CountingResult,
 )
+from agents.counting.target_parser import CountTargetResolver, ResolvedCountTarget
 from agents.errors import (
     AgentExecutionError,
     AgentTaskMismatchError,
@@ -55,9 +55,8 @@ class CountingAgent:
         self,
         client: VisionLanguageClient,
         *,
-        target_prompt: str,
+        target_resolver: CountTargetResolver,
         backend_registry: BackendRegistry,
-        target_prompt_version: str = "target-parse-v1",
         default_backend: str = "auto",
         fallback_on_backend_unavailable: bool = True,
         fallback_on_backend_error: bool = True,
@@ -67,8 +66,7 @@ class CountingAgent:
         expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
-        self._target_prompt = target_prompt
-        self._target_prompt_version = target_prompt_version
+        self._target_resolver = target_resolver
         self._expert_catalog = expert_catalog
         self._selector = BackendSelector(
             backend_registry, default_backend=default_backend
@@ -103,23 +101,29 @@ class CountingAgent:
                 supported=self.supported_tasks,
             )
         try:
-            target = await self._target(sample, context)
+            resolution = self._target_resolution(sample, context)
         except Exception as exc:
             raise AgentExecutionError(
                 self.name, sample.sample_id, cause="TARGET_PARSE_FAILED"
             ) from exc
         hints: dict[str, Any] = {"quantity_estimation": True}
         if self._expert_catalog is not None:
-            hints.update(self._expert_catalog.target_hints(target))
-        plan = self._selector.plan(target, task=sample.task, hints=hints)
+            hints.update(self._expert_catalog.target_hints(resolution.target))
+        plan = self._selector.plan(
+            resolution.target,
+            task=sample.task,
+            executable_leaf_categories=resolution.executable_leaf_categories,
+            hints=hints,
+        )
         if plan is None:
             raise CountingBackendUnavailableError(
-                target.canonical_label, reason_code="NO_BACKEND_PLAN"
+                resolution.target.canonical_label, reason_code="NO_BACKEND_PLAN"
             )
         request = CountingRequest(
             sample=sample,
             image=_resolve_sample_image(sample, context),
-            target=target,
+            target=resolution.target,
+            executable_leaf_categories=resolution.executable_leaf_categories,
             artifact_dir=context.artifact_dir,
         )
         execution_state = await self._executor.execute(
@@ -128,7 +132,7 @@ class CountingAgent:
             context=context,
             agent_name=self.name,
         )
-        trace = self._build_trace(plan, target, execution_state)
+        trace = self._build_trace(plan, resolution, execution_state)
 
         # The primary payload is always the CountingResult with a fixed
         # filename; an AgentResult — whether produced by the backend or
@@ -148,7 +152,7 @@ class CountingAgent:
             ).model_dump(mode="json")
         additional_results["counting_attempts.json"] = CountingExecutionAudit(
             sample_id=sample.sample_id,
-            target=target.canonical_label,
+            target=resolution.target.canonical_label,
             attempts=list(execution_state.attempt_audits),
         ).model_dump(mode="json")
         return AgentExecution(
@@ -162,7 +166,7 @@ class CountingAgent:
     def _build_trace(
         self,
         plan: BackendPlan,
-        target: CountTargetSpec,
+        resolution: ResolvedCountTarget,
         state: CountingExecutionResult,
     ) -> dict[str, object]:
         """Build the public trace from the executor's structured state; every
@@ -191,7 +195,15 @@ class CountingAgent:
                 entry.to_trace() for entry in state.fallback_history
             ],
             "selection_reason": list(plan.reason_codes),
-            "target": target.canonical_label,
+            "target": resolution.target.canonical_label,
+            "target_source": resolution.target_source,
+            "planner_target": resolution.planner_target,
+            "planner_object_categories": list(resolution.planner_object_categories),
+            "executable_leaf_categories": list(
+                resolution.executable_leaf_categories
+            ),
+            "target_validation": resolution.validation_status,
+            "verifier_source": resolution.verifier_source,
             "target_classes": list(plan.target_classes),
             "fallback_triggered": state.fallback_triggered,
             "fallback_kind": state.fallback_kind,
@@ -216,36 +228,26 @@ class CountingAgent:
             trace["yolo"] = {"attempted": False, "used_for_final": False}
         return trace
 
-    async def _target(
+    def _target_resolution(
         self,
         sample: UnifiedSample,
         context: AgentContext,
-    ) -> CountTargetSpec:
-        """Resolve the target: normalization hint first, legacy metadata
-        second, frozen Qwen contract last. 解析目标：优先 normalization
-        hint，其次 legacy metadata，最后冻结 Qwen 契约。"""
-        # Temporary local import keeps module discovery working while the
-        # resolver-to-agent wiring is migrated in the next implementation step.
-        from agents.counting.target_parser import CountTargetParser
-
+    ) -> ResolvedCountTarget:
+        """Resolve the planner proposal and deterministic verifier hint."""
         normalization_hint = (
             sample.normalization.count_target_hint
             if sample.normalization is not None
             else None
         )
-        parser = CountTargetParser(
-            self._client,
-            self._target_prompt,
-            _identity_model(self._client),
-            prompt_version=self._target_prompt_version,
-        )
-        return await parser.parse(
-            sample.question,
-            sample_id=sample.sample_id,
-            artifact_dir=context.artifact_dir,
+        plan = context.visual_task_plan
+        return self._target_resolver.resolve(
+            question=sample.question,
+            planner_target=plan.count_target if plan is not None else None,
+            planner_object_categories=tuple(
+                plan.object_categories if plan is not None else ()
+            ),
             count_target_hint=normalization_hint,
             legacy_metadata=sample.metadata,
-            budget=getattr(context, "call_budget", None),
         )
 
 def _agent_result(counting: CountingResult, image_id: str) -> AgentResult:
@@ -308,8 +310,3 @@ def _resolve_sample_image(sample: UnifiedSample, context: AgentContext) -> Image
         return read_normalized_image(candidate)
     except OSError as exc:
         raise AgentExecutionError(agent_name, sample.sample_id, cause="IMAGE_READ_FAILED") from exc
-
-
-def _identity_model(client: Any) -> str | None:
-    identity = getattr(client, "cache_identity", None)
-    return identity.model if identity is not None else None

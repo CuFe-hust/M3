@@ -116,6 +116,7 @@ def _request(tmp_path: Path, image: Image.Image) -> CountingRequest:
         sample=_sample(),
         image=image,
         target=_TARGET,
+        executable_leaf_categories=(_TARGET.canonical_label,),
         artifact_dir=tmp_path / "run",
     )
 
@@ -349,6 +350,7 @@ def test_count_unsupported_target_raises(tmp_path: Path) -> None:
         sample=_sample(),
         image=Image.new("RGB", (100, 100)),
         target=CountTargetSpec(canonical_label="plane", inclusion_rule="r", exclusion_rule="e"),
+        executable_leaf_categories=("plane",),
         artifact_dir=tmp_path / "run",
     )
     with pytest.raises(ValueError, match="unsupported target"):

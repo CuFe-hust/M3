@@ -476,7 +476,10 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     )
     hints = {"quantity_estimation": True, **catalog.target_hints(target)}
 
-    plan = selector.plan(target, task="counting", hints=hints)
+    plan = selector.plan(
+        target, task="counting",
+        executable_leaf_categories=("small-vehicle",), hints=hints,
+    )
 
     assert plan is not None
     assert plan.primary_backend_name == "detector_obb_csl_001"
@@ -491,20 +494,31 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
         "quantity_estimation": True,
         **catalog.target_hints(vehicle),
     }
-    vehicle_plan = selector.plan(vehicle, task="counting", hints=vehicle_hints)
+    vehicle_plan = selector.plan(
+        vehicle, task="counting",
+        executable_leaf_categories=("small-vehicle", "large-vehicle"),
+        hints=vehicle_hints,
+    )
     assert vehicle_plan is not None
-    assert vehicle_plan.primary_backend_name == "quantity_proposal"
-    assert vehicle_plan.fallback_backend_names == ("qwen_point",)
+    assert vehicle_plan.primary_backend_name == "detector_obb_csl_001"
+    assert vehicle_plan.fallback_backend_names == (
+        "segmenter_mitb2_001", "quantity_proposal", "qwen_point",
+    )
 
     aircraft = target.model_copy(update={"canonical_label": "aircraft"})
     aircraft_hints = {
         "quantity_estimation": True,
         **catalog.target_hints(aircraft),
     }
-    aircraft_plan = selector.plan(aircraft, task="counting", hints=aircraft_hints)
+    aircraft_plan = selector.plan(
+        aircraft, task="counting",
+        executable_leaf_categories=("plane", "helicopter"), hints=aircraft_hints,
+    )
     assert aircraft_plan is not None
-    assert aircraft_plan.primary_backend_name == "qwen_point"
-    assert aircraft_plan.fallback_backend_names == ()
+    assert aircraft_plan.primary_backend_name == "detector_obb_csl_001"
+    assert aircraft_plan.fallback_backend_names == (
+        "segmenter_mitb2_001", "qwen_point",
+    )
 
 
 def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
@@ -524,14 +538,20 @@ def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
         "quantity_estimation": True,
         **catalog.target_hints(swimming_pool),
     }
-    pool_plan = selector.plan(swimming_pool, task="counting", hints=pool_hints)
+    pool_plan = selector.plan(
+        swimming_pool, task="counting",
+        executable_leaf_categories=("swimming-pool",), hints=pool_hints,
+    )
     assert pool_plan is not None
     assert pool_plan.primary_backend_name == "segmenter_mitb2_001"
     assert pool_plan.fallback_backend_names == ("qwen_point",)
 
     crane = swimming_pool.model_copy(update={"canonical_label": "crane"})
     crane_hints = {"quantity_estimation": True, **catalog.target_hints(crane)}
-    crane_plan = selector.plan(crane, task="counting", hints=crane_hints)
+    crane_plan = selector.plan(
+        crane, task="counting",
+        executable_leaf_categories=("container-crane",), hints=crane_hints,
+    )
     assert crane_plan is not None
     assert crane_plan.primary_backend_name == "qwen_point"
     assert crane_plan.fallback_backend_names == ()

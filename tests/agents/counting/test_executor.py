@@ -329,6 +329,7 @@ def _request(root: Path, target: CountTargetSpec = _TARGET) -> CountingRequest:
         sample=_sample(),
         image=Image.new("RGB", (100, 100), (1, 2, 3)),
         target=target,
+        executable_leaf_categories=(target.canonical_label,),
         artifact_dir=root / "artifacts",
     )
 

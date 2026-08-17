@@ -35,6 +35,7 @@ from agents.counting.backends.yolo_model_store import YoloModelStore
 from agents.counting.expert_catalog import ExpertCatalog, ExpertSpec
 from agents.counting.schema import CountTargetSpec
 from agents.counting.settings import CountingTargetStrategy, YoloDetectorSettings
+from agents.counting.target_parser import CountTargetResolver
 from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from agents.general_vqa import GeneralVQAAgent
 from agents.general_vqa.evidence.executor import (
@@ -283,9 +284,11 @@ def _build_agent_registry(
     )
     counting_agent = CountingAgent(
         qwen_client,
-        target_prompt=catalog["target"],
+        target_resolver=CountTargetResolver(
+            evidence_catalog=_load_evidence_catalog(root),
+            expert_catalog=expert_catalog,
+        ),
         backend_registry=backend_registry,
-        target_prompt_version=catalog.version("target"),
         default_backend=settings.agents.counting.default_backend,
         fallback_on_backend_unavailable=settings.counting.fallback_on_backend_unavailable,
         fallback_on_backend_error=settings.counting.fallback_on_backend_error,

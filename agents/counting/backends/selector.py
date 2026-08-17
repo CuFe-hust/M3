@@ -51,6 +51,7 @@ class BackendSelector:
         target: CountTargetSpec,
         *,
         task: str,
+        executable_leaf_categories: tuple[str, ...],
         hints: dict[str, Any] | None = None,
     ) -> BackendPlan | None:
         """Plan without consulting transient runtime availability.
@@ -59,7 +60,9 @@ class BackendSelector:
         if task not in COUNTING_TASKS:
             return None
         effective_hints = hints if hints is not None else _DEFAULT_HINTS
-        ordered = self._ordered_candidates(target, effective_hints)
+        ordered = self._ordered_candidates(
+            target, executable_leaf_categories, effective_hints
+        )
 
         if self._default_backend == "qwen_point":
             ordered = [item for item in ordered if _validate_kind(item) == "qwen_point"]
@@ -83,7 +86,7 @@ class BackendSelector:
                 reason,
                 "fixed_kind_rank_then_priority_then_name",
             ),
-            target_classes=self._target_classes(primary, target),
+            target_classes=executable_leaf_categories,
         )
 
     def select(
@@ -91,12 +94,16 @@ class BackendSelector:
         target: CountTargetSpec,
         *,
         task: str,
+        executable_leaf_categories: tuple[str, ...] = (),
         hints: dict[str, Any] | None = None,
     ) -> BackendSelection | None:
         """Return one currently available primary for legacy callers.
         为旧调用方返回当前可用的 primary。"""
 
-        plan = self.plan(target, task=task, hints=hints)
+        plan = self.plan(
+            target, task=task,
+            executable_leaf_categories=executable_leaf_categories, hints=hints,
+        )
         if plan is None:
             return None
         backend = self.backend_by_name(plan.primary_backend_name)
@@ -116,6 +123,7 @@ class BackendSelector:
     def _ordered_candidates(
         self,
         target: CountTargetSpec,
+        executable_leaf_categories: tuple[str, ...],
         hints: dict[str, Any],
     ) -> list[Any]:
         candidates: list[Any] = []
@@ -124,7 +132,14 @@ class BackendSelector:
             _validate_plan_contract(backend)
             try:
                 enabled = backend.is_enabled()
-                supported = backend.supports(target, hints=hints)
+                kind = _validate_kind(backend)
+                if kind in {"yolo_obb", "semantic_segmentation"}:
+                    supported = bool(executable_leaf_categories) and all(
+                        backend.supports(_leaf_target(leaf), hints=hints)
+                        for leaf in executable_leaf_categories
+                    )
+                else:
+                    supported = backend.supports(target, hints=hints)
             except Exception as error:
                 raise _invalid_contract_error() from error
             if not isinstance(enabled, bool) or not isinstance(supported, bool):
@@ -145,10 +160,13 @@ class BackendSelector:
         kind: BackendKind,
         target: CountTargetSpec,
         hints: dict[str, Any],
+        executable_leaf_categories: tuple[str, ...] = (),
     ) -> list[Any]:
         return [
             backend
-            for backend in self._ordered_candidates(target, hints)
+            for backend in self._ordered_candidates(
+                target, executable_leaf_categories, hints
+            )
             if _validate_kind(backend) == kind
         ]
 
@@ -177,12 +195,13 @@ class BackendSelector:
             "qwen_point": "no_supported_specialist_qwen",
         }[_validate_kind(ordered[0])]
 
-    @staticmethod
-    def _target_classes(backend: object, target: CountTargetSpec) -> tuple[str, ...]:
-        resolve = getattr(backend, "resolve_target_classes", None)
-        if callable(resolve):
-            return tuple(sorted(resolve(target)))
-        return (target.canonical_label,)
+
+def _leaf_target(leaf: str) -> CountTargetSpec:
+    return CountTargetSpec(
+        canonical_label=leaf,
+        inclusion_rule="Count the exact canonical leaf.",
+        exclusion_rule="Exclude every other category.",
+    )
 
 
 def _validate_kind(backend: object) -> BackendKind:

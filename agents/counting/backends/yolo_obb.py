@@ -114,6 +114,22 @@ class YoloOBBCountingBackend:
                 resolved.add(normalized)
         return frozenset(resolved)
 
+    def resolve_leaf_classes(self, leaves: tuple[str, ...]) -> frozenset[str]:
+        """Map canonical execution leaves to exact configured raw classes."""
+        resolved: set[str] = set()
+        for leaf in leaves:
+            classes = self.resolve_target_classes(
+                CountTargetSpec(
+                    canonical_label=leaf,
+                    inclusion_rule="Count the exact canonical leaf.",
+                    exclusion_rule="Exclude every other category.",
+                )
+            )
+            if not classes:
+                return frozenset()
+            resolved.update(classes)
+        return frozenset(resolved)
+
     def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
         """Return whether the requested target resolves to at least one
         detector class. 返回请求目标是否可解析为至少一个检测器类别。"""
@@ -126,7 +142,7 @@ class YoloOBBCountingBackend:
     ) -> CountingBackendOutcome:
         """Run sequential OBB tiles and preserve all visible failure evidence.
         顺序运行 OBB 切片并保留全部可见失败证据。"""
-        allowed = self.resolve_target_classes(request.target)
+        allowed = self.resolve_leaf_classes(request.executable_leaf_categories)
         if not allowed:
             raise ValueError("YOLO backend selected for an unsupported target")
         image = request.image.convert("RGB")
