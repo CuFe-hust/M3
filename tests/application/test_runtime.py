@@ -37,14 +37,12 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeQwenClient:
-    """Branches on the response model: task resolutions for the resolver,
-    joint plans for the doc 15 planner (configurable task), agent results for
-    the visual agents. 按 response model 分支：解析器收到任务解析、doc 15
-    规划器收到联合计划（task 可配置）、视觉 Agent 收到 Agent 结果。"""
+    """Return v3 planner output once, then ordinary Agent output.
+    先返回 v3 规划结果一次，再返回普通 Agent 结果。"""
 
-    def __init__(self, joint_task: str = "general_vqa") -> None:
+    def __init__(self, planned_task: str = "general_vqa") -> None:
         self.calls = 0
-        self.joint_task = joint_task
+        self.planned_task = planned_task
 
     @property
     def cache_identity(self) -> ModelCacheIdentity:
@@ -57,26 +55,21 @@ class _FakeQwenClient:
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         self.calls += 1
         name = response_model.__name__
-        if name == "_ModelTaskResolution":
+        if name == "VisualTaskPlan":
+            content = messages[1]["content"]
+            image_count = sum(item.get("type") == "image_url" for item in content)
+            question = content[-1]["text"]
+            task = self.planned_task
+            if not question:
+                task = {1: "caption", 2: "change_caption"}.get(image_count, task)
             return response_model.model_validate(
                 {
-                    "task": "general_vqa",
-                    "confidence": 0.95,
-                    "candidate_tasks": ["general_vqa"],
-                    "reason_codes": ["model_high_confidence"],
-                }
-            )
-        if name == "JointQwenVisualPlan":
-            return response_model.model_validate(
-                {
-                    "version": "joint-qwen-plan-v1",
-                    "task": self.joint_task,
-                    "visual_plan": {
-                        "version": "first-qwen-plan-v1",
-                        "execution_family": "direct_vqa",
-                        "confidence": 0.9,
-                        "roi_plan": {"rois": []},
-                    },
+                    "version": "visual-task-plan-v3",
+                    "task": task,
+                    "needs_visual_assistance": False,
+                    "object_categories": [],
+                    "region_request": {"explicit": False},
+                    "reason_codes": ["fake_test_plan"],
                 }
             )
         return response_model.model_validate(
@@ -157,9 +150,30 @@ def test_runtime_run_dataset_delegates_to_dataset_runner(tmp_path: Path) -> None
     RunManifest.model_validate_json((run_dir / "manifest.json").read_text(encoding="utf-8"))
     snapshot = json.loads((run_dir / "config.snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["runs"]["root"] == (tmp_path / "runs").as_posix()
-    assert (run_dir / "prompts.snapshot" / "task_resolver_v1.md").is_file()
+    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v3.runtime.md").is_file()
     assert (run_dir / "tasks" / "auto" / "dataset_probe.json").is_file()
     assert (run_dir / "predictions.jsonl").is_file()
+
+
+def test_fresh_v2_planning_mode_is_rejected_before_run_creation(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    with pytest.raises(ValueError, match="visual-task-plan-v3"):
+        _run(
+            runtime,
+            DatasetRunOptions(
+                dataset="auto-demo",
+                root=data_root,
+                split="test",
+                tasks=(),
+                auto_task=True,
+                run_id="v2-fresh",
+                planning_mode="visual-task-plan-v2",
+            ),
+        )
+    assert not (tmp_path / "runs" / "v2-fresh").exists()
+    assert runtime.components.qwen_client.calls == 0
 
 
 def test_runtime_build_report(tmp_path: Path) -> None:
@@ -223,7 +237,7 @@ def test_runtime_auto_task_mode(tmp_path: Path) -> None:
     run_dir = tmp_path / "runs" / "auto-run"
     assert (run_dir / "tasks" / "auto" / "dataset_probe.json").is_file()
     report = runtime.build_report("auto-run")
-    assert report.samples[0].task == "general_vqa"  # resolver picked the task
+    assert report.samples[0].task == "general_vqa"  # planner picked the task
 
 
 def test_runtime_with_api_key_creates_judge_client(tmp_path: Path) -> None:
@@ -423,19 +437,10 @@ def _ask_runtime(
     tmp_path: Path,
     client: _FakeQwenClient | None = None,
     agents: dict[str, _RecordingAgent] | None = None,
-    *,
-    joint: bool = False,
 ) -> Runtime:
-    """A Runtime with the real resolver/router but recording stub agents;
-    joint=True wires the doc 15 joint planner through the real bootstrap.
-    使用真实 resolver/router 与记录型 stub Agent 的 Runtime；joint=True 经真实
-    bootstrap 接上 doc 15 联合规划器。"""
+    """A Runtime with the real v3 planner/router and recording stub agents.
+    使用真实 v3 规划器、Router 与记录型 stub Agent 的 Runtime。"""
     settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
-    if joint:
-        settings = AppSettings(
-            runs=RunSettings(root=tmp_path / "runs"),
-            visual_planning={"enabled": True},
-        )
     client = client or _FakeQwenClient()
     components = assemble_runtime(
         settings,
@@ -518,9 +523,9 @@ def test_ask_auto_one_image_empty_question_caption(tmp_path: Path) -> None:
     assert [image.role for image in sample.images] == ["image"]
     assert sample.images[0].path.as_posix() == "img.png"
     assert context.data_root == (tmp_path / "imgs").resolve()
-    # The deterministic rule path never calls the resolver model.
-    # 确定性规则路径绝不调用 resolver 模型。
-    assert runtime.components.qwen_client.calls == 0
+    # Every fresh request starts with one visual planner call.
+    # 每条新鲜请求都从一次视觉规划调用开始。
+    assert runtime.components.qwen_client.calls == 1
 
 
 def test_ask_auto_two_images_empty_question_change_caption(tmp_path: Path) -> None:
@@ -532,10 +537,10 @@ def test_ask_auto_two_images_empty_question_change_caption(tmp_path: Path) -> No
     assert answer.agent == "change_agent"
     sample, _ = agent.runs[0]
     assert [image.role for image in sample.images] == ["t1", "t2"]
-    assert [image.image_id for image in sample.images] == ["t1", "t2"]
+    assert [image.image_id for image in sample.images] == ["image-0", "context-1"]
 
 
-def test_ask_auto_question_resolves_via_resolver_once(tmp_path: Path) -> None:
+def test_ask_auto_question_uses_visual_planner_once(tmp_path: Path) -> None:
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient()
     agent = _RecordingAgent("general_vqa_agent", "general_vqa")
@@ -545,12 +550,12 @@ def test_ask_auto_question_resolves_via_resolver_once(tmp_path: Path) -> None:
     answer = _ask(
         runtime, image_dir=tmp_path / "imgs", question="Is there a road?"
     )
-    assert client.calls == 1  # exactly one resolver model call
+    assert client.calls == 1  # exactly one visual planner call
     assert answer.task == "general_vqa"
     assert answer.agent == "general_vqa_agent"
 
 
-def test_ask_explicit_task_skips_resolver(tmp_path: Path) -> None:
+def test_ask_explicit_task_is_retained_for_audit(tmp_path: Path) -> None:
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient()
     agent = _RecordingAgent("general_vqa_agent", "general_vqa")
@@ -563,7 +568,7 @@ def test_ask_explicit_task_skips_resolver(tmp_path: Path) -> None:
         question="Any buildings?",
         task="general_vqa",
     )
-    assert client.calls == 0  # explicit task never calls the resolver
+    assert client.calls == 1  # explicit task still uses the visual planner
     assert answer.task == "general_vqa"
     assert answer.agent == "general_vqa_agent"
 
@@ -577,10 +582,22 @@ def test_ask_explicit_unknown_task_fails(tmp_path: Path) -> None:
 
 def test_ask_change_task_count_validation(tmp_path: Path) -> None:
     _make_images(tmp_path / "imgs", ["img.png"])
-    runtime = _ask_runtime(tmp_path)
-    with pytest.raises(ValueError, match="exactly two images"):
-        _ask(runtime, image_dir=tmp_path / "imgs", task="change_caption")
+    runtime = _ask_runtime(
+        tmp_path,
+        client=_FakeQwenClient(planned_task="change_caption"),
+    )
+    with pytest.raises(ValueError, match="CHANGE_TASK_NEEDS_TWO_IMAGES"):
+        _ask(
+            runtime,
+            image_dir=tmp_path / "imgs",
+            question="focus on the change",
+            task="change_caption",
+        )
     _make_images(tmp_path / "imgs2", ["a.png", "b.png", "c.png"])
+    runtime = _ask_runtime(
+        tmp_path,
+        client=_FakeQwenClient(planned_task="change_qa"),
+    )
     with pytest.raises(ValueError, match="exactly two images"):
         _ask(
             runtime,
@@ -598,6 +615,7 @@ def test_ask_runs_single_primary_agent_no_fallback(tmp_path: Path) -> None:
     general = _RecordingAgent("general_vqa_agent", "general_vqa")
     runtime = _ask_runtime(
         tmp_path,
+        client=_FakeQwenClient(planned_task="change_qa"),
         agents={"change_agent": change, "general_vqa_agent": general},
     )
     answer = _ask(
@@ -630,7 +648,7 @@ def test_ask_artifacts_relative_and_judge_free(tmp_path: Path) -> None:
     # No Judge/evaluation/report artifacts on the manual path.
     # 手动路径无 Judge/评测/报告产物。
     names = {entry.name for entry in request_dir.iterdir()}
-    assert names == {"request.json", "result.json"}
+    assert names == {"request.json", "result.json", "visual_task_plan.json"}
 
 
 def test_ask_reuses_single_qwen_client(tmp_path: Path) -> None:
@@ -644,84 +662,68 @@ def test_ask_reuses_single_qwen_client(tmp_path: Path) -> None:
     assert first.request_id != second.request_id
 
 
-# ── joint mode ask (doc 15) / 联合模式 ask（doc 15） ────────────────────────
+# ── v3 planner ask path / v3 规划器 ask 路径 ───────────────────────────────
 
 
-def test_ask_joint_mode_one_model_call_and_model_task(tmp_path: Path) -> None:
-    """In joint mode the manual ask is exactly one schema-validated planner
-    call over a placeholder-role draft: the model task is authoritative,
-    roles are rebuilt at materialization, and the joint plan is persisted.
-    联合模式下 manual ask 恰好一次 schema 校验规划调用：对占位角色 draft，
-    模型 task 权威、角色在物化时重建、联合计划被持久化。"""
+def test_ask_v3_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
+    """The manual path persists and injects one canonical v3 plan.
+    手动路径持久化并注入一份规范 v3 计划。"""
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient()
     agent = _RecordingAgent("general_vqa_agent", "general_vqa")
     runtime = _ask_runtime(
-        tmp_path, client=client, agents={"general_vqa_agent": agent}, joint=True
+        tmp_path, client=client, agents={"general_vqa_agent": agent}
     )
-    answer = _ask(
-        runtime, image_dir=tmp_path / "imgs", question="Is there a road?"
-    )
-    assert client.calls == 1  # one call for task + plan / 一次调用完成 task+plan
-    assert answer.task == "general_vqa"
-    assert answer.agent == "general_vqa_agent"
+    answer = _ask(runtime, image_dir=tmp_path / "imgs", question="Is there a road?")
+    assert client.calls == 1
     sample, context = agent.runs[0]
     assert sample.task == "general_vqa"
-    # Roles rebuilt for the model task; placeholder roles never survive.
-    # 角色按模型任务重建；占位角色绝不残留。
     assert [image.role for image in sample.images] == ["image"]
-    assert [image.image_id for image in sample.images] == ["image-0"]
-    # The validated plan and bindings reach the agent context.
-    # 已验证计划与绑定进入 AgentContext。
-    assert context.visual_plan is not None
-    assert context.visual_plan.execution_family == "direct_vqa"
-    assert context.visual_bindings is runtime.components.joint_planner.bindings
+    assert context.visual_task_plan is not None
+    assert context.visual_task_plan.task == "general_vqa"
+    assert context.visual_bindings is runtime.components.visual_bindings
     request_dir = tmp_path / "runs" / "service" / "requests" / answer.request_id
-    request = json.loads((request_dir / "request.json").read_text(encoding="utf-8"))
-    assert request["joint_plan"] is True
-    assert request["resolved_task"] == "general_vqa"
-    joint = json.loads(
-        (request_dir / "joint_visual_plan.json").read_text(encoding="utf-8")
+    visual_plan = json.loads(
+        (request_dir / "visual_task_plan.json").read_text(encoding="utf-8")
     )
-    assert joint["version"] == "joint-qwen-plan-v1"
-    assert joint["task"] == "general_vqa"
+    assert visual_plan["version"] == "visual-task-plan-v3"
+    assert "confidence" not in visual_plan
+    assert visual_plan["task"] == "general_vqa"
 
 
-def test_ask_joint_mode_explicit_task_still_goes_through_planner(
-    tmp_path: Path,
-) -> None:
-    """Even an explicit manual task resolves task + plan in the single joint
-    call; the source task is never re-sent or re-guessed.
-    即使显式 manual task 也在单次联合调用内解析 task + plan；来源 task 绝不
-    被重发或重猜。"""
+def test_ask_planner_task_is_authoritative_over_source_task(tmp_path: Path) -> None:
+    """An explicit source task is audit-only; the v3 plan selects execution.
+    显式来源 task 仅用于审计；执行 task 由 v3 计划选择。"""
     _make_images(tmp_path / "imgs", ["img.png"])
-    client = _FakeQwenClient(joint_task="caption")
+    client = _FakeQwenClient(planned_task="caption")
     agent = _RecordingAgent("caption_agent", "caption")
     runtime = _ask_runtime(
-        tmp_path, client=client, agents={"caption_agent": agent}, joint=True
+        tmp_path, client=client, agents={"caption_agent": agent}
     )
     answer = _ask(
         runtime,
         image_dir=tmp_path / "imgs",
         question="Describe the scene.",
-        task="caption",
+        task="general_vqa",
     )
-    assert client.calls == 1  # explicit task no longer zero-call in joint mode
-    assert answer.task == "caption"  # 联合模式下显式 task 不再是零调用
-    assert answer.agent == "caption_agent"
+    assert client.calls == 1
+    assert answer.task == "caption"
+    request_dir = tmp_path / "runs" / "service" / "requests" / answer.request_id
+    request = json.loads((request_dir / "request.json").read_text(encoding="utf-8"))
+    assert request["requested_task"] == "general_vqa"
+    assert request["resolved_task"] == "caption"
 
 
-def test_ask_joint_mode_incompatible_plan_fails_closed(tmp_path: Path) -> None:
-    """A model task incompatible with the collected images fails closed with
-    a stable materialization code instead of guessing.
-    模型 task 与收集图片不兼容时以稳定物化 code 严格失败，绝不猜测。"""
-    from workflows.task_resolver import SampleMaterializationError
+def test_ask_planner_materialization_fails_closed(tmp_path: Path) -> None:
+    """An incompatible planner task fails at sample materialization.
+    不兼容的规划 task 在样本物化边界严格失败。"""
+    from data.schema import SampleMaterializationError
 
     _make_images(tmp_path / "imgs", ["img.png"])
-    client = _FakeQwenClient(joint_task="change_caption")
-    runtime = _ask_runtime(tmp_path, client=client, agents={}, joint=True)
+    client = _FakeQwenClient(planned_task="change_caption")
+    runtime = _ask_runtime(tmp_path, client=client, agents={})
     with pytest.raises(SampleMaterializationError, match="CHANGE_TASK_NEEDS_TWO_IMAGES"):
-        _ask(runtime, image_dir=tmp_path / "imgs")
+        _ask(runtime, image_dir=tmp_path / "imgs", question="what changed?")
     assert client.calls == 1
 
 
@@ -1003,7 +1005,7 @@ def test_serve_asks_reuse_single_runtime(tmp_path: Path) -> None:
         harness.close()
     assert first_status == 200 and second_status == 200
     assert runtime.components.qwen_client is client  # one client, both requests
-    assert client.calls == 2  # one resolver model call per ask
+    assert client.calls == 2  # one visual planner call per ask
     assert first["request_id"] != second["request_id"]
 
 
@@ -1492,8 +1494,7 @@ class _TaskAwareAdapter:
 
 def test_runtime_neither_task_mode_uses_adapter_supported_tasks(tmp_path: Path) -> None:
     """tasks=None runs every adapter.supported_tasks and never touches the
-    TaskResolver. tasks=None 运行全部 adapter.supported_tasks，绝不触碰
-    TaskResolver。"""
+    planner. tasks=None 运行全部 adapter.supported_tasks，绝不触碰规划器。"""
     settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
     client = _FakeQwenClient()
     components = assemble_runtime(
@@ -1516,7 +1517,7 @@ def test_runtime_neither_task_mode_uses_adapter_supported_tasks(tmp_path: Path) 
     )
     assert set(results) == {"caption", "general_vqa"}
     assert sorted(adapter.iter_tasks) == ["caption", "general_vqa"]
-    assert client.calls == 0  # adapter-default mode never calls the resolver
+    assert client.calls == 0  # adapter-default mode never calls the planner
 
 
 def _render_failed_point(point_id: str) -> dict:
@@ -6218,6 +6219,13 @@ def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
     legacy_parity = _parity_normalize(report)
     for task in legacy_parity["tasks"]:
         task.pop("judge_metrics", None)
+    # Doc-16 intentionally adds the active planner and its validated artifact
+    # to the read-only report path; the locked fixture compares functional
+    # evaluation fields only. doc-16 有意在只读报告路径加入现役规划器与已校验
+    # 产物；锁定 fixture 这里只比较功能性评测字段。
+    for sample in legacy_parity["samples"]:
+        sample.pop("execution_path", None)
+        sample.pop("structured_artifacts", None)
     assert legacy_parity == _parity_fixture("evaluate_run.json")
 
 

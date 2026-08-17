@@ -84,7 +84,7 @@ def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
         "caption_agent",
     )
     assert components.prompt_catalog is not None
-    assert components.task_resolver is not None
+    assert components.visual_task_planner is not None
     assert components.judge_service is not None
     assert components.dataset_runner_factory is not None
     change_agent = components.agent_registry.get("change_agent")
@@ -703,25 +703,21 @@ def _calibrated_detector(tmp_path: Path, name: str = "fake-det") -> YoloDetector
     )
 
 
-def test_visual_planning_flag_off_wires_none(tmp_path: Path) -> None:
-    """The feature flag off must leave the gate unwired so the legacy path
-    stays byte-identical. flag 关闭时门禁必须保持未接线，旧路径逐字节一致。"""
+def test_visual_planning_is_always_v2_and_injected(tmp_path: Path) -> None:
+    """Fresh composition always injects the v2 planner bindings.
+    新鲜组合始终注入 v2 规划器绑定。"""
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
     runner = components.sample_runner_factory(data_root=tmp_path)
-    assert runner.visual_planning is None
+    assert components.visual_task_planner is not None
+    assert runner.visual_bindings is components.visual_bindings
 
 
-def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
+def test_visual_planning_enabled_uses_v2_with_uncalibrated_bindings(
     tmp_path: Path,
 ) -> None:
-    """Enabled with default (uncalibrated) policies: the doc 15 joint planner
-    is wired (the legacy gate is not), the joint prompt/catalog version
-    binding holds, the VQA evidence service stays absent (fail closed at
-    runtime), and the grounding seam runs with the explicit all-None policy.
-    默认（未校准）策略下启用：doc 15 联合规划器接线（旧 gate 不接线）、联合
-    prompt/catalog 版本绑定成立、VQA 证据服务保持缺失（运行时严格失败）、
-    grounding seam 以显式全 None 策略运行。"""
-    settings = _visual_settings(tmp_path, visual_planning={"enabled": True})
+    """The v2 planner is always assembled; uncalibrated evidence stays closed.
+    v2 规划器始终组装；未校准的证据能力保持关闭。"""
+    settings = _visual_settings(tmp_path, visual_planning={})
     components = assemble_runtime(
         settings,
         project_root=tmp_path,
@@ -729,22 +725,19 @@ def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
         qwen_client=_FakeQwenClient(),
     )
     runner = components.sample_runner_factory(data_root=tmp_path)
-    # Joint mode replaces the gate: exactly one of them is ever wired.
-    # 联合模式取代 gate：两者绝不并存。
-    assert runner.visual_planning is None
-    planner = components.joint_planner
+    assert runner.visual_bindings is components.visual_bindings
+    planner = components.visual_task_planner
     assert planner is not None
     # The settings-declared versions must bind the real prompt/catalog assets.
     # settings 声明版本必须绑定真实 prompt/catalog 资产。
-    assert planner._prompt_version == components.prompt_catalog.version("joint_plan")
+    assert planner.prompt_version == components.prompt_catalog.version("visual_task_plan")
     assert planner._catalog.catalog_version == (
         settings.visual_planning.planner.catalog_version
     )
-    assert runner.joint_bindings is planner.bindings
-    assert planner.bindings is not None
-    assert planner.bindings.vqa_evidence is None
-    assert planner.bindings.grounding_evidence is not None
-    grounding = planner.bindings.grounding_evidence
+    assert components.visual_bindings is not None
+    assert components.visual_bindings.vqa_evidence is None
+    assert components.visual_bindings.grounding_evidence is not None
+    grounding = components.visual_bindings.grounding_evidence
     assert grounding._policy.yolo_enabled is False
     # Uncalibrated means the YOLO phase is off: no detector is wired at all,
     # so nothing is ever loaded for it. 未校准即 YOLO 阶段关闭：完全不接线检测
@@ -761,7 +754,6 @@ def test_visual_planning_catalog_version_mismatch_fails_closed(
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "planner": {"catalog_version": "bogus-catalog-v1"},
         },
     )
@@ -782,7 +774,7 @@ def test_visual_planning_prompt_version_mismatch_fails_closed(
     定漂移时必须在组装时严格失败。"""
     settings = _visual_settings(
         tmp_path,
-        visual_planning={"enabled": True, "planner": {"prompt_version": "v99"}},
+        visual_planning={"planner": {"task_prompt_version": "v99"}},
     )
     with pytest.raises(RuntimeCompositionError):
         assemble_runtime(
@@ -800,7 +792,6 @@ def test_visual_planning_partial_calibration_fails_closed(tmp_path: Path) -> Non
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {"small_vehicle": {"confidence_threshold": 0.5}},
         },
     )
@@ -820,7 +811,6 @@ def test_visual_planning_multiple_calibration_fails_closed(tmp_path: Path) -> No
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {
                 "small_vehicle": {
                     "confidence_threshold": 0.5,
@@ -853,7 +843,6 @@ def test_visual_planning_calibrated_without_detector_fails_closed(
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {
                 "small_vehicle": {
                     "confidence_threshold": 0.5,
@@ -880,7 +869,6 @@ def test_visual_planning_enabled_segmenter_fails_closed(tmp_path: Path) -> None:
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "segmenters": {
                 "building": {"enabled": True, "class_map_version": "isaid-v2"}
             },
@@ -921,7 +909,6 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {
                 "small_vehicle": {
                     "confidence_threshold": 0.5,
@@ -938,10 +925,10 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
         prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
     )
-    planner = components.joint_planner
-    assert planner is not None and planner.bindings is not None
+    planner = components.visual_task_planner
+    assert planner is not None and components.visual_bindings is not None
     assert get_calls == []  # assembly never loads / 组合期绝不加载
-    vqa = planner.bindings.vqa_evidence
+    vqa = components.visual_bindings.vqa_evidence
     assert vqa is not None
     with pytest.raises(Exception) as exc_info:
         vqa._yolo_client.detect(  # type: ignore[attr-defined]

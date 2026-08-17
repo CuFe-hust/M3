@@ -4,8 +4,8 @@
 接线：参数校验（先于任何运行时/模型初始化）→ 配置 → Runtime.create（Qwen
 一次）→ build_dataset_run_options → Runtime.run_dataset → 汇总 JSON 与
 run_dir → 退出码（0/1/2/130）。任务选择模式：--task 显式；--auto-task
-逐样本 resolver；两者都不给 → adapter.supported_tasks（绝不调用
-TaskResolver）；两者都给 → 参数错误。公共错误只输出稳定类型名。
+逐样本进入唯一 VisualTaskPlanner；两者都不给 → adapter.supported_tasks；
+两者都给 → 参数错误。公共错误只输出稳定类型名。
 """
 
 from __future__ import annotations

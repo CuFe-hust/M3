@@ -4,7 +4,8 @@
 
 M3 当前采用分层的多模态遥感 Agent 架构，围绕 **统一样本契约、任务解析与确定性路由、领域 Agent、可恢复运行、确定性评测、可选 Judge 和只读报告** 组织代码。主流程默认面向本地 Qwen 多模态模型，支持数据集批量评测、手动问答、计数、变化理解、空间关系、Grounding、Caption、VQA，以及运行后的评测与报告导出。
 
-当前分支 `new_structure` 是新的长期架构。旧 `try_yolo` 分支仅作为迁移和行为对齐参考，不再作为运行时依赖。
+仓库主线 `main` 是新的长期架构。迁移期名称 `new_structure` 仅用于历史文档；旧
+`try_yolo` 分支仅作为迁移和行为对齐参考，不再作为运行时依赖。
 
 ---
 
@@ -50,7 +51,10 @@ data/
           -> SampleDraft
                 |
                 v
-        TaskResolver (only when task is unknown)
+        VisualTaskPlanner (images + raw question)
+                |
+                v
+        materialize UnifiedSample + deterministic TaskRouter
                 |
                 v
 routing/
@@ -87,7 +91,8 @@ main.py
 几个最重要的边界：
 
 - `data.schema.UnifiedSample` 是内部统一样本契约。
-- `TaskResolver` 回答“这是什么任务”，`TaskRouter` 回答“已知任务交给哪个 Agent”。
+- 新鲜推理统一先调用一次 `VisualTaskPlanner`：第一次 user content 只有按序图像与原始问题，输出 task 与可选视觉辅助计划。
+- `UnifiedSample` 在规划后物化；`TaskRouter` 只回答“已知 task 交给哪个 Agent”，不读 question、不调用模型。
 - Router 是同步、确定性、无模型调用的。
 - Agent 依赖模型协议，不自行创建具体 Qwen 客户端。
 - `application/` 是唯一 composition root。
@@ -414,39 +419,33 @@ SampleDraft
 再通过：
 
 ```text
-TaskResolver -> materialize_sample -> UnifiedSample
+VisualTaskPlanner -> materialize_sample -> UnifiedSample
 ```
+
+旧 resolver/联合规划器已从当前 runtime 删除；历史 run 只通过 reporting 的只读
+兼容 seam 审计，不参与新鲜推理。
 
 ---
 
-## 8. TaskResolver 与 Router
+## 8. VisualTaskPlanner 与 Router
 
-任务未知时：
-
-```text
-explicit task
-    -> deterministic rule
-    -> model resolution
-```
-
-空问题当前有两条窄规则：
+每条新鲜样本（包括手动 ask 的显式/auto task，以及 dataset 的
+explicit/default/auto 模式）都经过：
 
 ```text
-1 image -> caption
-2 images -> change_caption
+normalized image previews + raw question
+    -> one VisualTaskPlanner Qwen call
+    -> materialize/rebuild UnifiedSample
+    -> deterministic TaskRouter
 ```
 
-其他空问题不猜 `general_vqa`。
+规划输出版本为 `visual-task-plan-v3`。显式 CLI/dataset task 只作审计，不发送给
+第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域只在目标图像
+宽高都大于 1024 时生成一个固定 1024×1024 ROI。
 
-模型解析只在：
+`SampleDraft` 路径也由同一规划调用物化，不再单独走文本任务解析路径。
 
-```text
-task unknown AND question non-empty
-```
-
-时发生。
-
-低置信度 TaskResolver 最多返回有限候选任务，并保留 `general_vqa` 兜底槽位；真正候选执行由 SampleRunner 完成。
+历史任务解析规则仅可在迁移文档中审计，不是新鲜运行契约。
 
 TaskRouter 本身：
 
@@ -651,10 +650,10 @@ no --task
     -> explicit tasks
 
 --auto-task
-    -> per-sample TaskResolver
+    -> per-sample VisualTaskPlanner
 ```
 
-不要把“未传 `--task`”理解成自动任务识别。
+无论是哪种模式，新鲜样本都会调用一次视觉规划器；`--task` 只保留为审计输入。
 
 ---
 
@@ -1136,7 +1135,7 @@ TaskSummary
 
 - 调 Qwen；
 - 调 Agent；
-- 重跑 TaskResolver；
+	- 重跑任何规划器或任务解析器；
 - 修改 prediction；
 - 为了报告重新计算另一套 prediction。
 
@@ -1222,7 +1221,7 @@ outputs/runs/<run_id>/
 
 ### Resolved task
 
-TaskResolver/UnifiedSample 的 canonical task：
+VisualTaskPlanner/UnifiedSample 的 canonical task：
 
 ```text
 sample.json.task

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from agents.schema import VisualTaskPlan
 from data.adapters.base import AdapterProbe
 from data.schema import GroundTruth, ImageRef, SampleDraft, UnifiedSample
 from workflows.artifact_writer import ArtifactWriter
@@ -81,8 +82,9 @@ class _StubSampleRunner:
         self.states = states or {}
         self.fail_ids = fail_ids or set()
         self.raise_error = raise_error
+        self.judge_service = None
         self.calls: list[tuple[UnifiedSample, Path, str, object]] = []
-        self.joint_plans: list[tuple[str, object, object]] = []
+        self.visual_plans: list[tuple[str, object, tuple[object, ...], object]] = []
         self.in_flight = 0
         self.max_in_flight = 0
 
@@ -91,13 +93,13 @@ class _StubSampleRunner:
         sample,
         sample_dir,
         *,
-        resolution=None,
-        joint_plan=None,
+        visual_task_plan=None,
+        visual_views=(),
         budget=None,
         judge_policy="none",
     ):
-        self.calls.append((sample, sample_dir, judge_policy, resolution))
-        self.joint_plans.append((sample.sample_id, joint_plan, budget))
+        self.calls.append((sample, sample_dir, judge_policy, visual_task_plan))
+        self.visual_plans.append((sample.sample_id, visual_task_plan, visual_views, budget))
         self.in_flight += 1
         self.max_in_flight = max(self.max_in_flight, self.in_flight)
         delay = self.delays.get(sample.sample_id, self.delay)
@@ -172,35 +174,64 @@ def _create_run(tmp_path: Path, run_id: str = "runner-run") -> tuple[Path, RunSt
     return tmp_path / "runs" / run_id, store
 
 
+class _FakeVisualPlanner:
+    """Return a strict v3 plan and record each planning call.
+    返回严格的 v3 计划并记录每次规划调用。"""
+
+    def __init__(
+        self,
+        task: str | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.task = task
+        self.error = error
+        self.calls: list[tuple[object, Path, Path, object]] = []
+
+    async def plan_with_views(self, sample, *, data_root, artifact_dir, budget):
+        self.calls.append((sample, data_root, artifact_dir, budget))
+        if self.error is not None:
+            raise self.error
+        task = self.task
+        if task is None:
+            task = getattr(sample, "task", None) or getattr(sample, "explicit_task", None)
+        task = task or "caption"
+        return (
+            VisualTaskPlan(
+                version="visual-task-plan-v3",
+                task=task,
+                reason_codes=["fake_test_plan"],
+            ),
+            (),
+        )
+
+
+_DEFAULT_VISUAL_PLANNER = object()
+
+
 def _runner(
     adapter: _FakeAdapter,
     sample_runner: _StubSampleRunner,
     run_dir: Path,
     *,
     judge_policy: str = "none",
-    joint_planner=None,
+    visual_task_planner=_DEFAULT_VISUAL_PLANNER,
     data_root: Path | None = None,
 ) -> DatasetRunner:
-    # Joint mode bypasses the resolver but the draft-mode guard still
-    # requires non-None; legacy mode keeps both unset so configuration-time
-    # failures stay observable. 联合模式绕过 resolver，但 draft 模式守卫仍要求
-    # 非 None；旧模式保持两者未设置，使配置期失败仍然可观察。
-    if joint_planner is not None:
-        task_resolver = object()
-        call_budget_factory = CallBudgetFactory()
-    else:
-        task_resolver = None
-        call_budget_factory = None
+    planner = (
+        _FakeVisualPlanner()
+        if visual_task_planner is _DEFAULT_VISUAL_PLANNER
+        else visual_task_planner
+    )
+    call_budget_factory = CallBudgetFactory() if planner is not None else None
     return DatasetRunner(
         adapter=adapter,
         sample_runner=sample_runner,
         run_dir=run_dir,
         artifact_writer=ArtifactWriter(),
         judge_policy=judge_policy,
-        task_resolver=task_resolver,
         call_budget_factory=call_budget_factory,
-        joint_planner=joint_planner,
-        data_root=data_root,
+        visual_task_planner=planner,
+        data_root=data_root or Path("."),
     )
 
 
@@ -588,12 +619,17 @@ def test_dataset_run_options_auto_task_contract() -> None:
 
 def test_dataset_runner_task_none_is_internal_auto_task_mode(tmp_path: Path) -> None:
     """task=None is the explicit internal auto-task mode, never a user
-    default; without a resolver it fails at configuration time.
-    task=None 是内部显式 auto-task 模式而非用户缺省；缺少 resolver 时在
+    default; without the v3 planner it fails at configuration time.
+    task=None 是内部显式 auto-task 模式而非用户缺省；缺少 v3 规划器时在
     配置期失败。"""
     run_dir, _ = _create_run(tmp_path)
-    runner = _runner(_FakeAdapter([]), _StubSampleRunner(), run_dir)
-    with pytest.raises(ValueError, match="draft task mode"):
+    runner = _runner(
+        _FakeAdapter([]),
+        _StubSampleRunner(),
+        run_dir,
+        visual_task_planner=None,
+    )
+    with pytest.raises(ValueError, match="fresh dataset runs"):
         _run(runner, task=None)
 
 
@@ -712,9 +748,6 @@ def test_judge_sample_rate_intermediate_deterministic_across_resume(
     assert summary2.judge_sample_rate == 0.5
 
 
-# ── joint mode (doc 15) / 联合模式（doc 15） ────────────────────────────────
-
-
 class _DraftAdapter(_FakeAdapter):
     """Adapter that yields SampleDraft entries for the auto-task entry.
     为 auto-task 入口产出 SampleDraft 的适配器。"""
@@ -752,76 +785,42 @@ def _draft(sample_id: str) -> SampleDraft:
     )
 
 
-class _FakeJointPlanner:
-    """Duck-typed JointVisualPlanner with a configurable outcome and call
-    record; the configured plan lives under result so it never shadows the
-    plan method the runner invokes. 可配置结果并记录调用的 JointVisualPlanner
-    鸭子类型；配置的计划放在 result 下，避免遮蔽 runner 调用的 plan 方法。"""
-
-    def __init__(self, result=None, error: Exception | None = None) -> None:
-        self.result = result
-        self.error = error
-        self.calls: list[tuple[object, object, object, object]] = []
-
-    async def plan(self, view, *, data_root, artifact_dir, budget):
-        self.calls.append((view, data_root, artifact_dir, budget))
-        if self.error is not None:
-            raise self.error
-        return self.result
-
-
-def _joint_plan(*, task: str = "caption") -> dict:
-    """A valid joint plan dict; the runner passes it through opaque.
-    一条合法联合计划 dict；runner 原样透传。"""
-    from agents.schema import JointQwenVisualPlan
-
-    return JointQwenVisualPlan(
-        version="joint-qwen-plan-v1",
-        task=task,  # type: ignore[arg-type]
-        visual_plan={
-            "version": "first-qwen-plan-v1",
-            "execution_family": "direct_vqa",
-            "confidence": 0.9,
-            "roi_plan": {"rois": []},
-        },
-    )
-
-
-def test_joint_mode_sample_entry_one_planner_call(tmp_path: Path) -> None:
-    """An adapter (explicit/default) sample gets exactly one planner call;
-    the sample is rebuilt to the model-selected task, run_one receives the
-    joint plan, and the persisted summary closes. 适配器（显式/默认）样本恰好
-    一次规划调用；样本按模型选定 task 重建，run_one 收到联合计划，持久化
-    汇总闭合。"""
+def test_visual_plan_explicit_entry_one_planner_call(tmp_path: Path) -> None:
+    """An explicit sample gets one v3 planner call and one execution.
+    显式样本获得一次 v3 规划调用与一次执行。"""
     samples = [_sample("s0"), _sample("s1")]
-    run_dir, _ = _create_run(tmp_path, run_id="joint-sample")
-    planner = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    run_dir, _ = _create_run(tmp_path, run_id="visual-sample")
+    planner = _FakeVisualPlanner(task="caption")
     stub = _StubSampleRunner()
-    runner = _runner(_FakeAdapter(samples), stub, run_dir, joint_planner=planner)
+    runner = _runner(_FakeAdapter(samples), stub, run_dir, visual_task_planner=planner)
     summary = _run(runner)
     assert len(planner.calls) == 2  # one per sample / 每条样本一次
     assert [call[0].sample_id for call in planner.calls] == ["s0", "s1"]
-    # run_one got the rebuilt sample and the same joint plan / run_one 收到
-    # 重建样本与同一联合计划
+    # run_one got the rebuilt sample and the same v3 plan / run_one 收到
+    # 重建样本与同一 v3 计划
     assert [call[0].task for call in stub.calls] == ["caption", "caption"]
-    assert all(plan.task == "caption" for _sid, plan, _budget in stub.joint_plans)
-    # The shared budget spans planner and runner / 共享预算贯穿规划与执行
+    assert all(plan.task == "caption" for _sid, plan, _views, _budget in stub.visual_plans)
     planned_budget = planner.calls[0][3]
-    assert stub.joint_plans[0][2] is planned_budget
+    assert stub.visual_plans[0][3] is planned_budget
     assert summary.total == 2
     assert summary.succeeded == 2
 
 
-def test_joint_mode_incompatible_rebuild_fails_closed(tmp_path: Path) -> None:
+def test_visual_plan_incompatible_rebuild_fails_closed(tmp_path: Path) -> None:
     """A model-selected task the sample cannot be rebuilt for (change task on
-    a single image) fails closed with INCOMPATIBLE_JOINT_TASK — never a
+    a single image) fails closed with INCOMPATIBLE_VISUAL_TASK — never a
     guessed task, never a run_one call. 样本无法重建为模型选定 task（单图上的
-    变化任务）时以 INCOMPATIBLE_JOINT_TASK 严格失败——绝不猜测 task、绝不
+    变化任务）时以 INCOMPATIBLE_VISUAL_TASK 严格失败——绝不猜测 task、绝不
     调用 run_one。"""
-    run_dir, _ = _create_run(tmp_path, run_id="joint-incompatible")
-    planner = _FakeJointPlanner(result=_joint_plan(task="change_caption"))
+    run_dir, _ = _create_run(tmp_path, run_id="visual-incompatible")
+    planner = _FakeVisualPlanner(task="change_caption")
     stub = _StubSampleRunner()
-    runner = _runner(_FakeAdapter([_sample("s0")]), stub, run_dir, joint_planner=planner)
+    runner = _runner(
+        _FakeAdapter([_sample("s0")]),
+        stub,
+        run_dir,
+        visual_task_planner=planner,
+    )
     summary = _run(runner)
     assert len(planner.calls) == 1
     assert stub.calls == []
@@ -829,59 +828,74 @@ def test_joint_mode_incompatible_rebuild_fails_closed(tmp_path: Path) -> None:
         run_dir / "tasks" / "general_vqa" / "samples" / storage_key("s0") / "status.json"
     )
     assert status["state"] == "failed"
-    assert status["error_code"] == "INCOMPATIBLE_JOINT_TASK"
+    assert status["error_code"] == "INCOMPATIBLE_VISUAL_TASK"
     assert status["task"] == "change_caption"
     assert summary.failed == 1
 
 
-def test_joint_mode_planner_error_is_stable_failure(tmp_path: Path) -> None:
-    """A JointPlanError collapses to a failed status with the stable code,
+def test_visual_planner_error_is_stable_failure(tmp_path: Path) -> None:
+    """A VisualTaskPlanError collapses to a failed status with the stable code,
     no agent execution, and honest 'unknown' task label.
-    JointPlanError 收敛为携带稳定 code 的 failed 状态，不执行 Agent，
+    VisualTaskPlanError 收敛为携带稳定 code 的 failed 状态，不执行 Agent，
     task 标签诚实为 'unknown'。"""
-    from workflows.visual_planner import JointPlanError
+    from workflows.visual_planner import VisualTaskPlanError
 
-    run_dir, _ = _create_run(tmp_path, run_id="joint-error")
-    planner = _FakeJointPlanner(error=JointPlanError("LOW_CONFIDENCE"))
+    run_dir, _ = _create_run(tmp_path, run_id="visual-error")
+    planner = _FakeVisualPlanner(error=VisualTaskPlanError("SCHEMA_INVALID"))
     stub = _StubSampleRunner()
-    runner = _runner(_FakeAdapter([_sample("s0")]), stub, run_dir, joint_planner=planner)
+    runner = _runner(
+        _FakeAdapter([_sample("s0")]),
+        stub,
+        run_dir,
+        visual_task_planner=planner,
+    )
     summary = _run(runner)
     assert stub.calls == []
     status = _read_json(
         run_dir / "tasks" / "general_vqa" / "samples" / storage_key("s0") / "status.json"
     )
     assert status["state"] == "failed"
-    assert status["error_code"] == "LOW_CONFIDENCE"
+    assert status["error_code"] == "SCHEMA_INVALID"
     assert status["task"] == "unknown"
     assert summary.failed == 1
 
 
-def test_joint_mode_draft_entry_one_planner_call(tmp_path: Path) -> None:
-    """The auto-task entry drafts through the joint planner: one planner call
+def test_visual_plan_draft_entry_one_planner_call(tmp_path: Path) -> None:
+    """The auto-task entry drafts through the v3 planner: one planner call
     per draft, materialization under the model-selected task, run_one with
-    the joint plan. auto-task 入口的 draft 经联合规划器处理：每条 draft 一次
-    规划调用、按模型选定 task 物化、run_one 携带联合计划。"""
-    run_dir, _ = _create_run(tmp_path, run_id="joint-draft")
-    planner = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    the v3 plan. auto-task 入口的 draft 经 v3 规划器处理：每条 draft 一次
+    规划调用、按模型选定 task 物化、run_one 携带 v3 计划。"""
+    run_dir, _ = _create_run(tmp_path, run_id="visual-draft")
+    planner = _FakeVisualPlanner(task="caption")
     stub = _StubSampleRunner()
-    runner = _runner(_DraftAdapter([_draft("d0"), _draft("d1")]), stub, run_dir, joint_planner=planner)
+    runner = _runner(
+        _DraftAdapter([_draft("d0"), _draft("d1")]),
+        stub,
+        run_dir,
+        visual_task_planner=planner,
+    )
     summary = _run(runner, task=None)
     assert len(planner.calls) == 2
     assert all(isinstance(call[0], SampleDraft) for call in planner.calls)
     assert [call[0].task for call in stub.calls] == ["caption", "caption"]
-    assert stub.joint_plans[0][1].task == "caption"
+    assert stub.visual_plans[0][1].task == "caption"
     assert summary.total == 2
     assert summary.succeeded == 2
 
 
-def test_joint_mode_draft_materialization_failure_fails_closed(tmp_path: Path) -> None:
+def test_visual_plan_draft_materialization_failure_fails_closed(tmp_path: Path) -> None:
     """An incompatible draft (change task on a single image) fails closed
     with the stable materialization code and the known task label.
     不兼容 draft（单图上的变化任务）以稳定物化 code 与已知 task 标签严格失败。"""
-    run_dir, _ = _create_run(tmp_path, run_id="joint-draft-incompatible")
-    planner = _FakeJointPlanner(result=_joint_plan(task="change_caption"))
+    run_dir, _ = _create_run(tmp_path, run_id="visual-draft-incompatible")
+    planner = _FakeVisualPlanner(task="change_caption")
     stub = _StubSampleRunner()
-    runner = _runner(_DraftAdapter([_draft("d0")]), stub, run_dir, joint_planner=planner)
+    runner = _runner(
+        _DraftAdapter([_draft("d0")]),
+        stub,
+        run_dir,
+        visual_task_planner=planner,
+    )
     summary = _run(runner, task=None)
     assert len(planner.calls) == 1
     assert stub.calls == []
@@ -894,24 +908,23 @@ def test_joint_mode_draft_materialization_failure_fails_closed(tmp_path: Path) -
     assert summary.failed == 1
 
 
-def test_joint_mode_resume_succeeded_has_zero_model_calls(tmp_path: Path) -> None:
-    """Resuming a succeeded run in joint mode never calls the planner (doc 15
-    §4.6): zero model calls per resumed sample. 联合模式下 resume 已 succeeded
-    的运行绝不调用规划器（doc 15 §4.6）：每条恢复样本零模型调用。"""
+def test_visual_plan_resume_succeeded_has_zero_planner_calls(tmp_path: Path) -> None:
+    """Resuming succeeded samples never calls the planner.
+    resume 已 succeeded 样本绝不调用规划器。"""
     samples = [_sample("s0"), _sample("s1")]
-    run_dir, _ = _create_run(tmp_path, run_id="joint-resume")
-    first = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    run_dir, _ = _create_run(tmp_path, run_id="visual-resume")
+    first = _FakeVisualPlanner()
     stub1 = _StubSampleRunner()
-    runner1 = _runner(_FakeAdapter(samples), stub1, run_dir, joint_planner=first)
+    runner1 = _runner(_FakeAdapter(samples), stub1, run_dir, visual_task_planner=first)
     summary1 = _run(runner1)
     assert summary1.succeeded == 2
     assert len(first.calls) == 2
     # A fresh runner resumes; the planner must not be touched.
     # 新 runner 恢复；规划器绝不能被触碰。
-    fresh = _FakeJointPlanner(result=_joint_plan(task="caption"))
+    fresh = _FakeVisualPlanner()
     stub2 = _StubSampleRunner()
-    runner2 = _runner(_FakeAdapter(samples), stub2, run_dir, joint_planner=fresh)
+    runner2 = _runner(_FakeAdapter(samples), stub2, run_dir, visual_task_planner=fresh)
     summary2 = _run(runner2, resume=True)
     assert summary2.succeeded == 2
     assert fresh.calls == []
-    assert all(call[1] is None for call in stub2.joint_plans)
+    assert stub2.visual_plans == []

@@ -74,11 +74,8 @@ from workflows.dataset_runner import DatasetRunner
 from workflows.judge_service import JudgeService
 from workflows.run_store import RunStore
 from workflows.sample_runner import SampleRunner
-from workflows.task_resolver import TaskResolver
 from workflows.visual_planner import (
-    JointVisualPlanner,
-    VisualPlanner,
-    VisualPlanningGate,
+    VisualTaskPlanner,
 )
 
 
@@ -91,7 +88,6 @@ class RuntimeComponents:
     judge_client: DeepSeekJudgeClient | None
     prompt_catalog: PromptCatalog
     router: TaskRouter
-    task_resolver: TaskResolver
     agent_registry: AgentRegistry
     judge_service: JudgeService
     artifact_writer: ArtifactWriter
@@ -99,16 +95,16 @@ class RuntimeComponents:
     run_store: RunStore
     build_report: Callable[[Path], Report]
     render_overlay: Callable[..., Path]
+    # Canonical v3 planner and shared evidence bindings for every fresh entry.
+    # 所有新鲜入口共用的 v3 规划器与视觉证据绑定。
+    visual_task_planner: VisualTaskPlanner
+    visual_bindings: VisualPlanBindings
     dataset_runner_factory: Callable[..., DatasetRunner] = field(
         default=None  # type: ignore[assignment]
     )
     sample_runner_factory: Callable[[Path], SampleRunner] = field(
         default=None  # type: ignore[assignment]
     )
-    # Doc 15 joint planner; wired only when the feature flag is enabled, in
-    # which case the legacy gate is not assembled. / 联合规划器（doc 15）；
-    # 仅在特性开关启用时接线，此时旧 gate 不组装。
-    joint_planner: JointVisualPlanner | None = None
 
 
 class RuntimeCompositionError(ValueError):
@@ -154,29 +150,16 @@ def assemble_runtime(
     # 每次 runtime assembly 一个可审计 YOLO 模型 store，计数后端与特性开关式
     # 视觉证据服务共享（14A3 C9）。仅构造 store 本身不加载任何权重。
     model_store = YoloModelStore()
-    # The joint planner (doc 15) replaces the two-stage decision when the
-    # feature flag is enabled; the legacy gate is then not assembled, so the
-    # two modes are never wired together. Flag off keeps the legacy path
-    # byte-identical. 特性开关启用时联合规划器（doc 15）取代两阶段决策，旧
-    # gate 不再组装，两种模式绝不同时接线。开关关闭保持旧路径逐字节一致。
-    if settings.visual_planning.enabled:
-        visual_planning = None
-        joint_planner = _build_joint_planning(
-            settings,
-            catalog,
-            qwen_client,
-            model_store,
-            project_root=asset_root,
-        )
-    else:
-        visual_planning = _build_visual_planning(
-            settings,
-            catalog,
-            qwen_client,
-            model_store,
-            project_root=asset_root,
-        )
-        joint_planner = None
+    # Every fresh sample uses the same visual-only planner. The deprecated
+    # feature flag is deliberately ignored for new execution.
+    # 每条新鲜样本都使用同一个纯视觉规划器；废弃的 feature flag 对新执行无效。
+    visual_task_planner, visual_bindings = _build_visual_task_planning(
+        settings,
+        catalog,
+        qwen_client,
+        model_store,
+        project_root=asset_root,
+    )
     if settings.agents.change.semantic.enabled and semantic_client is None:
         semantic_client = segformer_clients.get(
             settings.models.segformer_isaid.logical_model_id
@@ -200,11 +183,6 @@ def assemble_runtime(
         model_store=model_store,
     )
     router = TaskRouter()
-    task_resolver = TaskResolver(
-        qwen_client,
-        system_prompt=catalog["task_resolver"],
-        confidence_threshold=settings.router.confidence_threshold,
-    )
     judge_client = _build_judge_client(settings, catalog, api_key)
     judge_service = JudgeService(
         judge_prompt=catalog["count_judge"],
@@ -232,16 +210,7 @@ def assemble_runtime(
             judge_service=judge_service,
             fallback_on_partial=settings.router.fallback_on_partial,
             data_root=data_root,
-            # None while the feature flag is off, keeping the legacy path
-            # byte-identical; the gate is assembled only when enabled (14A3).
-            # In joint mode (doc 15) the gate is None and the joint bindings
-            # serve every sample instead. 特性开关关闭时为 None，保持旧路径
-            # 逐字节一致；仅在启用时组装门禁（14A3）。联合模式下（doc 15）
-            # gate 为 None，由联合绑定服务每条样本。
-            visual_planning=visual_planning,
-            joint_bindings=(
-                joint_planner.bindings if joint_planner is not None else None
-            ),
+            visual_bindings=visual_bindings,
         )
 
     def dataset_runner_factory(
@@ -251,6 +220,7 @@ def assemble_runtime(
         judge_policy: str,
         judge_sample_rate: float | None = None,
         data_root: Path,
+        planning_mode: str = "visual-task-plan-v3",
     ) -> DatasetRunner:
         return DatasetRunner(
             adapter,
@@ -259,9 +229,9 @@ def assemble_runtime(
             artifact_writer=artifact_writer,
             judge_policy=judge_policy,
             judge_sample_rate=judge_sample_rate,
-            task_resolver=task_resolver,
             call_budget_factory=call_budget_factory,
-            joint_planner=joint_planner,
+            visual_task_planner=visual_task_planner,
+            planning_mode=planning_mode,
             data_root=data_root,
         )
 
@@ -270,7 +240,6 @@ def assemble_runtime(
         judge_client=judge_client,
         prompt_catalog=catalog,
         router=router,
-        task_resolver=task_resolver,
         agent_registry=agent_registry,
         judge_service=judge_service,
         artifact_writer=artifact_writer,
@@ -280,7 +249,8 @@ def assemble_runtime(
         render_overlay=render_counting_overlay,
         dataset_runner_factory=dataset_runner_factory,
         sample_runner_factory=make_sample_runner,
-        joint_planner=joint_planner,
+        visual_task_planner=visual_task_planner,
+        visual_bindings=visual_bindings,
     )
     return components
 
@@ -671,82 +641,25 @@ def _build_judge_client(
     )
 
 
-def _build_visual_planning(
+def _build_visual_task_planning(
     settings: AppSettings,
     catalog: PromptCatalog,
     qwen_client: VisionLanguageClient,
     model_store: YoloModelStore,
     *,
     project_root: Path,
-) -> VisualPlanningGate | None:
-    """Assemble the feature-flagged first-Qwen planning gate (14A3 C9). The
-    gate is None while the flag is off, so the legacy path keeps every
-    existing behaviour byte-identical. When enabled, the settings-declared
-    prompt/catalog versions must bind the same prompt and evidence catalog
-    asset pair — any drift fails closed at assembly.
-    组装特性开关式第一 Qwen 规划门（14A3 C9）。flag 关闭时为 None，旧路径
-    逐字节保持现有行为。启用时，settings 声明的 prompt/catalog 版本必须绑定
-    同一 prompt 与证据目录资产对——任何漂移在组装时严格失败。"""
-
-    if not settings.visual_planning.enabled:
-        return None
+) -> tuple[VisualTaskPlanner, VisualPlanBindings]:
+    """Assemble the always-on doc-18 planner and shared evidence bindings.
+    组装始终启用的 doc-18 规划器与共享证据绑定。"""
     evidence_catalog = _load_evidence_catalog(project_root)
     planner_settings = settings.visual_planning.planner
     if planner_settings.catalog_version != evidence_catalog.catalog_version:
         raise RuntimeCompositionError(
-            "visual planning catalog version differs from the evidence catalog asset"
+            "visual task planning catalog version differs from the evidence catalog asset"
         )
-    if planner_settings.prompt_version != catalog.version("visual_plan"):
+    if planner_settings.task_prompt_version != catalog.version("visual_task_plan"):
         raise RuntimeCompositionError(
-            "visual planning prompt version differs from the prompt catalog"
-        )
-    planner = VisualPlanner(
-        qwen_client,
-        system_prompt=catalog["visual_plan"],
-        prompt_version=planner_settings.prompt_version,
-        catalog=evidence_catalog,
-        confidence_threshold=planner_settings.confidence_threshold,
-        # The configured per-plan ROI cap; exceeding it falls back to the
-        # unique full-image ROI (14B §6.2) — never truncated.
-        # 配置的每计划 ROI 上限；超限回退唯一整图 ROI（14B §6.2）——绝不截断。
-        max_rois=planner_settings.max_rois,
-    )
-    bindings = _build_visual_bindings(
-        settings,
-        catalog,
-        evidence_catalog,
-        qwen_client,
-        model_store,
-        project_root=project_root,
-    )
-    return VisualPlanningGate(planner, bindings=bindings)
-
-
-def _build_joint_planning(
-    settings: AppSettings,
-    catalog: PromptCatalog,
-    qwen_client: VisionLanguageClient,
-    model_store: YoloModelStore,
-    *,
-    project_root: Path,
-) -> JointVisualPlanner:
-    """Assemble the doc 15 joint planner (one schema-validated call returns
-    task + visual plan) with the same-version evidence catalog and prompt
-    binding as the legacy gate; any drift fails closed at assembly. The
-    planner owns the shared evidence bindings injected into every sample.
-    组装 doc 15 联合规划器（一次 schema 校验调用返回 task + 视觉计划），使用
-    与旧 gate 同版本的证据目录与 prompt 绑定；任何漂移在组装时严格失败。规划器
-    持有注入每条样本的共享证据绑定。"""
-
-    evidence_catalog = _load_evidence_catalog(project_root)
-    planner_settings = settings.visual_planning.planner
-    if planner_settings.catalog_version != evidence_catalog.catalog_version:
-        raise RuntimeCompositionError(
-            "joint planning catalog version differs from the evidence catalog asset"
-        )
-    if planner_settings.prompt_version != catalog.version("joint_plan"):
-        raise RuntimeCompositionError(
-            "joint planning prompt version differs from the prompt catalog"
+            "visual task planning prompt version differs from the prompt catalog"
         )
     bindings = _build_visual_bindings(
         settings,
@@ -756,15 +669,27 @@ def _build_joint_planning(
         model_store,
         project_root=project_root,
     )
-    return JointVisualPlanner(
-        qwen_client,
-        system_prompt=catalog["joint_plan"],
-        prompt_version=planner_settings.prompt_version,
-        catalog=evidence_catalog,
-        confidence_threshold=planner_settings.confidence_threshold,
-        max_rois=planner_settings.max_rois,
-        bindings=bindings,
+    # A category is advertised to the planner only when both protocol owners
+    # are executable. This conservative intersection prevents a VQA plan from
+    # silently falling back when its evidence service is uncalibrated.
+    # 仅当两个协议 owner 都可执行时才向规划器声明类别；保守交集避免 VQA
+    # 计划在证据服务未校准时静默回退。
+    executable_categories = (
+        evidence_catalog.composite_categories
+        if bindings.vqa_evidence is not None and bindings.grounding_evidence is not None
+        else ()
     )
+    planner = VisualTaskPlanner(
+        qwen_client,
+        system_prompt=catalog["visual_task_plan"],
+        prompt_version=planner_settings.task_prompt_version,
+        catalog=evidence_catalog,
+        executable_categories=executable_categories,
+        max_side=planner_settings.preview_max_side,
+        roi_size=planner_settings.roi_size,
+        large_image_policy=planner_settings.large_image_policy,
+    )
+    return planner, bindings
 
 
 def _build_visual_bindings(
@@ -776,9 +701,9 @@ def _build_visual_bindings(
     *,
     project_root: Path,
 ) -> VisualPlanBindings:
-    """Shared evidence bindings for both planning modes: the VQA object
+    """Shared evidence bindings for the canonical visual planner: the VQA object
     evidence executor and the grounding evidence executor, assembled from the
-    frozen settings policies. 两种规划模式共享的证据绑定：VQA object-evidence
+    frozen settings policies. 规范视觉规划器共享的证据绑定：VQA object-evidence
     执行器与 grounding 证据执行器，由冻结的 settings 策略组装。"""
 
     return VisualPlanBindings(
@@ -969,7 +894,6 @@ def _build_grounding_evidence_service(
             yolo_client=yolo_client,
             yolo_device=yolo_device,
             yolo_image_size=yolo_image_size,
-            halo_ratio=settings.visual_planning.planner.halo_ratio,
         )
     except ValueError as exc:
         raise RuntimeCompositionError(str(exc)) from exc

@@ -1,9 +1,7 @@
-"""Contract tests for the shared first-Qwen plan schema and the strict VQA
-evidence schema.
+"""Contract tests for the v3 visual plan and strict VQA evidence schemas.
 
-共享第一次 Qwen 计划 schema 与严格 VQA 证据 schema 的契约测试：strict
-fields、版本/类别/ROI 约束、required 联动、missing 语义、confidence 隔离、
-mask 不转框与 JSON 安全。
+v3 视觉计划与严格 VQA 证据 schema 契约测试：计划与物化视图保持独立，证据
+几何使用源像素坐标，mask 不转框且所有持久化字段 JSON-safe。
 """
 
 from __future__ import annotations
@@ -21,146 +19,75 @@ from agents.general_vqa.evidence.schema import (
     YoloDetectionRecord,
 )
 from agents.schema import (
-    FirstQwenVisualPlan,
-    ObjectEvidenceRequest,
-    RoiPlan,
-    RoiRegion,
+    MaterializedVisualView,
+    VisualTaskPlan,
 )
 
 
-def _region(roi_id: str = "roi-1", xyxy=(0.0, 0.0, 0.5, 0.5)) -> RoiRegion:
-    return RoiRegion(roi_id=roi_id, image_id="img1", xyxy=xyxy)
-
-
-def _plan(**overrides) -> FirstQwenVisualPlan:
+def _plan(**overrides) -> VisualTaskPlan:
     data = {
-        "version": "first-qwen-plan-v1",
-        "execution_family": "object_evidence_vqa",
-        "confidence": 0.9,
-        "roi_plan": RoiPlan(rois=[_region()]),
-        "evidence_request": ObjectEvidenceRequest(
-            composite_categories=["vehicle"]
-        ),
+        "version": "visual-task-plan-v3",
+        "task": "general_vqa",
+        "needs_visual_assistance": True,
+        "object_categories": ["vehicle"],
+        "region_request": {
+            "explicit": True,
+            "image_index": 0,
+            "focus_xy_norm": (0.5, 0.5),
+        },
+        "reason_codes": ["test"],
     }
     data.update(overrides)
-    return FirstQwenVisualPlan.model_validate(data)
+    return VisualTaskPlan.model_validate(data)
 
 
-# ── 共享计划 schema / shared plan schema ────────────────────────────────
-
-
-def test_plan_accepts_valid_object_evidence() -> None:
+def test_visual_task_plan_validates_assistance_linkage() -> None:
     plan = _plan()
-    assert plan.version == "first-qwen-plan-v1"
-    assert plan.execution_family == "object_evidence_vqa"
-    assert plan.roi_plan.rois[0].xyxy == (0.0, 0.0, 0.5, 0.5)
-    assert plan.evidence_request is not None
-    assert plan.evidence_request.composite_categories == ["vehicle"]
+    assert plan.version == "visual-task-plan-v3"
+    assert plan.task == "general_vqa"
+    assert plan.object_categories == ["vehicle"]
+    with pytest.raises(ValidationError, match="requires object_categories"):
+        _plan(needs_visual_assistance=True, object_categories=[])
+    with pytest.raises(ValidationError, match="require visual assistance"):
+        _plan(needs_visual_assistance=False, object_categories=["vehicle"])
 
 
-def test_plan_accepts_direct_vqa_without_evidence() -> None:
-    plan = _plan(
-        execution_family="direct_vqa",
-        evidence_request=None,
-        roi_plan=RoiPlan(rois=[]),
-    )
-    assert plan.execution_family == "direct_vqa"
-    assert plan.evidence_request is None
-    # Empty ROI plan means no spatial constraint; geometry maps to full image.
-    # 空 ROI 计划表示无空间约束；几何层映射为整图。
-    assert plan.roi_plan.rois == []
-
-
-def test_plan_accepts_full_image_roi() -> None:
-    plan = _plan(roi_plan=RoiPlan(rois=[_region("full", (0.0, 0.0, 1.0, 1.0))]))
-    assert plan.roi_plan.rois[0].xyxy == (0.0, 0.0, 1.0, 1.0)
-
-
-def test_plan_rejects_wrong_version() -> None:
-    with pytest.raises(ValidationError, match="version"):
-        _plan(version="second-qwen-plan-v2")
-
-
-def test_plan_rejects_extra_fields() -> None:
-    with pytest.raises(ValidationError, match="Extra inputs"):
-        _plan(backend="ultralytics", checkpoint="/models/det.pt", answer="42")
-
-
-def test_plan_rejects_family_evidence_mismatch() -> None:
-    with pytest.raises(ValidationError, match="requires an evidence_request"):
-        _plan(execution_family="object_evidence_vqa", evidence_request=None)
-    with pytest.raises(ValidationError, match="must not carry"):
-        _plan(
-            execution_family="direct_vqa",
-            evidence_request=ObjectEvidenceRequest(composite_categories=["vehicle"]),
-        )
-
-
-def test_plan_rejects_out_of_range_confidence() -> None:
+def test_visual_task_plan_rejects_unknown_or_path_like_fields() -> None:
     with pytest.raises(ValidationError):
-        _plan(confidence=1.5)
-    with pytest.raises(ValidationError):
-        _plan(confidence=-0.1)
-
-
-def test_plan_rejects_more_than_three_composite_categories() -> None:
-    with pytest.raises(ValidationError):
-        ObjectEvidenceRequest(
-            composite_categories=["a", "b", "c", "d"]
-        )
-
-
-def test_plan_rejects_empty_evidence_request() -> None:
-    with pytest.raises(ValidationError):
-        ObjectEvidenceRequest(composite_categories=[])
-
-
-def test_plan_rejects_path_like_category() -> None:
+        _plan(task="not-a-task")
     with pytest.raises(ValidationError, match="path-like"):
-        ObjectEvidenceRequest(composite_categories=["/home/user/vehicle"])
-
-
-def test_plan_accepts_more_than_three_rois() -> None:
-    """The count is not capped at the schema: 14B §6.2 lets the planner
-    collapse an over-limit plan to the unique full-image ROI instead of
-    rejecting it. 数量不在 schema 封顶：14B §6.2 让规划器把超限计划折叠为
-    唯一整图 ROI 而非拒绝。"""
-    rois = [_region(f"roi-{index}") for index in range(1, 4)]
-    rois.append(_region("roi-4"))
-    assert len(RoiPlan(rois=rois).rois) == 4
-
-
-def test_plan_accepts_degenerate_and_out_of_range_rois() -> None:
-    """Geometric validity is decided by the planner (14B §6.2 full-image
-    fallback), so the schema parses finite out-of-range or degenerate boxes.
-    几何合法性由规划器决定（14B §6.2 整图回退），因此 schema 接受有限的越界
-    或退化框。"""
-    assert _region("d", (0.2, 0.2, 0.2, 0.6)).xyxy == (0.2, 0.2, 0.2, 0.6)
-    assert _region("d", (0.2, 0.2, 0.6, 0.2)).xyxy == (0.2, 0.2, 0.6, 0.2)
-    assert _region("o", (0.0, 0.0, 1.1, 1.0)).xyxy == (0.0, 0.0, 1.1, 1.0)
-    assert _region("o", (-0.1, 0.0, 0.5, 0.5)).xyxy == (-0.1, 0.0, 0.5, 0.5)
-
-
-def test_plan_rejects_non_finite_roi_coordinates() -> None:
+        _plan(object_categories=["/models/vehicle"])
     with pytest.raises(ValidationError, match="finite"):
-        _region("n", (0.0, 0.0, float("nan"), 0.5))
-    with pytest.raises(ValidationError, match="finite"):
-        _region("n", (0.0, 0.0, float("inf"), 0.5))
-
-
-def test_plan_rejects_bad_roi_id_and_empty_image_id() -> None:
+        _plan(region_request={"explicit": True, "image_index": 0, "focus_xy_norm": (float("nan"), 0.5)})
     with pytest.raises(ValidationError):
-        _region("bad id")
+        _plan(version="visual-task-plan-v2")
+
+
+def test_visual_task_plan_v3_schema_has_no_confidence_and_forbids_extra_score() -> None:
+    schema = VisualTaskPlan.model_json_schema()
+    assert "confidence" not in schema["properties"]
+    assert "confidence" not in schema.get("required", [])
     with pytest.raises(ValidationError):
-        RoiRegion(roi_id="roi-1", image_id="", xyxy=(0.0, 0.0, 0.5, 0.5))
+        _plan(confidence=0.9)
 
 
-def test_plan_never_carries_backend_or_answer_fields() -> None:
-    plan = _plan()
-    dumped = plan.model_dump()
-    for forbidden in ("backend", "checkpoint", "device", "answer", "box_id", "mask"):
-        assert forbidden not in dumped
-    plan.model_dump_json()  # JSON-safe / JSON 安全
+def test_materialized_view_is_exact_source_pixel_geometry() -> None:
+    view = MaterializedVisualView(
+        image_id="img1",
+        view_mode="fixed_roi",
+        source_size=(2048, 1536),
+        crop_xyxy=(1024, 512, 2048, 1536),
+        crop_size=(1024, 1024),
+    )
+    assert view.model_dump(mode="json")["crop_xyxy"] == [1024, 512, 2048, 1536]
+    with pytest.raises(ValidationError, match="full_image"):
+        MaterializedVisualView(
+            image_id="img1",
+            view_mode="full_image",
+            source_size=(100, 80),
+            crop_xyxy=(1, 0, 100, 80),
+            crop_size=(99, 80),
+        )
 
 
 # ── VQA 证据 schema / VQA evidence schema ────────────────────────────────

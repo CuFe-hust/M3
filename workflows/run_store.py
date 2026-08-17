@@ -58,6 +58,7 @@ class RunStore:
         config_payload: Mapping[str, Any],
         model_ids: Mapping[str, str],
         prompt_paths: list[Path],
+        prompt_texts: Mapping[str, str] | None = None,
         run_id: str | None = None,
         dataset: str | None = None,
         split: str | None = None,
@@ -79,6 +80,8 @@ class RunStore:
         prompts_dir = run_dir / "prompts.snapshot"
         prompts_dir.mkdir(parents=True)
         prompt_hashes = _snapshot_prompts(prompt_paths, prompts_dir)
+        if prompt_texts:
+            prompt_hashes.update(_snapshot_prompt_texts(prompt_texts, prompts_dir))
         config_payload_plain = json.loads(json.dumps(config_payload, ensure_ascii=False))
         manifest = RunManifest(
             run_id=resolved_run_id,
@@ -124,6 +127,17 @@ class RunStore:
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ValueError("run request is invalid") from exc
         try:
+            # Runs created before doc-16 have no planner identity. They remain
+            # readable for model-free supplements, but inference reruns are
+            # rejected by DatasetRunner instead of silently changing semantics.
+            # doc-16 之前的 run 没有规划器身份；仍可无模型读取补判，但由
+            # DatasetRunner 拒绝重新推理，绝不静默改变语义。
+            if (
+                isinstance(raw, dict)
+                and "planning_mode" not in raw
+                and raw.get("command") != "count-image"
+            ):
+                raw = {**raw, "planning_mode": "legacy"}
             return RunRequest.model_validate(raw)
         except ValueError as exc:
             raise ValueError("run request is invalid") from exc
@@ -198,6 +212,41 @@ def _snapshot_prompts(prompt_paths: list[Path], destination: Path) -> dict[str, 
         shutil.copy2(prompt_path, temporary)
         temporary.replace(target)
         hashes[prompt_path.name] = _sha256_file(prompt_path)
+    return hashes
+
+
+def _snapshot_prompt_texts(
+    prompt_texts: Mapping[str, str], destination: Path
+) -> dict[str, str]:
+    """Snapshot generated prompt bodies with the same hash contract.
+    以相同哈希契约快照运行时生成的 Prompt 正文。
+
+    Capability-bound system text is assembled only after runtime composition,
+    so it cannot be represented by a source file path. It is nevertheless a
+    versioned prompt input and must be present in ``prompts.snapshot``.
+    运行时能力绑定的 system 正文只有在组合后才能由内存生成，不能由源文件路径
+    表示；但它仍是版本化 Prompt 输入，必须进入 ``prompts.snapshot``。
+    """
+
+    hashes: dict[str, str] = {}
+    for filename, text in prompt_texts.items():
+        if (
+            not isinstance(filename, str)
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", filename) is None
+            or "/" in filename
+            or "\\" in filename
+        ):
+            raise ValueError("generated prompt snapshot filename is unsafe")
+        if not isinstance(text, str):
+            raise ValueError("generated prompt snapshot text is invalid")
+        _reject_secrets(text, "generated prompt snapshot")
+        target = destination / filename
+        if target.exists():
+            raise ValueError("Duplicate Prompt filename")
+        temporary = destination / (target.name + ".tmp")
+        temporary.write_text(text, encoding="utf-8")
+        temporary.replace(target)
+        hashes[filename] = _sha256_file(target)
     return hashes
 
 

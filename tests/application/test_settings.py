@@ -268,7 +268,10 @@ def test_safe_snapshot_is_json_safe_and_secret_free(tmp_path: Path) -> None:
     snapshot = settings.safe_snapshot()
     serialized = json.dumps(snapshot)
     assert "sk-super-secret-value" not in serialized
-    assert "sk-" not in serialized
+    # The v3 planner identity legitimately contains the substring "task-";
+    # only the secret value itself is forbidden here.
+    # v3 规划器身份合法包含 "task-" 子串；这里只禁止实际 secret value。
+    assert "sk-super" not in serialized
     # The env var NAME is declarative metadata, never a secret value.
     # 环境变量名是声明性元数据，绝非密钥值。
     assert snapshot["models"]["deepseek"]["api_key_env"] == "DEEPSEEK_API_KEY"
@@ -276,7 +279,7 @@ def test_safe_snapshot_is_json_safe_and_secret_free(tmp_path: Path) -> None:
     assert isinstance(snapshot["runs"]["root"], str)
     assert "\\" not in snapshot["runs"]["root"]
     # repr never leaks secret values either. / repr 同样不泄漏密钥值。
-    assert "sk-" not in repr(settings)
+    assert "sk-super" not in repr(settings)
 
 
 def test_to_config_payload_matches_safe_snapshot() -> None:
@@ -369,30 +372,32 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
 # ── visual planning group (C7, 14A2) / 视觉规划配置组 ─────────────────────
 
 
-def test_visual_planning_defaults_to_frozen_disabled_state() -> None:
-    """The whole group must default to the frozen disabled state: flag off,
-    planner sane, no detector/segmenter policies, strict failure policy.
-    整个配置组必须默认为冻结禁用状态：flag off、planner 合理默认、无
-    detector/segmenter 策略、严格失败策略。"""
+def test_visual_planning_defaults_to_v3_planner_state() -> None:
+    """Fresh execution defaults to the canonical v3 planner configuration.
+    新鲜执行默认使用规范 v3 规划器配置。"""
     settings = AppSettings()
-    assert settings.visual_planning.enabled is False
-    assert settings.visual_planning.planner.prompt_version == "v1"
-    # The declared version must bind the same evidence catalog asset
-    # (agents/evidence_catalog.json); the composition root verifies this.
-    # 声明版本必须绑定同一证据目录资产（agents/evidence_catalog.json）；
-    # 组合根校验该绑定。
+    planner = settings.visual_planning.planner
+    assert not hasattr(settings.visual_planning, "enabled")
+    assert planner.planning_mode == "visual-task-plan-v3"
+    assert planner.task_prompt_version == "v3"
     assert (
-        settings.visual_planning.planner.catalog_version
+        planner.catalog_version
         == "first-qwen-evidence-catalog-v2"
     )
-    assert settings.visual_planning.planner.max_rois == 3
-    assert settings.visual_planning.planner.halo_ratio == pytest.approx(0.10)
-    assert settings.visual_planning.planner.confidence_threshold == pytest.approx(0.70)
-    assert settings.visual_planning.planner.failure.on_low_confidence == "fail"
-    assert settings.visual_planning.planner.failure.on_planner_error == "fail"
+    assert not hasattr(planner, "confidence_threshold")
+    assert planner.preview_max_side == 1080
+    assert planner.roi_size == 1024
     assert settings.visual_planning.detectors == {}
     assert settings.visual_planning.segmenters == {}
-    assert settings.visual_planning.roi_partial_failure == "continue"
+
+
+def test_visual_planner_rejects_removed_confidence_threshold() -> None:
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "planner": {"confidence_threshold": 0.7},
+            }
+        )
 
 
 def test_visual_planning_detector_policy_accepts_calibrated_values() -> None:
@@ -469,16 +474,14 @@ def test_visual_planning_unknown_fields_rejected() -> None:
     with pytest.raises(ValueError):
         AppSettings(visual_planning={"unknown_field": 1})
     with pytest.raises(ValueError):
-        AppSettings(
-            visual_planning={"roi_partial_failure": "abort"}
-        )
+        AppSettings(visual_planning={"enabled": True})
+    with pytest.raises(ValueError):
+        AppSettings(visual_planning={"roi_partial_failure": "abort"})
 
 
-def test_visual_planning_enabled_does_not_imply_calibration() -> None:
-    """Even with the feature flag on, empty detector/segmenter policies keep
-    every capability disabled. 即使特性 flag 开启，空的 detector/segmenter
-    策略仍保持全部能力禁用。"""
-    settings = AppSettings(visual_planning={"enabled": True})
-    assert settings.visual_planning.enabled is True
+def test_visual_planning_empty_evidence_policies_stay_closed() -> None:
+    """Empty evidence policies keep optional capabilities closed.
+    空的证据策略保持可选能力关闭。"""
+    settings = AppSettings(visual_planning={})
     assert settings.visual_planning.detectors == {}
     assert settings.visual_planning.segmenters == {}

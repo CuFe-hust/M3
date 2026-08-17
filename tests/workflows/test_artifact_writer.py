@@ -25,8 +25,7 @@ from workflows.artifact_writer import (
     ROUTING_DECISION_FILENAME,
     SAMPLE_FILENAME,
     STATUS_FILENAME,
-    VISUAL_PLAN_FILENAME,
-    JOINT_VISUAL_PLAN_FILENAME,
+    VISUAL_TASK_PLAN_FILENAME,
     ArtifactWriter,
     atomic_append_jsonl,
     atomic_write_json,
@@ -98,48 +97,37 @@ def test_write_routing(tmp_path: Path) -> None:
     assert payload["primary_agent"] == "change_agent"
 
 
-def test_write_visual_plan_persists_validated_schema(tmp_path: Path) -> None:
-    from agents.schema import FirstQwenVisualPlan, ObjectEvidenceRequest, RoiPlan, RoiRegion
+def test_write_visual_task_plan_persists_validated_v3_schema(tmp_path: Path) -> None:
+    from agents.schema import MaterializedVisualView, VisualTaskPlan
 
-    # Only the validated schema is stored — the frozen basename is a pure
-    # basename and the payload is exactly the model_dump of the plan.
-    # 只存已校验 schema——冻结 basename 是纯 basename，载荷就是 plan 的
-    # model_dump，绝不存原始模型正文。
-    plan = FirstQwenVisualPlan(
-        version="first-qwen-plan-v1",
-        execution_family="object_evidence_vqa",
-        confidence=0.92,
-        roi_plan=RoiPlan(
-            rois=[
-                RoiRegion(
-                    roi_id="r1",
-                    image_id="image",
-                    xyxy=(0.1, 0.2, 0.5, 0.6),
-                )
-            ]
-        ),
-        evidence_request=ObjectEvidenceRequest(
-            composite_categories=["vehicle", "building"]
-        ),
+    plan = VisualTaskPlan(
+        version="visual-task-plan-v3",
+        task="general_vqa",
+        needs_visual_assistance=True,
+        object_categories=["vehicle"],
+        region_request={
+            "explicit": True,
+            "image_index": 0,
+            "focus_xy_norm": (0.5, 0.5),
+        },
+        reason_codes=["test"],
+    )
+    view = MaterializedVisualView(
+        image_id="image",
+        view_mode="full_image",
+        source_size=(100, 80),
+        crop_xyxy=(0, 0, 100, 80),
+        crop_size=(100, 80),
     )
     writer = ArtifactWriter()
-    written = writer.write_visual_plan(tmp_path, plan)
-    assert written == tmp_path / VISUAL_PLAN_FILENAME
-    stored = json.loads((tmp_path / VISUAL_PLAN_FILENAME).read_text(encoding="utf-8"))
-    assert stored == plan.model_dump(mode="json")
-    assert stored["execution_family"] == "object_evidence_vqa"
-    assert stored["roi_plan"]["rois"][0]["roi_id"] == "r1"
-    assert stored["evidence_request"]["composite_categories"] == ["vehicle", "building"]
-    # Never any raw model body / extra keys.
-    # 绝不包含原始模型正文或多余键。
-    assert set(stored) == {
-        "version",
-        "execution_family",
-        "confidence",
-        "roi_plan",
-        "evidence_request",
-        "reason_codes",
-    }
+    written = writer.write_visual_task_plan(tmp_path, plan, materialized_views=(view,))
+    assert written == tmp_path / VISUAL_TASK_PLAN_FILENAME
+    stored = json.loads((tmp_path / VISUAL_TASK_PLAN_FILENAME).read_text(encoding="utf-8"))
+    assert stored["version"] == "visual-task-plan-v3"
+    assert "confidence" not in stored
+    assert stored["task"] == "general_vqa"
+    assert stored["materialized_views"][0]["crop_xyxy"] == [0, 0, 100, 80]
+    assert "answer" not in stored
 
 
 def test_write_execution_primary_and_additional(tmp_path: Path) -> None:
@@ -389,38 +377,3 @@ def test_lexical_alias_paths_share_lock_and_lose_no_lines(tmp_path: Path) -> Non
     rows = [json_module.loads(line) for line in lines]
     assert {row["i"] for row in rows} == set(range(100))
     assert list(root.rglob("*.tmp")) == []
-
-
-def test_write_joint_visual_plan_persists_validated_schema(tmp_path: Path) -> None:
-    from agents.schema import JointQwenVisualPlan
-
-    # The joint artifact stores the validated joint schema under the frozen
-    # basename: task plus visual-plan substructure, never a raw model body.
-    # 联合产物在冻结 basename 下保存已校验联合 schema：task 加视觉计划子结构，
-    # 绝不存原始模型正文。
-    plan = JointQwenVisualPlan(
-        version="joint-qwen-plan-v1",
-        task="general_vqa",
-        visual_plan={
-            "version": "first-qwen-plan-v1",
-            "execution_family": "direct_vqa",
-            "confidence": 0.9,
-            "roi_plan": {"rois": []},
-        },
-    )
-    writer = ArtifactWriter()
-    written = writer.write_joint_visual_plan(tmp_path, plan)
-    assert written == tmp_path / JOINT_VISUAL_PLAN_FILENAME
-    stored = json.loads(
-        (tmp_path / JOINT_VISUAL_PLAN_FILENAME).read_text(encoding="utf-8")
-    )
-    assert stored == plan.model_dump(mode="json")
-    assert stored["version"] == "joint-qwen-plan-v1"
-    assert stored["task"] == "general_vqa"
-    assert stored["visual_plan"]["execution_family"] == "direct_vqa"
-    # Never any raw model body / extra keys.
-    # 绝不包含原始模型正文或多余键。
-    assert set(stored) == {"version", "task", "visual_plan"}
-    # The joint basename never collides with the legacy plan basename.
-    # 联合 basename 与旧计划 basename 绝不冲突。
-    assert JOINT_VISUAL_PLAN_FILENAME != VISUAL_PLAN_FILENAME

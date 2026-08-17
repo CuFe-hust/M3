@@ -21,24 +21,64 @@
 
 ```text
 repository: CuFe-hust/M3
-branch: new_structure
+architecture baseline: repository mainline (`main`)
 evaluation/reporting integration baseline:
   E1-E5 through 396a5900411930e16c75ff9fe18af01080c33428
 legacy behavior reference:
   try_yolo@ec962eb87c3ad0b8c1502efcbd08db0daec48868
 ```
 
+长期架构以仓库主线 `main` 为事实来源。`new_structure` 是迁移期的历史名称，不是
+当前公共分支，也不是运行时依赖。
+
 当前 `architecture/implementation_status.json` 中生产 Python 文件已全部实现，`pending_files` 为空。
 
-E6 最终离线质量门记录：
+Doc 17 离线质量门记录：
 
 ```text
-Full offline suite: 1648 passed
+core v2/runtime gate: 1228 passed, 39 deselected (HTTP socket cases)
+architecture implementation/import/init/package/no-legacy gate: 33 passed
+full offline suite excluding missing safetensors export collection: 1953 passed, 33 failed, 1 skipped
 compileall: clean
 git diff --check: clean
 ```
 
-新架构已完成核心离线功能迁移与硬化。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
+剩余失败来自 HTTP socket/超大请求传输、既有 allowlist 漂移、缺失可选依赖（如
+`safetensors`/`peft`/`transformers`）及未参与本任务的模型测试；不能表述为全仓
+pytest 全绿。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按
+具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
+
+### Doc 18 当前执行事实
+
+Doc 18 离线验证（2026-08-17）：planner/runtime/resume/reporting 目标回归为
+`446 passed, 8 failed`；8 个失败均为当前沙箱禁止 HTTP harness 绑定
+`127.0.0.1`。detector/counting/evidence 代表性回归为 `176 passed`；
+`python3 -m compileall` 与 `git diff --check` 通过。架构门为 `41 passed, 1 failed`，
+唯一失败是 HEAD 已存在但不在冻结白名单中的 8 个 scripts/tests Python 文件。
+完整 pytest 受缺失 `safetensors` 阻断；排除该独立 checkpoint 导出收集后为
+`1960 passed, 33 failed, 1 skipped`，剩余失败来自上述沙箱 HTTP、既有 allowlist
+漂移及未安装的 `peft`/`transformers`/`safetensors` 等可选依赖。
+
+新鲜的 manual `ask` 与 dataset（explicit/default/auto）入口统一使用
+`workflows.visual_planner.VisualTaskPlanner`。当前配置不含
+`visual_planning.enabled` 字段；composition root 只组装 v3 planner。旧 Resolver、旧 gate、联合
+planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 reporting/迁移审计。
+
+第一次规划调用的 user content 严格为按源顺序排列的内存图像 block，随后是未经
+包装的原始 question 文本。输出 schema 是 `VisualTaskPlan`，版本为
+`visual-task-plan-v3`，只表达 task、视觉辅助类别和显式焦点，不携带答案、GT、
+路径、backend、checkpoint、device、secret 或 planner confidence。v2/legacy 只用于
+读取历史 run request；历史非终态需要重新推理时稳定拒绝。
+
+图像先做 EXIF transpose/RGB 规范化；规划预览最长边为 1080 且不放大。显式区域
+只在目标图像宽高都严格大于 1024 时生成一个固定 1024×1024 ROI，按焦点居中并
+clamp；否则使用整图。`MaterializedVisualView` 记录 source/crop 几何，最终
+Agent 与 evidence executor 消费同一视图。
+
+样本产物使用 `visual_task_plan.json`，只保存已校验计划与安全几何。dataset
+`run_request.json` 保存 `planning_mode`、preview/ROI 参数和 large-image policy；
+v3 succeeded resume 不调用模型，v2/legacy 成功样本同样只允许无模型补评测，v2/legacy
+需要重新推理时返回 `LEGACY_PLANNING_RESUME_UNSUPPORTED`。
 
 ---
 
@@ -119,7 +159,7 @@ ALLOWLIST_CHANGE_POLICY.md
               v                                   |
       +---------------+                           |
       | workflows/    |<--------------------------+
-      | resolver/run  |
+      | planner/run   |
       +-------+-------+
               |
               | known task
@@ -227,7 +267,7 @@ M3/
 │   ├── events.py
 │   ├── run_store.py
 │   ├── artifact_writer.py
-│   ├── task_resolver.py
+│   ├── visual_planner.py
 │   ├── judge_service.py
 │   ├── sample_runner.py
 │   └── dataset_runner.py
@@ -458,7 +498,8 @@ change_caption
 
 其他 UnifiedSample task 要求非空问题。
 
-注意：这和 pre-sample TaskResolver 的空问题规则不是同一个层次。
+空问题的 `caption` / `change_caption` 规则现在由 v3 system prompt 约束，并在
+`materialize_sample(...)` 边界校验图像角色与数量。
 
 ## 7.3 Normalization 一致性
 
@@ -494,8 +535,7 @@ explicit_task: TaskName | None
 
 ```text
 SampleDraft
-  -> TaskResolutionRequest
-  -> TaskResolver
+  -> VisualTaskPlanner
   -> materialize_sample(draft, task)
   -> UnifiedSample
 ```
@@ -848,28 +888,22 @@ agents
 visual_planning
 ```
 
-### `VisualPlanningSettings`（`agents.visual_planning`）
+### `VisualPlanningSettings`（`application.visual_planning`）
 
-First-Qwen 视觉工作流配置组（C7，14A2），默认整体禁用：
+v3 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag：
 
 ```text
-enabled = False
-prompt_version = "v1"
+planning_mode = "visual-task-plan-v3"
+task_prompt_version = "v3"
 catalog_version = "first-qwen-evidence-catalog-v2"
-max_rois = 3
-halo_ratio = 0.10
-confidence_threshold = 0.70
-failure:
-    on_low_confidence = "fail"
-    on_planner_error  = "fail"
-detectors:   每类别策略；None = 未校准 = 能力关闭
-segmenters:  同上；启用必须携带已验证 class map
-roi_partial_failure = "continue"
+preview_max_side = 1080
+roi_size = 1024
+large_image_policy = "both-dimensions-strictly-greater-than-1024"
+detectors: 每类别策略；None = 未校准 = 能力关闭
+segmenters: 同上；启用必须携带已验证 class map
 ```
 
-- `enabled=False` 时整个门禁不参与运行，调用次数/结果/产物与启用前逐字节一致；
 - 未校准能力（None）视为关闭，绝不带默认值参与推理；
-- `failure` 只支持 `"fail"`，任何放宽需新批准；
 - catalog/prompt 版本绑定规划 prompt 与封闭证据目录为单一版本对，进入 request hash。
 
 主要分组：
@@ -969,10 +1003,9 @@ prompts.snapshot/
 
 涉及模型输出行为的 Prompt 修改必须被视为行为变化，而不只是文案修改。
 
-联合模式（doc 15）prompt binding `"joint_plan"` → 版本化
-`joint_qwen_task_visual_plan_v1.md`（v1），与 `"visual_plan"` gate binding
-并存；启用联合模式时只有联合 binding 被消费，两条 prompt 路径同样不同时
-接线。
+当前 active planner binding 为 `"visual_task_plan"` → 版本化
+`visual_task_plan_v3.md`（v3）。旧 resolver/gate/joint prompt 不在 active
+catalog 中；历史 prompt 文件不参与新鲜规划。
 
 ---
 
@@ -1004,13 +1037,14 @@ call_budget
 data_root
 judge_client
 request_context
-visual_plan          # Optional; 仅当 VisualPlanningGate 启用时注入
-visual_bindings      # Optional; 仅当 VisualPlanningGate 启用时注入
+visual_task_plan     # v3 VisualTaskPlan；fresh Agent execution 必须有 materialized views
+visual_views         # tuple[MaterializedVisualView, ...]
+visual_bindings      # 轻量 evidence service bindings
 ```
 
-`visual_plan` 是已验证的 `FirstQwenVisualPlan`（绝不变更 `sample.task`，
-只选择内部完成路径）；`visual_bindings` 是完成路径与证据服务的绑定。
-两者默认均为 `None`，此时 Agent 走既有 legacy 路径，产物逐字节一致。
+fresh path 中，`visual_task_plan` 与 `visual_views` 由规划器物化后注入；direct 与
+evidence 只消费同一组视图。历史 artifact 读取不进入 `AgentContext`，也不能作为
+新鲜规划 fallback。
 
 它是单样本轻量上下文。
 
@@ -1064,16 +1098,15 @@ spatial_relation
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
 
-First-Qwen 视觉工作流（C7，14A2，默认关闭）：当
-`AgentContext.visual_plan.execution_family == "object_evidence_vqa"` 时，
-GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
+v3 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 且 task 为
+`general_vqa` 时，GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
 `VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜），按 14B §10 契约
 组装唯一一次 final Qwen 调用：clean ROI 图在前、逐 ROI 掩膜 overlay 按
 `roi_id` 序在后，文本证据含 question、answer constraints、图像尺寸、
 ROI 裁切几何、YOLO 文本记录（ROI 局部 `0..999` 整数 `xyxy` JSON）与 SegFormer 颜色叶子
 图例；绝不携带 confidence、绝不使用画框图。`vqa_evidence.json` 作为
 additional result 持久化 bundle（严格 JSON-safe，无掩膜数组/无 secret）。
-`execution_family == "direct_vqa"` 或无 plan 时走既有 legacy 路径。模型侧框统一使用
+`needs_visual_assistance == false` 或未注入计划时走 direct 路径。模型侧框统一使用
 `0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
 禁止组合（如 scene_classification + object evidence）以
 `object_evidence_plan_forbidden_for_task` 稳定失败；兼容矩阵见 14A2 §4.4。
@@ -1096,13 +1129,12 @@ grounding
 
 completed 结果需要合法定位证据。
 
-First-Qwen 视觉工作流（C6/C7，14A2，默认关闭）：当
-`AgentContext.visual_plan.execution_family == "object_evidence_vqa"` 时，
+v3 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
 GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
 唯一一次 final Grounding Qwen 调用（evidence 管线在 Agent 外执行），
 返回确定性整图框 `WholeImageBox`。`AgentResult.answer` 为
 `, `.join(labels) 文本；final Qwen 绝不产出自由文本坐标（14C §8）。
-`direct_vqa` 或无 plan 时走既有 legacy 路径。服务缺失/失败以
+`needs_visual_assistance == false` 或无计划时走 direct 路径。服务缺失/失败以
 `grounding_evidence_failed:<CODE>` 稳定失败。最终 Grounding Qwen 接收和输出的
 ROI 局部框统一为 `0..999` 整数 `xyxy` JSON，确定性后处理再转换为整图坐标。
 
@@ -1210,9 +1242,11 @@ guess general_vqa
 
 ---
 
-# 23. TaskResolver
+# 23. Historical TaskResolver（只读迁移参考，非当前实现）
 
-`TaskResolver` 是 workflow 服务，不是业务 Agent。
+`TaskResolver` 仅是历史 workflow 服务；当前仓库不再提供该实现或调用入口。
+doc 17 已用 `VisualTaskPlanner` 统一替代其模型调用；本节只解释旧 run 与迁移
+fixture 的行为，不能据此新增 active resolver 路径。
 
 它回答：
 
@@ -1284,17 +1318,16 @@ reason_codes
 
 模型解析需要完整 model cache identity 和 request hash。
 
-联合模式（doc 15，`visual_planning.enabled=True`）下 dataset 与 manual ask
-不走本解析路径：单次联合 Qwen 调用同时产出 task 与视觉计划（见 §36.4 与
-§79.9），模型选定 task 对 routing / materialization / execution 权威，源
-task 只做审计。低置信度候选 fallback 仍是 SampleRunner 的职责，Resolved
-候选不执行 Agent。
+doc 16 的 fresh dataset 与 manual ask 不走本历史解析路径：单次
+`VisualTaskPlanner` 调用同时产出 task 与视觉辅助意图，模型选定 task 对
+routing/materialization/execution 权威，源 task 只做审计。历史 v2 计划曾将低置信度
+作为稳定失败；当前 v3 不输出或评估 planner confidence，也不回退到另一个规划模型。
 
 ---
 
-# 24. Low-confidence candidate fallback
+# 24. Historical low-confidence candidate fallback
 
-当模型 task resolution 低于阈值：
+旧 TaskResolver 模型 task resolution 低于阈值时：
 
 - task 本身保持第一候选；
 - 最多 3 个候选；
@@ -1302,7 +1335,9 @@ task 只做审计。低置信度候选 fallback 仍是 SampleRunner 的职责，
 - Resolver 只返回结构化候选；
 - 真正执行由 SampleRunner 完成。
 
-候选 fallback 不等于“多 Agent 全跑”。
+该节只解释旧 run 的候选审计；doc 16 历史 v2 `VisualTaskPlanner` 的低置信度曾直接
+稳定失败，当前 v3 不再输出该分数，也不启动旧候选路径。候选 fallback 不等于“多
+Agent 全跑”。
 
 SampleRunner 会按 AgentName 稳定去重，避免多个 candidate task 实际映射同一 Agent 时重复执行。
 
@@ -1568,7 +1603,9 @@ lazy SegFormer clients by logical model id
 Counting backend registry
 AgentRegistry
 TaskRouter
-TaskResolver
+VisualTaskPlanner
+VisualTaskPlan / MaterializedVisualView
+VisualPlanBindings
 DeepSeekJudgeClient (optional)
 JudgeService
 ArtifactWriter
@@ -1630,9 +1667,8 @@ reserve_qwen()
 reserve_deepseek()
 ```
 
-TaskResolver 如果真的调用模型，会消费 Qwen budget。
-
-显式 task 或 deterministic rule 不消费 resolver 模型调用。
+每条 fresh manual/dataset 样本的 VisualTaskPlanner 调用消费一次 Qwen budget；规划后
+的 Agent/final-Qwen 与可选 Judge 继续共享同一样本预算语义。显式 task 也不跳过规划。
 
 SampleRunner 的多个 attempt 与逐样本 judge 共享样本预算语义，不能让 fallback 无限放大模型调用数。
 
@@ -1793,7 +1829,8 @@ auto_task = False
 
 运行 adapter.supported_tasks。
 
-不调用 TaskResolver。
+每条 fresh sample 仍由统一 VisualTaskPlanner 规划一次；adapter default 本身不
+改变 task 集合，也不把 task 选择交给 Router。
 
 ### Explicit
 
@@ -1809,7 +1846,7 @@ tasks = ()
 auto_task = True
 ```
 
-走 SampleDraft → TaskResolver。
+走 SampleDraft → VisualTaskPlanner → materialize_sample → UnifiedSample。
 
 ---
 
@@ -1854,7 +1891,7 @@ unknown
 
 ### Resolved task
 
-TaskResolver / canonical sample 决定的任务。
+VisualTaskPlanner / canonical sample 决定的任务。
 
 保存在：
 
@@ -1904,8 +1941,9 @@ auto
 ```text
 persist sample
 persist running status
-resolve/use task
-optional VisualPlanningGate        # default off
+visual-only planning (one call)
+materialize/rebuild task
+deterministic TaskRouter
 build routing/attempt plan
 run Agent
 persist result
@@ -1916,32 +1954,18 @@ persist final status
 append execution index
 ```
 
-`VisualPlanningGate`（C7，14A2，默认关闭）只对 PLANNING_TASKS
-（general_vqa / scene_classification / multiple_choice_vqa /
-spatial_relation / grounding）生效：一次 VisualPlanner Qwen 调用产出
-plan → `visual_plan.json` 原子持久化 → 与证据服务绑定注入 AgentContext；
-planner 与 Agent 共享同一样本预算（fallback 不创建新 budget）。
-`VisualPlanError` 严格失败为
-`state=failed, error_code="VISUAL_PLAN_FAILED:<CODE>",
-error_message="VisualPlanError"`，不重试、不 legacy 兜底、不变更
-`sample.task`。门禁关闭或非规划任务时零调用、零产物。
+所有 fresh 样本都由 `VisualTaskPlanner` 先消费一次共享 Qwen budget，产出
+`visual-task-plan-v3`，再由纯转换生成 routing decision。planner 失败稳定写入
+`state=failed`，不重试、不 legacy 回退；模型 task 在物化后成为执行 task。
 
-联合模式（doc 15，`visual_planning.enabled=True` 时接线，默认关闭）下
-`run_one` 接收 `joint_plan: JointQwenVisualPlan` 代替独立 resolution：
-联合计划经纯确定性 `joint_plan_to_resolution` 派生 resolution
-（`source="model"`、单一候选、reason codes 透传），并在
-`joint_visual_plan.json` 原子持久化已验证联合 schema。`joint_plan` 与
-`resolution` 互斥、被执行样本必须已携带模型选定 task，违反即失败而非猜测；
-两种模式下 `visual_plan` 与证据绑定都注入 AgentContext（联合模式下
-`joint_bindings` 来自 composition root），gate 与联合规划器绝不同时接线。
-trace 增加 `joint_plan` 布尔审计字段，记录 task 来自单次联合调用而非独立
-文本解析器。
+`visual_task_plan.json` 保存已校验计划与 `MaterializedVisualView` 几何；
+direct、General VQA evidence 与 Grounding evidence 都消费同一视图。历史
+`visual_plan.json` / `joint_visual_plan.json` 只由 reporting 只读展示。
 
 职责：
 
 - 单样本；
-- attempt plan；
-- task candidate fallback；
+- routing attempt plan；
 - routing fallback；
 - partial fallback policy；
 - 调用预算；
@@ -2011,24 +2035,21 @@ fail-fast 后：
 - 已选择样本最终仍需要有终态记录；
 - summary 计数闭合。
 
-## 36.4 联合模式（doc 15）
+## 36.4 v3 visual-only planning
 
-`visual_planning.enabled=True` 时，DatasetRunner 在 resume 检查之后、任何
-执行之前，对每条样本先做一次联合 Qwen 调用（缩略图 + 文本 → task + 视觉
-计划，见 §79.9），再以模型选定 task 物化/路由/执行。三条入口统一接线：
+DatasetRunner 在 resume 检查之后、任何执行之前，对每条 fresh 样本先做一次
+视觉规划 Qwen 调用（预览图 + 原始文本 → v3 task plan），再以模型选定 task
+物化/路由/执行。三条入口统一接线：
 
 ```text
-tasks=(...) 显式任务    -> _run_sample_joint：重建成选定 task 后执行
+tasks=(...) 显式任务    -> _run_sample_visual：重建成选定 task 后执行
 tasks=None   默认任务    -> 同显式任务（重建成选定 task 后执行）
-auto_task=True + tasks=() -> _run_draft_joint：SampleDraft 直接走 planner
+auto_task=True + tasks=() -> _run_draft_visual：SampleDraft 直接走 planner
 ```
 
-TaskResolver 在联合模式下被旁路（§23.1）；重建成选定 task 失败或所选 task
-与样本图像数不兼容（如单图 change_caption）时稳定失败
-`INCOMPATIBLE_JOINT_TASK`，draft 物化失败（如
-`CHANGE_TASK_NEEDS_TWO_IMAGES`）同样 fail-closed。planner 失败（
-`JOINT_PLAN_FAILED:<CODE>`）与物化失败都以 `task="unknown"` 记录终态。
-联合调用与后续 Agent 共享同一样本 `CallBudget`（`max_qwen_calls` 必填）；
+旧 resolver/gate/joint planner 不再参与 fresh 路径；重建成选定 task 失败或所选
+task 与样本图像数不兼容时稳定失败。规划调用与后续 Agent 共享同一样本
+`CallBudget`；
 resume 时 succeeded 样本零模型调用，只补缺失/损坏的确定性评测产物
 （§36.5 补评测）。summary 计数闭合规则不变。
 
@@ -2056,14 +2077,14 @@ agent_result.json
 counting_result.json
 counting_attempts.json       # counting only; ordered backend audit
 agent_trace.json
-visual_plan.json             # First-Qwen; validated schema only, never raw body
+visual_task_plan.json        # current versioned plan + materialized view geometry
 predictions.jsonl
 dataset_summary.json
 dataset_probe.json
 ```
 
-`visual_plan.json` 只存已验证 `FirstQwenVisualPlan` schema（原子写入），
-绝不存原始模型正文。对象证据路径的证据 bundle 作为 Agent additional
+`visual_task_plan.json` 只存已验证 `VisualTaskPlan` 与
+`MaterializedVisualView` 几何（原子写入），绝不存原始模型正文。对象证据路径的证据 bundle 作为 Agent additional
 result 持久化（`vqa_evidence.json` / grounding candidate JSON），严格
 JSON-safe；clean ROI 图像与 SegFormer overlay 目前仅内存传输，持久化
 格式/质量参数未批准（14A2 §5.1 语义占位）。ROI 图像文件、目录结构等
@@ -2107,13 +2128,13 @@ outputs/runs/<run_id>/
                 ├── agent_result.json
                 │   or counting_result.json
                 ├── counting_attempts.json    # new counting runs only
-                ├── visual_plan.json          # First-Qwen gate on (default off)
+                ├── visual_task_plan.json     # current versioned plan + exact view geometry
                 ├── <task>_evaluation.json
                 ├── agent_trace.json
                 └── optional model/judge artifacts
 ```
 
-First-Qwen 证据路径（门禁开启时）可能另存 additional result：
+当前 v3 证据路径（规划请求视觉辅助时）可能另存 additional result：
 
 ```text
 vqa_evidence.json     # object_evidence_vqa bundle (JSON-safe)
@@ -2221,11 +2242,10 @@ resume 是持久化契约的重要组成。
 
 如果缺确定性评测或允许补 Judge，可按共享逻辑补充。
 
-First-Qwen 推理期产物（C8，14A2 §5.3）：`visual_plan.json`、证据
-JSON、ROI 图像属于推理期产物，绝不进入补判范围——succeeded 样本保持
-原样（不重跑、不修复），即使损坏或缺失也只可能通过后续 explicit
-rerun 契约处理。resume 判断 metric family 只用 `status.task`（实际执行
-任务），持久化 plan 的 `execution_family` 绝不覆盖指标族。
+推理期产物（`visual_task_plan.json`、证据 JSON、ROI 视图记录）属于推理期
+产物，绝不进入补判范围——succeeded 样本保持原样（不重跑、不修复），即使
+损坏或缺失也只可能通过后续 explicit rerun 契约处理。resume 判断 metric family
+只用 `status.task`（实际执行任务），计划字段绝不覆盖指标族。
 
 ### Partial / Failed / Running / Pending
 
@@ -2640,7 +2660,7 @@ predictions.jsonl
 
 - 调 Qwen；
 - 调 Agent；
-- 调 TaskResolver；
+- 重新调用 VisualTaskPlanner；
 - 修改状态；
 - 重新跑 deterministic evaluation；
 - 自动纠正模型答案。
@@ -2687,8 +2707,9 @@ sample 目录内已有的 request/raw/parsed/validation 产物，raw response �
 8000 字符，且不暴露 artifact_dir、绝对路径、Base64 或 credential。
 `execution_path` 是从已持久化 trace、任务与模型调用投影出的顶层模块交接链，
 仅用于 HTML 审计，不重新推理。`structured_artifacts` 只读取允许列表中的
-`vqa_evidence.json`、`grounding_evidence.json`、`visual_plan.json` 与
-`joint_visual_plan.json`，用于展示已落盘的结构化子模型状态。
+`vqa_evidence.json`、`grounding_evidence.json` 与 `visual_task_plan.json`，用于
+展示已落盘的结构化 v2/v3 状态；历史 `visual_plan.json` /
+`joint_visual_plan.json` 仅按只读兼容规则展示。
 
 ## `TaskSummary`
 
@@ -2982,8 +3003,9 @@ POST /ask
 
 `--task auto` 时：
 
-- 空问题走 deterministic rule；
-- 有问题可以进入 TaskResolver；
+- 空问题规则由 v3 VisualTaskPlanner 的冻结 system prompt 处理；
+- 显式 task 也先经过同一个 VisualTaskPlanner，requested task 只作审计；
+- 规划 task 后才物化 UnifiedSample；
 - 一次手动请求只执行一个主业务路径；
 - 不自动做完整 DatasetRunner Judge/Report workflow。
 
@@ -3370,11 +3392,13 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 
 当前工作流 JSONL 并发安全承诺局限于同一 Python 进程。
 
-### 79.4 First-Qwen visual workflow is disabled; runtime policy remains uncalibrated
+### 79.4 Doc 16 visual-only planner; runtime evidence remains fail-closed
 
-`visual_planning.enabled` 默认 `False`：门禁不参与运行，调用次数、结果、
-trace、产物与启用前逐字节一致。`first-qwen-evidence-catalog-v2` 已根据当前
-DOTA-v2 YOLO 与经验证的 iSAID SegFormer class map 声明并启用以下类别映射：
+`VisualTaskPlanner` 对所有 fresh manual/dataset 入口始终启用；旧的
+当前配置不再提供 `visual_planning.enabled` 开关；所有 fresh 入口都先经过 v3
+规划器。
+`first-qwen-evidence-catalog-v2` 已根据当前 DOTA-v2 YOLO 与经验证的 iSAID
+SegFormer class map 声明以下类别映射：
 
 ```text
 vehicle
@@ -3389,23 +3413,13 @@ aviation_infrastructure
 其中机场、停机坪、集装箱起重机只有 YOLO 映射；其余叶子类别同时具有 YOLO
 与 iSAID SegFormer 映射。OEM SegFormer 仍因 class map 未验证而禁用。类别映射
 已验证不等于运行策略已校准：detector threshold/NMS/max detections 与视觉证据
-SegFormer 的运行绑定仍默认关闭（None），`vqa_evidence.json`、ROI overlay 等为
-语义占位，持久化格式/质量参数未批准（14A2 §5.1）。组合根装配已落地（14A3 C9）：
-`application/bootstrap.py` 按版本绑定检查组装 `VisualPlanningGate` 与
-`VisualPlanBindings`；VQA 证据服务仅在完整校准策略 + 启用检测器时组装，
-grounding 证据 seam 以显式全 None 策略运行；启用 segmenter 而无冻结模型
-绑定、部分/多条校准、无启用检测器均组装期严格失败；`agents/evidence_catalog.json`
-已进 wheel 包数据。检测器一律惰性接线（`_LazyObjectDetectionClient`），组合
-期绝不加载 YOLO 权重，首次推理才经共享审计 store；未校准 grounding 完全不
-接线 detector。ROI 计划按 14B §6.2：超限（`max_rois`，1–3，默认 3）、越界
-或退化时折叠为唯一整图 ROI，保留已校验类别计划，不截断、不重调；非有限
-坐标与错误 image_id 仍为 SCHEMA_INVALID。live 校准与默认翻转属于后续任务。
-
-doc 15（§79.9）落地后，`visual_planning.enabled=True` 时 composition root
-组装 `JointVisualPlanner`（含 `VisualPlanBindings`）并完全替代
-`VisualPlanningGate`——两条路径绝不同时接线，flag 仍默认 `False`，关闭时
-行为逐字节不变（gate 路径原样保留）。启用时每条样本只有一次联合 Qwen
-调用（见 §35、§36.4），旧 `visual_plan.json` gate 产物不再产生。
+SegFormer 的运行绑定仍默认关闭（None）。没有完整校准的对象证据服务时，planner
+binding 不声明可执行类别；模型请求视觉辅助会稳定失败，绝不静默回退 direct。
+Grounding 的未校准 seam 仍可作为显式能力边界，但不会使 planner 宣布对象辅助
+可执行。检测器一律惰性接线，组合期绝不加载 YOLO 权重。新 v3 ROI 只按规范化
+EXIF/RGB 源尺寸生成一个固定 1024×1024 视图，禁止旧 multi-ROI 与 halo 语义；
+历史 `visual_plan.json` / `joint_visual_plan.json` 仅供 reporting 只读展示。
+真实 Qwen3-VL live gate 与校准策略仍需单独验证。
 
 ### 79.5 Live validation
 
@@ -3433,11 +3447,12 @@ doc 15（§79.9）落地后，`visual_planning.enabled=True` 时 composition roo
 SegFormer 输出 semantic region 而非 instance mask。相接实例可能形成一个 component 并
 低估数量；当前不隐藏加入 watershed 或 instance splitting。此限制应在 benchmark 中单列。
 
-### 79.9 Joint task + visual planning（doc 15）
+### 79.9 Historical joint task + visual planning（doc 15，仅只读）
 
-单次 Qwen 调用同时产出 task 与视觉计划（替代 23.1 的独立文本 TaskResolver
-模型路径与 14A/14B 的独立 VisualPlanner gate），flag
-`visual_planning.enabled=True` 时接线，默认关闭。
+doc 15 的单次 Qwen 联合调用已被 doc 17 的 `visual-task-plan-v2` 替代，现役 fresh
+链路再由 doc 18 升级为 `visual-task-plan-v3`。
+本节只保留旧 artifact、旧 trace 与迁移结果的只读解释；不得重新接线为
+fresh execution fallback。
 
 ```text
 joint-qwen-plan-v1
@@ -3462,11 +3477,10 @@ joint-qwen-plan-v1
   trace 增加 `joint_plan` 审计字段；manual ask 以 placeholder-role
   SampleDraft 走联合路径（request.json `"joint_plan": true`）；
 - 低置信度候选 fallback 语义不变（SampleRunner 职责，非 Resolver）；
-- prompt binding `"joint_plan"` → `joint_qwen_task_visual_plan_v1.md` v1。
+- 联合规划器、联合 prompt binding 与对应 runner 分支均已从当前 runtime 删除。
 
-已知限制：联合规划器尚未通过真实 Qwen3-VL checkpoint 的 live 门禁（离线
-约束下无法执行，属后续人工步骤）；flag 保持默认关闭，启用前必须先完成
-live 验证。
+已知限制：本节只解释历史 run；不得把这些类型、字段或路径重新接线到 fresh
+execution。
 
 ---
 
@@ -3494,9 +3508,8 @@ data/schema.py
 routing/schema.py
 routing/policies.py
 routing/router.py
-workflows/task_resolver.py
 tests/routing/
-tests/workflows/test_task_resolver.py
+tests/workflows/test_sample_runner.py
 ```
 
 ### 修改 Agent
@@ -3610,7 +3623,7 @@ tests/integration/
 | 新模型 wrapper | `models/` + `models/entry.py` |
 | 新业务 task workflow | `agents/<domain>/` |
 | 已知 task → Agent 映射 | `routing/` |
-| 无 task 样本的任务判定 | `workflows/task_resolver.py` |
+| 无 task 样本的任务判定 | `workflows/dataset_runner.py` + `workflows/visual_planner.py` + `data/schema.py` |
 | 单样本 orchestration | `workflows/sample_runner.py` |
 | 数据集 orchestration | `workflows/dataset_runner.py` |
 | deterministic metric | `evaluation/metrics/` |
@@ -3702,7 +3715,8 @@ reporting/
 Dataset source
   -> explicit Adapter
   -> UnifiedSample / SampleDraft
-  -> optional TaskResolver
+  -> VisualTaskPlanner (one call)
+  -> materialize UnifiedSample
   -> deterministic TaskRouter
   -> task Agent
   -> SampleRunner

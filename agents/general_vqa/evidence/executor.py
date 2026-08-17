@@ -1,8 +1,12 @@
-"""Frozen VQA object-evidence executor (C5, 14A1) — fake clients only, not
-wired to GeneralVQAAgent.run() or SampleRunner.
+"""VQA object-evidence executor with a doc-17 materialized-view seam.
 
-C5 冻结 VQA 对象证据执行器——仅 fake clients，不接 GeneralVQAAgent.run() 或
-SampleRunner。
+The v2 path is wired to ``GeneralVQAAgent`` and receives the same exact
+materialized views as direct inference; only this v2 entry is assembled by the
+fresh runtime.
+
+VQA 对象证据执行器带有 doc-17 物化视图 seam。v2 路径已接入
+``GeneralVQAAgent``，与 direct inference 消费同一组精确物化视图；新鲜 runtime
+只组装这条 v2 入口。
 
 Frozen state machine / 冻结状态机：
 
@@ -49,7 +53,7 @@ from typing import Any
 from PIL import Image
 
 from agents.evidence_catalog import EvidenceCatalog
-from agents.general_vqa.evidence.geometry import local_to_global, resolve_roi_records
+from agents.general_vqa.evidence.geometry import local_to_global
 from agents.general_vqa.evidence.rendering import render_roi_crop
 from agents.general_vqa.evidence.schema import (
     EvidenceLayer,
@@ -61,7 +65,7 @@ from agents.general_vqa.evidence.schema import (
     VqaEvidenceBundle,
     YoloDetectionRecord,
 )
-from agents.schema import FirstQwenVisualPlan, RoiRegion
+from agents.schema import MaterializedVisualView, VisualTaskPlan
 from models.base import (
     DenseSemanticClient,
     ObjectDetectionClient,
@@ -268,10 +272,28 @@ class ObjectEvidenceExecutor:
 
     def execute(
         self,
-        plan: FirstQwenVisualPlan,
+        plan: VisualTaskPlan,
         images: Mapping[str, Image.Image],
         *,
         fallback_image_id: str,
+        materialized_views: tuple[MaterializedVisualView, ...],
+    ) -> EvidenceExecution:
+        """Execute evidence against the already materialized v2 views.
+        使用已物化的 v2 视图执行证据流程。"""
+        return self._execute_plan(
+            plan,
+            images,
+            fallback_image_id=fallback_image_id,
+            materialized_views=materialized_views,
+        )
+
+    def _execute_plan(
+        self,
+        plan: VisualTaskPlan,
+        images: Mapping[str, Image.Image],
+        *,
+        fallback_image_id: str,
+        materialized_views: tuple[MaterializedVisualView, ...],
     ) -> EvidenceExecution:
         """Run the frozen state machine over one plan. The plan must be the
         object_evidence_vqa family with a validated evidence request; the
@@ -281,27 +303,19 @@ class ObjectEvidenceExecutor:
         object_evidence_vqa 家族且携带已校验证据请求；bundle 按 roi_id 与稳定
         leaf order 组装。所有累积状态在每次调用时重新创建，一个执行器可服务
         多个计划而无跨计划泄漏。"""
-        if plan.execution_family != "object_evidence_vqa":
-            raise ValueError("executor requires an object_evidence_vqa plan")
-        if plan.evidence_request is None:
-            raise ValueError("object_evidence_vqa plan must carry an evidence_request")
         self._audits: list[ModelCallAudit] = []
         self._outcomes: list[RoiLeafOutcome] = []
         self._masks: dict[tuple[str, str], Any] = {}
 
-        sizes = {image_id: image.size for image_id, image in images.items()}
-        leaves = self._catalog.expand_composites(
-            plan.evidence_request.composite_categories
-        )
-        regions = self._regions(plan, fallback_image_id)
-        records = resolve_roi_records(plan, sizes, fallback_image_id=fallback_image_id)
+        if not plan.needs_visual_assistance:
+            raise ValueError("v2 evidence executor requires visual assistance")
+        if not materialized_views:
+            raise ValueError("v2 evidence executor requires materialized views")
+        leaves = self._catalog.expand_composites(plan.object_categories)
+        records = self._materialized_regions(materialized_views, images)
 
-        hit_leaves, detections = self._yolo_phase(
-            images, regions, records, leaves
-        )
-        segments = self._segformer_phase(
-            images, regions, records, leaves, hit_leaves
-        )
+        hit_leaves, detections = self._yolo_phase(images, records, leaves)
+        segments = self._segformer_phase(images, records, leaves, hit_leaves)
         layer_states, final_states, missing = self._aggregate(leaves)
         bundle = VqaEvidenceBundle(
             catalog_version=self._catalog.catalog_version,
@@ -319,29 +333,43 @@ class ObjectEvidenceExecutor:
             masks=dict(self._masks),
         )
 
-    # ── helpers / 辅助 ─────────────────────────────────────────────────
-
-    def _regions(
+    def _materialized_regions(
         self,
-        plan: FirstQwenVisualPlan,
-        fallback_image_id: str,
-    ) -> list[RoiRegion]:
-        """Plan ROIs in order, or the unique full-image ROI for an empty plan.
-        按顺序返回计划 ROI；空计划返回唯一整图 ROI。"""
-        if plan.roi_plan.rois:
-            return list(plan.roi_plan.rois)
-        return [
-            RoiRegion(
-                roi_id="full",
-                image_id=fallback_image_id,
-                xyxy=(0.0, 0.0, 1.0, 1.0),
+        views: tuple[MaterializedVisualView, ...],
+        images: Mapping[str, Image.Image],
+    ) -> list[RoiEvidenceRecord]:
+        """Convert frozen v2 views into exact evidence geometry.
+        将冻结的 v2 视图转换为精确证据几何。"""
+        if not views:
+            raise ValueError("materialized views must not be empty")
+        records: list[RoiEvidenceRecord] = []
+        for index, view in enumerate(views):
+            image = images.get(view.image_id)
+            if image is None or image.size != view.source_size:
+                raise ValueError("materialized view source size does not match image")
+            roi_id = (
+                "full"
+                if len(views) == 1 and view.view_mode == "full_image"
+                else f"{view.view_mode}-{index}"
             )
-        ]
+            box = view.crop_xyxy
+            records.append(
+                RoiEvidenceRecord(
+                    roi_id=roi_id,
+                    image_id=view.image_id,
+                    source_size=view.source_size,
+                    core_xyxy=box,
+                    expanded_xyxy=box,
+                    crop_size=view.crop_size,
+                )
+            )
+        return records
+
+    # ── helpers / 辅助 ─────────────────────────────────────────────────
 
     def _yolo_phase(
         self,
         images: Mapping[str, Image.Image],
-        regions: list[RoiRegion],
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
     ) -> tuple[set[str], list[YoloDetectionRecord]]:
@@ -352,8 +380,8 @@ class ObjectEvidenceExecutor:
         内部消费：阈值、top-k 保留与 whole-image 坐标下的跨 ROI 贪心去重。"""
         hit_leaves: set[str] = set()
         detected: list[tuple[float, YoloDetectionRecord]] = []
-        for region, record in zip(regions, records):
-            crop = render_roi_crop(images[record.image_id], region, record)
+        for record in records:
+            crop = render_roi_crop(images[record.image_id], record)
             outputs: list[ObjectDetectionOutput] | None = None
             failed_code: str | None = None
             if self._yolo_client is not None:
@@ -375,7 +403,7 @@ class ObjectEvidenceExecutor:
                 self._audits.append(
                     ModelCallAudit(
                         layer="yolo",
-                        roi_id=region.roi_id,
+                        roi_id=record.roi_id,
                         input_size=crop.size,
                         logical_model_id=logical_model_id,
                         weights_sha256=digest,
@@ -386,18 +414,18 @@ class ObjectEvidenceExecutor:
             for leaf in leaves:
                 if not self._catalog.capability_enabled(leaf, "yolo"):
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "yolo", "unsupported")
+                        RoiLeafOutcome(record.roi_id, leaf, "yolo", "unsupported")
                     )
                     continue
                 if self._yolo_client is None:
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "yolo", "unavailable")
+                        RoiLeafOutcome(record.roi_id, leaf, "yolo", "unavailable")
                     )
                     continue
                 if failed_code is not None:
                     self._outcomes.append(
                         RoiLeafOutcome(
-                            region.roi_id, leaf, "yolo", "error", failed_code
+                            record.roi_id, leaf, "yolo", "error", failed_code
                         )
                     )
                     continue
@@ -406,7 +434,7 @@ class ObjectEvidenceExecutor:
                 leaf_outputs = [o for o in outputs if o.label in leaf_labels]
                 if not leaf_outputs:
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "yolo", "missing")
+                        RoiLeafOutcome(record.roi_id, leaf, "yolo", "missing")
                     )
                     continue
                 retained = sorted(
@@ -418,7 +446,7 @@ class ObjectEvidenceExecutor:
                             detection.confidence,
                             YoloDetectionRecord(
                                 leaf_category=leaf,
-                                roi_id=region.roi_id,
+                                roi_id=record.roi_id,
                                 local_xyxy=detection.xyxy,
                                 local_roi_size=crop.size,
                                 global_xyxy=local_to_global(detection.xyxy, record),
@@ -428,7 +456,7 @@ class ObjectEvidenceExecutor:
                     )
                 hit_leaves.add(leaf)
                 self._outcomes.append(
-                    RoiLeafOutcome(region.roi_id, leaf, "yolo", "hit")
+                    RoiLeafOutcome(record.roi_id, leaf, "yolo", "hit")
                 )
         return hit_leaves, self._dedup_global(detected)
 
@@ -460,7 +488,6 @@ class ObjectEvidenceExecutor:
     def _segformer_phase(
         self,
         images: Mapping[str, Image.Image],
-        regions: list[RoiRegion],
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
         hit_leaves: set[str],
@@ -473,8 +500,8 @@ class ObjectEvidenceExecutor:
         绝不重筛。mask 只在内存中按 ROI 保留；持久化只有（叶子，ROI）存在性
         记录。"""
         segments: list[SegFormerEvidenceRecord] = []
-        for region, record in zip(regions, records):
-            crop = render_roi_crop(images[record.image_id], region, record)
+        for record in records:
+            crop = render_roi_crop(images[record.image_id], record)
             still_missing = [
                 leaf
                 for leaf in leaves
@@ -500,7 +527,7 @@ class ObjectEvidenceExecutor:
                 self._audits.append(
                     ModelCallAudit(
                         layer="segformer",
-                        roi_id=region.roi_id,
+                        roi_id=record.roi_id,
                         input_size=crop.size,
                         logical_model_id=logical_model_id,
                         weights_sha256=digest,
@@ -512,23 +539,23 @@ class ObjectEvidenceExecutor:
                 if leaf in hit_leaves:
                     if self._catalog.capability_enabled(leaf, "segformer"):
                         self._outcomes.append(
-                            RoiLeafOutcome(region.roi_id, leaf, "segformer", "not_run")
+                            RoiLeafOutcome(record.roi_id, leaf, "segformer", "not_run")
                         )
                     continue
                 if not self._catalog.capability_enabled(leaf, "segformer"):
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "segformer", "unsupported")
+                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "unsupported")
                     )
                     continue
                 if self._segformer_client is None:
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "segformer", "unavailable")
+                    RoiLeafOutcome(record.roi_id, leaf, "segformer", "unavailable")
                     )
                     continue
                 if failed_code is not None:
                     self._outcomes.append(
                         RoiLeafOutcome(
-                            region.roi_id, leaf, "segformer", "error", failed_code
+                            record.roi_id, leaf, "segformer", "error", failed_code
                         )
                     )
                     continue
@@ -545,7 +572,7 @@ class ObjectEvidenceExecutor:
                 except ValueError:
                     self._outcomes.append(
                         RoiLeafOutcome(
-                            region.roi_id,
+                            record.roi_id,
                             leaf,
                             "segformer",
                             "error",
@@ -559,17 +586,17 @@ class ObjectEvidenceExecutor:
                 if bool(presence.any()):
                     segments.append(
                         SegFormerEvidenceRecord(
-                            leaf_category=leaf, roi_id=region.roi_id
+                            leaf_category=leaf, roi_id=record.roi_id
                         )
                     )
-                    self._masks[(region.roi_id, leaf)] = presence
+                    self._masks[(record.roi_id, leaf)] = presence
                     hit_leaves.add(leaf)
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "segformer", "hit")
+                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "hit")
                     )
                 else:
                     self._outcomes.append(
-                        RoiLeafOutcome(region.roi_id, leaf, "segformer", "missing")
+                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "missing")
                     )
         return segments
 

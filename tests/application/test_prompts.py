@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 15
+    assert len(catalog.all_keys()) == 13
     for key in (
         "count_tile",
         "target",
@@ -26,9 +26,7 @@ def test_catalog_loads_all_bound_prompts() -> None:
         "grounding",
         "caption",
         "seam",
-        "task_resolver",
-        "visual_plan",
-        "joint_plan",
+        "visual_task_plan",
         "count_judge",
         "vqa_judge",
         "json_repair",
@@ -46,11 +44,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.version("count_tile") == "v4"
     assert catalog.version("general") == "v3"
     assert catalog.asset("general").path.name == "general_vqa_v3.md"
-    assert catalog.version("task_resolver") == "v1"
-    assert catalog.version("visual_plan") == "v1"
-    assert catalog.asset("visual_plan").path.name == "first_qwen_visual_plan_v1.md"
-    assert catalog.version("joint_plan") == "v1"
-    assert catalog.asset("joint_plan").path.name == "joint_qwen_task_visual_plan_v1.md"
+    assert catalog.version("visual_task_plan") == "v3"
+    assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v3.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
     assert catalog.version("change") == "v3"
@@ -63,7 +58,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 14  # 15 keys, general_vqa_v3 shared by two keys
+    assert len(paths) == 12  # 13 keys, general_vqa_v3 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 
@@ -114,30 +109,31 @@ def test_seam_review_v2_is_local_and_decision_only() -> None:
         assert forbidden not in prompt
 
 
-def test_joint_plan_prompt_declares_merged_contract() -> None:
-    """The joint prompt must classify the task AND plan in one call, emit
-    strict JSON, and forbid answers/paths/GT/backend output.
-    联合 prompt 必须单次调用内同时分类 task 与规划、输出严格 JSON，并禁止
-    答案/路径/GT/backend 输出。"""
-    prompt = PromptCatalog(REPO_ROOT / "prompts")["joint_plan"].casefold()
+def test_visual_task_plan_prompt_declares_visual_only_contract() -> None:
+    """The active prompt accepts only images/raw text and emits v3 intent.
+    active prompt 只接受图像/原始文本，并输出 v3 意图。"""
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["visual_task_plan"].casefold()
     for required in (
-        "joint-qwen-plan-v1",
+        "visual-task-plan-v3",
         "task",
-        "visual_plan",
-        "allowed_tasks",
-        "composite_categories",
-        "roi_plan",
-        "[0,1]",
-        "never answer the question",
-        "never count",
+        "needs_visual_assistance",
+        "object_categories",
+        "region_request",
+        "raw",
+        "question",
         "ground truth",
-        "file paths",
+        "image paths",
         "backend",
-        "never invent",
-        "authoritative",
     ):
         assert required in prompt
-    assert "first-qwen-plan-v1" in prompt
+    for forbidden in (
+        "confidence",
+        "probability",
+        "certainty score",
+        "uncertainty flag",
+        "candidate task list",
+    ):
+        assert forbidden in prompt
 
 
 def test_catalog_unknown_key_fails_stable() -> None:
@@ -175,9 +171,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "general_vqa_v3.md",
         "caption_v1.md",
         "seam_review_v2.md",
-        "task_resolver_v1.md",
-        "first_qwen_visual_plan_v1.md",
-        "joint_qwen_task_visual_plan_v1.md",
+        "visual_task_plan_v3.md",
         "deepseek_judge_v1.md",
         "deepseek_vqa_judge_v2.md",
         "json_repair_v1.md",
