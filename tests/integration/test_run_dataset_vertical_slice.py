@@ -41,12 +41,11 @@ class _FakeQwenClient:
         if response_model.__name__ == "VisualTaskPlan":
             return response_model.model_validate(
                 {
-                    "version": "visual-task-plan-v2",
+                    "version": "visual-task-plan-v3",
                     "task": "general_vqa",
                     "needs_visual_assistance": False,
                     "object_categories": [],
                     "region_request": {"explicit": False},
-                    "confidence": 0.95,
                     "reason_codes": ["fake_test_plan"],
                 }
             )

@@ -437,7 +437,7 @@ normalized image previews + raw question
     -> deterministic TaskRouter
 ```
 
-规划输出版本为 `visual-task-plan-v2`。显式 CLI/dataset task 只作审计，不发送给
+规划输出版本为 `visual-task-plan-v3`。显式 CLI/dataset task 只作审计，不发送给
 第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域只在目标图像
 宽高都大于 1024 时生成一个固定 1024×1024 ROI。
 

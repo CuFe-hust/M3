@@ -1,6 +1,6 @@
-"""Contract tests for the v2 visual-only planner.
+"""Contract tests for the v3 visual-only planner.
 
-v2 纯视觉规划器契约测试：验证单次调用、请求身份、能力闭集、确定性视图
+v3 纯视觉规划器契约测试：验证单次调用、请求身份、能力闭集、确定性视图
 物化以及不会把 GT 或物理路径带入规划请求。
 """
 
@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import inspect
 import json
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from PIL import Image
 from agents.evidence_catalog import EvidenceCatalog
 from agents.schema import VisualTaskPlan
 from application.prompts import PromptCatalog
+from application.settings import VisualPlannerSettings
 from data.schema import ImageRef, SampleDraft, UnifiedSample
 from models.base import ModelCacheIdentity
 from models.images import image_sha256
@@ -138,11 +140,10 @@ def _response(
     explicit_region: bool = False,
     image_index: int | None = None,
     focus: tuple[float, float] | None = None,
-    confidence: float = 0.9,
     **overrides,
 ) -> dict:
     data = {
-        "version": "visual-task-plan-v2",
+        "version": "visual-task-plan-v3",
         "task": task,
         "needs_visual_assistance": assistance,
         "object_categories": list(categories),
@@ -151,7 +152,6 @@ def _response(
             "image_index": image_index,
             "focus_xy_norm": focus,
         },
-        "confidence": confidence,
         "reason_codes": ["test"],
     }
     data.update(overrides)
@@ -162,7 +162,7 @@ def _planner(client: _FakeClient, **kwargs) -> VisualTaskPlanner:
     return VisualTaskPlanner(
         client,
         system_prompt="You are the visual-only planner.",
-        prompt_version="v2",
+        prompt_version="v3",
         catalog=kwargs.pop("catalog", _catalog()),
         executable_categories=kwargs.pop("executable_categories", ("vehicle",)),
         **kwargs,
@@ -232,12 +232,12 @@ def test_planner_budget_and_request_identity_are_deterministic(tmp_path: Path) -
     _run(_planner(client), _sample(tmp_path), tmp_path, budget=budget)
     assert budget.qwen_calls_used == 1
     meta = client.calls[0]["request_meta"]
-    assert meta.prompt_version == "v2"
+    assert meta.prompt_version == "v3"
     assert meta.image_sha256 == image_sha256(_preview_bytes(client.calls[0]))
     assert len(meta.request_hash) == 64
 
 
-def test_planner_materializes_fixed_roi_from_v2_focus(tmp_path: Path) -> None:
+def test_planner_materializes_fixed_roi_from_v3_focus(tmp_path: Path) -> None:
     client = _FakeClient(
         identity=_identity(),
         response=_response(
@@ -277,10 +277,12 @@ def test_planner_requires_both_source_dimensions_above_roi_size(
     assert views[0].view_mode == expected_mode
 
 
-def test_planner_rejects_low_confidence_and_unavailable_categories(tmp_path: Path) -> None:
-    low = _FakeClient(identity=_identity(), response=_response(confidence=0.4))
-    with pytest.raises(VisualTaskPlanError, match="LOW_CONFIDENCE"):
-        _run(_planner(low), _sample(tmp_path), tmp_path)
+def test_planner_accepts_schema_valid_plan_without_subjective_score(tmp_path: Path) -> None:
+    client = _FakeClient(identity=_identity(), response=_response())
+    plan, _views = _run(_planner(client), _sample(tmp_path), tmp_path)
+    assert plan.version == "visual-task-plan-v3"
+    with pytest.raises(TypeError):
+        _planner(client, confidence_threshold=0.7)
 
     unavailable = _FakeClient(
         identity=_identity(),
@@ -303,9 +305,20 @@ def test_planner_schema_and_image_index_fail_closed(tmp_path: Path) -> None:
         _run(_planner(bad_index), _sample(tmp_path), tmp_path)
 
 
-def test_planner_prompt_snapshot_and_artifact_payload_are_v2_only() -> None:
+def test_planner_prompt_snapshot_and_artifact_payload_are_v3_only() -> None:
     client = _FakeClient(identity=_identity(), response=_response())
     planner = _planner(client)
-    assert planner.prompt_snapshot_filename == "visual_task_plan_v2.runtime.md"
-    assert planner.planning_parameters["planning_mode"] == "visual-task-plan-v2"
-    assert PromptCatalog(REPO_ROOT / "prompts").version("visual_task_plan") == "v2"
+    assert planner.prompt_snapshot_filename == "visual_task_plan_v3.runtime.md"
+    assert planner.planning_parameters["planning_mode"] == "visual-task-plan-v3"
+    assert PromptCatalog(REPO_ROOT / "prompts").version("visual_task_plan") == "v3"
+
+
+def test_planner_scope_has_no_subjective_gate() -> None:
+    """Guard only the planner contract; detector/counting confidence remains separate.
+    只守护 planner 契约；detector/counting 的 confidence 保持独立。"""
+    assert "confidence" not in VisualTaskPlan.model_fields
+    assert "confidence_threshold" not in VisualPlannerSettings.model_fields
+    assert "confidence_threshold" not in inspect.signature(VisualTaskPlanner).parameters
+    source = (REPO_ROOT / "workflows" / "visual_planner.py").read_text(encoding="utf-8")
+    assert "plan." + "confidence" not in source
+    assert "LOW_" + "CONFIDENCE" not in source

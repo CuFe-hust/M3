@@ -246,13 +246,13 @@ def _repair_severity(normalizations: list[str]) -> str:
     return "none"
 
 
-# ── Visual-only task planning contract (doc 16) ───────────────────────────
-# The v2 planner receives only normalized image previews and the raw question.
+# ── Visual-only task planning contract (doc 18) ───────────────────────────
+# The v3 planner receives only normalized image previews and the raw question.
 # Its output contains task/assistance intent, never an answer or implementation
-# choice. v2 规划器只接收规范化图像预览与原始问题；输出只表达任务和辅助意图，
-# 绝不携带答案或实现选择。
+# choice or subjective confidence. v3 规划器只接收规范化图像预览与原始问题；
+# 输出只表达任务和辅助意图，绝不携带答案、实现选择或主观置信度。
 
-VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v2"
+VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v3"
 
 
 class RegionRequest(BaseModel):
@@ -293,7 +293,6 @@ class VisualTaskPlan(BaseModel):
     needs_visual_assistance: bool = False
     object_categories: list[str] = Field(default_factory=list, max_length=3)
     region_request: RegionRequest = Field(default_factory=RegionRequest)
-    confidence: float = Field(ge=0.0, le=1.0)
     reason_codes: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")

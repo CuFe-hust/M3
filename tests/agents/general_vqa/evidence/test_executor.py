@@ -84,11 +84,10 @@ def _image(size: tuple[int, int] = (1000, 800)) -> Image.Image:
 
 def _plan(categories: tuple[str, ...] = ("vehicle", "building")) -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v2",
+        version="visual-task-plan-v3",
         task="general_vqa",
         needs_visual_assistance=True,
         object_categories=list(categories),
-        confidence=0.95,
         reason_codes=["test"],
     )
 
@@ -206,9 +205,8 @@ def test_executor_consumes_exact_fixed_roi_pixels() -> None:
 
 def test_executor_requires_assistance_and_materialized_views() -> None:
     direct = VisualTaskPlan(
-        version="visual-task-plan-v2",
+        version="visual-task-plan-v3",
         task="general_vqa",
-        confidence=0.9,
     )
     with pytest.raises(ValueError, match="visual assistance"):
         _execute(_executor(), plan=direct)

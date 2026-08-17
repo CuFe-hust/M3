@@ -1,9 +1,9 @@
 """Canonical visual-only task planner and deterministic view materialization.
 规范纯视觉任务规划器与确定性视图物化。
 
-The v2 planner is the only fresh-inference planning seam. It performs one
+The v3 planner is the only fresh-inference planning seam. It performs one
 schema-validated call, then materializes exact full-image or fixed-ROI views.
-v2 规划器是所有新鲜推理唯一的规划 seam：执行一次 schema 校验调用，然后
+v3 规划器是所有新鲜推理唯一的规划 seam：执行一次 schema 校验调用，然后
 物化精确整图或固定 ROI 视图。
 """
 
@@ -53,16 +53,13 @@ class VisualTaskPlanner:
         client: VisionLanguageClient,
         *,
         system_prompt: str,
-        prompt_version: str = "v2",
+        prompt_version: str = "v3",
         catalog: EvidenceCatalog,
-        confidence_threshold: float = 0.70,
         executable_categories: tuple[str, ...] | None = None,
         max_side: int = 1080,
         roi_size: int = 1024,
         large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
     ) -> None:
-        if not 0.0 <= confidence_threshold <= 1.0:
-            raise ValueError("confidence_threshold must be within [0.0, 1.0]")
         if max_side <= 0 or roi_size <= 0:
             raise ValueError("preview and ROI sizes must be positive")
         if roi_size != 1024:
@@ -73,7 +70,6 @@ class VisualTaskPlanner:
         self._system_prompt = system_prompt
         self._prompt_version = prompt_version
         self._catalog = catalog
-        self._confidence_threshold = confidence_threshold
         self._executable_categories = (
             frozenset(executable_categories)
             if executable_categories is not None
@@ -93,7 +89,7 @@ class VisualTaskPlanner:
         """Return JSON-safe parameters frozen into run identity.
         返回写入运行身份的 JSON 安全冻结参数。"""
         return {
-            "planning_mode": "visual-task-plan-v2",
+            "planning_mode": "visual-task-plan-v3",
             "preview_max_side": self._max_side,
             "roi_size": self._roi_size,
             "large_image_policy": self._large_image_policy,
@@ -103,7 +99,7 @@ class VisualTaskPlanner:
     def prompt_snapshot_filename(self) -> str:
         """Stable basename for the capability-bound prompt snapshot.
         能力绑定 Prompt 快照使用稳定 basename。"""
-        return "visual_task_plan_v2.runtime.md"
+        return "visual_task_plan_v3.runtime.md"
 
     @property
     def system_prompt(self) -> str:
@@ -318,8 +314,8 @@ class VisualTaskPlanner:
         plan: VisualTaskPlan,
         view: SampleDraft | UnifiedSample,
     ) -> VisualTaskPlan:
-        """Apply closed task/category, image-index, and confidence policy.
-        执行封闭任务/类别、图像索引与置信度策略校验。"""
+        """Apply closed task/category and image-index policy.
+        执行封闭任务/类别与图像索引策略校验。"""
         if plan.needs_visual_assistance:
             try:
                 self._catalog.validate_plan_categories(plan.object_categories)
@@ -339,6 +335,4 @@ class VisualTaskPlanner:
             image_index = plan.region_request.image_index
             if image_index is None or image_index >= len(view.images):
                 raise VisualTaskPlanError("IMAGE_INDEX_INVALID")
-        if plan.confidence < self._confidence_threshold:
-            raise VisualTaskPlanError("LOW_CONFIDENCE")
         return plan

@@ -163,15 +163,15 @@ class GeneralVQAAgent(VisualAgentBase):
         return result.model_copy(update={"status": "partial", "geometry": geometry})
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
-        """Run direct VQA or the canonical v2 evidence path.
-        运行直接 VQA 或规范 v2 证据路径。"""
+        """Run direct VQA or the canonical v3 evidence path.
+        运行直接 VQA 或规范 v3 证据路径。"""
         if sample.task not in self.supported_tasks:
             raise AgentTaskMismatchError(
                 self.name, sample.task, supported=self.supported_tasks
             )
-        v2_plan = context.visual_task_plan
-        if v2_plan is not None:
-            if not v2_plan.needs_visual_assistance:
+        task_plan = context.visual_task_plan
+        if task_plan is not None:
+            if not task_plan.needs_visual_assistance:
                 return await super().run(sample, context)
             if sample.task != "general_vqa":
                 raise AgentExecutionError(
@@ -188,7 +188,7 @@ class GeneralVQAAgent(VisualAgentBase):
             return await self._run_object_evidence(
                 sample,
                 context,
-                v2_plan,
+                task_plan,
                 context.visual_bindings.vqa_evidence,
             )
 

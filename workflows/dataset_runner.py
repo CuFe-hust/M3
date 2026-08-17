@@ -138,7 +138,7 @@ class DatasetRunner:
         judge_sample_rate: float | None = None,
         call_budget_factory: CallBudgetFactory | None = None,
         visual_task_planner: VisualTaskPlanner | None = None,
-        planning_mode: str = "visual-task-plan-v2",
+        planning_mode: str = "visual-task-plan-v3",
         data_root: Path | None = None,
     ) -> None:
         self.adapter = adapter
@@ -181,8 +181,8 @@ class DatasetRunner:
             raise ValueError("shard_index must be within [0, shard_count)")
         if sample_concurrency < 1:
             raise ValueError("sample_concurrency must be >= 1")
-        if not resume and self.planning_mode != "visual-task-plan-v2":
-            raise ValueError("fresh dataset runs require visual-task-plan-v2")
+        if not resume and self.planning_mode != "visual-task-plan-v3":
+            raise ValueError("fresh dataset runs require visual-task-plan-v3")
         if not resume and (
             self.call_budget_factory is None
             or self.visual_task_planner is None
@@ -404,8 +404,12 @@ class DatasetRunner:
                 # Supplement by persisted execution task; this path never
                 # calls a model. 按持久化执行 task 补判；此路径绝不调用模型。
                 return await self._resume_supplement(sample, sample_dir, persisted.task)
-            if self.planning_mode == "legacy":
-                return self._write_planning_resume_failure(sample, sample_dir)
+            if self.planning_mode != "visual-task-plan-v3":
+                return self._write_planning_resume_failure(
+                    sample,
+                    sample_dir,
+                    persisted_task=persisted.task if persisted is not None else None,
+                )
         return await self._run_sample_visual(sample, sample_dir)
 
     async def _run_sample_visual(
@@ -476,8 +480,8 @@ class DatasetRunner:
         *,
         resume: bool,
     ) -> SampleRunStatus:
-        """Plan, materialize, and execute one draft through the v2 seam.
-        通过 v2 seam 规划、物化并执行一条 draft。
+        """Plan, materialize, and execute one draft through the v3 seam.
+        通过 v3 seam 规划、物化并执行一条 draft。
         """
 
         sample_dir = samples_root / storage_key(draft.sample_id)
@@ -489,8 +493,12 @@ class DatasetRunner:
                     return await self._resume_supplement(
                         persisted_sample, sample_dir, persisted.task
                     )
-            if self.planning_mode == "legacy":
-                return self._write_planning_resume_failure(draft, sample_dir)
+            if self.planning_mode != "visual-task-plan-v3":
+                return self._write_planning_resume_failure(
+                    draft,
+                    sample_dir,
+                    persisted_task=persisted.task if persisted is not None else None,
+                )
         return await self._run_draft_visual(draft, sample_dir)
 
 
@@ -499,8 +507,8 @@ class DatasetRunner:
         draft: SampleDraft,
         sample_dir: Path,
     ) -> SampleRunStatus:
-        """Plan and materialize one draft with the same v2 call as all entries.
-        用与所有入口相同的 v2 调用规划并物化一条 draft。"""
+        """Plan and materialize one draft with the same v3 call as all entries.
+        用与所有入口相同的 v3 调用规划并物化一条 draft。"""
         if (
             self.call_budget_factory is None
             or self.data_root is None
@@ -571,13 +579,23 @@ class DatasetRunner:
         self,
         sample: SampleDraft | UnifiedSample,
         sample_dir: Path,
+        *,
+        persisted_task: str | None = None,
     ) -> SampleRunStatus:
-        """Reject inference reruns for legacy runs while keeping old success
-        supplements model-free. 旧运行只允许无模型成功补判，拒绝重新推理。"""
+        """Reject inference reruns for historical planner modes while keeping
+        old success supplements model-free. When a persisted status exists, its
+        execution task remains authoritative even for a failed resume. 历史规划模式
+        只允许无模型成功补判，拒绝重新推理；如果存在持久化状态，即使 resume
+        失败也继续使用其中的实际执行 task。"""
+        task = (
+            persisted_task
+            if persisted_task is not None
+            else sample.task if isinstance(sample, UnifiedSample) else None
+        )
         return self._write_planning_failure(
             sample,
             sample_dir,
-            task=sample.task if isinstance(sample, UnifiedSample) else None,
+            task=task,
             code="LEGACY_PLANNING_RESUME_UNSUPPORTED",
         )
 

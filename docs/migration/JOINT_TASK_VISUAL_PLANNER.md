@@ -4,7 +4,16 @@
 的历史行为，以及 doc 16（`docs/architecture/16_VISUAL_ONLY_PLANNER_REPLACEMENT_PLAN.md`）
 如何有意替代它。doc 16 之后，联合模式不再是 fresh execution 的 feature-flag
 分支；旧 run、旧 artifact 和旧 trace 仍可只读审计，但需要重新推理时不使用旧
-planner，也不静默改用 v2。
+planner，也不静默改用 v2 或 v3。
+
+doc 18 further supersedes the active v2 response shape: fresh execution uses
+`visual-task-plan-v3` and removes planner confidence. v2 remains a historical,
+confidence-bearing artifact/resume identity only; reporting may display it but never
+rewrites or re-executes it.
+
+doc 18 进一步替代现役 v2 response shape：新鲜执行使用
+`visual-task-plan-v3` 并删除 planner confidence。v2 仅作为带 confidence 的历史
+artifact/resume 身份保留；reporting 可以展示，但绝不改写或重新执行。
 
 ## 任务权威来源变化
 
@@ -23,24 +32,29 @@ doc 15 的联合模式曾改变这一顺序：单次 Qwen 调用同时产出 tas
 历史（联合）：SampleDraft/UnifiedSample -> 一次联合 Qwen 调用(task+plan)
       -> 按模型 task 物化 -> TaskRouter(确定性) -> Agent(注入 plan)
 
-当前（doc 16）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
+历史（doc 16）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
 VisualTaskPlanner 调用 -> `visual-task-plan-v2` -> materialized view + task
       -> TaskRouter(确定性) -> Agent(注入 v2 plan/view)
+
+当前（doc 18）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
+VisualTaskPlanner 调用 -> `visual-task-plan-v3` -> materialized view + task
+      -> TaskRouter(确定性) -> Agent(注入 v3 plan/view)
 ```
 
 ## 历史结果可比性
 
 - doc 15 联合模式产物使用 basename `joint_visual_plan.json`，与 gate 的
   `visual_plan.json` 永不冲突；旧 run 只读兼容，reporting 不扫描任意文件；
-- doc 16 fresh 产物使用 `visual_task_plan.json`，记录 v2 计划与 materialized
-  view 几何；旧 artifact 不转换成 v2；
+- doc 16 historical fresh 产物使用 `visual_task_plan.json`，记录 v2 计划与
+  materialized view 几何；新 fresh 产物仍使用同一 basename 但记录 v3，旧 artifact
+  不转换成 v3；
 - resume：succeeded 样本零模型调用，只补缺失/损坏的确定性评测产物；
 - 有意改变：doc 16 中每条 fresh 样本都使用一次视觉规划调用；旧 run 若需
   重新推理，稳定失败 `LEGACY_PLANNING_RESUME_UNSUPPORTED`，不使用 v2 fallback。
 
 ## 影响范围
 
-- doc 16 后所有 fresh manual/dataset 入口均统一为一次 v2 规划调用，
-  trace 增加 `planning_mode=visual-task-plan-v2`；
+- doc 18 后所有 fresh manual/dataset 入口均统一为一次 v3 规划调用，
+  trace 增加 `planning_mode=visual-task-plan-v3`；
 - 历史 doc 15 run 保留既有 artifact 与 report 语义，但不再获得旧推理能力；
 - 不新增第二套 Prediction/全局 sample schema；`UnifiedSample` 契约不变。

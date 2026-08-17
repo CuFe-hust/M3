@@ -76,8 +76,8 @@ class AgentsSettings(BaseModel):
 
 
 class VisualPlannerSettings(BaseModel):
-    """Canonical v2 visual-only planner parameters.
-    规范 v2 纯视觉规划器参数。"""
+    """Canonical v3 visual-only planner parameters.
+    规范 v3 纯视觉规划器参数。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -85,9 +85,8 @@ class VisualPlannerSettings(BaseModel):
     # composition root verifies this binding for every fresh runtime.
     # 必须等于 agents/evidence_catalog.json 声明的版本；每次新鲜运行均由组合根校验。
     catalog_version: str = "first-qwen-evidence-catalog-v2"
-    confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
-    task_prompt_version: str = "v2"
-    planning_mode: Literal["visual-task-plan-v2"] = "visual-task-plan-v2"
+    task_prompt_version: str = "v3"
+    planning_mode: Literal["visual-task-plan-v3"] = "visual-task-plan-v3"
     preview_max_side: int = Field(default=1080, gt=0)
     roi_size: int = Field(default=1024, gt=0)
     large_image_policy: Literal["both-dimensions-strictly-greater-than-1024"] = (

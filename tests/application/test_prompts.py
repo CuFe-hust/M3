@@ -44,8 +44,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.version("count_tile") == "v4"
     assert catalog.version("general") == "v3"
     assert catalog.asset("general").path.name == "general_vqa_v3.md"
-    assert catalog.version("visual_task_plan") == "v2"
-    assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v2.md"
+    assert catalog.version("visual_task_plan") == "v3"
+    assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v3.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
     assert catalog.version("change") == "v2"
@@ -106,11 +106,11 @@ def test_seam_review_v2_is_local_and_decision_only() -> None:
 
 
 def test_visual_task_plan_prompt_declares_visual_only_contract() -> None:
-    """The active prompt accepts only images/raw text and emits v2 intent.
-    active prompt 只接受图像/原始文本，并输出 v2 意图。"""
+    """The active prompt accepts only images/raw text and emits v3 intent.
+    active prompt 只接受图像/原始文本，并输出 v3 意图。"""
     prompt = PromptCatalog(REPO_ROOT / "prompts")["visual_task_plan"].casefold()
     for required in (
-        "visual-task-plan-v2",
+        "visual-task-plan-v3",
         "task",
         "needs_visual_assistance",
         "object_categories",
@@ -122,6 +122,14 @@ def test_visual_task_plan_prompt_declares_visual_only_contract() -> None:
         "backend",
     ):
         assert required in prompt
+    for forbidden in (
+        "confidence",
+        "probability",
+        "certainty score",
+        "uncertainty flag",
+        "candidate task list",
+    ):
+        assert forbidden in prompt
 
 
 def test_catalog_unknown_key_fails_stable() -> None:
@@ -159,7 +167,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "general_vqa_v3.md",
         "caption_v1.md",
         "seam_review_v2.md",
-        "visual_task_plan_v2.md",
+        "visual_task_plan_v3.md",
         "deepseek_judge_v1.md",
         "deepseek_vqa_judge_v2.md",
         "json_repair_v1.md",

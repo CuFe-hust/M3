@@ -169,12 +169,12 @@ def test_generated_prompt_snapshot_is_hashed_and_copied(tmp_path: Path) -> None:
         config_payload=_config_payload(),
         model_ids={"qwen": "qwen"},
         prompt_paths=[],
-        prompt_texts={"visual_task_plan_v2.runtime.md": body},
+        prompt_texts={"visual_task_plan_v3.runtime.md": body},
     )
     run_dir = root / manifest.run_id
-    copied = run_dir / "prompts.snapshot" / "visual_task_plan_v2.runtime.md"
+    copied = run_dir / "prompts.snapshot" / "visual_task_plan_v3.runtime.md"
     assert copied.read_text(encoding="utf-8") == body
-    assert len(manifest.prompt_hashes["visual_task_plan_v2.runtime.md"]) == 64
+    assert len(manifest.prompt_hashes["visual_task_plan_v3.runtime.md"]) == 64
 
 
 # ── 密钥安全 / secret safety ───────────────────────────────────────────────

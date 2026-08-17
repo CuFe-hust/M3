@@ -11,6 +11,12 @@
 >
 > 后续收口：doc 17 已删除剩余可执行 resolver/gate/joint 实现；本文仅保留迁移基线与
 > v2 设计记录。
+>
+> Superseded by doc 18: fresh execution now uses `visual-task-plan-v3` without planner
+> confidence; the v2 shape remains only as historical artifact/resume context.
+>
+> 后续 supersede：doc 18 将 fresh execution 升级为不含 planner confidence 的
+> `visual-task-plan-v3`；v2 shape 仅作为历史产物/resume 上下文保留。
 
 ## 1. 背景与问题
 

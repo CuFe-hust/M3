@@ -23,7 +23,7 @@ _BINDINGS: dict[str, tuple[str, str]] = {
     "grounding": ("general_vqa_v3.md", "v3"),
     "caption": ("caption_v1.md", "v1"),
     "seam": ("seam_review_v2.md", "v2"),
-    "visual_task_plan": ("visual_task_plan_v2.md", "v2"),
+    "visual_task_plan": ("visual_task_plan_v3.md", "v3"),
     "count_judge": ("deepseek_judge_v1.md", "v1"),
     "vqa_judge": ("deepseek_vqa_judge_v2.md", "v2"),
     "json_repair": ("json_repair_v1.md", "v1"),

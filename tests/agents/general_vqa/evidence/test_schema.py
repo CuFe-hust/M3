@@ -1,6 +1,6 @@
-"""Contract tests for the v2 visual plan and strict VQA evidence schemas.
+"""Contract tests for the v3 visual plan and strict VQA evidence schemas.
 
-v2 视觉计划与严格 VQA 证据 schema 契约测试：计划与物化视图保持独立，证据
+v3 视觉计划与严格 VQA 证据 schema 契约测试：计划与物化视图保持独立，证据
 几何使用源像素坐标，mask 不转框且所有持久化字段 JSON-safe。
 """
 
@@ -26,7 +26,7 @@ from agents.schema import (
 
 def _plan(**overrides) -> VisualTaskPlan:
     data = {
-        "version": "visual-task-plan-v2",
+        "version": "visual-task-plan-v3",
         "task": "general_vqa",
         "needs_visual_assistance": True,
         "object_categories": ["vehicle"],
@@ -35,7 +35,6 @@ def _plan(**overrides) -> VisualTaskPlan:
             "image_index": 0,
             "focus_xy_norm": (0.5, 0.5),
         },
-        "confidence": 0.9,
         "reason_codes": ["test"],
     }
     data.update(overrides)
@@ -44,7 +43,7 @@ def _plan(**overrides) -> VisualTaskPlan:
 
 def test_visual_task_plan_validates_assistance_linkage() -> None:
     plan = _plan()
-    assert plan.version == "visual-task-plan-v2"
+    assert plan.version == "visual-task-plan-v3"
     assert plan.task == "general_vqa"
     assert plan.object_categories == ["vehicle"]
     with pytest.raises(ValidationError, match="requires object_categories"):
@@ -60,6 +59,16 @@ def test_visual_task_plan_rejects_unknown_or_path_like_fields() -> None:
         _plan(object_categories=["/models/vehicle"])
     with pytest.raises(ValidationError, match="finite"):
         _plan(region_request={"explicit": True, "image_index": 0, "focus_xy_norm": (float("nan"), 0.5)})
+    with pytest.raises(ValidationError):
+        _plan(version="visual-task-plan-v2")
+
+
+def test_visual_task_plan_v3_schema_has_no_confidence_and_forbids_extra_score() -> None:
+    schema = VisualTaskPlan.model_json_schema()
+    assert "confidence" not in schema["properties"]
+    assert "confidence" not in schema.get("required", [])
+    with pytest.raises(ValidationError):
+        _plan(confidence=0.9)
 
 
 def test_materialized_view_is_exact_source_pixel_geometry() -> None:

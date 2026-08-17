@@ -102,11 +102,10 @@ def _sample(tmp_path: Path, size: tuple[int, int] = (100, 80)) -> UnifiedSample:
 
 def _plan() -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v2",
+        version="visual-task-plan-v3",
         task="grounding",
         needs_visual_assistance=True,
         object_categories=["building"],
-        confidence=0.9,
         reason_codes=["test"],
     )
 

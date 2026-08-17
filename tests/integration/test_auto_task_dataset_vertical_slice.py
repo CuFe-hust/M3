@@ -1,6 +1,6 @@
-"""Vertical slices for explicit and draft DatasetRunner v2 planning.
+"""Vertical slices for explicit and draft DatasetRunner v3 planning.
 
-显式样本与 SampleDraft 两条 DatasetRunner 垂直切片：两者都经同一个 v2
+显式样本与 SampleDraft 两条 DatasetRunner 垂直切片：两者都经同一个 v3
 planner，draft 只在 planner 返回 task 后物化为 UnifiedSample。
 """
 
@@ -58,9 +58,8 @@ class _FakePlanner:
     async def plan_with_views(self, view, *, data_root, artifact_dir, budget):
         self.calls.append(view)
         plan = VisualTaskPlan(
-            version="visual-task-plan-v2",
+            version="visual-task-plan-v3",
             task="general_vqa",
-            confidence=0.95,
             reason_codes=["test"],
         )
         image = view.images[0]
@@ -125,7 +124,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, _FakePlanner, _FakeAgent, _FakeA
     registry.register(agent)
     run_store = RunStore(tmp_path / "runs", tmp_path)
     run_store.create_run(
-        config_payload={"planning_mode": "visual-task-plan-v2"},
+        config_payload={"planning_mode": "visual-task-plan-v3"},
         model_ids={"qwen": "logical-qwen"},
         prompt_paths=[],
         run_id="auto-run",
@@ -151,7 +150,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, _FakePlanner, _FakeAgent, _FakeA
     return root, run_dir, planner, agent, adapter
 
 
-def test_explicit_dataset_sample_uses_v2_planner(tmp_path: Path) -> None:
+def test_explicit_dataset_sample_uses_v3_planner(tmp_path: Path) -> None:
     root, run_dir, planner, agent, adapter = _setup(tmp_path)
     registry = AgentRegistry()
     registry.register(agent)
@@ -182,7 +181,7 @@ def test_explicit_dataset_sample_uses_v2_planner(tmp_path: Path) -> None:
     assert (sample_dir / "visual_task_plan.json").is_file()
 
 
-def test_draft_auto_task_materializes_after_v2_planning(tmp_path: Path) -> None:
+def test_draft_auto_task_materializes_after_v3_planning(tmp_path: Path) -> None:
     root, run_dir, planner, agent, adapter = _setup(tmp_path)
     registry = AgentRegistry()
     registry.register(agent)
@@ -212,6 +211,7 @@ def test_draft_auto_task_materializes_after_v2_planning(tmp_path: Path) -> None:
     assert isinstance(planner.calls[0], SampleDraft)
     assert agent.calls[0].task == "general_vqa"
     plan_payload = json.loads((sample_dir / "visual_task_plan.json").read_text(encoding="utf-8"))
-    assert plan_payload["version"] == "visual-task-plan-v2"
+    assert plan_payload["version"] == "visual-task-plan-v3"
+    assert "confidence" not in plan_payload
     assert not (sample_dir / "visual_plan.json").exists()
     assert not (sample_dir / "joint_visual_plan.json").exists()

@@ -78,7 +78,7 @@ def build_dataset_run_options(
     judge_sample_rate: float | None = None,
     render_errors: bool = False,
     fail_fast: bool = False,
-    planning_mode: str = "visual-task-plan-v2",
+    planning_mode: str = "visual-task-plan-v3",
     preview_max_side: int = 1080,
     roi_size: int = 1024,
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
@@ -467,16 +467,21 @@ def _validate_resume_match(
         raise ValueError("resume render errors mismatch")
     if supplied.fail_fast != persisted.fail_fast:
         raise ValueError("resume fail fast mismatch")
+    if supplied.planning_mode not in (
+        "visual-task-plan-v3",
+        persisted.planning_mode,
+    ):
+        raise ValueError("resume planning mode mismatch")
     if persisted.planning_mode != "legacy":
         # The CLI does not expose planner geometry knobs. A caller-provided
         # non-default override is compared; omitted/default values defer to
         # the persisted run request as the authority.
         # CLI 不暴露规划器几何参数；调用方明确提供的非默认值才比较，未提供的
         # 默认值服从持久化 run_request 权威。
-        if supplied.planning_mode != "visual-task-plan-v2":
-            if supplied.planning_mode != persisted.planning_mode:
-                raise ValueError("resume planning mode mismatch")
-        if supplied.preview_max_side != 1080 and supplied.preview_max_side != persisted.preview_max_side:
+        if (
+            supplied.preview_max_side != 1080
+            and supplied.preview_max_side != persisted.preview_max_side
+        ):
             raise ValueError("resume preview size mismatch")
         if supplied.roi_size != 1024 and supplied.roi_size != persisted.roi_size:
             raise ValueError("resume ROI size mismatch")
@@ -594,8 +599,8 @@ class Runtime:
             root=options.root.expanduser().resolve(),
         )
         if not options.resume:
-            if options.planning_mode != "visual-task-plan-v2":
-                raise ValueError("fresh dataset runs require visual-task-plan-v2")
+            if options.planning_mode != "visual-task-plan-v3":
+                raise ValueError("fresh dataset runs require visual-task-plan-v3")
             planner_settings = self.settings.visual_planning.planner
             options = dataclasses.replace(
                 options,
@@ -625,7 +630,7 @@ class Runtime:
             _validate_resume_match(options, persisted)
             options = persisted
             self._validate_existing_run(run_dir, options, run_id)
-        if options.planning_mode == "visual-task-plan-v2":
+        if options.planning_mode == "visual-task-plan-v3":
             planner = self.components.visual_task_planner
             if planner is None or planner.planning_parameters != {
                 "planning_mode": options.planning_mode,
@@ -951,7 +956,7 @@ class Runtime:
             "question": question,
             "requested_task": task,
             "resolved_task": resolved_task,
-            "planning_mode": "visual-task-plan-v2",
+            "planning_mode": "visual-task-plan-v3",
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)

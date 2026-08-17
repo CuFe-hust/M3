@@ -12,6 +12,14 @@
 > 2026-08-17. The implementation agent must treat the current dirty worktree as user
 > work, run the preflight checks again, and never reset or overwrite unrelated changes.
 
+> Superseded by doc 18 for planner confidence semantics: fresh execution uses
+> `visual-task-plan-v3`; there is no planner confidence threshold or low-confidence
+> rejection. The v2/legacy resume rules below remain historical compatibility context.
+>
+> 关于 planner confidence 的语义由 doc 18 supersede：新鲜执行使用
+> `visual-task-plan-v3`，不再有 planner confidence threshold 或低置信度拒绝；下文
+> v2/legacy resume 规则仅保留为历史兼容上下文。
+
 ## 1. 给实施代理的上文
 
 doc 16 已经把 fresh inference 的规范入口改为唯一的
@@ -253,21 +261,22 @@ fresh runtime 继续生成 `candidate_tasks`、`low_confidence` 或 `joint_plan`
 - 从 `RuntimeComponents` 删除 `task_resolver`、`joint_planner` 历史槽位；
 - `visual_task_planner` 改为现役必需组件，不再以 `None` 表示功能关闭；
 - 删除 `visual_planning = None` / `joint_planner = None` 局部变量和条件 bindings；
-- `SampleRunner` 直接接收 `visual_bindings`，`DatasetRunner` 直接接收 v2 planner。
+- `SampleRunner` 直接接收 `visual_bindings`，`DatasetRunner` 直接接收 v3 planner。
 
 在 `application/settings.py`：
 
 - 删除 `VisualPlanningSettings.enabled`；视觉规划没有关闭开关；
-- 删除只服务 v1 的 planner 字段与未被 v2 读取的 failure policy；
-- 保留并验证 v2 的 `task_prompt_version`、`catalog_version`、
-  `confidence_threshold`、`preview_max_side=1080`、`roi_size=1024`、方案 A policy；
+- 删除只服务 v1 的 planner 字段、planner `confidence_threshold` 与未被 v3 读取的
+  failure policy；
+- 保留并验证 v3 的 `task_prompt_version`、`catalog_version`、
+  `preview_max_side=1080`、`roi_size=1024`、方案 A policy；
 - 因 `extra="forbid"`，用户 YAML 再提供已删除字段应明确校验失败。不要加入静默忽略旧字段
   的兼容层；旧 `config.snapshot.json` 由 reporting 只读，不通过 AppSettings 重放。
 
 在 prompts/artifacts：
 
 - 删除三个未绑定旧 prompt 文件和相应测试 fixture 列表；
-- `PromptCatalog` 只绑定 `visual_task_plan_v2.md`；
+- `PromptCatalog` 只绑定 `visual_task_plan_v3.md`；
 - `ArtifactWriter` 只保留 `VISUAL_TASK_PLAN_FILENAME` 和 `write_visual_task_plan`；
 - reporting 的旧 artifact filename 字符串必须留在 `reporting/adapters.py`，不要重新 import
   已删除的 schema 或 writer constant。
@@ -357,7 +366,8 @@ fresh runtime 继续生成 `candidate_tasks`、`low_confidence` 或 `joint_plan`
 - `DatasetRunner` 无法注入 resolver/joint，`SampleRunner` 无法注入 gate/joint/resolution；
 - v2 plan/task 冲突稳定失败，缺 views 稳定失败；
 - Router primary/fallback 仍可执行，且 Router 零模型调用；
-- v2 low confidence 按 `VisualTaskPlanError` fail closed，不跑跨 task candidates；
+- v3 schema-valid plan 不因主观置信度被拒绝；其他 schema/capability/index 错误仍
+  按 `VisualTaskPlanError` fail closed，不跑跨 task candidates；
 - fresh run 只产生 `visual_task_plan.json`；
 - reporting 能读一个包含旧 `visual_plan.json` / `joint_visual_plan.json` 的历史 fixture；
 - succeeded legacy resume 零模型补判；需要重推理的 legacy resume 稳定失败且零 Qwen；

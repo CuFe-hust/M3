@@ -1,8 +1,8 @@
 # 18 — 删除 VisualTaskPlan confidence 的实施计划
 
-> Status: proposed; implementation has not started.
+> Status: implemented; fresh planner and historical resume semantics are now wired.
 >
-> 状态：待实施；本文只定义实施方案，不代表生产代码已经移除 planner confidence。
+> 状态：已实施；fresh planner 与历史 resume 语义已完成接线。
 >
 > Baseline inspected: `2191ac6aa60eff4aab5a4a5381622681ed81afdb` plus the
 > uncommitted doc-16/doc-17 implementation present in the workspace on 2026-08-17.

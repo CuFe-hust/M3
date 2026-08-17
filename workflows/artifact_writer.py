@@ -91,8 +91,8 @@ class ArtifactWriter:
         *,
         materialized_views: tuple[object, ...] = (),
     ) -> Path:
-        """Persist the canonical v2 plan and safe view geometry.
-        持久化规范 v2 计划及安全的视图几何。"""
+        """Persist the current versioned plan and safe view geometry.
+        持久化当前版本计划及安全的视图几何。"""
         payload = plan.model_dump(mode="json")
         payload["materialized_views"] = [
             _json_value(view) for view in materialized_views

@@ -37,8 +37,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeQwenClient:
-    """Return v2 planner output once, then ordinary Agent output.
-    先返回 v2 规划结果一次，再返回普通 Agent 结果。"""
+    """Return v3 planner output once, then ordinary Agent output.
+    先返回 v3 规划结果一次，再返回普通 Agent 结果。"""
 
     def __init__(self, planned_task: str = "general_vqa") -> None:
         self.calls = 0
@@ -64,12 +64,11 @@ class _FakeQwenClient:
                 task = {1: "caption", 2: "change_caption"}.get(image_count, task)
             return response_model.model_validate(
                 {
-                    "version": "visual-task-plan-v2",
+                    "version": "visual-task-plan-v3",
                     "task": task,
                     "needs_visual_assistance": False,
                     "object_categories": [],
                     "region_request": {"explicit": False},
-                    "confidence": 0.95,
                     "reason_codes": ["fake_test_plan"],
                 }
             )
@@ -151,9 +150,30 @@ def test_runtime_run_dataset_delegates_to_dataset_runner(tmp_path: Path) -> None
     RunManifest.model_validate_json((run_dir / "manifest.json").read_text(encoding="utf-8"))
     snapshot = json.loads((run_dir / "config.snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["runs"]["root"] == (tmp_path / "runs").as_posix()
-    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v2.runtime.md").is_file()
+    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v3.runtime.md").is_file()
     assert (run_dir / "tasks" / "auto" / "dataset_probe.json").is_file()
     assert (run_dir / "predictions.jsonl").is_file()
+
+
+def test_fresh_v2_planning_mode_is_rejected_before_run_creation(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    with pytest.raises(ValueError, match="visual-task-plan-v3"):
+        _run(
+            runtime,
+            DatasetRunOptions(
+                dataset="auto-demo",
+                root=data_root,
+                split="test",
+                tasks=(),
+                auto_task=True,
+                run_id="v2-fresh",
+                planning_mode="visual-task-plan-v2",
+            ),
+        )
+    assert not (tmp_path / "runs" / "v2-fresh").exists()
+    assert runtime.components.qwen_client.calls == 0
 
 
 def test_runtime_build_report(tmp_path: Path) -> None:
@@ -418,8 +438,8 @@ def _ask_runtime(
     client: _FakeQwenClient | None = None,
     agents: dict[str, _RecordingAgent] | None = None,
 ) -> Runtime:
-    """A Runtime with the real v2 planner/router and recording stub agents.
-    使用真实 v2 规划器、Router 与记录型 stub Agent 的 Runtime。"""
+    """A Runtime with the real v3 planner/router and recording stub agents.
+    使用真实 v3 规划器、Router 与记录型 stub Agent 的 Runtime。"""
     settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
     client = client or _FakeQwenClient()
     components = assemble_runtime(
@@ -642,12 +662,12 @@ def test_ask_reuses_single_qwen_client(tmp_path: Path) -> None:
     assert first.request_id != second.request_id
 
 
-# ── v2 planner ask path / v2 规划器 ask 路径 ───────────────────────────────
+# ── v3 planner ask path / v3 规划器 ask 路径 ───────────────────────────────
 
 
-def test_ask_v2_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
-    """The manual path persists and injects one canonical v2 plan.
-    手动路径持久化并注入一份规范 v2 计划。"""
+def test_ask_v3_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
+    """The manual path persists and injects one canonical v3 plan.
+    手动路径持久化并注入一份规范 v3 计划。"""
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient()
     agent = _RecordingAgent("general_vqa_agent", "general_vqa")
@@ -666,13 +686,14 @@ def test_ask_v2_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
     visual_plan = json.loads(
         (request_dir / "visual_task_plan.json").read_text(encoding="utf-8")
     )
-    assert visual_plan["version"] == "visual-task-plan-v2"
+    assert visual_plan["version"] == "visual-task-plan-v3"
+    assert "confidence" not in visual_plan
     assert visual_plan["task"] == "general_vqa"
 
 
 def test_ask_planner_task_is_authoritative_over_source_task(tmp_path: Path) -> None:
-    """An explicit source task is audit-only; the v2 plan selects execution.
-    显式来源 task 仅用于审计；执行 task 由 v2 计划选择。"""
+    """An explicit source task is audit-only; the v3 plan selects execution.
+    显式来源 task 仅用于审计；执行 task 由 v3 计划选择。"""
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient(planned_task="caption")
     agent = _RecordingAgent("caption_agent", "caption")

@@ -76,16 +76,16 @@ class GroundingAgent(VisualAgentBase):
         )
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
-        """Protocol-owner entry for the v2 plan and injected grounding service.
+        """Protocol-owner entry for the v3 plan and injected grounding service.
         The direct path remains the explicit no-assistance branch. The trace is
         always enriched with a stable agent class and route; no request
         construction happens here.
-        v2 计划与注入 Grounding 服务的协议 owner 入口。direct 路径是显式的无
+        v3 计划与注入 Grounding 服务的协议 owner 入口。direct 路径是显式的无
         辅助分支。trace 始终补充稳定的 agent class 与 route；本处不做请求构造。"""
-        v2_plan = context.visual_task_plan
+        task_plan = context.visual_task_plan
         bindings = context.visual_bindings
-        if v2_plan is not None:
-            if not v2_plan.needs_visual_assistance:
+        if task_plan is not None:
+            if not task_plan.needs_visual_assistance:
                 execution = await super().run(sample, context)
                 return replace(
                     execution,
@@ -102,7 +102,7 @@ class GroundingAgent(VisualAgentBase):
                     cause="grounding_evidence_service_unavailable",
                 )
             execution = await self._run_grounding_evidence(
-                sample, context, v2_plan, bindings.grounding_evidence
+                sample, context, task_plan, bindings.grounding_evidence
             )
             return replace(
                 execution,

@@ -97,11 +97,11 @@ def test_write_routing(tmp_path: Path) -> None:
     assert payload["primary_agent"] == "change_agent"
 
 
-def test_write_visual_task_plan_persists_validated_v2_schema(tmp_path: Path) -> None:
+def test_write_visual_task_plan_persists_validated_v3_schema(tmp_path: Path) -> None:
     from agents.schema import MaterializedVisualView, VisualTaskPlan
 
     plan = VisualTaskPlan(
-        version="visual-task-plan-v2",
+        version="visual-task-plan-v3",
         task="general_vqa",
         needs_visual_assistance=True,
         object_categories=["vehicle"],
@@ -110,7 +110,6 @@ def test_write_visual_task_plan_persists_validated_v2_schema(tmp_path: Path) -> 
             "image_index": 0,
             "focus_xy_norm": (0.5, 0.5),
         },
-        confidence=0.92,
         reason_codes=["test"],
     )
     view = MaterializedVisualView(
@@ -124,7 +123,8 @@ def test_write_visual_task_plan_persists_validated_v2_schema(tmp_path: Path) -> 
     written = writer.write_visual_task_plan(tmp_path, plan, materialized_views=(view,))
     assert written == tmp_path / VISUAL_TASK_PLAN_FILENAME
     stored = json.loads((tmp_path / VISUAL_TASK_PLAN_FILENAME).read_text(encoding="utf-8"))
-    assert stored["version"] == "visual-task-plan-v2"
+    assert stored["version"] == "visual-task-plan-v3"
+    assert "confidence" not in stored
     assert stored["task"] == "general_vqa"
     assert stored["materialized_views"][0]["crop_xyxy"] == [0, 0, 100, 80]
     assert "answer" not in stored

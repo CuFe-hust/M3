@@ -91,9 +91,8 @@ def _runner(root: Path) -> tuple[SampleRunner, _FakeClient]:
 
 def _plan() -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v2",
+        version="visual-task-plan-v3",
         task="general_vqa",
-        confidence=0.9,
         reason_codes=["test"],
     )
 
@@ -152,5 +151,5 @@ def test_sample_runner_vertical_slice_general_vqa(tmp_path: Path) -> None:
     trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["execution_agent"] == "general_vqa_agent"
     assert trace["task_type"] == "general_vqa"
-    assert trace["resolution_source"] == "visual-task-plan-v2"
+    assert trace["resolution_source"] == "visual-task-plan-v3"
     assert trace["judge_status"] == "not_requested"

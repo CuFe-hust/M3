@@ -94,8 +94,8 @@ class RuntimeComponents:
     run_store: RunStore
     build_report: Callable[[Path], Report]
     render_overlay: Callable[..., Path]
-    # Canonical v2 planner and shared evidence bindings for every fresh entry.
-    # 所有新鲜入口共用的 v2 规划器与视觉证据绑定。
+    # Canonical v3 planner and shared evidence bindings for every fresh entry.
+    # 所有新鲜入口共用的 v3 规划器与视觉证据绑定。
     visual_task_planner: VisualTaskPlanner
     visual_bindings: VisualPlanBindings
     dataset_runner_factory: Callable[..., DatasetRunner] = field(
@@ -217,7 +217,7 @@ def assemble_runtime(
         judge_policy: str,
         judge_sample_rate: float | None = None,
         data_root: Path,
-        planning_mode: str = "visual-task-plan-v2",
+        planning_mode: str = "visual-task-plan-v3",
     ) -> DatasetRunner:
         return DatasetRunner(
             adapter,
@@ -644,8 +644,8 @@ def _build_visual_task_planning(
     *,
     project_root: Path,
 ) -> tuple[VisualTaskPlanner, VisualPlanBindings]:
-    """Assemble the always-on doc-17 planner and shared evidence bindings.
-    组装始终启用的 doc-17 规划器与共享证据绑定。"""
+    """Assemble the always-on doc-18 planner and shared evidence bindings.
+    组装始终启用的 doc-18 规划器与共享证据绑定。"""
     evidence_catalog = _load_evidence_catalog(project_root)
     planner_settings = settings.visual_planning.planner
     if planner_settings.catalog_version != evidence_catalog.catalog_version:
@@ -679,7 +679,6 @@ def _build_visual_task_planning(
         system_prompt=catalog["visual_task_plan"],
         prompt_version=planner_settings.task_prompt_version,
         catalog=evidence_catalog,
-        confidence_threshold=planner_settings.confidence_threshold,
         executable_categories=executable_categories,
         max_side=planner_settings.preview_max_side,
         roi_size=planner_settings.roi_size,
@@ -697,9 +696,9 @@ def _build_visual_bindings(
     *,
     project_root: Path,
 ) -> VisualPlanBindings:
-    """Shared evidence bindings for both planning modes: the VQA object
+    """Shared evidence bindings for the canonical visual planner: the VQA object
     evidence executor and the grounding evidence executor, assembled from the
-    frozen settings policies. 两种规划模式共享的证据绑定：VQA object-evidence
+    frozen settings policies. 规范视觉规划器共享的证据绑定：VQA object-evidence
     执行器与 grounding 证据执行器，由冻结的 settings 策略组装。"""
 
     return VisualPlanBindings(

@@ -61,8 +61,8 @@ def render_roi_crop(
     image: Image.Image,
     record: RoiEvidenceRecord,
 ) -> Image.Image:
-    """Render the exact source-pixel box recorded by the v2 planner.
-    按 v2 规划器记录的精确源像素框渲染图像。"""
+    """Render the exact source-pixel box recorded by the v3 planner.
+    按 v3 规划器记录的精确源像素框渲染图像。"""
 
     crop = crop_image_box(image, record.expanded_xyxy)
     if crop.size != record.crop_size:

@@ -232,9 +232,9 @@ def test_safe_snapshot_is_json_safe_and_secret_free(tmp_path: Path) -> None:
     snapshot = settings.safe_snapshot()
     serialized = json.dumps(snapshot)
     assert "sk-super-secret-value" not in serialized
-    # The v2 planner identity legitimately contains the substring "task-";
+    # The v3 planner identity legitimately contains the substring "task-";
     # only the secret value itself is forbidden here.
-    # v2 规划器身份合法包含 "task-" 子串；这里只禁止实际 secret value。
+    # v3 规划器身份合法包含 "task-" 子串；这里只禁止实际 secret value。
     assert "sk-super" not in serialized
     # The env var NAME is declarative metadata, never a secret value.
     # 环境变量名是声明性元数据，绝非密钥值。
@@ -323,23 +323,32 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
 # ── visual planning group (C7, 14A2) / 视觉规划配置组 ─────────────────────
 
 
-def test_visual_planning_defaults_to_v2_planner_state() -> None:
-    """Fresh execution defaults to the canonical v2 planner configuration.
-    新鲜执行默认使用规范 v2 规划器配置。"""
+def test_visual_planning_defaults_to_v3_planner_state() -> None:
+    """Fresh execution defaults to the canonical v3 planner configuration.
+    新鲜执行默认使用规范 v3 规划器配置。"""
     settings = AppSettings()
     planner = settings.visual_planning.planner
     assert not hasattr(settings.visual_planning, "enabled")
-    assert planner.planning_mode == "visual-task-plan-v2"
-    assert planner.task_prompt_version == "v2"
+    assert planner.planning_mode == "visual-task-plan-v3"
+    assert planner.task_prompt_version == "v3"
     assert (
         planner.catalog_version
         == "first-qwen-evidence-catalog-v2"
     )
-    assert planner.confidence_threshold == pytest.approx(0.70)
+    assert not hasattr(planner, "confidence_threshold")
     assert planner.preview_max_side == 1080
     assert planner.roi_size == 1024
     assert settings.visual_planning.detectors == {}
     assert settings.visual_planning.segmenters == {}
+
+
+def test_visual_planner_rejects_removed_confidence_threshold() -> None:
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "planner": {"confidence_threshold": 0.7},
+            }
+        )
 
 
 def test_visual_planning_detector_policy_accepts_calibrated_values() -> None:
