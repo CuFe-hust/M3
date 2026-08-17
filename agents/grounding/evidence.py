@@ -1,10 +1,10 @@
-"""Grounding evidence executor with the doc-16 materialized-view seam.
+"""Grounding evidence executor consuming validated v4 planner leaves.
 
-The v2 path is wired to ``GroundingAgent`` and uses the exact planner crop
-without halo expansion.
+The evidence path is wired to ``GroundingAgent`` and uses canonical executable
+leaves plus the exact planner crop without halo expansion.
 
-Grounding 证据执行器带有 v2 物化视图 seam。v2 路径已接入
-``GroundingAgent``，使用规划器精确裁片且不扩张 halo。
+Grounding 证据执行器消费 v4 planner 已校验的 canonical leaves，并使用规划器
+精确裁片且不扩张 halo。
 
 Flow / 流程:
 

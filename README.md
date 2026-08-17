@@ -994,15 +994,18 @@ backend 对每个 model label 分别做 connected components，不会先合并�
 review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset 名。新增同类 expert
 主要修改 catalog、资产和 composition settings，不要求修改 `CountingAgent`。
 
-目标解析优先级：
+目标来源与核验规则：
 
 ```text
-normalization.count_target_hint
-    -> legacy metadata count_target_hint
+VisualTaskPlanner v4 count_target
+    -> normalization.count_target_hint（确定性 verifier）
+    -> legacy metadata count_target_hint（兼容 verifier）
     -> deterministic CountTargetResolver
 ```
 
-无效 hint 显式失败，不静默吞掉。
+无 plan 的显式 structured normalization hint 允许 direct 执行，trace 标记
+`normalization_explicit_hint`；legacy metadata direct 仅为历史兼容，标记
+`legacy_direct_hint`。无 plan 且无 hint 时稳定失败。无效 hint 显式失败，不静默吞掉。
 
 ---
 

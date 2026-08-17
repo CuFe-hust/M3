@@ -1,5 +1,5 @@
-# YOLO Counting Example — DO NOT COMMIT REAL WEIGHTS
-# YOLO 计数示例 — 不得提交真实权重
+# YOLO Counting Deployment Example — the audited ONNX below is a Git LFS asset.
+# YOLO 计数部署示例——下列已审计 ONNX 由 Git LFS 管理。
 agents:
   counting:
     default_backend: auto

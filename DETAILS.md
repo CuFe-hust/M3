@@ -1449,26 +1449,27 @@ trust_empty_detection
 Detection zero review 使用 ordered chain 中下一位实际支持的专家，trace 记录真实 reviewer，
 不再假设 reviewer 必然是 Qwen。
 
-## 25.4 Target parser
+## 25.4 Deterministic count target resolver
 
-目标优先级：
+fresh counting 的语义 target 来自 VisualTaskPlanner v4；normalization 与 legacy
+metadata hint 只作为确定性 verifier。无 plan 的 direct 兼容边界为：
 
 ```text
-normalization.count_target_hint
-  -> legacy metadata count_target_hint
-  -> Qwen target parsing
+structured normalization.count_target_hint -> normalization_explicit_hint
+legacy metadata count_target_hint           -> legacy_direct_hint
+no plan + no hint                           -> COUNT_TARGET_SOURCE_REQUIRED
 ```
 
 invalid hint：
 
 ```text
-InvalidCountTargetHintError
+COUNT_TARGET_VERIFIER_INVALID
 ```
 
 不得静默忽略。
 
-解析后的 target 只和 `ExpertCatalog` 的 canonical label、显式 aliases、dataset-neutral
-hints 匹配；VLM 不返回 backend/checkpoint 决策。
+resolver 不调用模型、cache 或预算。解析后的 target 只和 canonical label、显式 aliases、
+parent expansion 与 dataset-neutral hints 匹配；planner/VLM 不返回 backend/checkpoint 决策。
 
 ## 25.5 YOLO
 

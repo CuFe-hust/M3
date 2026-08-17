@@ -1,12 +1,10 @@
-"""VQA object-evidence executor with a doc-17 materialized-view seam.
+"""VQA object-evidence executor consuming validated v4 planner leaves.
 
-The v2 path is wired to ``GeneralVQAAgent`` and receives the same exact
-materialized views as direct inference; only this v2 entry is assembled by the
-fresh runtime.
+The evidence path is wired to ``GeneralVQAAgent`` and receives the exact
+materialized views plus canonical executable leaves from the v4 planner.
 
-VQA 对象证据执行器带有 doc-17 物化视图 seam。v2 路径已接入
-``GeneralVQAAgent``，与 direct inference 消费同一组精确物化视图；新鲜 runtime
-只组装这条 v2 入口。
+VQA 对象证据执行器消费 v4 planner 已校验的 canonical leaves，并与 direct
+inference 消费同一组精确物化视图。
 
 Frozen state machine / 冻结状态机：
 

@@ -480,8 +480,8 @@ class DatasetRunner:
         *,
         resume: bool,
     ) -> SampleRunStatus:
-        """Plan, materialize, and execute one draft through the v3 seam.
-        通过 v3 seam 规划、物化并执行一条 draft。
+        """Plan, materialize, and execute one draft through the v4 seam.
+        通过 v4 seam 规划、物化并执行一条 draft。
         """
 
         sample_dir = samples_root / storage_key(draft.sample_id)
@@ -507,8 +507,8 @@ class DatasetRunner:
         draft: SampleDraft,
         sample_dir: Path,
     ) -> SampleRunStatus:
-        """Plan and materialize one draft with the same v3 call as all entries.
-        用与所有入口相同的 v3 调用规划并物化一条 draft。"""
+        """Plan and materialize one draft with the same v4 call as all entries.
+        用与所有入口相同的 v4 调用规划并物化一条 draft。"""
         if (
             self.call_budget_factory is None
             or self.data_root is None
