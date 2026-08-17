@@ -21,12 +21,15 @@
 
 ```text
 repository: CuFe-hust/M3
-architecture baseline: current repository mainline
+architecture baseline: repository mainline (`main`)
 evaluation/reporting integration baseline:
   E1-E5 through 396a5900411930e16c75ff9fe18af01080c33428
 legacy behavior reference:
   try_yolo@ec962eb87c3ad0b8c1502efcbd08db0daec48868
 ```
+
+长期架构以仓库主线 `main` 为事实来源。`new_structure` 是迁移期的历史名称，不是
+当前公共分支，也不是运行时依赖。
 
 当前 `architecture/implementation_status.json` 中生产 Python 文件已全部实现，`pending_files` 为空。
 
