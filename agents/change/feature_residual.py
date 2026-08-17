@@ -150,6 +150,7 @@ def compute_multiscale_feature_residual(
     feature_stage_weights: Mapping[int, float] | None = None,
     feature_strides_by_stage: Mapping[int, tuple[float, float]] | None = None,
     image_size: tuple[int, int] | None = None,
+    valid_mask: Any | None = None,
     local_match_radius: int = 1,
     min_pif_feature_cells: int = 32,
     feature_scale_epsilon: float = 1e-3,
@@ -159,8 +160,9 @@ def compute_multiscale_feature_residual(
     Each stage is normalized from the same PIF mask independently.  Scores are
     then resized to one canonical grid before weighted fusion, so a coarse
     stage cannot silently change the meaning of a pixel merely because its
-    native stride differs.  Missing requested stages are reported explicitly;
-    no stage is fabricated by resizing another feature tensor.
+    native stride differs.  PIF is used for normalization and diagnostics, not
+    as the final change-validity mask.  Missing requested stages are reported
+    explicitly; no stage is fabricated by resizing another feature tensor.
     """
 
     np = _require_numpy()
@@ -253,8 +255,21 @@ def compute_multiscale_feature_residual(
         (canonical_width, canonical_height),
         interpolation=cv2.INTER_NEAREST,
     ).astype(bool, copy=False)
-    valid_accumulator &= canonical_pif
+    registration_valid = None
+    if valid_mask is not None:
+        registration_valid = np.asarray(valid_mask)
+        if registration_valid.ndim != 2 or any(
+            dimension <= 0 for dimension in registration_valid.shape
+        ):
+            raise ValueError("FEATURE_RESIDUAL_VALID_MASK_SHAPE_INVALID")
+        registration_valid = cv2.resize(
+            (registration_valid != 0).astype(np.uint8),
+            (canonical_width, canonical_height),
+            interpolation=cv2.INTER_NEAREST,
+        ).astype(bool, copy=False)
+        valid_accumulator &= registration_valid
     score_accumulator[~valid_accumulator] = 0.0
+    pif_valid = canonical_pif & valid_accumulator
     return FeatureResidualResult(
         score_map=np.ascontiguousarray(score_accumulator, dtype=np.float32),
         valid_mask=np.ascontiguousarray(valid_accumulator, dtype=bool),
@@ -272,8 +287,8 @@ def compute_multiscale_feature_residual(
                 else "insufficient_pif"
             ),
             "pif_feature_cells": int(np.count_nonzero(canonical_pif)),
-            "median_score_pif": float(np.median(score_accumulator[canonical_pif]))
-            if np.any(canonical_pif)
+            "median_score_pif": float(np.median(score_accumulator[pif_valid]))
+            if np.any(pif_valid)
             else 0.0,
             "median_score_full": float(np.median(score_accumulator[valid_accumulator]))
             if np.any(valid_accumulator)

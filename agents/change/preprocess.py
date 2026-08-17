@@ -142,10 +142,19 @@ def prepare_pair(
         geometry_t2 = registered.t2.copy()
         registration_mask = registered.valid_overlap_mask.copy()
         geometry_comparable = True
+    elif not settings.registration.enabled and raw1.shape == raw2.shape:
+        # An explicitly disabled registration stage is the compatibility
+        # request for the legacy same-canvas path.  Its canvas is therefore
+        # fully valid even though no geometric quality estimate was made.
+        geometry_t1 = raw1.copy()
+        geometry_t2 = raw2.copy()
+        registration_mask = np.ones(raw1.shape[:2], dtype=bool)
+        geometry_comparable = True
     elif raw1.shape == raw2.shape:
-        # Same-size raw fallback preserves the legacy proposal path, but the
-        # zero mask makes it impossible for PIF/feature gates to claim the
-        # unregistered border is valid evidence.
+        # A failed/rejected enabled registration must not be mistaken for a
+        # trustworthy raw comparison merely because the arrays have matching
+        # shapes.  Keep the raw fallback available for audit/VLM use, but
+        # prevent dense proposal evidence from consuming it.
         geometry_t1 = raw1.copy()
         geometry_t2 = raw2.copy()
         registration_mask = np.zeros(raw1.shape[:2], dtype=bool)
@@ -397,13 +406,15 @@ def publish_change_proposals(
     for proposal in proposals:
         x1, y1, x2, y2 = proposal.pixel_box
         evidence: list[str] = []
-        raw_t2_crop = prepared.raw_t2[y1:y2, x1:x2]
+        reference_crop = prepared.raw_t1[y1:y2, x1:x2]
         registered_t2 = _registered_t2_for_evidence(prepared)
         crop_images = [("raw_t1", prepared.raw_t1)]
         if registered_t2 is not None:
             crop_images.append(("registered_t2", registered_t2))
         else:
-            crop_images.append(("raw_t2", prepared.raw_t2))
+            raw_t2_evidence = _raw_t2_for_same_canvas_evidence(prepared)
+            if raw_t2_evidence is not None:
+                crop_images.append(("raw_t2", raw_t2_evidence))
         for label, image in crop_images:
             filename = f"{proposal.proposal_id}_{label}.png"
             _write_image(crops / filename, image[y1:y2, x1:x2])
@@ -420,16 +431,19 @@ def publish_change_proposals(
                 )
             component_mask = _component_mask_artifact(
                 component_mask,
-                expected_shape=raw_t2_crop.shape[:2],
+                expected_shape=reference_crop.shape[:2],
             )
             _write_image(crops / mask_basename, component_mask)
             overlay_filename = f"{proposal.proposal_id}_mask_overlay.png"
+            overlay_image = (
+                registered_t2[y1:y2, x1:x2]
+                if registered_t2 is not None
+                else reference_crop
+            )
             _write_image(
                 crops / overlay_filename,
                 _render_change_mask_overlay(
-                    registered_t2[y1:y2, x1:x2]
-                    if registered_t2 is not None
-                    else raw_t2_crop,
+                    overlay_image,
                     component_mask,
                 ),
             )
@@ -524,6 +538,27 @@ def _registered_t2_for_evidence(prepared: ChangePreparedPair) -> Any | None:
     ):
         return None
     return prepared.registered_t2
+
+
+def _raw_t2_for_same_canvas_evidence(prepared: ChangePreparedPair) -> Any | None:
+    """Return raw T2 only when its pixels share the T1 reference canvas.
+
+    A raw T2 crop cannot inherit a T1 proposal box across different source
+    sizes, nor after an enabled registration failure.  In those cases the
+    full raw T2 remains available to the VLM, while local evidence uses only
+    the reference T1 and any registered T2 artifact.
+    """
+
+    if prepared.raw_t1.shape[:2] != prepared.raw_t2.shape[:2]:
+        return None
+    report = prepared.registration_report
+    if report is None:
+        return prepared.raw_t2
+    if "REGISTRATION_DISABLED" in report.decision.reason_codes:
+        return prepared.raw_t2
+    if report.decision.used_for_comparison and report.decision.model == "identity":
+        return prepared.raw_t2
+    return None
 
 
 def _map_artifact(value: Any) -> Any:

@@ -72,9 +72,18 @@ def _registration_reliability(
     if report is None:
         return 1.0
     decision = report.decision
+    if "REGISTRATION_DISABLED" in decision.reason_codes:
+        return 1.0
+    if decision.used_for_comparison and any(
+        code in decision.reason_codes
+        for code in (
+            "REGISTRATION_NOT_NEEDED",
+            "METADATA_ALIGNMENT_USED",
+            "IDENTICAL_INPUTS",
+        )
+    ):
+        return 1.0
     if decision.status == "skipped":
-        if "REGISTRATION_DISABLED" in decision.reason_codes:
-            return 1.0
         return 0.35
     if decision.status != "applied" or report.metrics is None:
         return 0.20
@@ -395,6 +404,10 @@ def fuse_change_proposals(
         cv2.MORPH_CLOSE,
         close_kernel,
     ).astype(bool)
+    if valid_overlap is not None:
+        # Closing can dilate pixels back across the comparison-canvas edge.
+        # Re-apply the hard validity invariant after every morphology step.
+        binary &= valid_overlap
     proposals, component_masks, component_diagnostics, component_count = _components(
         binary,
         fused_score=fused_score,

@@ -220,6 +220,7 @@ class ChangePerceptionPipeline:
                     feature_stage_weights=semantic_settings.feature_stage_weights,
                     feature_strides_by_stage=first_output.feature_strides_by_stage,
                     image_size=expected_size,
+                    valid_mask=getattr(prepared, "registration_valid_mask", None),
                     local_match_radius=semantic_settings.local_match_radius,
                     min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
                     feature_scale_epsilon=semantic_settings.feature_scale_epsilon,

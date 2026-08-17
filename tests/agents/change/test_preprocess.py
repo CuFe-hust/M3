@@ -20,10 +20,14 @@ from agents.change.preprocess import (
     preprocess_pair,
     publish_change_proposals,
 )
+from agents.change.registration import RegisteredPair
 from agents.change.schema import (
     ChangePreprocessResult,
     ChangeProposal,
     HarmonizationDecision,
+    RegistrationDecision,
+    RegistrationMetrics,
+    RegistrationReport,
 )
 from agents.change.settings import (
     AgentChangeSettings,
@@ -34,7 +38,7 @@ from agents.change.settings import (
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 
 
-def _write_pair(root: Path) -> UnifiedSample:
+def _write_pair(root: Path, *, metadata: dict[str, object] | None = None) -> UnifiedSample:
     root.mkdir(parents=True, exist_ok=True)
     Image.new("RGB", (64, 64), (10, 20, 30)).save(root / "t1.png")
     Image.new("RGB", (64, 64), (40, 50, 60)).save(root / "t2.png")
@@ -49,7 +53,29 @@ def _write_pair(root: Path) -> UnifiedSample:
         ],
         question="Describe the change.",
         ground_truth=GroundTruth(answers=["x"]),
-        metadata={"geometry_aligned": True},
+        metadata=metadata if metadata is not None else {"geometry_aligned": True},
+    )
+
+
+def _write_change_pair(root: Path) -> UnifiedSample:
+    root.mkdir(parents=True, exist_ok=True)
+    first = np.zeros((64, 64, 3), dtype=np.uint8)
+    first[:, :] = (10, 20, 30)
+    second = first.copy()
+    second[24:40, 24:40] = (240, 230, 220)
+    Image.fromarray(first).save(root / "t1.png")
+    Image.fromarray(second).save(root / "t2.png")
+    return UnifiedSample(
+        sample_id="change-s1",
+        dataset="parity",
+        split="test",
+        task="change_caption",
+        images=[
+            ImageRef(image_id="t1", path="t1.png", role="t1"),
+            ImageRef(image_id="t2", path="t2.png", role="t2"),
+        ],
+        question="Describe the change.",
+        ground_truth=GroundTruth(answers=["x"]),
     )
 
 
@@ -90,6 +116,154 @@ def test_preprocess_with_proposals_enabled(tmp_path: Path) -> None:
     assert (tmp_path / "run" / files["proposal_overlay"]).is_file()
     # Proposals JSON is published. / proposals JSON 已发布。
     assert (tmp_path / "run" / "change_preprocess" / "proposals.json").is_file()
+
+
+def test_registration_disabled_same_size_preserves_legacy_valid_canvas(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_change_pair(root)
+    settings = _settings(
+        registration={"enabled": False},
+        proposals=ChangeProposalSettings(enabled=True),
+    )
+
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    result = preprocess_pair(sample, settings, tmp_path / "run", data_root=root)
+
+    assert bool(np.all(prepared.registration_valid_mask))
+    assert result.proposals
+    difference = np.asarray(
+        Image.open(tmp_path / "run" / result.artifact_files["difference_map"])
+    )
+    assert bool(np.any(difference))
+
+
+def test_enabled_registration_failure_does_not_trust_same_size_raw_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root, metadata={})
+    report = RegistrationReport(
+        decision=RegistrationDecision(
+            version="global_registration_v1",
+            status="rejected",
+            model="none",
+            reason_codes=["REGISTRATION_INSUFFICIENT_MATCHES"],
+            used_for_comparison=False,
+        ),
+        metrics=RegistrationMetrics(),
+        transform_matrix=None,
+        source_size_t1=[64, 64],
+        source_size_t2=[64, 64],
+        output_size=[64, 64],
+    )
+
+    from agents.change import preprocess as preprocess_module
+
+    monkeypatch.setattr(
+        preprocess_module,
+        "register_pair",
+        lambda *args, **kwargs: RegisteredPair(
+            t1=args[0].copy(),
+            t2=args[1].copy(),
+            valid_overlap_mask=np.zeros((64, 64), dtype=bool),
+            report=report,
+        ),
+    )
+    settings = _settings(
+        registration={"enabled": True},
+        proposals=ChangeProposalSettings(enabled=True),
+    )
+
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+
+    assert not bool(np.any(prepared.registration_valid_mask))
+
+
+def test_different_size_registration_uses_reference_and_registered_crops(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "data"
+    root.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (160, 160), (10, 20, 30)).save(root / "t1.png")
+    Image.new("RGB", (128, 128), (40, 50, 60)).save(root / "t2.png")
+    sample = UnifiedSample(
+        sample_id="different-size",
+        dataset="parity",
+        split="test",
+        task="change_caption",
+        images=[
+            ImageRef(image_id="t1", path="t1.png", role="t1"),
+            ImageRef(image_id="t2", path="t2.png", role="t2"),
+        ],
+        question="Describe the change.",
+    )
+    report = RegistrationReport(
+        decision=RegistrationDecision(
+            version="global_registration_v1",
+            status="applied",
+            model="similarity",
+            reason_codes=["REGISTRATION_APPLIED"],
+            used_for_comparison=True,
+        ),
+        metrics=RegistrationMetrics(
+            match_count=20,
+            inlier_count=18,
+            inlier_ratio=0.9,
+            median_reprojection_error=1.0,
+            overlap_ratio=0.95,
+        ),
+        transform_matrix=[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        source_size_t1=[160, 160],
+        source_size_t2=[128, 128],
+        output_size=[160, 160],
+    )
+    from agents.change import preprocess as preprocess_module
+
+    monkeypatch.setattr(
+        preprocess_module,
+        "register_pair",
+        lambda *args, **kwargs: RegisteredPair(
+            t1=np.asarray(args[0]).copy(),
+            t2=np.zeros_like(args[0]),
+            valid_overlap_mask=np.ones((160, 160), dtype=bool),
+            report=report,
+        ),
+    )
+    settings = _settings(
+        harmonization=ChangeHarmonizationSettings(enabled=False),
+        proposals=ChangeProposalSettings(enabled=False),
+    )
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    proposal = ChangeProposal(
+        proposal_id="change_000",
+        box=[750, 750, 937, 937],
+        pixel_box=[120, 120, 150, 150],
+        score=0.8,
+        area_ratio=0.05,
+        source="fused_change_v2",
+        mask_filename="change_000_mask.png",
+    )
+    result = publish_change_proposals(
+        prepared,
+        score_map=np.ones((160, 160), dtype=np.float32),
+        proposals=[proposal],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+        component_masks={"change_000_mask.png": np.ones((30, 30), dtype=np.uint8)},
+    )
+
+    proposal_result = result.proposals[0]
+    assert "change_preprocess/crops/change_000_registered_t2.png" in proposal_result.evidence_filenames
+    assert "change_preprocess/crops/change_000_raw_t2.png" not in proposal_result.evidence_filenames
+    crop_dir = tmp_path / "run" / "change_preprocess" / "crops"
+    assert Image.open(crop_dir / "change_000_raw_t1.png").size == (30, 30)
+    assert Image.open(crop_dir / "change_000_registered_t2.png").size == (30, 30)
+    assert Image.open(crop_dir / "change_000_mask.png").size == (30, 30)
+    assert Image.open(crop_dir / "change_000_mask_overlay.png").size == (30, 30)
 
 
 def test_preprocess_with_harmonization_enabled(tmp_path: Path) -> None:

@@ -290,6 +290,52 @@ def test_low_quality_registration_reduces_registration_reliability() -> None:
     assert diagnostics["raw"]["registration"] < 0.5
 
 
+@pytest.mark.parametrize("reason_codes", [["REGISTRATION_NOT_NEEDED", "METADATA_ALIGNMENT_USED"], ["REGISTRATION_NOT_NEEDED", "IDENTICAL_INPUTS"]])
+def test_trusted_identity_registration_has_full_reliability(
+    reason_codes: list[str],
+) -> None:
+    report = RegistrationReport(
+        decision=RegistrationDecision(
+            version="global_registration_v1",
+            status="skipped",
+            model="identity",
+            reason_codes=reason_codes,
+            used_for_comparison=True,
+        ),
+        metrics=RegistrationMetrics(),
+    )
+
+    reliability, _ = compute_reliabilities(
+        registration_report=report,
+        feature_diagnostics=None,
+        semantic_diagnostics=None,
+        harmonization_decision=None,
+        settings=ChangeReliabilitySettings(),
+    )
+
+    assert reliability["registration"] == pytest.approx(1.0)
+
+
+def test_disabled_registration_has_legacy_reliability() -> None:
+    report = RegistrationReport(
+        decision=RegistrationDecision(
+            version="global_registration_v1",
+            status="skipped",
+            model="identity",
+            reason_codes=["REGISTRATION_DISABLED"],
+            used_for_comparison=False,
+        ),
+    )
+    reliability, _ = compute_reliabilities(
+        registration_report=report,
+        feature_diagnostics=None,
+        semantic_diagnostics=None,
+        harmonization_decision=None,
+        settings=ChangeReliabilitySettings(),
+    )
+    assert reliability["registration"] == pytest.approx(1.0)
+
+
 def test_invalid_overlap_is_a_hard_mask_for_threshold_and_components() -> None:
     low, feature, semantic = _maps(32)
     low[:, :] = 1.0
@@ -313,6 +359,30 @@ def test_invalid_overlap_is_a_hard_mask_for_threshold_and_components() -> None:
         valid[proposal.pixel_box[1] : proposal.pixel_box[3], proposal.pixel_box[0] : proposal.pixel_box[2]].any()
         for proposal in result.proposals
     )
+
+
+def test_invalid_overlap_remains_masked_after_morphology_close() -> None:
+    low = np.zeros((32, 32), dtype=np.float32)
+    feature = np.zeros((32, 32), dtype=np.float32)
+    semantic = np.zeros((32, 32), dtype=np.float32)
+    valid = np.zeros((32, 32), dtype=bool)
+    valid[8:24, 8:16] = True
+    valid[8:24, 18:26] = True
+    low[valid] = 1.0
+    feature[valid] = 1.0
+    semantic[valid] = 1.0
+
+    result = fuse_change_proposals(
+        low,
+        feature,
+        semantic,
+        np.zeros((32, 32), dtype=np.uint8),
+        _settings(mask_close_kernel=5, threshold_floor=0.1),
+        min_pif_pixels=1,
+        valid_overlap_mask=valid,
+    )
+
+    assert not bool(np.any(result.binary_change_mask[~valid]))
 
 
 @pytest.mark.parametrize(

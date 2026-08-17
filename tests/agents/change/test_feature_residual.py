@@ -271,6 +271,39 @@ def test_score_range_and_diagnostics_contract() -> None:
     } <= result.diagnostics.keys()
 
 
+def test_multiscale_residual_keeps_change_outside_pif() -> None:
+    pif = np.ones((64, 64), dtype=np.uint8)
+    change = np.s_[24:40, 24:40]
+    pif[change] = 0
+    features_t1_by_stage: dict[int, np.ndarray] = {}
+    features_t2_by_stage: dict[int, np.ndarray] = {}
+    for stage, size in ((1, 8), (2, 16), (3, 32)):
+        first = _features(seed=stage + 100, shape=(8, size, size))
+        second = first.copy()
+        y1, y2 = int(24 * size / 64), int(40 * size / 64)
+        second[:, y1:y2, y1:y2] *= np.float32(-1.0)
+        features_t1_by_stage[stage] = first
+        features_t2_by_stage[stage] = second
+
+    valid_mask = np.ones((64, 64), dtype=bool)
+    valid_mask[:8, :8] = False
+    result = compute_multiscale_feature_residual(
+        features_t1_by_stage,
+        features_t2_by_stage,
+        pif,
+        feature_stages=(1, 2, 3),
+        image_size=(64, 64),
+        valid_mask=valid_mask,
+        local_match_radius=0,
+        min_pif_feature_cells=8,
+    )
+
+    assert float(np.median(result.score_map[change])) > 0.10
+    assert bool(np.any(result.score_map[pif == 0] > 0.0))
+    assert not bool(np.any(result.score_map[:8, :8]))
+    assert result.diagnostics["pif_feature_cells"] < 64 * 64
+
+
 def test_module_has_no_model_dependency() -> None:
     source_path = Path(feature_residual_module.__file__ or "")
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
