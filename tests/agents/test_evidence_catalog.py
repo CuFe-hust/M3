@@ -1,8 +1,4 @@
-"""Contract tests for the versioned evidence catalog.
-
-版本化证据目录契约测试：版本固定、组合展开顺序与去重、能力判断、逻辑身份、
-安全校验、严格失败与生产资产一致性。
-"""
+"""Contract tests for canonical leaves, aliases, parents, and capability."""
 
 from __future__ import annotations
 
@@ -11,295 +7,219 @@ from pathlib import Path
 import pytest
 
 from agents.counting.expert_catalog import ExpertCatalog
-from agents.evidence_catalog import (
-    CatalogCategoryError,
-    EvidenceCatalog,
-)
+from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from application.settings import load_settings
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _PRODUCTION_CATALOG = REPO_ROOT / "agents" / "evidence_catalog.json"
-_COUNTING_EXPERT_CATALOG = (
-    REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
-)
+_COUNTING_CATALOG = REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
+_TASKS = ("counting", "fine_grained_counting", "general_vqa", "grounding")
 
 
-def _catalog(**overrides) -> EvidenceCatalog:
-    data = {
-        "catalog_version": "catalog-test-v1",
-        "composites": {
-            "vehicle": ["small_vehicle", "large_vehicle"],
-            "aircraft": ["plane"],
+def _data() -> dict[str, object]:
+    leaves = {
+        "small-vehicle": {
+            "yolo_labels": ["small vehicle"],
+            "segformer_labels": ["Small_Vehicle"],
+            "yolo_enabled": True,
+            "segformer_enabled": True,
         },
-        "leaves": {
-            "small_vehicle": {
-                "yolo_labels": ["small vehicle"],
-                "segformer_labels": ["SmallVehicle"],
-                "yolo_enabled": True,
-                "segformer_enabled": True,
-            },
-            "large_vehicle": {
-                "yolo_labels": ["large vehicle"],
-                "segformer_labels": None,
-                "yolo_enabled": True,
-                "segformer_enabled": False,
-            },
-            "plane": {
-                "yolo_labels": ["airplane"],
-                "segformer_labels": None,
-                "yolo_enabled": True,
-                "segformer_enabled": False,
-            },
+        "large-vehicle": {
+            "yolo_labels": ["large vehicle"],
+            "segformer_labels": None,
+            "yolo_enabled": True,
+            "segformer_enabled": False,
+        },
+        "plane": {
+            "yolo_labels": ["plane"],
+            "segformer_labels": None,
+            "yolo_enabled": True,
+            "segformer_enabled": False,
+        },
+        "helicopter": {
+            "yolo_labels": ["helicopter"],
+            "segformer_labels": None,
+            "yolo_enabled": True,
+            "segformer_enabled": False,
         },
     }
+    return {
+        "catalog_version": "catalog-test-v3",
+        "aliases": {"airplane": "plane", "aeroplane": "plane"},
+        "parents": {
+            "vehicle": ["small-vehicle", "large-vehicle"],
+            "aircraft": ["plane", "helicopter"],
+        },
+        "leaves": leaves,
+        "task_capabilities": {task: list(leaves) for task in _TASKS},
+    }
+
+
+def _catalog(**overrides: object) -> EvidenceCatalog:
+    data = _data()
     data.update(overrides)
     return EvidenceCatalog(data)
 
 
-# ── 版本与结构 / version and structure ───────────────────────────────────
-
-
-def test_catalog_exposes_version_and_stable_order() -> None:
+def test_catalog_exposes_stable_canonical_shape() -> None:
     catalog = _catalog()
-    assert catalog.catalog_version == "catalog-test-v1"
-    assert catalog.composite_categories == ("vehicle", "aircraft")
-    assert catalog.leaf_categories == ("small_vehicle", "large_vehicle", "plane")
-    assert catalog.is_composite("vehicle") is True
-    assert catalog.is_leaf("plane") is True
-    assert catalog.is_composite("plane") is False
+    assert catalog.catalog_version == "catalog-test-v3"
+    assert catalog.leaf_categories == (
+        "small-vehicle", "large-vehicle", "plane", "helicopter"
+    )
+    assert catalog.parent_categories == ("vehicle", "aircraft")
+    assert catalog.is_leaf("small-vehicle")
+    assert catalog.is_parent("vehicle")
+    assert not catalog.is_leaf("small_vehicle")
+    assert dict(catalog.parent_expansions)["vehicle"] == (
+        "small-vehicle", "large-vehicle"
+    )
 
 
-def test_catalog_rejects_bad_versions() -> None:
-    for version in ("", "  ", "has space", "UPPER", "has/control\x00"):
-        with pytest.raises(CatalogCategoryError, match="INVALID_CATALOG_VERSION"):
-            _catalog(catalog_version=version)
+@pytest.mark.parametrize(
+    ("raw", "canonical"),
+    [
+        ("small_vehicle", "small-vehicle"),
+        ("small vehicle", "small-vehicle"),
+        ("small-vehicle", "small-vehicle"),
+        ("airplane", "plane"),
+        ("aeroplane", "plane"),
+    ],
+)
+def test_alias_canonicalization_is_deterministic(raw: str, canonical: str) -> None:
+    assert _catalog().canonicalize_alias(raw) == canonical
 
 
-def test_catalog_rejects_extra_top_level_keys() -> None:
-    with pytest.raises(CatalogCategoryError, match="INVALID_TOP_LEVEL_KEYS"):
-        EvidenceCatalog(
-            {
-                "catalog_version": "v1",
-                "composites": {},
-                "leaves": {},
-                "unexpected": True,
-            }
-        )
-
-
-def test_catalog_rejects_invalid_category_names() -> None:
-    with pytest.raises(CatalogCategoryError, match="INVALID_CATEGORY_NAME"):
-        _catalog(leaves={"Bad Name": {"yolo_labels": ["x"]}})
-    with pytest.raises(CatalogCategoryError, match="INVALID_CATEGORY_NAME"):
-        _catalog(leaves={"has-dash": {"yolo_labels": ["x"]}})
-
-
-def test_catalog_rejects_composite_targeting_unknown_leaf() -> None:
-    with pytest.raises(CatalogCategoryError, match="COMPOSITE_TARGETS_UNKNOWN_LEAF"):
-        _catalog(composites={"vehicle": ["missing_leaf"]})
-
-
-def test_catalog_rejects_composite_name_colliding_with_leaf() -> None:
-    with pytest.raises(CatalogCategoryError, match="COMPOSITE_NAME_COLLIDES_WITH_LEAF"):
-        _catalog(composites={"plane": ["small_vehicle"]})
-
-
-def test_catalog_rejects_duplicated_composite_targets() -> None:
-    with pytest.raises(CatalogCategoryError, match="COMPOSITE_TARGETS_DUPLICATED"):
-        _catalog(composites={"vehicle": ["small_vehicle", "small_vehicle"]})
-
-
-# ── 展开 / expansion ─────────────────────────────────────────────────────
-
-
-def test_expand_composites_preserves_order_and_dedupes() -> None:
+def test_parent_and_alias_expansion_is_central_and_ordered() -> None:
     catalog = _catalog()
-    assert catalog.composite_leaves("vehicle") == ("small_vehicle", "large_vehicle")
-    assert catalog.expand_composites(["vehicle", "aircraft"]) == (
-        "small_vehicle",
-        "large_vehicle",
+    assert catalog.expand_target("vehicle") == ("small-vehicle", "large-vehicle")
+    assert catalog.expand_target("aircraft") == ("plane", "helicopter")
+    assert catalog.expand_target("airplane") == ("plane",)
+    assert catalog.expand_target("unknown-object") == ()
+
+
+def test_plan_validation_accepts_only_canonical_executable_leaves() -> None:
+    catalog = _catalog()
+    assert catalog.validate_plan_leaves(
+        ["small-vehicle", "large-vehicle"], task="counting"
+    ) == ("small-vehicle", "large-vehicle")
+    for invalid in (
+        "vehicle", "airplane", "small_vehicle", "small vehicle", "LABEL_0",
+        "background", "unknown-vehical",
+    ):
+        with pytest.raises(CatalogCategoryError, match="PLAN_CATEGORY_NOT_CANONICAL_LEAF"):
+            catalog.validate_plan_leaves([invalid], task="counting")
+    with pytest.raises(CatalogCategoryError, match="PLAN_CATEGORY_DUPLICATED"):
+        catalog.validate_plan_leaves(["plane", "plane"], task="grounding")
+
+
+def test_per_task_capability_is_explicit() -> None:
+    data = _data()
+    data["task_capabilities"]["grounding"] = ["plane"]
+    catalog = EvidenceCatalog(data)
+    assert catalog.executable_leaves_for_task("grounding") == ("plane",)
+    assert catalog.executable_leaves_for_target("aircraft", task="grounding") == ()
+    assert catalog.executable_leaves_for_target("airplane", task="grounding") == (
         "plane",
     )
-    assert catalog.expand_composites(["vehicle", "vehicle"]) == (
-        "small_vehicle",
-        "large_vehicle",
+    with pytest.raises(CatalogCategoryError, match="NOT_EXECUTABLE"):
+        catalog.validate_plan_leaves(["helicopter"], task="grounding")
+
+
+@pytest.mark.parametrize("invalid", ["../plane", "/plane", "plane\\x", "bad\nname", ""])
+def test_category_inputs_reject_paths_controls_and_empty(invalid: str) -> None:
+    with pytest.raises(CatalogCategoryError, match="INVALID_CATEGORY_NAME"):
+        _catalog().canonicalize_alias(invalid)
+
+
+def test_catalog_rejects_invalid_structure_and_alias_conflicts() -> None:
+    data = _data()
+    data["unexpected"] = True
+    with pytest.raises(CatalogCategoryError, match="INVALID_TOP_LEVEL_KEYS"):
+        EvidenceCatalog(data)
+
+    data = _data()
+    data["parents"] = {"plane": ["plane"]}
+    with pytest.raises(CatalogCategoryError, match="COLLIDES_WITH_LEAF"):
+        EvidenceCatalog(data)
+
+    data = _data()
+    data["aliases"] = {"flying-machine": "missing"}
+    with pytest.raises(CatalogCategoryError, match="ALIAS_TARGET_UNKNOWN"):
+        EvidenceCatalog(data)
+
+
+def test_catalog_rejects_background_placeholder_and_bad_model_labels() -> None:
+    for leaf in ("background", "label-0"):
+        data = _data()
+        data["leaves"] = {leaf: {"yolo_labels": [leaf], "yolo_enabled": True}}
+        data["parents"] = {}
+        data["task_capabilities"] = {task: [leaf] for task in _TASKS}
+        with pytest.raises(CatalogCategoryError, match="INVALID_LEAF"):
+            EvidenceCatalog(data)
+
+    data = _data()
+    data["leaves"]["plane"]["yolo_labels"] = ["LABEL_7"]
+    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
+        EvidenceCatalog(data)
+
+
+def test_capability_labels_and_identity_are_versioned() -> None:
+    catalog = _catalog()
+    assert catalog.leaf_yolo_labels("small-vehicle") == ("small vehicle",)
+    assert catalog.leaf_segformer_labels("small-vehicle") == ("Small_Vehicle",)
+    assert catalog.capability_enabled("small-vehicle", "segformer")
+    assert not catalog.capability_enabled("large-vehicle", "segformer")
+    assert catalog.capability_identity("small-vehicle", "yolo") == (
+        "catalog-test-v3:small-vehicle:yolo"
     )
-    assert catalog.expand_composites([]) == ()
 
 
-def test_expand_unknown_or_leaf_category_fails_strictly() -> None:
-    catalog = _catalog()
-    with pytest.raises(CatalogCategoryError, match="UNKNOWN_COMPOSITE"):
-        catalog.expand_composites(["tank"])
-    with pytest.raises(CatalogCategoryError, match="UNKNOWN_COMPOSITE"):
-        catalog.expand_composites(["plane"])  # a leaf is not a composite / 叶子不是组合
-    with pytest.raises(CatalogCategoryError, match="UNKNOWN_COMPOSITE"):
-        catalog.validate_plan_categories(["vehicle", "tank"])
-
-
-def test_validate_plan_categories_accepts_known_composites() -> None:
-    catalog = _catalog()
-    catalog.validate_plan_categories(["vehicle"])
-    catalog.validate_plan_categories(["aircraft", "vehicle"])
-
-
-# ── 能力与身份 / capabilities and identity ──────────────────────────────
-
-
-def test_capabilities_expose_labels_and_enabled_flags() -> None:
-    catalog = _catalog()
-    assert catalog.leaf_yolo_labels("small_vehicle") == ("small vehicle",)
-    assert catalog.leaf_segformer_labels("small_vehicle") == ("SmallVehicle",)
-    assert catalog.leaf_segformer_labels("large_vehicle") is None
-    assert catalog.capability_enabled("small_vehicle", "yolo") is True
-    assert catalog.capability_enabled("large_vehicle", "segformer") is False
-    assert catalog.capability_enabled("plane", "yolo") is True
-
-
-def test_capability_identity_is_logical_and_versioned() -> None:
-    catalog = _catalog()
-    assert catalog.capability_identity("small_vehicle", "yolo") == (
-        "catalog-test-v1:small_vehicle:yolo"
-    )
-    assert catalog.capability_identity("small_vehicle", "segformer") == (
-        "catalog-test-v1:small_vehicle:segformer"
-    )
-
-
-def test_unknown_leaf_capability_fails_stable() -> None:
-    catalog = _catalog()
-    for call in (
-        lambda: catalog.leaf_yolo_labels("tank"),
-        lambda: catalog.capability_enabled("tank", "yolo"),
-        lambda: catalog.capability_identity("tank", "segformer"),
-    ):
-        with pytest.raises(CatalogCategoryError, match="UNKNOWN_LEAF"):
-            call()
-
-
-def test_enabled_capability_requires_verified_labels() -> None:
-    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
-        _catalog(
-            leaves={
-                "tank": {"yolo_labels": [], "yolo_enabled": True},
-            }
-        )
-    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
-        _catalog(
-            leaves={
-                "tank": {
-                    "yolo_labels": ["tank"],
-                    "segformer_labels": [],
-                    "segformer_enabled": True,
-                },
-            }
-        )
-
-
-def test_uncalibrated_capability_stays_disabled() -> None:
-    catalog = EvidenceCatalog(
-        {
-            "catalog_version": "seed-v1",
-            "composites": {"vehicle": ["small_vehicle"]},
-            "leaves": {
-                "small_vehicle": {
-                    "yolo_labels": [],
-                    "segformer_labels": None,
-                    "yolo_enabled": False,
-                    "segformer_enabled": False,
-                }
-            },
-        }
-    )
-    assert catalog.capability_enabled("small_vehicle", "yolo") is False
-    assert catalog.capability_enabled("small_vehicle", "segformer") is False
-    assert catalog.leaf_yolo_labels("small_vehicle") == ()
-
-
-# ── 安全 / safety ────────────────────────────────────────────────────────
-
-
-def test_catalog_rejects_sensitive_keys() -> None:
-    with pytest.raises(CatalogCategoryError, match="SENSITIVE_KEY_IN_CATALOG"):
-        EvidenceCatalog(
-            {
-                "catalog_version": "v1",
-                "composites": {},
-                "leaves": {"x": {"yolo_labels": [], "api_key": "sk-123"}},
-            }
-        )
-
-
-def test_catalog_rejects_path_like_labels() -> None:
-    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
-        _catalog(
-            leaves={
-                "tank": {"yolo_labels": ["/home/user/models/class.txt"]},
-            }
-        )
-    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
-        _catalog(
-            leaves={
-                "tank": {"yolo_labels": ["C:\\models\\class"]},
-            }
-        )
-    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
-        _catalog(
-            leaves={
-                "tank": {"yolo_labels": ["bad\x00label"]},
-            }
-        )
-
-
-# ── 生产资产 / production asset ──────────────────────────────────────────
-
-
-def test_production_catalog_loads_and_is_consistent() -> None:
+def test_production_catalog_publishes_only_verified_current_leaves() -> None:
     catalog = EvidenceCatalog.from_file(_PRODUCTION_CATALOG)
-    assert catalog.catalog_version == "first-qwen-evidence-catalog-v2"
-    assert catalog.composite_categories == (
-        "vehicle",
-        "aircraft",
-        "watercraft",
-        "sports_facility",
-        "transport_infrastructure",
-        "industrial_facility",
-        "aviation_infrastructure",
+    expected_yolo = (
+        "plane", "baseball-diamond", "bridge", "ground-track-field",
+        "small-vehicle", "large-vehicle", "ship", "tennis-court",
+        "basketball-court", "storage-tank", "soccer-ball-field", "roundabout",
+        "harbor", "swimming-pool", "helicopter", "container-crane", "airport",
+        "helipad",
     )
-    assert catalog.composite_leaves("vehicle") == ("small_vehicle", "large_vehicle")
-    assert catalog.composite_leaves("aircraft") == ("plane", "helicopter")
-    assert catalog.composite_leaves("watercraft") == ("ship",)
-    assert catalog.leaf_yolo_labels("small_vehicle") == ("small vehicle",)
-    assert catalog.leaf_segformer_labels("small_vehicle") == ("Small_Vehicle",)
-    assert catalog.capability_enabled("small_vehicle", "yolo") is True
-    assert catalog.capability_enabled("small_vehicle", "segformer") is True
-    assert catalog.capability_enabled("container_crane", "yolo") is True
-    assert catalog.capability_enabled("container_crane", "segformer") is False
+    expected_segformer = {
+        "storage-tank", "large-vehicle", "small-vehicle", "plane", "ship",
+        "swimming-pool", "harbor", "tennis-court", "ground-track-field",
+        "soccer-ball-field", "baseball-diamond", "bridge", "basketball-court",
+        "roundabout", "helicopter",
+    }
+    assert catalog.catalog_version == "visual-evidence-catalog-v3"
+    assert catalog.leaf_categories == expected_yolo
+    assert catalog.executable_leaves_for_task("counting") == expected_yolo
+    assert {
+        leaf for leaf in catalog.leaf_categories
+        if catalog.capability_enabled(leaf, "segformer")
+    } == expected_segformer
+    assert "background" not in catalog.leaf_categories
+    assert not any(leaf.startswith("label-") for leaf in catalog.leaf_categories)
 
 
-def test_production_catalog_labels_are_backed_by_current_model_maps() -> None:
+def test_production_raw_labels_are_backed_by_current_model_maps() -> None:
     evidence = EvidenceCatalog.from_file(_PRODUCTION_CATALOG)
-    experts = ExpertCatalog.load(_COUNTING_EXPERT_CATALOG, asset_root=REPO_ROOT)
+    experts = ExpertCatalog.load(_COUNTING_CATALOG, asset_root=REPO_ROOT)
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
     (yolo,) = settings.backend.yolo.detectors
-    segformer = experts.expert("segmenter_mitb2_001")
-    yolo_labels = set(yolo.classes)
-    segformer_labels = {
-        label
-        for support in segformer.supports.values()
-        for label in support.model_labels
+    semantic = experts.expert("segmenter_mitb2_001")
+    semantic_labels = {
+        label for support in semantic.supports.values() for label in support.model_labels
     }
-
     for leaf in evidence.leaf_categories:
         if evidence.capability_enabled(leaf, "yolo"):
-            assert set(evidence.leaf_yolo_labels(leaf)) <= yolo_labels
+            assert set(evidence.leaf_yolo_labels(leaf)) <= set(yolo.classes)
         if evidence.capability_enabled(leaf, "segformer"):
-            assert set(evidence.leaf_segformer_labels(leaf) or ()) <= segformer_labels
+            assert set(evidence.leaf_segformer_labels(leaf) or ()) <= semantic_labels
 
 
-def test_catalog_asset_has_no_physical_paths() -> None:
+def test_catalog_asset_has_no_physical_paths_or_unverified_classes() -> None:
     text = _PRODUCTION_CATALOG.read_text(encoding="utf-8")
-    for token in ("/Users", "C:\\", "checkpoints", ".pt", ".onnx", "sk-", "data:image"):
+    for token in ("/Users", "C:\\", "checkpoints", ".onnx", "LABEL_", "background"):
         assert token not in text
 
 

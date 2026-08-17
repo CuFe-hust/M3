@@ -1,11 +1,10 @@
-"""Versioned closed category catalog shared by VQA and Grounding protocols.
+"""Versioned canonical category catalog shared by visual protocols.
 
-VQA/Grounding 共用的版本化封闭类别目录。本模块只维护组合类别展开、叶子类别
-到两类模型输出标签的映射与逻辑能力身份等纯事实：不执行任何模型、不读取
-Ground Truth、不保存物理路径、不导入重依赖。第一次 Qwen prompt、plan 校验、
-组合类别展开、模型能力判断和结果筛选都必须读取同一目录版本；目录外或部分
-非法类别的容错策略未被批准时严格失败。Grounding 只消费 YOLO mapping，VQA
-可消费两类 mapping；未校准能力保持 disabled。
+The catalog owns canonical leaf identities, deterministic aliases, semantic
+parent expansion, and per-task executable capability. It never selects a
+backend or exposes physical model identity.
+该目录统一管理 canonical 叶子身份、确定性 alias、语义父类展开和
+按任务划分的可执行能力；它不选择 backend，也不暴露物理模型身份。
 """
 
 from __future__ import annotations
@@ -14,31 +13,30 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-# The two model capabilities the catalog maps leaf categories to.
-# 目录为叶子类别映射的两类模型能力。
 ModelCapability = Literal["yolo", "segformer"]
 
-_CATEGORY_PATTERN = r"^[a-z][a-z0-9_]*$"
+_CATEGORY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 _VERSION_PATTERN = r"^[a-z0-9][a-z0-9_.-]*$"
-
-# Keys that must never appear anywhere in the catalog data; the catalog is a
-# static asset, so a sensitive key indicates corruption, not configuration.
-# 目录数据中任何位置都不得出现的键；目录是静态资产，敏感键说明数据损坏。
-_SENSITIVE_KEYS = frozenset({
-    "api_key", "apikey", "authorization", "access_token", "refresh_token",
-    "private_key", "password", "credential", "token", "secret",
-})
+_EXECUTABLE_TASKS = frozenset(
+    {"counting", "fine_grained_counting", "general_vqa", "grounding"}
+)
+_PLACEHOLDER_PATTERN = re.compile(r"^label(?:[-_\s]*)\d+$", re.IGNORECASE)
+_SENSITIVE_KEYS = frozenset(
+    {
+        "api_key", "apikey", "authorization", "access_token", "refresh_token",
+        "private_key", "password", "credential", "token", "secret",
+    }
+)
 
 
 class CatalogCategoryError(ValueError):
-    """Stable error for catalog validation failures; the public message
-    carries only the stable code and category names, never file contents or
-    machine paths. 目录校验失败的稳定错误；公共消息只携带稳定 code 与类别名，
-    绝不携带文件内容或机器路径。"""
+    """Stable catalog failure without file contents or host paths.
+    不泄露文件内容或主机路径的稳定 catalog 错误。"""
 
     def __init__(
         self,
@@ -57,13 +55,7 @@ class CatalogCategoryError(ValueError):
 
 
 class LeafCapabilities(BaseModel):
-    """Verified output-label mappings for one leaf category. An enabled
-    capability requires verified labels; labels without an enabled flag stay
-    declared but uncalibrated (disabled). segformer_labels is None when no
-    SegFormer mapping is declared at all.
-    单个叶子类别的已验证输出标签映射。启用的能力必须有已验证标签；有标签但
-    未启用表示已声明但未校准（禁用）。未声明任何 SegFormer 映射时
-    segformer_labels 为 None。"""
+    """Verified raw model-label mappings for one canonical leaf."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -74,17 +66,13 @@ class LeafCapabilities(BaseModel):
 
     @model_validator(mode="after")
     def validate_capabilities(self) -> "LeafCapabilities":
-        """Validate every label and the enabled/labels linkage. Labels are
-        exact model class names: non-empty, no control characters, never a
-        local path. 校验每条标签及 enabled/labels 联动。标签是模型类别名的
-        精确字符串：非空、无控制字符、绝不是一个本地路径。"""
         for label in self.yolo_labels:
-            _validate_label(label, "yolo")
+            _validate_model_label(label, "yolo")
         if self.segformer_labels is not None:
             if not self.segformer_labels:
                 raise ValueError("segformer_labels must be null or non-empty")
             for label in self.segformer_labels:
-                _validate_label(label, "segformer")
+                _validate_model_label(label, "segformer")
         if self.yolo_enabled and not self.yolo_labels:
             raise ValueError("yolo_enabled requires verified yolo_labels")
         if self.segformer_enabled and not self.segformer_labels:
@@ -92,245 +80,291 @@ class LeafCapabilities(BaseModel):
         return self
 
 
-def _validate_label(label: Any, capability: str) -> None:
-    """One verified model output label; absolute-path-like strings are
-    rejected so a physical path can never masquerade as a label.
-    一条已验证模型输出标签；类绝对路径字符串被拒绝，使物理路径无法冒充标签。"""
-    if not isinstance(label, str) or not label.strip():
-        raise ValueError(f"{capability} label must be a non-empty string")
-    if any(ord(character) < 32 for character in label):
-        raise ValueError(f"{capability} label contains control characters")
-    if label.startswith(("/", "\\")) or "\\" in label or ":" in label:
-        raise ValueError(f"{capability} label must not be path-like: {label!r}")
-
-
 class EvidenceCatalog:
-    """Validated, versioned, closed category catalog. All consumers of the
-    same instance share one version; out-of-catalog categories fail strictly
-    until a tolerance policy is approved.
-    校验后的版本化封闭类别目录。同一实例的所有消费者共享一个版本；目录外
-    类别在容错策略获批前严格失败。"""
+    """Immutable canonical leaves, aliases, parents, and task capability."""
 
     def __init__(self, data: Mapping[str, Any]) -> None:
         if not isinstance(data, Mapping):
             raise TypeError("catalog data must be a mapping")
         _check_no_sensitive_keys(data)
+        expected = {
+            "catalog_version", "aliases", "parents", "leaves", "task_capabilities",
+        }
         top_level = set(data)
-        expected = {"catalog_version", "composites", "leaves"}
         if top_level != expected:
             raise CatalogCategoryError(
-                "INVALID_TOP_LEVEL_KEYS", categories=sorted(top_level - expected)
+                "INVALID_TOP_LEVEL_KEYS",
+                categories=sorted(top_level.symmetric_difference(expected)),
             )
+
         version = data["catalog_version"]
-        if not isinstance(version, str) or not version.strip():
-            raise CatalogCategoryError("INVALID_CATALOG_VERSION")
-        if any(ord(character) < 32 for character in version):
-            raise CatalogCategoryError("INVALID_CATALOG_VERSION")
-        if not _matches(version, _VERSION_PATTERN):
+        if (
+            not isinstance(version, str)
+            or not version.strip()
+            or any(ord(character) < 32 for character in version)
+            or re.fullmatch(_VERSION_PATTERN, version) is None
+        ):
             raise CatalogCategoryError("INVALID_CATALOG_VERSION")
         self._version = version
 
-        composites_raw = data["composites"]
-        leaves_raw = data["leaves"]
-        if not isinstance(composites_raw, Mapping) or not isinstance(leaves_raw, Mapping):
-            raise CatalogCategoryError("INVALID_CATALOG_STRUCTURE")
-
+        leaves_raw = _require_mapping(data["leaves"])
         leaves: dict[str, LeafCapabilities] = {}
         for name, capabilities in leaves_raw.items():
-            _validate_category_name(name)
+            _validate_canonical_name(name)
+            if _PLACEHOLDER_PATTERN.fullmatch(name) or name == "background":
+                raise CatalogCategoryError("INVALID_LEAF", categories=[str(name)])
             if not isinstance(capabilities, Mapping):
                 raise CatalogCategoryError(
-                    "INVALID_LEAF_CAPABILITIES", categories=[name]
+                    "INVALID_LEAF_CAPABILITIES", categories=[str(name)]
                 )
             try:
                 leaves[name] = LeafCapabilities.model_validate(dict(capabilities))
             except Exception as exc:
                 raise CatalogCategoryError(
-                    "INVALID_LEAF_CAPABILITIES", categories=[name]
+                    "INVALID_LEAF_CAPABILITIES", categories=[str(name)]
                 ) from exc
         self._leaves = leaves
 
-        composites: dict[str, tuple[str, ...]] = {}
-        for name, targets in composites_raw.items():
-            _validate_category_name(name)
+        parents_raw = _require_mapping(data["parents"])
+        parents: dict[str, tuple[str, ...]] = {}
+        for name, children in parents_raw.items():
+            _validate_canonical_name(name)
             if name in leaves:
                 raise CatalogCategoryError(
-                    "COMPOSITE_NAME_COLLIDES_WITH_LEAF", categories=[name]
+                    "PARENT_NAME_COLLIDES_WITH_LEAF", categories=[name]
                 )
-            if not isinstance(targets, Sequence) or isinstance(targets, (str, bytes)):
-                raise CatalogCategoryError(
-                    "INVALID_COMPOSITE_TARGETS", categories=[name]
-                )
-            expanded: list[str] = []
-            for target in targets:
-                _validate_category_name(target)
-                if target not in leaves:
+            if not isinstance(children, Sequence) or isinstance(children, (str, bytes)):
+                raise CatalogCategoryError("INVALID_PARENT_CHILDREN", categories=[name])
+            ordered: list[str] = []
+            for child in children:
+                if child not in leaves:
                     raise CatalogCategoryError(
-                        "COMPOSITE_TARGETS_UNKNOWN_LEAF", categories=[name, target]
+                        "PARENT_TARGETS_UNKNOWN_LEAF", categories=[name, str(child)]
                     )
-                if target in expanded:
+                if child in ordered:
                     raise CatalogCategoryError(
-                        "COMPOSITE_TARGETS_DUPLICATED", categories=[name, target]
+                        "PARENT_TARGETS_DUPLICATED", categories=[name, child]
                     )
-                expanded.append(target)
-            composites[name] = tuple(expanded)
-        self._composites = composites
+                ordered.append(child)
+            if not ordered:
+                raise CatalogCategoryError("INVALID_PARENT_CHILDREN", categories=[name])
+            parents[name] = tuple(ordered)
+        self._parents = parents
 
-    # ── identity and shape / 身份与结构 ─────────────────────────────────
+        aliases_raw = _require_mapping(data["aliases"])
+        aliases: dict[str, str] = {}
+        semantic_names = set(leaves) | set(parents)
+        for alias, target in aliases_raw.items():
+            normalized_alias = _normalize_semantic(alias)
+            if not isinstance(target, str) or target not in semantic_names:
+                raise CatalogCategoryError(
+                    "ALIAS_TARGET_UNKNOWN", categories=[str(alias), str(target)]
+                )
+            if normalized_alias in semantic_names:
+                raise CatalogCategoryError(
+                    "ALIAS_COLLIDES_WITH_CANONICAL", categories=[str(alias)]
+                )
+            owner = aliases.get(normalized_alias)
+            if owner is not None and owner != target:
+                raise CatalogCategoryError("ALIAS_CONFLICT", categories=[str(alias)])
+            aliases[normalized_alias] = target
+        self._aliases = MappingProxyType(aliases)
+
+        capabilities_raw = _require_mapping(data["task_capabilities"])
+        if set(capabilities_raw) != _EXECUTABLE_TASKS:
+            raise CatalogCategoryError(
+                "INVALID_TASK_CAPABILITIES", categories=sorted(capabilities_raw)
+            )
+        task_capabilities: dict[str, tuple[str, ...]] = {}
+        for task, categories in capabilities_raw.items():
+            if not isinstance(categories, Sequence) or isinstance(categories, (str, bytes)):
+                raise CatalogCategoryError("INVALID_TASK_CAPABILITIES", categories=[task])
+            ordered: list[str] = []
+            for category in categories:
+                if category not in leaves:
+                    raise CatalogCategoryError(
+                        "TASK_CAPABILITY_UNKNOWN_LEAF", categories=[task, str(category)]
+                    )
+                if category in ordered:
+                    raise CatalogCategoryError(
+                        "TASK_CAPABILITY_DUPLICATED", categories=[task, category]
+                    )
+                ordered.append(category)
+            task_capabilities[task] = tuple(ordered)
+        self._task_capabilities = task_capabilities
 
     @property
     def catalog_version(self) -> str:
-        """The version every consumer of this instance must share.
-        该实例所有消费者必须共享的版本。"""
         return self._version
 
     @property
-    def composite_categories(self) -> tuple[str, ...]:
-        """All composite categories in stable declaration order.
-        按稳定声明顺序的全部组合类别。"""
-        return tuple(self._composites)
-
-    @property
     def leaf_categories(self) -> tuple[str, ...]:
-        """All leaf categories in stable declaration order.
-        按稳定声明顺序的全部叶子类别。"""
         return tuple(self._leaves)
 
-    def is_composite(self, name: str) -> bool:
-        """Return whether name is a declared composite category.
-        返回 name 是否为已声明组合类别。"""
-        return name in self._composites
+    @property
+    def parent_categories(self) -> tuple[str, ...]:
+        return tuple(self._parents)
 
-    def is_leaf(self, name: str) -> bool:
-        """Return whether name is a declared leaf category.
-        返回 name 是否为已声明叶子类别。"""
-        return name in self._leaves
+    @property
+    def aliases(self) -> Mapping[str, str]:
+        return self._aliases
 
-    # ── expansion / 展开 ────────────────────────────────────────────────
+    @property
+    def parent_expansions(self) -> Mapping[str, tuple[str, ...]]:
+        return MappingProxyType(self._parents)
 
-    def composite_leaves(self, name: str) -> tuple[str, ...]:
-        """Ordered leaf categories of one composite; unknown composites fail
-        with a stable error. 一个组合类别的有序叶子类别；未知组合以稳定错误
-        失败。"""
-        if name not in self._composites:
+    def is_leaf(self, value: str) -> bool:
+        return isinstance(value, str) and value in self._leaves
+
+    def is_parent(self, value: str) -> bool:
+        return isinstance(value, str) and value in self._parents
+
+    def canonicalize_alias(self, value: str) -> str:
+        normalized = _normalize_semantic(value)
+        return self._aliases.get(normalized, normalized)
+
+    def expand_target(self, value: str) -> tuple[str, ...]:
+        canonical = self.canonicalize_alias(value)
+        if canonical in self._leaves:
+            return (canonical,)
+        return self._parents.get(canonical, ())
+
+    def executable_leaves_for_task(self, task: str) -> tuple[str, ...]:
+        try:
+            return self._task_capabilities[task]
+        except KeyError:
             raise CatalogCategoryError(
-                "UNKNOWN_COMPOSITE", categories=[name], available=self.composite_categories
-            )
-        return self._composites[name]
+                "TASK_CAPABILITY_UNKNOWN", categories=[str(task)]
+            ) from None
 
-    def expand_composites(self, categories: Sequence[str]) -> tuple[str, ...]:
-        """Expand requested composite categories to ordered leaf categories,
-        deduplicated stably while preserving first occurrence. Every category
-        must be a known composite; direct leaf names are rejected.
-        将请求的组合类别展开为有序叶子类别，稳定去重并保留首次出现顺序。每个
-        类别必须是已知组合；直接请求叶子名被拒绝。"""
-        expanded: list[str] = []
+    def validate_plan_leaves(
+        self,
+        categories: Sequence[str],
+        *,
+        task: str,
+    ) -> tuple[str, ...]:
+        allowed = frozenset(self.executable_leaves_for_task(task))
+        validated: list[str] = []
         for category in categories:
-            leaves = self.composite_leaves(category)
-            for leaf in leaves:
-                if leaf not in expanded:
-                    expanded.append(leaf)
-        return tuple(expanded)
+            if not isinstance(category, str) or category not in self._leaves:
+                raise CatalogCategoryError(
+                    "PLAN_CATEGORY_NOT_CANONICAL_LEAF",
+                    categories=[str(category)],
+                    available=tuple(allowed),
+                )
+            if category not in allowed:
+                raise CatalogCategoryError(
+                    "PLAN_CATEGORY_NOT_EXECUTABLE",
+                    categories=[category],
+                    available=tuple(allowed),
+                )
+            if category in validated:
+                raise CatalogCategoryError(
+                    "PLAN_CATEGORY_DUPLICATED", categories=[category]
+                )
+            validated.append(category)
+        return tuple(validated)
 
-    def validate_plan_categories(self, categories: Sequence[str]) -> None:
-        """Strictly require every planned composite category to belong to this
-        catalog version; no tolerance policy has been approved, so unknown or
-        non-composite categories fail instead of being guessed.
-        严格要求每个计划组合类别属于本目录版本；容错策略尚未批准，因此未知或
-        非组合类别严格失败，绝不猜测。"""
-        invalid = [
-            category
-            for category in categories
-            if not isinstance(category, str) or category not in self._composites
-        ]
-        if invalid:
-            raise CatalogCategoryError(
-                "UNKNOWN_COMPOSITE",
-                categories=[str(item) for item in invalid],
-                available=self.composite_categories,
-            )
-
-    # ── capabilities / 能力 ─────────────────────────────────────────────
+    def executable_leaves_for_target(
+        self,
+        target: str,
+        *,
+        task: str,
+    ) -> tuple[str, ...]:
+        leaves = self.expand_target(target)
+        allowed = frozenset(self.executable_leaves_for_task(task))
+        if not leaves or any(leaf not in allowed for leaf in leaves):
+            return ()
+        return leaves
 
     def leaf_yolo_labels(self, leaf: str) -> tuple[str, ...]:
-        """Verified YOLO output labels for one leaf (empty while uncalibrated).
-        The catalog is a closed static asset, so callers get immutable tuples.
-        单个叶子的已验证 YOLO 输出标签（未校准时为空）。目录是封闭静态资产，
-        调用方获得不可变元组。"""
         return tuple(self._leaf(leaf).yolo_labels)
 
     def leaf_segformer_labels(self, leaf: str) -> tuple[str, ...] | None:
-        """Verified SegFormer output labels for one leaf, or None when no
-        SegFormer mapping is declared. 单个叶子的已验证 SegFormer 输出标签；
-        未声明 SegFormer 映射时为 None。"""
-        caps = self._leaf(leaf)
-        if caps.segformer_labels is None:
-            return None
-        return tuple(caps.segformer_labels)
+        labels = self._leaf(leaf).segformer_labels
+        return None if labels is None else tuple(labels)
 
     def capability_enabled(self, leaf: str, capability: ModelCapability) -> bool:
-        """Whether the approved model capability is calibrated and enabled for
-        one leaf. Uncalibrated capabilities stay disabled.
-        单个叶子已批准模型能力是否已校准并启用。未校准能力保持禁用。"""
-        leaf_caps = self._leaf(leaf)
-        if capability == "yolo":
-            return leaf_caps.yolo_enabled
-        return leaf_caps.segformer_enabled
+        spec = self._leaf(leaf)
+        return spec.yolo_enabled if capability == "yolo" else spec.segformer_enabled
 
     def capability_identity(self, leaf: str, capability: ModelCapability) -> str:
-        """Stable logical capability identity: version + leaf + capability.
-        Never a physical path or a model-specific name.
-        稳定逻辑能力身份：版本 + 叶子 + 能力。绝不是一个物理路径或模型专属名。"""
         self._leaf(leaf)
         return f"{self._version}:{leaf}:{capability}"
 
-    # ── loading / 加载 ──────────────────────────────────────────────────
-
     @classmethod
     def from_file(cls, path: Path | str) -> "EvidenceCatalog":
-        """Load one catalog JSON asset; parse and validation errors stay
-        stable and never leak file contents. 加载一个目录 JSON 资产；解析与
-        校验错误保持稳定且绝不泄漏文件内容。"""
         try:
-            text = Path(path).read_text(encoding="utf-8")
-            data = json.loads(text)
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise CatalogCategoryError("CATALOG_LOAD_FAILED") from exc
-        return cls(data)
-
-    # ── internals / 内部 ────────────────────────────────────────────────
+        return cls(payload)
 
     def _leaf(self, leaf: str) -> LeafCapabilities:
-        if leaf not in self._leaves:
+        try:
+            return self._leaves[leaf]
+        except KeyError:
             raise CatalogCategoryError(
                 "UNKNOWN_LEAF", categories=[leaf], available=self.leaf_categories
-            )
-        return self._leaves[leaf]
+            ) from None
 
 
 def load_evidence_catalog(path: Path | str) -> EvidenceCatalog:
-    """Convenience loader for the shared catalog asset. 共享目录资产的便利加载器。"""
     return EvidenceCatalog.from_file(path)
 
 
-def _validate_category_name(name: Any) -> None:
-    if not isinstance(name, str) or not _matches(name, _CATEGORY_PATTERN):
-        raise CatalogCategoryError("INVALID_CATEGORY_NAME", categories=[str(name)])
+def _normalize_semantic(value: Any) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise CatalogCategoryError("INVALID_CATEGORY_NAME", categories=[str(value)])
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise CatalogCategoryError("INVALID_CATEGORY_NAME", categories=[value])
+    if "/" in value or "\\" in value or value.strip() in {".", ".."}:
+        raise CatalogCategoryError("INVALID_CATEGORY_NAME", categories=[value])
+    normalized = re.sub(
+        r"-+", "-", re.sub(r"[_\s]+", "-", value.strip().casefold())
+    ).strip("-")
+    if re.fullmatch(_CATEGORY_PATTERN, normalized) is None:
+        raise CatalogCategoryError("INVALID_CATEGORY_NAME", categories=[value])
+    return normalized
 
 
-def _matches(value: str, pattern: str) -> bool:
-    return re.fullmatch(pattern, value) is not None
+def _validate_canonical_name(value: Any) -> None:
+    if not isinstance(value, str) or re.fullmatch(_CATEGORY_PATTERN, value) is None:
+        raise CatalogCategoryError("INVALID_CATEGORY_NAME", categories=[str(value)])
+
+
+def _validate_model_label(label: Any, capability: str) -> None:
+    if not isinstance(label, str) or not label.strip():
+        raise ValueError(f"{capability} label must be a non-empty string")
+    if any(ord(character) < 32 for character in label):
+        raise ValueError(f"{capability} label contains control characters")
+    if label.startswith(("/", "\\")) or "\\" in label or ":" in label:
+        raise ValueError(f"{capability} label must not be path-like")
+    if _PLACEHOLDER_PATTERN.fullmatch(label):
+        raise ValueError(f"{capability} placeholder label is not verified")
+
+
+def _require_mapping(value: Any) -> Mapping[str, Any]:
+    if not isinstance(value, Mapping):
+        raise CatalogCategoryError("INVALID_CATALOG_STRUCTURE")
+    return value
 
 
 def _check_no_sensitive_keys(value: Any) -> None:
-    """Reject sensitive key names anywhere in the catalog data.
-    拒绝目录数据中任何位置的敏感键名。"""
     if isinstance(value, Mapping):
         for key, item in value.items():
             normalized = str(key).casefold().replace("-", "_").replace(" ", "_")
             if normalized in _SENSITIVE_KEYS:
-                raise CatalogCategoryError("SENSITIVE_KEY_IN_CATALOG", categories=[str(key)])
+                raise CatalogCategoryError(
+                    "SENSITIVE_KEY_IN_CATALOG", categories=[str(key)]
+                )
             _check_no_sensitive_keys(item)
     elif isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
         for item in value:
             _check_no_sensitive_keys(item)
+
+
+__all__ = [
+    "CatalogCategoryError", "EvidenceCatalog", "LeafCapabilities",
+    "ModelCapability", "load_evidence_catalog",
+]

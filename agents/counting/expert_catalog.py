@@ -60,6 +60,7 @@ class CatalogTargetSpec(_FrozenModel):
 
     aliases: tuple[str, ...] = ()
     countable: bool
+    executable_leaf: bool = True
     hints: tuple[str, ...] = ()
 
     @field_validator("aliases", "hints")
@@ -227,6 +228,10 @@ class _CatalogDocument(_FrozenModel):
             unknown_targets = set(expert.supports) - set(self.targets)
             if unknown_targets:
                 raise ValueError("expert supports an unknown canonical target")
+            if any(
+                not self.targets[target].executable_leaf for target in expert.supports
+            ):
+                raise ValueError("expert supports must contain canonical leaves only")
             if any(target != _normalize_label(target) for target in expert.supports):
                 raise ValueError("expert support keys must be normalized canonical labels")
         return self

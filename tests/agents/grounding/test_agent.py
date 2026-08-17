@@ -95,10 +95,10 @@ def _context(
 
 def _plan() -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v3",
+        version="visual-task-plan-v4",
         task="grounding",
         needs_visual_assistance=True,
-        object_categories=["vehicle"],
+        object_categories=["small-vehicle"],
         reason_codes=["test"],
     )
 

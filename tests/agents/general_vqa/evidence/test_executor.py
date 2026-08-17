@@ -20,14 +20,19 @@ from models.base import ModelCacheIdentity, ObjectDetectionOutput
 
 _CATALOG_DATA = {
     "catalog_version": "test-catalog-v1",
-    "composites": {
-        "vehicle": ["small_vehicle", "large_vehicle"],
-        "building": ["building_outline"],
+    "aliases": {},
+    "parents": {
+        "vehicle": ["small-vehicle", "large-vehicle"],
+        "building": ["building-outline"],
     },
     "leaves": {
-        "small_vehicle": {"yolo_labels": ["small_vehicle"], "yolo_enabled": True},
-        "large_vehicle": {"yolo_labels": ["large_vehicle"], "yolo_enabled": True},
-        "building_outline": {"yolo_labels": ["building"], "yolo_enabled": True},
+        "small-vehicle": {"yolo_labels": ["small_vehicle"], "yolo_enabled": True},
+        "large-vehicle": {"yolo_labels": ["large_vehicle"], "yolo_enabled": True},
+        "building-outline": {"yolo_labels": ["building"], "yolo_enabled": True},
+    },
+    "task_capabilities": {
+        task: ["small-vehicle", "large-vehicle", "building-outline"]
+        for task in ("counting", "fine_grained_counting", "general_vqa", "grounding")
     },
 }
 
@@ -82,9 +87,13 @@ def _image(size: tuple[int, int] = (1000, 800)) -> Image.Image:
     return Image.new("RGB", size, (7, 8, 9))
 
 
-def _plan(categories: tuple[str, ...] = ("vehicle", "building")) -> VisualTaskPlan:
+def _plan(
+    categories: tuple[str, ...] = (
+        "small-vehicle", "large-vehicle", "building-outline"
+    ),
+) -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v3",
+        version="visual-task-plan-v4",
         task="general_vqa",
         needs_visual_assistance=True,
         object_categories=list(categories),
@@ -178,9 +187,9 @@ def test_yolo_runs_once_per_materialized_view_and_keeps_requested_leaves() -> No
     assert len(yolo.calls) == 1
     assert yolo.calls[0].size == (1000, 800)
     assert set(execution.bundle.leaf_states) == {
-        "small_vehicle",
-        "large_vehicle",
-        "building_outline",
+        "small-vehicle",
+        "large-vehicle",
+        "building-outline",
     }
     assert all(state == "hit" for state in execution.bundle.leaf_states.values())
     assert execution.bundle.rois[0].expanded_xyxy == (0, 0, 1000, 800)
@@ -195,7 +204,7 @@ def test_executor_consumes_exact_fixed_roi_pixels() -> None:
     )
     execution = _execute(
         _executor(yolo=yolo),
-        plan=_plan(("vehicle",)),
+        plan=_plan(("small-vehicle", "large-vehicle")),
         images={"img1": _image((2048, 1536))},
         views=(view,),
     )
@@ -205,14 +214,14 @@ def test_executor_consumes_exact_fixed_roi_pixels() -> None:
 
 def test_executor_requires_assistance_and_materialized_views() -> None:
     direct = VisualTaskPlan(
-        version="visual-task-plan-v3",
+        version="visual-task-plan-v4",
         task="general_vqa",
     )
     with pytest.raises(ValueError, match="visual assistance"):
         _execute(_executor(), plan=direct)
     with pytest.raises(ValueError, match="materialized views"):
         _executor(yolo=_FakeYolo(("small_vehicle",))).execute(
-            _plan(("vehicle",)),
+            _plan(("small-vehicle", "large-vehicle")),
             {"img1": _image()},
             fallback_image_id="img1",
             materialized_views=(),
@@ -231,14 +240,14 @@ def test_detector_error_is_stable_and_does_not_leak_exception_text() -> None:
     yolo = _FakeYolo(("small_vehicle",), error=RuntimeError("/private/model.pt secret"))
     execution = _execute(
         _executor(yolo=yolo),
-        plan=_plan(("vehicle",)),
+        plan=_plan(("small-vehicle", "large-vehicle")),
     )
     dumped = execution.bundle.model_dump_json()
     assert "private/model.pt" not in dumped
     assert "secret" not in dumped
-    assert execution.bundle.leaf_states["small_vehicle"] == "unsupported"
+    assert execution.bundle.leaf_states["small-vehicle"] == "unsupported"
     assert any(
-        state.leaf_category == "small_vehicle"
+        state.leaf_category == "small-vehicle"
         and state.layer == "yolo"
         and state.state == "error"
         for state in execution.layer_states
@@ -248,7 +257,7 @@ def test_detector_error_is_stable_and_does_not_leak_exception_text() -> None:
 def test_bundle_is_json_safe_and_does_not_persist_confidence() -> None:
     execution = _execute(
         _executor(yolo=_FakeYolo(("small_vehicle",))),
-        plan=_plan(("vehicle",)),
+        plan=_plan(("small-vehicle", "large-vehicle")),
     )
     payload = json.loads(execution.bundle.model_dump_json())
     assert "confidence" not in json.dumps(payload)

@@ -10,13 +10,14 @@ v4 规划器是所有新鲜推理唯一的规划 seam：执行一次 schema 校�
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import get_args
 
 from pydantic import ValidationError
 
 from agents.base import CallBudget
-from agents.evidence_catalog import EvidenceCatalog
+from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from agents.general_vqa.evidence.rendering import (
     materialize_fixed_roi,
     normalized_image_size,
@@ -40,15 +41,6 @@ _VISUAL_CAPABILITY_TASKS = (
     "general_vqa",
     "grounding",
 )
-
-
-def _canonical_category(value: str) -> str:
-    """Translate the legacy catalog spelling at the v4 planner boundary.
-    在 v4 planner 边界将旧 catalog 拼写转为 canonical 拼写。"""
-
-    return "-".join(value.strip().casefold().replace("_", "-").split())
-
-
 class VisualTaskPlanError(ValueError):
     """Stable failure for the visual-only task planner.
     纯视觉任务规划器的稳定失败类型。"""
@@ -69,7 +61,7 @@ class VisualTaskPlanner:
         system_prompt: str,
         prompt_version: str = "v4",
         catalog: EvidenceCatalog,
-        executable_categories: tuple[str, ...] | None = None,
+        executable_categories_by_task: Mapping[str, tuple[str, ...]] | None = None,
         max_side: int = 1080,
         roi_size: int = 1024,
         large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
@@ -84,25 +76,14 @@ class VisualTaskPlanner:
         self._system_prompt = system_prompt
         self._prompt_version = prompt_version
         self._catalog = catalog
-        self._leaf_to_catalog = {
-            _canonical_category(leaf): leaf for leaf in catalog.leaf_categories
-        }
-        self._parent_expansions = {
-            _canonical_category(parent): tuple(
-                _canonical_category(leaf)
-                for leaf in catalog.composite_leaves(parent)
+        self._runtime_executable_by_task = {
+            task: frozenset(
+                executable_categories_by_task[task]
+                if executable_categories_by_task is not None
+                else catalog.executable_leaves_for_task(task)
             )
-            for parent in catalog.composite_categories
+            for task in _VISUAL_CAPABILITY_TASKS
         }
-        self._aliases = self._catalog_aliases()
-        declared = (
-            executable_categories
-            if executable_categories is not None
-            else tuple(self._leaf_to_catalog)
-        )
-        self._executable_categories = frozenset(
-            self._expand_declared_categories(declared)
-        )
         self._max_side = max_side
         self._roi_size = roi_size
         self._large_image_policy = large_image_policy
@@ -136,14 +117,18 @@ class VisualTaskPlanner:
         binding = {
             "allowed_tasks": sorted(_ALL_TASK_NAMES),
             "catalog_version": self._catalog.catalog_version,
-            "canonical_leaf_categories": sorted(self._leaf_to_catalog),
+            "canonical_leaf_categories": list(self._catalog.leaf_categories),
             "parent_expansions": {
                 parent: list(leaves)
-                for parent, leaves in sorted(self._parent_expansions.items())
+                for parent, leaves in self._catalog.parent_expansions.items()
             },
-            "aliases": dict(sorted(self._aliases.items())),
+            "aliases": dict(self._catalog.aliases),
             "task_executable_categories": {
-                task: sorted(self._executable_categories)
+                task: [
+                    leaf
+                    for leaf in self._catalog.executable_leaves_for_task(task)
+                    if leaf in self._runtime_executable_by_task[task]
+                ]
                 for task in _VISUAL_CAPABILITY_TASKS
             },
             **self.planning_parameters,
@@ -353,15 +338,17 @@ class VisualTaskPlanner:
         """Apply v4 leaf/category consistency and image-index policy.
         执行 v4 叶子类别一致性与图像索引策略校验。"""
         if plan.needs_visual_assistance:
-            if any(
-                category not in self._leaf_to_catalog
-                for category in plan.object_categories
-            ):
-                raise VisualTaskPlanError("SCHEMA_INVALID")
+            try:
+                self._catalog.validate_plan_leaves(
+                    plan.object_categories,
+                    task=plan.task,
+                )
+            except CatalogCategoryError as exc:
+                raise VisualTaskPlanError("SCHEMA_INVALID") from exc
             unavailable = [
                 category
                 for category in plan.object_categories
-                if category not in self._executable_categories
+                if category not in self._runtime_executable_by_task[plan.task]
             ]
             if unavailable:
                 raise VisualTaskPlanError("CAPABILITY_UNAVAILABLE")
@@ -369,8 +356,18 @@ class VisualTaskPlanner:
             if deduped != plan.object_categories:
                 plan = plan.model_copy(update={"object_categories": deduped})
         if plan.task in _COUNTING_TASKS:
-            semantic = self._normalize_semantic_target(plan.count_target or "")
-            expected = self._executable_leaves_for_target(semantic)
+            try:
+                expected = self._catalog.executable_leaves_for_target(
+                    plan.count_target or "",
+                    task=plan.task,
+                )
+            except CatalogCategoryError as exc:
+                raise VisualTaskPlanError("SCHEMA_INVALID") from exc
+            if any(
+                leaf not in self._runtime_executable_by_task[plan.task]
+                for leaf in expected
+            ):
+                expected = ()
             if expected:
                 if tuple(plan.object_categories) != expected:
                     raise VisualTaskPlanError("SCHEMA_INVALID")
@@ -383,45 +380,3 @@ class VisualTaskPlanner:
             if image_index is None or image_index >= len(view.images):
                 raise VisualTaskPlanError("IMAGE_INDEX_INVALID")
         return plan
-
-    def _catalog_aliases(self) -> dict[str, str]:
-        """Expose deterministic legacy/raw spellings without changing the asset.
-        在不改动 catalog 资产的前提下暴露确定性旧/原始拼写。"""
-
-        aliases: dict[str, str] = {}
-        for canonical, raw in self._leaf_to_catalog.items():
-            for alias in (raw, raw.replace("_", " ")):
-                if alias != canonical:
-                    aliases[alias] = canonical
-            for label in self._catalog.leaf_yolo_labels(raw):
-                normalized = label.strip().casefold()
-                if normalized and normalized != canonical:
-                    aliases[normalized] = canonical
-        return aliases
-
-    def _expand_declared_categories(
-        self, categories: tuple[str, ...]
-    ) -> tuple[str, ...]:
-        """Accept the current composition input while advertising only leaves.
-        兼容当前 composition 输入，但只对 planner 发布叶子类。"""
-
-        expanded: list[str] = []
-        for value in categories:
-            canonical = _canonical_category(value)
-            leaves = self._parent_expansions.get(canonical, (canonical,))
-            for leaf in leaves:
-                if leaf in self._leaf_to_catalog and leaf not in expanded:
-                    expanded.append(leaf)
-        return tuple(expanded)
-
-    def _normalize_semantic_target(self, target: str) -> str:
-        canonical = _canonical_category(target)
-        return self._aliases.get(target.strip().casefold(), canonical)
-
-    def _executable_leaves_for_target(self, target: str) -> tuple[str, ...]:
-        leaves = self._parent_expansions.get(target)
-        if leaves is None and target in self._leaf_to_catalog:
-            leaves = (target,)
-        if leaves is None or any(leaf not in self._executable_categories for leaf in leaves):
-            return ()
-        return leaves

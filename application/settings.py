@@ -85,7 +85,7 @@ class VisualPlannerSettings(BaseModel):
     # Must equal the version declared by agents/evidence_catalog.json; the
     # composition root verifies this binding for every fresh runtime.
     # 必须等于 agents/evidence_catalog.json 声明的版本；每次新鲜运行均由组合根校验。
-    catalog_version: str = "first-qwen-evidence-catalog-v2"
+    catalog_version: str = "visual-evidence-catalog-v3"
     task_prompt_version: str = "v4"
     planning_mode: Literal["visual-task-plan-v4"] = "visual-task-plan-v4"
     preview_max_side: int = Field(default=1080, gt=0)

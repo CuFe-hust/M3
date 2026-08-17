@@ -382,7 +382,7 @@ def test_visual_planning_defaults_to_v4_planner_state() -> None:
     assert planner.task_prompt_version == "v4"
     assert (
         planner.catalog_version
-        == "first-qwen-evidence-catalog-v2"
+        == "visual-evidence-catalog-v3"
     )
     assert not hasattr(planner, "confidence_threshold")
     assert planner.preview_max_side == 1080

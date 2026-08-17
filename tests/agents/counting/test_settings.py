@@ -100,23 +100,15 @@ def test_detector_rejects_alias_to_unknown_class() -> None:
         _detector(aliases={"c": "plane"})
 
 
-def test_detector_rejects_empty_composite_target() -> None:
-    with pytest.raises(ValidationError, match="must not be empty"):
+def test_detector_rejects_removed_composite_target_configuration() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
         _detector(composite_targets={"all": []})
 
 
-def test_detector_rejects_composite_with_unknown_classes() -> None:
-    with pytest.raises(ValidationError, match="unknown classes"):
-        _detector(composite_targets={"pair": ["car", "plane"]})
-
-
-def test_detector_accepts_valid_alias_and_composite() -> None:
-    detector = _detector(
-        aliases={"vehicle": "car"},
-        composite_targets={"convoy": ["car", "truck"]},
-    )
-    assert detector.aliases["vehicle"] == "car"
-    assert detector.composite_targets["convoy"] == ["car", "truck"]
+def test_detector_accepts_explicit_raw_model_alias() -> None:
+    detector = _detector(aliases={"passenger-car": "car"})
+    assert detector.aliases["passenger-car"] == "car"
+    assert not hasattr(detector, "composite_targets")
 
 
 @pytest.mark.parametrize("reserved", ["qwen_point", "vrsbench_qwen_count"])

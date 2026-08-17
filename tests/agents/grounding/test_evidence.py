@@ -28,12 +28,17 @@ from models.base import ModelCacheIdentity, ObjectDetectionOutput
 
 _CATALOG_DATA = {
     "catalog_version": "test-catalog-v1",
-    "composites": {"building": ["building_outline"]},
+    "aliases": {},
+    "parents": {"building": ["building-outline"]},
     "leaves": {
-        "building_outline": {
+        "building-outline": {
             "yolo_labels": ["building"],
             "yolo_enabled": True,
         }
+    },
+    "task_capabilities": {
+        task: ["building-outline"]
+        for task in ("counting", "fine_grained_counting", "general_vqa", "grounding")
     },
 }
 
@@ -102,10 +107,10 @@ def _sample(tmp_path: Path, size: tuple[int, int] = (100, 80)) -> UnifiedSample:
 
 def _plan() -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v3",
+        version="visual-task-plan-v4",
         task="grounding",
         needs_visual_assistance=True,
-        object_categories=["building"],
+        object_categories=["building-outline"],
         reason_codes=["test"],
     )
 
@@ -175,7 +180,7 @@ def test_v2_executor_calls_each_model_once_and_returns_whole_image_box(tmp_path:
 
     assert len(yolo.calls) == 1
     assert len(qwen.calls) == 1
-    assert result.whole_image_boxes[0].label == "building_outline"
+    assert result.whole_image_boxes[0].label == "building-outline"
     assert result.whole_image_boxes[0].box == (100, 125, 400, 500)
     payload = result.bundle.model_dump_json()
     assert "confidence" not in payload
@@ -205,7 +210,7 @@ def test_uncalibrated_detector_allows_authorized_missing_leaf_fallback(tmp_path:
         {
             "selected_box_ids": [],
             "fallback_boxes": [
-                {"leaf_category": "building_outline", "roi_id": "full", "xyxy": [100, 100, 500, 500]}
+                {"leaf_category": "building-outline", "roi_id": "full", "xyxy": [100, 100, 500, 500]}
             ],
         }
     )
@@ -213,7 +218,7 @@ def test_uncalibrated_detector_allows_authorized_missing_leaf_fallback(tmp_path:
         _executor(qwen, yolo=None, policy=GroundingEvidencePolicy()),
         tmp_path,
     )
-    assert result.bundle.leaf_states["building_outline"] == "unavailable"
+    assert result.bundle.leaf_states["building-outline"] == "unavailable"
     assert result.whole_image_boxes[0].box == (100, 100, 500, 500)
 
 

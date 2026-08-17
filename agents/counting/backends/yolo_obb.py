@@ -1,7 +1,7 @@
 """Local YOLO OBB counting backend with point-derived final counts.
 
 使用点导出最终计数的本地 YOLO OBB 计数后端。保留多 detector、hash 校验、
-类别映射（alias/composite）与边界去重；不写入任何模型回退逻辑。
+类别映射（canonical leaf 到 raw label）与边界去重；不写入任何模型回退逻辑。
 """
 
 from __future__ import annotations
@@ -58,10 +58,6 @@ class YoloOBBCountingBackend:
             name.casefold(): target.casefold()
             for name, target in detector.aliases.items()
         }
-        self._composites = {
-            name.casefold(): tuple(target.casefold() for target in targets)
-            for name, targets in detector.composite_targets.items()
-        }
 
     kind: BackendKind = "yolo_obb"
 
@@ -103,9 +99,8 @@ class YoloOBBCountingBackend:
         }
 
     def resolve_target_classes(self, target: CountTargetSpec) -> frozenset[str]:
-        """Resolve one target to audited detector classes only (alias and
-        composite targets included). 将一个目标仅解析为已审计的检测器类别
-        （含 alias 与 composite 目标）。"""
+        """Resolve one canonical leaf to audited detector classes.
+        将一个 canonical 叶子仅解析为已审计的检测器类别。"""
         values = [target.canonical_label, *target.aliases]
         resolved: set[str] = set()
         for value in values:
@@ -115,9 +110,7 @@ class YoloOBBCountingBackend:
                 normalized = normalized[:-1]
             if normalized in self._aliases:
                 normalized = self._aliases[normalized]
-            if normalized in self._composites:
-                resolved.update(self._composites[normalized])
-            elif normalized in self._classes:
+            if normalized in self._classes:
                 resolved.add(normalized)
         return frozenset(resolved)
 

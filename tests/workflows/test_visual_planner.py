@@ -30,15 +30,25 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _CATALOG_DATA = {
     "catalog_version": "first-qwen-evidence-catalog-v1",
-    "composites": {
-        "vehicle": ["small_vehicle", "large_vehicle"],
-        "building": ["building_outline"],
+    "aliases": {"airplane": "plane"},
+    "parents": {
+        "vehicle": ["small-vehicle", "large-vehicle"],
+        "building": ["building-outline"],
     },
     "leaves": {
-        "small_vehicle": {"yolo_labels": ["small-vehicle"], "yolo_enabled": True},
-        "large_vehicle": {"yolo_labels": ["large-vehicle"], "yolo_enabled": True},
-        "building_outline": {"yolo_labels": ["building"], "yolo_enabled": True},
+        "small-vehicle": {"yolo_labels": ["small vehicle"], "yolo_enabled": True},
+        "large-vehicle": {"yolo_labels": ["large vehicle"], "yolo_enabled": True},
+        "building-outline": {"yolo_labels": ["building"], "yolo_enabled": True},
+        "plane": {"yolo_labels": ["plane"], "yolo_enabled": True},
     },
+    "task_capabilities": {
+        task: ["small-vehicle", "large-vehicle", "building-outline", "plane"]
+        for task in ("counting", "fine_grained_counting", "general_vqa", "grounding")
+    },
+}
+_EXECUTABLE_BY_TASK = {
+    task: ("small-vehicle", "large-vehicle")
+    for task in ("counting", "fine_grained_counting", "general_vqa", "grounding")
 }
 
 
@@ -166,7 +176,9 @@ def _planner(client: _FakeClient, **kwargs) -> VisualTaskPlanner:
         system_prompt="You are the visual-only planner.",
         prompt_version="v4",
         catalog=kwargs.pop("catalog", _catalog()),
-        executable_categories=kwargs.pop("executable_categories", ("vehicle",)),
+        executable_categories_by_task=kwargs.pop(
+            "executable_categories_by_task", _EXECUTABLE_BY_TASK
+        ),
         **kwargs,
     )
 
@@ -291,7 +303,16 @@ def test_planner_accepts_schema_valid_plan_without_subjective_score(tmp_path: Pa
         response=_response(assistance=True, categories=("small-vehicle",)),
     )
     with pytest.raises(VisualTaskPlanError, match="CAPABILITY_UNAVAILABLE"):
-        _run(_planner(unavailable, executable_categories=()), _sample(tmp_path), tmp_path)
+        _run(
+            _planner(
+                unavailable,
+                executable_categories_by_task={
+                    task: () for task in _EXECUTABLE_BY_TASK
+                },
+            ),
+            _sample(tmp_path),
+            tmp_path,
+        )
 
 
 def test_planner_schema_and_image_index_fail_closed(tmp_path: Path) -> None:
@@ -362,9 +383,10 @@ def test_planner_binding_and_post_validation_are_leaf_only(tmp_path: Path) -> No
     binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
     assert binding["planning_mode"] == "visual-task-plan-v4"
     assert binding["canonical_leaf_categories"] == [
-        "building-outline",
-        "large-vehicle",
         "small-vehicle",
+        "large-vehicle",
+        "building-outline",
+        "plane",
     ]
     assert binding["parent_expansions"]["vehicle"] == [
         "small-vehicle",

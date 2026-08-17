@@ -151,7 +151,6 @@ class YoloDetectorSettings(BaseModel):
     priority: int = Field(default=100, ge=0)
     classes: list[str] = Field(min_length=1)
     aliases: dict[str, str] = Field(default_factory=dict)
-    composite_targets: dict[str, list[str]] = Field(default_factory=dict)
     confidence: float = Field(default=0.20, ge=0.0, le=1.0)
     iou: float = Field(default=0.50, ge=0.0, le=1.0)
     image_size: int = Field(default=1024, gt=0)
@@ -200,16 +199,6 @@ class YoloDetectorSettings(BaseModel):
         for alias, target in self.aliases.items():
             if target.strip().casefold() not in known:
                 raise ValueError(f"YOLO alias {alias!r} targets unknown class {target!r}")
-        for composite, targets in self.composite_targets.items():
-            if not targets:
-                raise ValueError(f"YOLO composite target {composite!r} must not be empty")
-            missing = [
-                target for target in targets if target.strip().casefold() not in known
-            ]
-            if missing:
-                raise ValueError(
-                    f"YOLO composite {composite!r} contains unknown classes {missing!r}"
-                )
         if self.name in {"qwen_point", "vrsbench_qwen_count"}:
             raise ValueError(f"YOLO detector name {self.name!r} is reserved")
         self.classes = normalized

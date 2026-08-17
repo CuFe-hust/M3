@@ -669,27 +669,60 @@ def _build_visual_task_planning(
         model_store,
         project_root=project_root,
     )
-    # A category is advertised to the planner only when both protocol owners
-    # are executable. This conservative intersection prevents a VQA plan from
-    # silently falling back when its evidence service is uncalibrated.
-    # 仅当两个协议 owner 都可执行时才向规划器声明类别；保守交集避免 VQA
-    # 计划在证据服务未校准时静默回退。
-    executable_categories = (
-        evidence_catalog.composite_categories
-        if bindings.vqa_evidence is not None and bindings.grounding_evidence is not None
-        else ()
-    )
+    # Runtime availability is task-specific. Counting specialists remain
+    # independent from VQA/Grounding evidence service availability.
+    # 运行时能力按 task 分开；counting 专家不受 VQA/Grounding 证据服务开关影响。
+    counting_leaves = _enabled_counting_catalog_leaves(settings, evidence_catalog)
+    executable_categories_by_task = {
+        "counting": counting_leaves,
+        "fine_grained_counting": counting_leaves,
+        "general_vqa": (
+            evidence_catalog.executable_leaves_for_task("general_vqa")
+            if bindings.vqa_evidence is not None
+            else ()
+        ),
+        "grounding": (
+            evidence_catalog.executable_leaves_for_task("grounding")
+            if bindings.grounding_evidence is not None
+            else ()
+        ),
+    }
     planner = VisualTaskPlanner(
         qwen_client,
         system_prompt=catalog["visual_task_plan"],
         prompt_version=planner_settings.task_prompt_version,
         catalog=evidence_catalog,
-        executable_categories=executable_categories,
+        executable_categories_by_task=executable_categories_by_task,
         max_side=planner_settings.preview_max_side,
         roi_size=planner_settings.roi_size,
         large_image_policy=planner_settings.large_image_policy,
     )
     return planner, bindings
+
+
+def _enabled_counting_catalog_leaves(
+    settings: AppSettings,
+    catalog: EvidenceCatalog,
+) -> tuple[str, ...]:
+    """Return verified leaves backed by an enabled counting specialist.
+    返回当前已启用 counting specialist 能支撑的已验证叶子。"""
+
+    detector_labels = {
+        label.casefold()
+        for detector in settings.backend.yolo.detectors
+        if settings.backend.yolo.enabled and detector.enabled
+        for label in detector.classes
+    }
+    enabled: list[str] = []
+    for leaf in catalog.executable_leaves_for_task("counting"):
+        yolo_ready = catalog.capability_enabled(leaf, "yolo") and bool(
+            {label.casefold() for label in catalog.leaf_yolo_labels(leaf)}
+            & detector_labels
+        )
+        semantic_ready = catalog.capability_enabled(leaf, "segformer")
+        if yolo_ready or semantic_ready:
+            enabled.append(leaf)
+    return tuple(enabled)
 
 
 def _build_visual_bindings(

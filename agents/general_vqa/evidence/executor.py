@@ -311,7 +311,10 @@ class ObjectEvidenceExecutor:
             raise ValueError("v2 evidence executor requires visual assistance")
         if not materialized_views:
             raise ValueError("v2 evidence executor requires materialized views")
-        leaves = self._catalog.expand_composites(plan.object_categories)
+        leaves = self._catalog.validate_plan_leaves(
+            plan.object_categories,
+            task="general_vqa",
+        )
         records = self._materialized_regions(materialized_views, images)
 
         hit_leaves, detections = self._yolo_phase(images, records, leaves)

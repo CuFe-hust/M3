@@ -333,7 +333,12 @@ def test_segformer_catalog_label_mismatch_fails_without_absolute_path(
 def test_yolo_catalog_class_mismatch_fails_fast(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "yolo.example.yaml", environ={})
     detector = settings.backend.yolo.detectors[0].model_copy(
-        update={"composite_targets": {"vehicle": ["small vehicle"]}}
+        update={
+            "classes": [
+                value for value in settings.backend.yolo.detectors[0].classes
+                if value != "small vehicle"
+            ]
+        }
     )
     yolo = settings.backend.yolo.model_copy(update={"detectors": [detector]})
     settings = settings.model_copy(
@@ -488,12 +493,8 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     }
     vehicle_plan = selector.plan(vehicle, task="counting", hints=vehicle_hints)
     assert vehicle_plan is not None
-    assert vehicle_plan.primary_backend_name == "detector_obb_csl_001"
-    assert vehicle_plan.fallback_backend_names == (
-        "segmenter_mitb2_001",
-        "quantity_proposal",
-        "qwen_point",
-    )
+    assert vehicle_plan.primary_backend_name == "quantity_proposal"
+    assert vehicle_plan.fallback_backend_names == ("qwen_point",)
 
     aircraft = target.model_copy(update={"canonical_label": "aircraft"})
     aircraft_hints = {
@@ -502,11 +503,8 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     }
     aircraft_plan = selector.plan(aircraft, task="counting", hints=aircraft_hints)
     assert aircraft_plan is not None
-    assert aircraft_plan.primary_backend_name == "detector_obb_csl_001"
-    assert aircraft_plan.fallback_backend_names == (
-        "segmenter_mitb2_001",
-        "qwen_point",
-    )
+    assert aircraft_plan.primary_backend_name == "qwen_point"
+    assert aircraft_plan.fallback_backend_names == ()
 
 
 def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
@@ -703,20 +701,20 @@ def _calibrated_detector(tmp_path: Path, name: str = "fake-det") -> YoloDetector
     )
 
 
-def test_visual_planning_is_always_v2_and_injected(tmp_path: Path) -> None:
-    """Fresh composition always injects the v2 planner bindings.
-    新鲜组合始终注入 v2 规划器绑定。"""
+def test_visual_planning_is_always_v4_and_injected(tmp_path: Path) -> None:
+    """Fresh composition always injects the v4 planner bindings.
+    新鲜组合始终注入 v4 规划器绑定。"""
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
     runner = components.sample_runner_factory(data_root=tmp_path)
     assert components.visual_task_planner is not None
     assert runner.visual_bindings is components.visual_bindings
 
 
-def test_visual_planning_enabled_uses_v2_with_uncalibrated_bindings(
+def test_visual_planning_uses_v4_with_uncalibrated_bindings(
     tmp_path: Path,
 ) -> None:
-    """The v2 planner is always assembled; uncalibrated evidence stays closed.
-    v2 规划器始终组装；未校准的证据能力保持关闭。"""
+    """The v4 planner is always assembled; uncalibrated evidence stays closed.
+    v4 规划器始终组装；未校准的证据能力保持关闭。"""
     settings = _visual_settings(tmp_path, visual_planning={})
     components = assemble_runtime(
         settings,
@@ -734,6 +732,13 @@ def test_visual_planning_enabled_uses_v2_with_uncalibrated_bindings(
     assert planner._catalog.catalog_version == (
         settings.visual_planning.planner.catalog_version
     )
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    assert len(binding["canonical_leaf_categories"]) == 18
+    assert "vehicle" not in binding["canonical_leaf_categories"]
+    assert binding["parent_expansions"]["vehicle"] == [
+        "small-vehicle", "large-vehicle"
+    ]
+    assert len(binding["task_executable_categories"]["counting"]) == 15
     assert components.visual_bindings is not None
     assert components.visual_bindings.vqa_evidence is None
     assert components.visual_bindings.grounding_evidence is not None

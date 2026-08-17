@@ -460,7 +460,10 @@ class GroundingEvidenceExecutor:
                 raise GroundingEvidenceError("PLAN_WITHOUT_VISUAL_ASSISTANCE")
             if not materialized_views:
                 raise GroundingEvidenceError("MATERIALIZED_VIEWS_MISSING")
-            leaves = self._catalog.expand_composites(plan.object_categories)
+            leaves = self._catalog.validate_plan_leaves(
+                plan.object_categories,
+                task="grounding",
+            )
         except CatalogCategoryError as exc:
             raise GroundingEvidenceError("PLAN_INVALID") from exc
         sizes = {image_id: image.size for image_id, image in images.items()}

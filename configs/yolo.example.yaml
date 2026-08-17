@@ -17,8 +17,7 @@ backend:
         source_dataset: DOTAv2.0
         priority: 100
         classes: [plane, baseball diamond, bridge, ground track field, small vehicle, large vehicle, ship, tennis court, basketball court, storage tank, soccer ball field, roundabout, harbor, swimming pool, helicopter, container crane, airport, helipad]
-        aliases: {airplane: plane, aeroplane: plane, vessel: ship, boat: ship, storage-tank: storage tank, oil tank: storage tank, large-vehicle: large vehicle, small-vehicle: small vehicle, football field: soccer ball field, soccer field: soccer ball field, swimming-pool: swimming pool}
-        composite_targets: {vehicle: [small vehicle, large vehicle], aircraft: [plane, helicopter]}
+        aliases: {}
         confidence: 0.20
         iou: 0.50
         image_size: 1024
