@@ -96,8 +96,8 @@ class RuntimeComponents:
     run_store: RunStore
     build_report: Callable[[Path], Report]
     render_overlay: Callable[..., Path]
-    # Canonical v3 planner and shared evidence bindings for every fresh entry.
-    # 所有新鲜入口共用的 v3 规划器与视觉证据绑定。
+    # Canonical v4 planner and shared evidence bindings for every fresh entry.
+    # 所有新鲜入口共用的 v4 规划器与视觉证据绑定。
     visual_task_planner: VisualTaskPlanner
     visual_bindings: VisualPlanBindings
     dataset_runner_factory: Callable[..., DatasetRunner] = field(
@@ -159,6 +159,7 @@ def assemble_runtime(
         catalog,
         qwen_client,
         model_store,
+        expert_catalog=expert_catalog,
         project_root=asset_root,
     )
     if settings.agents.change.semantic.enabled and semantic_client is None:
@@ -650,10 +651,11 @@ def _build_visual_task_planning(
     qwen_client: VisionLanguageClient,
     model_store: YoloModelStore,
     *,
+    expert_catalog: ExpertCatalog,
     project_root: Path,
 ) -> tuple[VisualTaskPlanner, VisualPlanBindings]:
-    """Assemble the always-on doc-18 planner and shared evidence bindings.
-    组装始终启用的 doc-18 规划器与共享证据绑定。"""
+    """Assemble the always-on v4 planner and shared evidence bindings.
+    组装始终启用的 v4 规划器与共享证据绑定。"""
     evidence_catalog = _load_evidence_catalog(project_root)
     planner_settings = settings.visual_planning.planner
     if planner_settings.catalog_version != evidence_catalog.catalog_version:
@@ -675,7 +677,9 @@ def _build_visual_task_planning(
     # Runtime availability is task-specific. Counting specialists remain
     # independent from VQA/Grounding evidence service availability.
     # 运行时能力按 task 分开；counting 专家不受 VQA/Grounding 证据服务开关影响。
-    counting_leaves = _enabled_counting_catalog_leaves(settings, evidence_catalog)
+    counting_leaves = _enabled_counting_catalog_leaves(
+        settings, evidence_catalog, expert_catalog
+    )
     executable_categories_by_task = {
         "counting": counting_leaves,
         "fine_grained_counting": counting_leaves,
@@ -706,23 +710,41 @@ def _build_visual_task_planning(
 def _enabled_counting_catalog_leaves(
     settings: AppSettings,
     catalog: EvidenceCatalog,
+    expert_catalog: ExpertCatalog,
 ) -> tuple[str, ...]:
     """Return verified leaves backed by an enabled counting specialist.
     返回当前已启用 counting specialist 能支撑的已验证叶子。"""
 
-    detector_labels = {
-        label.casefold()
+    enabled_detectors = tuple(
+        detector
         for detector in settings.backend.yolo.detectors
         if settings.backend.yolo.enabled and detector.enabled
-        for label in detector.classes
-    }
+    )
+    yolo_specs = expert_catalog.experts(
+        kinds=frozenset({"yolo_obb"}), enabled_only=True
+    )
+    semantic_specs = expert_catalog.experts(
+        kinds=frozenset({"semantic_segmentation"}), enabled_only=True
+    )
     enabled: list[str] = []
     for leaf in catalog.executable_leaves_for_task("counting"):
-        yolo_ready = catalog.capability_enabled(leaf, "yolo") and bool(
-            {label.casefold() for label in catalog.leaf_yolo_labels(leaf)}
-            & detector_labels
+        yolo_ready = catalog.capability_enabled(leaf, "yolo") and any(
+            detector.model_id == expert.logical_model_id
+            and leaf in expert.supports
+            and expert.supports[leaf].counting_mode == "native_detection"
+            and bool(
+                {label.casefold() for label in expert.supports[leaf].model_labels}
+                & {label.casefold() for label in detector.classes}
+            )
+            for detector in enabled_detectors
+            for expert in yolo_specs
         )
-        semantic_ready = catalog.capability_enabled(leaf, "segformer")
+        semantic_ready = catalog.capability_enabled(leaf, "segformer") and any(
+            leaf in expert.supports
+            and expert.supports[leaf].counting_mode == "connected_components"
+            and expert.verification.class_map == "verified"
+            for expert in semantic_specs
+        )
         if yolo_ready or semantic_ready:
             enabled.append(leaf)
     return tuple(enabled)

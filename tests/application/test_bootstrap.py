@@ -17,11 +17,13 @@ from agents.change.settings import ChangeSemanticSettings
 from agents.counting.expert_catalog import ExpertCatalog, ExpertCatalogError
 from agents.counting.schema import CountTargetSpec
 from agents.counting.settings import YoloDetectorSettings
+from agents.evidence_catalog import EvidenceCatalog
 from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
     _build_segformer_clients,
     _catalog_validated_yolo_detector,
+    _enabled_counting_catalog_leaves,
     _resolve_yolo_detector,
     assemble_runtime,
 )
@@ -758,7 +760,7 @@ def test_visual_planning_uses_v4_with_uncalibrated_bindings(
     assert binding["parent_expansions"]["vehicle"] == [
         "small-vehicle", "large-vehicle"
     ]
-    assert len(binding["task_executable_categories"]["counting"]) == 15
+    assert len(binding["task_executable_categories"]["counting"]) == 13
     assert components.visual_bindings is not None
     assert components.visual_bindings.vqa_evidence is None
     assert components.visual_bindings.grounding_evidence is not None
@@ -768,6 +770,29 @@ def test_visual_planning_uses_v4_with_uncalibrated_bindings(
     # so nothing is ever loaded for it. 未校准即 YOLO 阶段关闭：完全不接线检测
     # 器，因此永远不会为它加载任何东西。
     assert grounding._yolo_client is None
+
+
+def test_counting_planner_leaves_require_real_specialist_support(tmp_path: Path) -> None:
+    evidence = EvidenceCatalog.from_file(REPO_ROOT / "agents" / "evidence_catalog.json")
+    experts = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
+
+    semantic_only = _visual_settings(
+        tmp_path,
+        yolo={"enabled": False, "detectors": []},
+    )
+    semantic_leaves = _enabled_counting_catalog_leaves(
+        semantic_only, evidence, experts
+    )
+    assert "small-vehicle" in semantic_leaves
+    assert "bridge" not in semantic_leaves
+    assert "harbor" not in semantic_leaves
+
+    yolo_enabled = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    yolo_leaves = _enabled_counting_catalog_leaves(
+        yolo_enabled, evidence, experts
+    )
+    assert "bridge" in yolo_leaves
+    assert "harbor" in yolo_leaves
 
 
 def test_visual_planning_catalog_version_mismatch_fails_closed(
