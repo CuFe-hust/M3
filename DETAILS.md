@@ -21,7 +21,7 @@
 
 ```text
 repository: CuFe-hust/M3
-branch: new_structure
+architecture baseline: current repository mainline
 evaluation/reporting integration baseline:
   E1-E5 through 396a5900411930e16c75ff9fe18af01080c33428
 legacy behavior reference:
