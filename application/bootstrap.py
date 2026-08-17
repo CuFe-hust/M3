@@ -48,6 +48,7 @@ from agents.grounding.evidence import (
     GroundingEvidencePolicy,
 )
 from agents.registry import AgentRegistry
+from agents.schema import COUNTING_TASKS
 from agents.visual_base import PromptBinding
 from application.prompts import PromptCatalog
 from application.settings import AppSettings, VisualDetectorSettings
@@ -678,11 +679,17 @@ def _build_visual_task_planning(
     # independent from VQA/Grounding evidence service availability.
     # 运行时能力按 task 分开；counting 专家不受 VQA/Grounding 证据服务开关影响。
     counting_leaves = _enabled_counting_catalog_leaves(
-        settings, evidence_catalog, expert_catalog
+        settings, evidence_catalog, expert_catalog, task="counting"
+    )
+    fine_grained_counting_leaves = _enabled_counting_catalog_leaves(
+        settings,
+        evidence_catalog,
+        expert_catalog,
+        task="fine_grained_counting",
     )
     executable_categories_by_task = {
         "counting": counting_leaves,
-        "fine_grained_counting": counting_leaves,
+        "fine_grained_counting": fine_grained_counting_leaves,
         "general_vqa": (
             evidence_catalog.executable_leaves_for_task("general_vqa")
             if bindings.vqa_evidence is not None
@@ -711,9 +718,16 @@ def _enabled_counting_catalog_leaves(
     settings: AppSettings,
     catalog: EvidenceCatalog,
     expert_catalog: ExpertCatalog,
+    *,
+    task: str,
 ) -> tuple[str, ...]:
     """Return verified leaves backed by an enabled counting specialist.
     返回当前已启用 counting specialist 能支撑的已验证叶子。"""
+
+    if task not in COUNTING_TASKS:
+        raise RuntimeCompositionError(
+            f"unsupported counting planner task: {task}"
+        )
 
     enabled_detectors = tuple(
         detector
@@ -727,7 +741,7 @@ def _enabled_counting_catalog_leaves(
         kinds=frozenset({"semantic_segmentation"}), enabled_only=True
     )
     enabled: list[str] = []
-    for leaf in catalog.executable_leaves_for_task("counting"):
+    for leaf in catalog.executable_leaves_for_task(task):
         yolo_ready = catalog.capability_enabled(leaf, "yolo") and any(
             detector.model_id == expert.logical_model_id
             and leaf in expert.supports

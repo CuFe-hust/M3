@@ -18,6 +18,7 @@ from agents.counting.expert_catalog import ExpertCatalog, ExpertCatalogError
 from agents.counting.schema import CountTargetSpec
 from agents.counting.settings import YoloDetectorSettings
 from agents.evidence_catalog import EvidenceCatalog
+import application.bootstrap as bootstrap_module
 from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
@@ -781,7 +782,7 @@ def test_counting_planner_leaves_require_real_specialist_support(tmp_path: Path)
         yolo={"enabled": False, "detectors": []},
     )
     semantic_leaves = _enabled_counting_catalog_leaves(
-        semantic_only, evidence, experts
+        semantic_only, evidence, experts, task="counting"
     )
     assert "small-vehicle" in semantic_leaves
     assert "bridge" not in semantic_leaves
@@ -789,10 +790,73 @@ def test_counting_planner_leaves_require_real_specialist_support(tmp_path: Path)
 
     yolo_enabled = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
     yolo_leaves = _enabled_counting_catalog_leaves(
-        yolo_enabled, evidence, experts
+        yolo_enabled, evidence, experts, task="counting"
     )
     assert "bridge" in yolo_leaves
     assert "harbor" in yolo_leaves
+
+
+def test_counting_planner_leaves_are_independent_per_counting_task(
+    tmp_path: Path,
+) -> None:
+    data = json.loads(
+        (REPO_ROOT / "agents" / "evidence_catalog.json").read_text(encoding="utf-8")
+    )
+    data["catalog_version"] = "task-split-test-v1"
+    data["task_capabilities"]["counting"] = [
+        "small-vehicle", "large-vehicle"
+    ]
+    data["task_capabilities"]["fine_grained_counting"] = ["small-vehicle"]
+    evidence = EvidenceCatalog(data)
+    experts = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+
+    counting = _enabled_counting_catalog_leaves(
+        settings, evidence, experts, task="counting"
+    )
+    fine = _enabled_counting_catalog_leaves(
+        settings, evidence, experts, task="fine_grained_counting"
+    )
+    assert counting == ("small-vehicle", "large-vehicle")
+    assert fine == ("small-vehicle",)
+
+    with pytest.raises(RuntimeCompositionError, match="unsupported counting planner task"):
+        _enabled_counting_catalog_leaves(
+            settings, evidence, experts, task="general_vqa"
+        )
+
+
+def test_visual_planner_binding_keeps_counting_task_capabilities_separate(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    data = json.loads(
+        (REPO_ROOT / "agents" / "evidence_catalog.json").read_text(encoding="utf-8")
+    )
+    data["catalog_version"] = "task-split-binding-v1"
+    data["task_capabilities"]["counting"] = [
+        "small-vehicle", "large-vehicle"
+    ]
+    data["task_capabilities"]["fine_grained_counting"] = ["small-vehicle"]
+    evidence = EvidenceCatalog(data)
+    monkeypatch.setattr(
+        bootstrap_module, "_load_evidence_catalog", lambda _root: evidence
+    )
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={"planner": {"catalog_version": evidence.catalog_version}},
+        yolo={"enabled": False, "detectors": []},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    planner = components.visual_task_planner
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    by_task = binding["task_executable_categories"]
+    assert by_task["counting"] == ["small-vehicle", "large-vehicle"]
+    assert by_task["fine_grained_counting"] == ["small-vehicle"]
 
 
 def test_visual_planning_catalog_version_mismatch_fails_closed(
