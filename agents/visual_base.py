@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,7 @@ from models.base import (
 )
 from models.images import (
     UnsupportedImageFormatError,
+    crop_image_box,
     detect_image_mime,
     image_to_data_url,
     read_normalized_image,
@@ -133,17 +135,12 @@ class VisualAgentBase:
         content: list[dict[str, Any]] = []
         image_hashes: list[str] = []
         for image_ref in sample.images:
-            candidate_path, data = self._read_image(
-                image_ref.path, context, sample_id=sample.sample_id
+            data, mime = self._read_model_image(
+                image_ref.image_id,
+                image_ref.path,
+                context,
+                sample_id=sample.sample_id,
             )
-            try:
-                mime = detect_image_mime(candidate_path)
-            except (UnsupportedImageFormatError, OSError) as error:
-                raise AgentExecutionError(
-                    self.name,
-                    sample.sample_id,
-                    cause=f"image_format_error:{type(error).__name__}",
-                ) from error
             content.append(
                 {"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}}
             )
@@ -194,16 +191,30 @@ class VisualAgentBase:
 
         result = await self.postprocess(sample, result)
 
+        trace: dict[str, Any] = {
+            "prompt_version": prompt_sel.version,
+            "request_hash": request_hash,
+            "image_sha256": image_hashes,
+            "model": identity.model,
+        }
+        if context.visual_task_plan is not None:
+            trace["visual_task_plan_version"] = context.visual_task_plan.version
+            trace["visual_view_modes"] = [
+                {
+                    "image_id": view.image_id,
+                    "view_mode": view.view_mode,
+                    "source_size": list(view.source_size),
+                    "crop_xyxy": list(view.crop_xyxy),
+                    "crop_size": list(view.crop_size),
+                }
+                for view in context.visual_views
+            ]
+
         return AgentExecution(
             agent_name=self.name,
             payload=result,
             result_filename=self.result_filename(sample),
-            trace={
-                "prompt_version": prompt_sel.version,
-                "request_hash": request_hash,
-                "image_sha256": image_hashes,
-                "model": identity.model,
-            },
+            trace=trace,
         )
 
     def _build_hash(
@@ -246,6 +257,12 @@ class VisualAgentBase:
                 image_ref.path, context, sample_id=sample.sample_id
             )
             try:
+                # Evidence executors receive the full normalized source and
+                # apply the same frozen view geometry themselves; this keeps
+                # source/global coordinates valid while final crops remain
+                # byte-identical to the direct path.
+                # evidence executor 接收完整规范源图并自行应用同一冻结视图几何；
+                # 这样 source/global 坐标有效，最终裁切仍与 direct 路径一致。
                 images[image_ref.image_id] = read_normalized_image(candidate_path)
             except (OSError, ValueError) as exc:
                 raise AgentExecutionError(
@@ -254,6 +271,88 @@ class VisualAgentBase:
                     cause=f"image_decode_failed:{type(exc).__name__}",
                 ) from exc
         return images
+
+    def _read_model_image(
+        self,
+        image_id: str,
+        path: Path,
+        context: AgentContext,
+        *,
+        sample_id: str,
+    ) -> tuple[bytes, str]:
+        """Return exactly the materialized view bytes for final Qwen.
+        返回最终 Qwen 实际接收的精确物化视图字节。"""
+        candidate_path, raw = self._read_image(path, context, sample_id=sample_id)
+        if context.visual_task_plan is None:
+            try:
+                return raw, detect_image_mime(candidate_path)
+            except (UnsupportedImageFormatError, OSError) as error:
+                raise AgentExecutionError(
+                    self.name,
+                    sample_id,
+                    cause=f"image_format_error:{type(error).__name__}",
+                ) from error
+        try:
+            normalized = read_normalized_image(candidate_path)
+            view = self._view_for_image(image_id, context, sample_id=sample_id)
+            materialized = self._apply_materialized_view(
+                image_id,
+                normalized,
+                context,
+                sample_id=sample_id,
+            )
+            if view.view_mode == "full_image" and materialized.size != view.crop_size:
+                raise ValueError("materialized full-image size drift")
+            buffer = io.BytesIO()
+            materialized.save(buffer, format="PNG")
+            return buffer.getvalue(), "image/png"
+        except (OSError, ValueError) as exc:
+            raise AgentExecutionError(
+                self.name,
+                sample_id,
+                cause=f"materialized_view_failed:{type(exc).__name__}",
+            ) from exc
+
+    def _view_for_image(
+        self,
+        image_id: str,
+        context: AgentContext,
+        *,
+        sample_id: str,
+    ) -> Any:
+        """Find one immutable view by image id without accepting paths.
+        按 image_id 查找不可变视图，绝不接受路径。"""
+        for view in context.visual_views:
+            if view.image_id == image_id:
+                return view
+        raise AgentExecutionError(
+            self.name,
+            sample_id,
+            cause="materialized_view_missing",
+        )
+
+    def _apply_materialized_view(
+        self,
+        image_id: str,
+        image: Image.Image,
+        context: AgentContext,
+        *,
+        sample_id: str,
+    ) -> Image.Image:
+        """Apply the frozen full-image or fixed ROI geometry in memory.
+        在内存中应用冻结的整图或固定 ROI 几何。"""
+        if context.visual_task_plan is None:
+            return image
+        view = self._view_for_image(image_id, context, sample_id=sample_id)
+        if image.size != view.source_size:
+            raise AgentExecutionError(
+                self.name,
+                sample_id,
+                cause="materialized_view_source_size_drift",
+            )
+        if view.view_mode == "full_image":
+            return image.copy()
+        return crop_image_box(image, view.crop_xyxy)
 
     def _read_image(
         self,

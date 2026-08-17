@@ -38,6 +38,18 @@ class _FakeQwenClient:
 
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         self.calls += 1
+        if response_model.__name__ == "VisualTaskPlan":
+            return response_model.model_validate(
+                {
+                    "version": "visual-task-plan-v2",
+                    "task": "general_vqa",
+                    "needs_visual_assistance": False,
+                    "object_categories": [],
+                    "region_request": {"explicit": False},
+                    "confidence": 0.95,
+                    "reason_codes": ["fake_test_plan"],
+                }
+            )
         return response_model.model_validate(
             {"agent_name": "general_vqa_agent", "answer": "yes", "status": "completed"}
         )

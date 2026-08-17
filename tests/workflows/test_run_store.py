@@ -160,6 +160,23 @@ def test_prompt_snapshot_copied_with_content(tmp_path: Path) -> None:
     assert copied.read_text(encoding="utf-8") == prompt.read_text(encoding="utf-8")
 
 
+def test_generated_prompt_snapshot_is_hashed_and_copied(tmp_path: Path) -> None:
+    """Capability-bound prompt text is part of the durable prompt identity.
+    能力绑定的 Prompt 正文属于可持久化的 Prompt 身份。"""
+    store, root = _store(tmp_path)
+    body = "planner_binding={\"executable_categories\": []}\n"
+    manifest = store.create_run(
+        config_payload=_config_payload(),
+        model_ids={"qwen": "qwen"},
+        prompt_paths=[],
+        prompt_texts={"visual_task_plan_v2.runtime.md": body},
+    )
+    run_dir = root / manifest.run_id
+    copied = run_dir / "prompts.snapshot" / "visual_task_plan_v2.runtime.md"
+    assert copied.read_text(encoding="utf-8") == body
+    assert len(manifest.prompt_hashes["visual_task_plan_v2.runtime.md"]) == 64
+
+
 # ── 密钥安全 / secret safety ───────────────────────────────────────────────
 
 

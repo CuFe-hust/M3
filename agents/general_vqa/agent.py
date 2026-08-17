@@ -29,13 +29,16 @@ from agents.general_vqa.evidence.executor import (
     _pixel_xyxy_to_999,
 )
 from agents.general_vqa.evidence.rendering import (
-    make_preview,
     overlay_mask,
     render_roi_crop,
     stable_palette_color,
 )
 from agents.general_vqa.evidence.schema import RoiEvidenceRecord, VqaEvidenceBundle
-from agents.schema import AgentName, AgentResult, FirstQwenVisualPlan, RoiRegion
+from agents.schema import (
+    AgentName,
+    AgentResult,
+    VisualTaskPlan,
+)
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import UnifiedSample
 from models.base import (
@@ -160,52 +163,42 @@ class GeneralVQAAgent(VisualAgentBase):
         return result.model_copy(update={"status": "partial", "geometry": geometry})
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
-        """Protocol-owner entry (14A2 §4.3): when the feature is on (typed
-        plan present) and the plan selects object_evidence_vqa, run the
-        object-evidence path; every other sample keeps the legacy direct path
-        byte-identical. The plan never rewrites sample.task, and a plan that
-        selects an unapproved task combination fails stably instead of
-        silently degrading to the direct path.
-        协议 owner 入口（14A2 §4.3）：特性开启（存在 typed plan）且计划选择
-        object_evidence_vqa 时运行对象证据路径；其余样本保持旧直接路径逐字节
-        一致。计划绝不改写 sample.task；选择未批准任务组合的计划稳定失败，而
-        不静默降级到直接路径。"""
+        """Run direct VQA or the canonical v2 evidence path.
+        运行直接 VQA 或规范 v2 证据路径。"""
         if sample.task not in self.supported_tasks:
             raise AgentTaskMismatchError(
                 self.name, sample.task, supported=self.supported_tasks
             )
-        plan = context.visual_plan
-        if plan is None or plan.execution_family != "object_evidence_vqa":
-            # Feature off, or the planner chose the direct path — legacy run.
-            # 特性关闭，或规划器选择直接路径——旧 run。
-            return await super().run(sample, context)
-        # Compatibility matrix (14A2 gate 1): object evidence is approved only
-        # for general_vqa; scene_classification / multiple_choice_vqa /
-        # spatial_relation plans must be direct_vqa.
-        # 兼容矩阵（14A2 门禁 1）：对象证据只对 general_vqa 批准；
-        # scene_classification / multiple_choice_vqa / spatial_relation 的计划
-        # 必须是 direct_vqa。
-        if sample.task != "general_vqa":
-            raise AgentExecutionError(
-                self.name,
-                sample.sample_id,
-                cause=f"object_evidence_plan_forbidden_for_task:{sample.task}",
+        v2_plan = context.visual_task_plan
+        if v2_plan is not None:
+            if not v2_plan.needs_visual_assistance:
+                return await super().run(sample, context)
+            if sample.task != "general_vqa":
+                raise AgentExecutionError(
+                    self.name,
+                    sample.sample_id,
+                    cause=f"visual_assistance_forbidden_for_task:{sample.task}",
+                )
+            if context.visual_bindings is None or context.visual_bindings.vqa_evidence is None:
+                raise AgentExecutionError(
+                    self.name,
+                    sample.sample_id,
+                    cause="vqa_evidence_service_unavailable",
+                )
+            return await self._run_object_evidence(
+                sample,
+                context,
+                v2_plan,
+                context.visual_bindings.vqa_evidence,
             )
-        if context.visual_bindings is None or context.visual_bindings.vqa_evidence is None:
-            raise AgentExecutionError(
-                self.name,
-                sample.sample_id,
-                cause="vqa_evidence_service_unavailable",
-            )
-        return await self._run_object_evidence(
-            sample, context, plan, context.visual_bindings.vqa_evidence
-        )
+
+        return await super().run(sample, context)
 
     async def _run_object_evidence(
         self,
         sample: UnifiedSample,
         context: AgentContext,
-        plan: FirstQwenVisualPlan,
+        plan: VisualTaskPlan,
         service: VqaEvidenceService,
     ) -> AgentExecution:
         """One evidence pass plus exactly one final-Qwen call assembled per
@@ -230,10 +223,11 @@ class GeneralVQAAgent(VisualAgentBase):
             )
         images = self._read_evidence_images(sample, context)
         try:
-            execution: EvidenceExecution = service.execute(
+            execution = service.execute(
                 plan,
                 images,
                 fallback_image_id=sample.images[0].image_id,
+                materialized_views=context.visual_views,
             )
             content, final_hashes = self._build_evidence_content(
                 sample, plan, execution.bundle, execution.masks, images
@@ -307,7 +301,7 @@ class GeneralVQAAgent(VisualAgentBase):
     def _build_evidence_content(
         self,
         sample: UnifiedSample,
-        plan: FirstQwenVisualPlan,
+        plan: VisualTaskPlan,
         bundle: VqaEvidenceBundle,
         masks: Mapping[tuple[str, str], Any],
         images: Mapping[str, Image.Image],
@@ -320,29 +314,11 @@ class GeneralVQAAgent(VisualAgentBase):
         按 14B §10 组装唯一最终 Qwen 用户内容：先干净 ROI 图像、再逐 ROI 掩膜
         overlay、后文本证据（问题、答案约束、图像尺寸、ROI 裁切几何、YOLO
         文本记录、SegFormer 图例）。confidence 绝不出现，绝不绘制检测框。"""
-        region_by_id = {region.roi_id: region for region in plan.roi_plan.rois}
         content: list[dict[str, Any]] = []
         final_hashes: list[str] = []
         roi_geometry: list[dict[str, Any]] = []
         for record in bundle.rois:
-            region = region_by_id.get(record.roi_id)
-            if region is None:
-                # The bundle's unique full-image ROI when the plan carried
-                # none (14B §10: 无可靠空间约束 -> 唯一整图 ROI).
-                # 计划无 ROI 时 bundle 的唯一整图 ROI。
-                if record.roi_id == "full" and not region_by_id:
-                    region = RoiRegion(
-                        roi_id="full",
-                        image_id=record.image_id,
-                        xyxy=(0.0, 0.0, 1.0, 1.0),
-                    )
-                else:
-                    raise ValueError(
-                        f"bundle references unknown roi_id {record.roi_id!r}"
-                    )
-            clean = make_preview(
-                render_roi_crop(images[record.image_id], region, record)
-            )
+            clean = render_roi_crop(images[record.image_id], record)
             content.append(self._image_block(clean, final_hashes))
             roi_geometry.append(
                 {
@@ -450,9 +426,9 @@ class GeneralVQAAgent(VisualAgentBase):
 def _structured_prompt(prompt: PromptBinding, agent_name: str) -> str:
     """Frozen structured-output suffix, verbatim mirror of
     VisualAgentBase.run() so the evidence path's final call stays
-    format-identical with the legacy direct path.
+    format-identical with the direct path.
     冻结结构化输出后缀，逐字镜像 VisualAgentBase.run()，使证据路径的最终调用
-    与旧直接路径格式一致。"""
+    与 direct 路径格式一致。"""
     return (
         prompt.text
         + f"\n\nReturn valid JSON only. Set agent_name to {agent_name!r}; "

@@ -80,9 +80,9 @@ def iter_manifest_drafts(
     split: str,
 ) -> Iterator[SampleDraft]:
     """Yield SampleDraft rows from the explicit field mapping; the task column
-    is optional — drafts without a task go through the TaskResolver and never
+    is optional — drafts without a task go through the visual planner and never
     pretend to be general_vqa. 从显式字段映射产出 SampleDraft；task 列可选——
-    无 task 的 draft 走 TaskResolver，绝不冒充 general_vqa。"""
+    无 task 的 draft 走视觉规划器，绝不冒充 general_vqa。"""
 
     samples_file, fields = load_manifest_mapping(root, dataset=dataset, version=version)
     for index, row in enumerate(read_json_rows(samples_file)):

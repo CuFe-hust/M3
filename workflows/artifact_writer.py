@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agents.base import AgentExecution, _validate_plain_basename
-from agents.schema import FirstQwenVisualPlan, JointQwenVisualPlan
+from agents.schema import VisualTaskPlan
 from data.adapters.base import AdapterProbe
 from data.schema import UnifiedSample
 from workflows.events import _atomic_replace, _path_lock, _reject_secrets
@@ -29,17 +29,10 @@ AGENT_TRACE_FILENAME = "agent_trace.json"
 PREDICTIONS_FILENAME = "predictions.jsonl"
 DATASET_SUMMARY_FILENAME = "dataset_summary.json"
 DATASET_PROBE_FILENAME = "dataset_probe.json"
-# Frozen first-Qwen visual-plan basename (C7, 14A2): sample-relative,
-# validated-schema only, never a raw model body.
-# 冻结第一 Qwen visual plan basename（C7，14A2）：样本相对、只存已校验
-# schema，绝不存原始模型正文。
-VISUAL_PLAN_FILENAME = "visual_plan.json"
-# Frozen joint task+plan basename (doc 15): sample-relative, validated
-# schema only, never a raw model body; the persisted joint plan is the
-# authoritative record of the model-selected task.
-# 冻结联合 task+plan basename（doc 15）：样本相对、只存已校验 schema，绝不
-# 存原始模型正文；持久化联合计划是模型选定 task 的权威记录。
-JOINT_VISUAL_PLAN_FILENAME = "joint_visual_plan.json"
+# Canonical planner artifact; it contains only validated intent and
+# materialized geometry, never raw model output or image bytes.
+# 规范规划产物；只包含已校验意图与物化几何，绝不保存原始模型输出或图像字节。
+VISUAL_TASK_PLAN_FILENAME = "visual_task_plan.json"
 
 
 def atomic_write_json(path: Path, value: Any) -> None:
@@ -91,26 +84,21 @@ class ArtifactWriter:
 
         atomic_write_json(sample_dir / ROUTING_DECISION_FILENAME, _json_value(routing))
 
-    def write_visual_plan(self, sample_dir: Path, plan: FirstQwenVisualPlan) -> Path:
-        """Atomically persist the validated visual plan under the frozen
-        basename; only the validated schema is stored, never a raw model
-        body. 在冻结 basename 下原子持久化已验证 visual plan；只存已校验
-        schema，绝不存原始模型正文。"""
-
-        path = sample_dir / VISUAL_PLAN_FILENAME
-        atomic_write_json(path, plan.model_dump(mode="json"))
-        return path
-
-    def write_joint_visual_plan(
-        self, sample_dir: Path, plan: JointQwenVisualPlan
+    def write_visual_task_plan(
+        self,
+        sample_dir: Path,
+        plan: VisualTaskPlan,
+        *,
+        materialized_views: tuple[object, ...] = (),
     ) -> Path:
-        """Atomically persist the validated joint task+plan under the frozen
-        basename; only the validated schema is stored, never a raw model
-        body. 在冻结 basename 下原子持久化已验证联合 task+plan；只存已校验
-        schema，绝不存原始模型正文。"""
-
-        path = sample_dir / JOINT_VISUAL_PLAN_FILENAME
-        atomic_write_json(path, plan.model_dump(mode="json"))
+        """Persist the canonical v2 plan and safe view geometry.
+        持久化规范 v2 计划及安全的视图几何。"""
+        payload = plan.model_dump(mode="json")
+        payload["materialized_views"] = [
+            _json_value(view) for view in materialized_views
+        ]
+        path = sample_dir / VISUAL_TASK_PLAN_FILENAME
+        atomic_write_json(path, payload)
         return path
 
     def write_execution(self, sample_dir: Path, execution: AgentExecution) -> Path:

@@ -19,7 +19,7 @@ from agents.registry import AgentRegistry
 from data.schema import GroundTruth, ImageRef, UnifiedSample
 from models.base import ModelCacheIdentity
 from routing.router import TaskRouter
-from routing.schema import TaskResolution
+from agents.schema import MaterializedVisualView, VisualTaskPlan
 from workflows.artifact_writer import ArtifactWriter
 from workflows.call_budget import CallBudgetFactory
 from workflows.sample_runner import SampleRunner
@@ -89,9 +89,34 @@ def _runner(root: Path) -> tuple[SampleRunner, _FakeClient]:
     return runner, client
 
 
-def _run(runner: SampleRunner, sample: UnifiedSample, sample_dir: Path, *, resolution=None):
+def _plan() -> VisualTaskPlan:
+    return VisualTaskPlan(
+        version="visual-task-plan-v2",
+        task="general_vqa",
+        confidence=0.9,
+        reason_codes=["test"],
+    )
+
+
+def _view() -> MaterializedVisualView:
+    return MaterializedVisualView(
+        image_id="i1",
+        view_mode="full_image",
+        source_size=(4, 4),
+        crop_xyxy=(0, 0, 4, 4),
+        crop_size=(4, 4),
+    )
+
+
+def _run(runner: SampleRunner, sample: UnifiedSample, sample_dir: Path):
     return asyncio.run(
-        runner.run_one(sample, sample_dir, resolution=resolution, judge_policy="none")
+        runner.run_one(
+            sample,
+            sample_dir,
+            visual_task_plan=_plan(),
+            visual_views=(_view(),),
+            judge_policy="none",
+        )
     )
 
 
@@ -110,6 +135,7 @@ def test_sample_runner_vertical_slice_general_vqa(tmp_path: Path) -> None:
     # evaluation → trace → final status. / 产物契约顺序。
     assert (sample_dir / "sample.json").is_file()
     assert (sample_dir / "routing_decision.json").is_file()
+    assert (sample_dir / "visual_task_plan.json").is_file()
     assert (sample_dir / "agent_result.json").is_file()
     assert (sample_dir / "vqa_evaluation.json").is_file()
     assert (sample_dir / "agent_trace.json").is_file()
@@ -126,29 +152,5 @@ def test_sample_runner_vertical_slice_general_vqa(tmp_path: Path) -> None:
     trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
     assert trace["execution_agent"] == "general_vqa_agent"
     assert trace["task_type"] == "general_vqa"
-    assert trace["resolution_source"] == "dataset_task"
+    assert trace["resolution_source"] == "visual-task-plan-v2"
     assert trace["judge_status"] == "not_requested"
-
-
-def test_vertical_slice_low_confidence_dedup_single_run(tmp_path: Path) -> None:
-    runner, client = _runner(tmp_path)
-    sample = _sample(tmp_path)
-    resolution = TaskResolution(
-        task="general_vqa",
-        confidence=0.4,
-        candidate_tasks=["general_vqa", "scene_classification", "multiple_choice_vqa"],
-        needs_candidate_fallback=True,
-        source="model",
-        reason_codes=["low_confidence"],
-    )
-    sample_dir = tmp_path / "samples" / "slice-dedup"
-    outcome = _run(runner, sample, sample_dir, resolution=resolution)
-    assert outcome.status.state == "succeeded"
-    # All three candidates route to general_vqa_agent and deduplicate to one
-    # attempt, so the model client is called exactly once.
-    # 三个候选都路由到 general_vqa_agent 并去重为一次尝试，模型只调用一次。
-    assert len(client.calls) == 1
-    trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
-    assert trace["low_confidence"] is True
-    assert trace["candidate_tasks"] == ["general_vqa"]
-    assert trace["attempt_agents"] == [["general_vqa_agent"]]

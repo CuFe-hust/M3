@@ -83,8 +83,8 @@ def test_missing_task_and_auto_task_defaults_to_adapter_tasks(
     capsys, monkeypatch
 ) -> None:
     """Neither --task nor --auto-task selects adapter.supported_tasks and
-    never calls the TaskResolver. 两者都不给时选择 adapter.supported_tasks，
-    绝不调用 TaskResolver。"""
+    never invokes visual planning. 两者都不给时选择 adapter.supported_tasks，
+    绝不调用视觉规划器。"""
     import application.commands.run_dataset as run_dataset_module
 
     captured = {}

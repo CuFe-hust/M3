@@ -1,14 +1,18 @@
-"""Single-sample execution kernel: routing, candidate fallback, agent
-fallback, shared budget, evaluation, and optional judge.
+"""Single-sample execution kernel for the canonical visual-plan path.
 
-单样本执行内核：路由、候选兜底、Agent 兜底、共享预算、评测与可选 judge。
+The active runner consumes a validated ``VisualTaskPlan`` and materialized
+views, then performs routing, agent fallback, shared-budget evaluation, and
+optional judge work. Historical artifact formats are read only by reporting
+and are not injected by the fresh composition root.
+
+规范纯视觉规划路径的单样本执行内核。现役 runner 消费已校验的
+``VisualTaskPlan`` 与物化视图，然后执行路由、Agent 兜底、共享预算评测与可选
+judge。历史产物格式只由 reporting 只读读取，新鲜组合根不会注入。
 
 SampleRunner 不拥有数据集迭代/resume/shard/模型创建/AppSettings/
-PromptCatalog/reporting/CLI——所有依赖注入构造。低置信度 TaskResolution 按
-candidate_tasks（最多 3 个）构建 attempt plan，路由后按 AgentName 稳定去重，
-绝不跑所有 Agent；候选样本经 model_copy 重建（task 替换、normalization 清空、
-图像角色重建），绝不原地修改 UnifiedSample；不兼容候选稳定跳过。失败只记录
-稳定 code（错误类名或显式 code），绝不泄漏原始异常文本、路径或密钥。
+PromptCatalog/reporting/CLI——所有依赖注入构造。它只消费已经确定的样本 task
+与可选 VisualTaskPlan，按 TaskRouter 的 primary/fallback 执行有限尝试。失败只
+记录稳定 code（错误类名或显式 code），绝不泄漏原始异常文本、路径或密钥。
 """
 
 from __future__ import annotations
@@ -22,10 +26,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from agents.base import AgentContext, AgentExecution
+from agents.base import AgentContext, AgentExecution, VisualPlanBindings
 from agents.counting.schema import CountingResult
 from agents.registry import AgentRegistry
-from agents.schema import JointQwenVisualPlan
+from agents.schema import MaterializedVisualView, VisualTaskPlan
 from data.schema import CHANGE_TASKS, UnifiedSample
 from evaluation.metrics.counting import merge_count_evaluation
 from evaluation.metrics.grounding import box_iou, grounding_deterministic_metrics
@@ -38,12 +42,11 @@ from evaluation.records import (
 )
 from models.base import VisionLanguageClient
 from routing.router import TaskRouter
-from routing.schema import RoutingDecision, TaskResolution, joint_plan_to_resolution
+from routing.schema import RoutingDecision
 from workflows.artifact_writer import ArtifactWriter
 from workflows.call_budget import CallBudget, CallBudgetFactory
 from workflows.judge_service import JudgeService
 from workflows.schema import SampleRunOutcome, SampleRunStatus
-from workflows.visual_planner import VisualPlanError, VisualPlanningGate
 
 # Hard bound on the candidate attempt plan: never run all agents.
 # 候选 attempt plan 的硬上限：绝不跑所有 Agent。
@@ -128,8 +131,8 @@ def build_deterministic_evaluation(
 
 @dataclass(frozen=True)
 class _AgentAttempt:
-    """One concrete agent execution with its materialized task and sample.
-    一次具体 Agent 执行及其已物化 task/sample。"""
+    """One concrete routed agent execution and its sample.
+    一次具体路由 Agent 执行及其样本。"""
 
     agent_name: str
     task: str
@@ -138,9 +141,8 @@ class _AgentAttempt:
 
 @dataclass(frozen=True)
 class _Attempt:
-    """One executable attempt: a task, its deduplicated agent list, the sample
-    rebuilt for that task, and the routing decision. 一次可执行尝试：任务、
-    去重后的 Agent 列表、为该任务重建的样本与路由决策。"""
+    """One executable task route and its fallback agents.
+    一次可执行 task 路由及其 fallback Agent。"""
 
     task: str
     agent_attempts: tuple[_AgentAttempt, ...]
@@ -226,8 +228,7 @@ class SampleRunner:
         judge_service: JudgeService | None = None,
         fallback_on_partial: bool = False,
         data_root: Path | None = None,
-        visual_planning: VisualPlanningGate | None = None,
-        joint_bindings: VisualPlanBindings | None = None,
+        visual_bindings: VisualPlanBindings | None = None,
     ) -> None:
         self.agent_registry = registry
         self.router = router
@@ -237,134 +238,60 @@ class SampleRunner:
         self.judge_service = judge_service
         self.fallback_on_partial = fallback_on_partial
         self.data_root = data_root
-        # Feature-flagged first-Qwen planning gate; None keeps every existing
-        # call count, result, trace, and artifact byte-identical.
-        # 特性开关第一 Qwen 规划门；None 时现有调用次数、结果、trace 与产物
-        # 逐字节一致。
-        self.visual_planning = visual_planning
-        # Evidence bindings for the joint flow (doc 15). In joint mode the
-        # gate is None and these bindings serve every sample; the two modes
-        # are never wired together.
-        # 联合流程（doc 15）的证据绑定。联合模式下 gate 为 None，这些绑定服务
-        # 每条样本；两种模式绝不同时接线。
-        self.joint_bindings = joint_bindings
+        # Bindings are lightweight services for the already materialized v2 plan.
+        # 绑定只携带已物化 v2 计划所需的轻量服务。
+        self.visual_bindings = visual_bindings
 
     async def run_one(
         self,
         sample: UnifiedSample,
         sample_dir: Path,
         *,
-        resolution: TaskResolution | None = None,
-        joint_plan: JointQwenVisualPlan | None = None,
+        visual_task_plan: VisualTaskPlan | None = None,
+        visual_views: tuple[MaterializedVisualView, ...] = (),
         judge_policy: str = "none",
         budget: CallBudget | None = None,
         evaluate: bool = True,
     ) -> SampleRunOutcome:
-        """Execute routing, attempt plan, optional judge, and persistence.
-        Sample-level failures are converted to a failed status with stable
-        codes and never raise raw exceptions. An external budget (e.g. one
-        already consumed by a TaskResolver or the joint planner) is shared
-        across every attempt and judge call; otherwise a fresh per-sample
-        budget is created. joint_plan (doc 15) supplies the authoritative
-        task and the validated visual plan in one object; it is mutually
-        exclusive with resolution and the executed sample must already carry
-        the model-selected task — any conflict fails closed instead of
-        guessing. evaluate=False writes inference artifacts only and skips
-        the deterministic evaluation artifact — the narrow switch used by
-        count-image; dataset execution keeps the default True.
-        执行路由、attempt plan、可选 judge 与持久化。样本级失败转换为携带
-        稳定 code 的 failed 状态，绝不抛出原始异常。外部预算（如已被
-        TaskResolver 或联合规划器消费的预算）贯穿所有 attempt 与 judge
-        调用；否则创建新的逐样本预算。joint_plan（doc 15）在一个对象内提供
-        权威 task 与已验证视觉计划；它与 resolution 互斥，且被执行样本必须
-        已携带模型选定 task——任何冲突严格失败而非猜测。evaluate=False 只写
-        推理产物并跳过确定性评估产物——这是 count-image 使用的窄开关；数据集
-        执行保持默认 True。"""
+        """Execute one already-materialized task route and persist its result.
+        执行一条已经物化的 task 路由并持久化结果。
 
-        if resolution is not None and joint_plan is not None:
-            raise ValueError("resolution and joint_plan are mutually exclusive")
-        if joint_plan is not None and sample.task != joint_plan.task:
-            raise ValueError(
-                "joint-mode sample task must equal the model-selected task"
-            )
-        joint_mode = joint_plan is not None
-        if joint_plan is not None:
-            # The model task is authoritative for routing, materialization,
-            # and execution; the conversion is pure and deterministic.
-            # 模型 task 对路由、物化与执行权威；转换纯且确定。
-            resolution = joint_plan_to_resolution(joint_plan)
+        Dataset runs pass the v2 plan and frozen views. Direct tools may omit
+        them for an explicitly selected sample task; such calls never plan.
+        数据集运行传入 v2 计划与冻结视图；显式选择 task 的直连工具可以省略，
+        这类调用绝不在此规划。
+        """
+
+        if visual_task_plan is not None:
+            if sample.task != visual_task_plan.task:
+                raise ValueError(
+                    "visual-plan sample task must equal the model-selected task"
+                )
+            if not visual_views:
+                raise ValueError("visual_task_plan requires materialized views")
 
         self.artifact_writer.write_sample(sample_dir, sample)
         self.artifact_writer.write_running_status(sample_dir, _status(sample, "running"))
         started_at = time.perf_counter()
-        base_task = resolution.task if resolution is not None else sample.task
+        base_task = sample.task
         budget = budget if budget is not None else self.call_budget_factory.create_for_sample(base_task)
-        if joint_plan is not None:
-            # Persist the validated joint response (validated schema only,
-            # never a raw model body) as the authoritative record of the
-            # model-selected task. / 持久化已验证联合响应（只存已校验 schema，
-            # 绝不存原始模型正文），作为模型选定 task 的权威记录。
-            self.artifact_writer.write_joint_visual_plan(sample_dir, joint_plan)
-        visual_plan = joint_plan.visual_plan if joint_plan is not None else None
-        if self.visual_planning is not None:
-            try:
-                visual_plan = await self.visual_planning.plan_sample(
-                    sample,
-                    data_root=self.data_root,
-                    artifact_dir=sample_dir,
-                    budget=budget,
-                )
-            except VisualPlanError as error:
-                # Frozen planner failure policy (14A2 gate 2): strict failure,
-                # no retry, no legacy fallback, no sample.task rewrite. The
-                # public message carries only the stable code.
-                # 冻结规划器失败策略（14A2 门禁 2）：严格失败，无重试、无旧路径
-                # 回退、不改 sample.task。公共消息只携带稳定 code。
-                return self._finish_failed(
-                    sample=sample,
-                    sample_dir=sample_dir,
-                    base_task=base_task,
-                    resolution=resolution,
-                    started_at=started_at,
-                    attempts=[],
-                    skipped=[],
-                    error_code=str(error),
-                    error_message="VisualPlanError",
-                    joint_mode=joint_mode,
-                )
-            except Exception as error:
-                # Defensive bound: any unexpected gate failure is still a
-                # stable-code sample failure, never a raw exception escape.
-                # 防御性兜底：任何意外 gate 失败仍是稳定 code 的样本失败，
-                # 绝不外泄原始异常。
-                return self._finish_failed(
-                    sample=sample,
-                    sample_dir=sample_dir,
-                    base_task=base_task,
-                    resolution=resolution,
-                    started_at=started_at,
-                    attempts=[],
-                    skipped=[],
-                    error_code=type(error).__name__,
-                    joint_mode=joint_mode,
-                )
-            if visual_plan is not None:
-                # Persist the validated plan (validated schema only, never a
-                # raw model body). / 持久化已验证计划（只存已校验 schema，
-                # 绝不存原始模型正文）。
-                self.artifact_writer.write_visual_plan(sample_dir, visual_plan)
-        attempts, skipped = self._build_attempt_plan(sample, resolution)
+        if visual_task_plan is not None:
+            self.artifact_writer.write_visual_task_plan(
+                sample_dir,
+                visual_task_plan,
+                materialized_views=visual_views,
+            )
+        attempts, skipped = self._build_attempt_plan(sample)
         if not attempts:
             return self._finish_failed(
                 sample=sample,
                 sample_dir=sample_dir,
                 base_task=base_task,
-                resolution=resolution,
+                planning_mode="visual-task-plan-v2" if visual_task_plan is not None else "direct",
                 started_at=started_at,
                 attempts=[],
                 skipped=skipped,
                 error_code="NO_EXECUTABLE_ATTEMPTS",
-                joint_mode=joint_mode,
             )
         self.artifact_writer.write_routing(sample_dir, attempts[0].decision)
         context = AgentContext(
@@ -377,12 +304,9 @@ class SampleRunner:
                 if self.judge_service is not None
                 else None
             ),
-            visual_plan=visual_plan,
-            visual_bindings=(
-                self.visual_planning.bindings
-                if self.visual_planning is not None
-                else self.joint_bindings
-            ),
+            visual_task_plan=visual_task_plan,
+            visual_views=visual_views,
+            visual_bindings=self.visual_bindings,
         )
 
         execution: AgentExecution | None = None
@@ -425,13 +349,12 @@ class SampleRunner:
                 sample=sample,
                 sample_dir=sample_dir,
                 base_task=base_task,
-                resolution=resolution,
+                planning_mode="visual-task-plan-v2" if visual_task_plan is not None else "direct",
                 started_at=started_at,
                 attempts=attempts,
                 skipped=skipped,
                 error_code=failure_code or "ALL_ATTEMPTS_FAILED",
                 fallback_used=fallback_used,
-                joint_mode=joint_mode,
             )
 
         # The routing artifact must reflect the task that actually executed,
@@ -453,7 +376,7 @@ class SampleRunner:
             execution,
             executed_attempt,
             executed_task=executed_agent_attempt.task,
-            resolution=resolution,
+            planning_mode="visual-task-plan-v2" if visual_task_plan is not None else "direct",
             resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
             evaluation=evaluation,
@@ -462,8 +385,10 @@ class SampleRunner:
             attempts=attempts,
             skipped=skipped,
             failure_code=None,
-            joint_mode=joint_mode,
         )
+        if visual_task_plan is not None:
+            trace["planning_mode"] = "visual-task-plan-v2"
+            trace["visual_task_plan_version"] = visual_task_plan.version
         self.artifact_writer.write_trace(sample_dir, trace)
         # result_path is the sample-relative result artifact (the declared
         # result basename); machine absolute paths never enter the status.
@@ -486,86 +411,45 @@ class SampleRunner:
     def _build_attempt_plan(
         self,
         sample: UnifiedSample,
-        resolution: TaskResolution | None,
     ) -> tuple[list[_Attempt], list[dict[str, str]]]:
-        """Build the bounded, deduplicated attempt plan. High-confidence or
-        absent resolutions run only the top task; low-confidence resolutions
-        expand up to MAX_ATTEMPTS candidate tasks, route each, and deduplicate
-        agent names stably. Incompatible candidate samples are skipped with a
-        stable reason. 构建有界、去重的 attempt plan。高置信度或缺省 resolution
-        只跑 top task；低置信度扩展最多 MAX_ATTEMPTS 个候选任务，逐个路由并
-        稳定去重 Agent 名。不兼容候选样本以稳定 reason 跳过。"""
+        """Build one deterministic route with its declared fallbacks.
+        构建一条确定性的路由及其声明的 fallback Agent。"""
 
-        base_task = resolution.task if resolution is not None else sample.task
-        if resolution is not None and resolution.needs_candidate_fallback:
-            candidate_tasks = list(dict.fromkeys([base_task, *resolution.candidate_tasks]))[:MAX_ATTEMPTS]
-        else:
-            candidate_tasks = [base_task]
-        attempts: list[_Attempt] = []
-        seen_agents: set[str] = set()
-        skipped: list[dict[str, str]] = []
-        for task in candidate_tasks:
-            try:
-                decision = self.router.route(task)
-            except KeyError:
-                skipped.append({"task": task, "reason": "UNROUTABLE_TASK"})
-                continue
-            candidate_sample = (
+        try:
+            decision = self.router.route(sample.task)
+        except KeyError:
+            return [], [{"task": sample.task, "reason": "UNROUTABLE_TASK"}]
+        agent_attempts: list[_AgentAttempt] = []
+        for agent_name in (decision.primary_agent, *decision.fallback_agents):
+            execution_task = _ROUTING_FALLBACK_TASK_REMAP.get(
+                (sample.task, agent_name),
+                sample.task,
+            )
+            execution_sample = (
                 sample
-                if task == sample.task
-                else _rebuild_sample_for_task(sample, task)
+                if execution_task == sample.task
+                else _rebuild_sample_for_task(sample, execution_task)
             )
-            if candidate_sample is None:
-                skipped.append({"task": task, "reason": "INCOMPATIBLE_SAMPLE"})
+            if execution_sample is None:
                 continue
-            agent_names = tuple(
-                agent_name
-                for agent_name in (decision.primary_agent, *decision.fallback_agents)
-                if agent_name not in seen_agents
-            )
-            if not agent_names:
-                skipped.append({"task": task, "reason": "AGENTS_DEDUPLICATED"})
-                continue
-            agent_attempts: list[_AgentAttempt] = []
-            for agent_name in agent_names:
-                execution_task = _ROUTING_FALLBACK_TASK_REMAP.get(
-                    (task, agent_name),
-                    task,
-                )
-                execution_sample = (
-                    candidate_sample
-                    if execution_task == task
-                    else _rebuild_sample_for_task(candidate_sample, execution_task)
-                )
-                if execution_sample is None:
-                    skipped.append(
-                        {
-                            "task": execution_task,
-                            "reason": "INCOMPATIBLE_FALLBACK_SAMPLE",
-                        }
-                    )
-                    continue
-                agent_attempts.append(
-                    _AgentAttempt(
-                        agent_name=agent_name,
-                        task=execution_task,
-                        sample=execution_sample,
-                    )
-                )
-            if not agent_attempts:
-                continue
-            seen_agents.update(item.agent_name for item in agent_attempts)
-            attempts.append(
-                _Attempt(
-                    task=task,
-                    agent_attempts=tuple(agent_attempts),
-                    sample=candidate_sample,
-                    decision=decision,
+            agent_attempts.append(
+                _AgentAttempt(
+                    agent_name=agent_name,
+                    task=execution_task,
+                    sample=execution_sample,
                 )
             )
-            if len(attempts) >= MAX_ATTEMPTS:
-                break
-        return attempts, skipped
+        if not agent_attempts:
+            return [], [{"task": sample.task, "reason": "NO_COMPATIBLE_AGENT"}]
+        return [
+            _Attempt(
+                task=sample.task,
+                agent_attempts=tuple(agent_attempts[:MAX_ATTEMPTS]),
+                sample=sample,
+                decision=decision,
+            )
+        ], []
+
 
     async def _run_attempt(
         self,
@@ -658,14 +542,13 @@ class SampleRunner:
         sample: UnifiedSample,
         sample_dir: Path,
         base_task: str,
-        resolution: TaskResolution | None,
+        planning_mode: str,
         started_at: float,
         attempts: list[_Attempt],
         skipped: list[dict[str, str]],
         error_code: str,
         error_message: str | None = None,
         fallback_used: bool = False,
-        joint_mode: bool = False,
     ) -> SampleRunOutcome:
         """Write the failure trace and the final failed status with only
         stable codes, then return the failed outcome. 写入失败 trace 与只含
@@ -675,7 +558,7 @@ class SampleRunner:
             None,
             None,
             executed_task=None,
-            resolution=resolution,
+            planning_mode=planning_mode,
             resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
             evaluation=None,
@@ -684,7 +567,6 @@ class SampleRunner:
             attempts=attempts,
             skipped=skipped,
             failure_code=error_code,
-            joint_mode=joint_mode,
         )
         self.artifact_writer.write_trace(sample_dir, trace)
         final = _status(
@@ -708,13 +590,13 @@ def _rebuild_sample_for_task(
     sample: UnifiedSample,
     task: str,
 ) -> UnifiedSample | None:
-    """Rebuild a sample for a candidate task: task replaced, normalization
-    dropped, image roles rebuilt (t1/t2/context for change tasks, image/
-    context otherwise). Returns None when the sample is incompatible with the
-    candidate task (e.g. a change task on a single image); the original sample
-    is never mutated. 为候选任务重建样本：替换 task、清空 normalization、重建
-    图像角色（变化任务 t1/t2/context，其余 image/context）。样本与候选任务
-    不兼容时（如单图上的变化任务）返回 None；原样本绝不修改。"""
+    """Rebuild only the declared routing fallback task contract.
+    仅为声明的路由 fallback 重建任务契约。
+
+    This is not task discovery: the router has already selected the fallback,
+    and incompatible image roles fail closed.
+    这不是任务发现：Router 已经选定 fallback，不兼容的图像角色严格失败。
+    """
 
     change_task = task in CHANGE_TASKS
     if change_task and len(sample.images) < 2:
@@ -725,10 +607,8 @@ def _rebuild_sample_for_task(
         data = sample.model_dump(mode="json")
         data["task"] = task
         data["normalization"] = None
-        images = data["images"]
-        for image_data, role in zip(images, roles):
+        for image_data, role in zip(data["images"], roles):
             image_data["role"] = role
-        data["images"] = images
         return UnifiedSample.model_validate(data)
     except (ValidationError, ValueError):
         return None
@@ -805,7 +685,7 @@ def _trace_payload(
     attempt: _Attempt | None,
     *,
     executed_task: str | None,
-    resolution: TaskResolution | None,
+    planning_mode: str,
     resolved_task: str,
     inference_seconds: float,
     evaluation: object | None,
@@ -814,18 +694,12 @@ def _trace_payload(
     attempts: list[_Attempt],
     skipped: list[dict[str, str]],
     failure_code: str | None,
-    joint_mode: bool = False,
 ) -> dict[str, Any]:
     """Compose the auditable trace from already-decided runtime facts; every
     value is JSON-safe and carries no raw paths, secrets, or exception text.
-    task_type is fixed to the resolved task; resolved_task and execution_task
-    are explicit so candidate fallback (resolved != executed) stays auditable;
-    joint_mode records that the task came from the one-call joint planner
-    (doc 15) rather than a separate text resolver.
+    task_type, planning mode, and execution task remain explicit for audit.
     根据已确定的运行时事实组装可审计 trace；所有值 JSON 安全且不含原始路径、
-    密钥或异常文本。task_type 固定为解析任务；resolved_task 与 execution_task
-    显式记录，使候选兜底（解析 != 执行）保持可审计；joint_mode 记录 task 来自
-    单次联合规划器调用（doc 15）而非独立文本解析器。"""
+    密钥或异常文本。task_type、planning mode 与 execution_task 均显式记录。"""
 
     judge_status = getattr(evaluation, "judge_status", None)
     if isinstance(evaluation, dict):
@@ -840,11 +714,9 @@ def _trace_payload(
             "inference_seconds": inference_seconds,
             "execution_task": executed_task,
             "execution_agent": execution.agent_name if execution is not None else None,
-            "resolution_source": resolution.source if resolution is not None else "dataset_task",
-            "joint_plan": joint_mode,
-            "low_confidence": (
-                resolution.needs_candidate_fallback if resolution is not None else False
-            ),
+            "planning_mode": planning_mode,
+            "resolution_source": planning_mode,
+            "low_confidence": False,
             "candidate_tasks": [item.task for item in attempts],
             "attempt_agents": [list(item.agent_names) for item in attempts],
             "skipped_candidates": skipped,

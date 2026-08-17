@@ -246,164 +246,111 @@ def _repair_severity(normalizations: list[str]) -> str:
     return "none"
 
 
-# ── First-Qwen visual plan contracts ──────────────────────────────────────
-# Shared by the VisualPlanner and the VQA protocol owner. The shared schema
-# deliberately holds no VQA masks, no Grounding box ids, and no
-# CountingResult; backend/checkpoint/device and the final answer are never
-# allowed here. 由 VisualPlanner 与 VQA 协议 owner 共用。共享 schema 刻意不
-# 携带 VQA 掩膜、Grounding box_id 或 CountingResult；此处不允许出现
-# backend/checkpoint/device 或最终答案。
+# ── Visual-only task planning contract (doc 16) ───────────────────────────
+# The v2 planner receives only normalized image previews and the raw question.
+# Its output contains task/assistance intent, never an answer or implementation
+# choice. v2 规划器只接收规范化图像预览与原始问题；输出只表达任务和辅助意图，
+# 绝不携带答案或实现选择。
 
-# Frozen plan schema version; the model output must match it exactly.
-# 冻结的计划 schema 版本；模型输出必须精确匹配。
-PLAN_SCHEMA_VERSION = "first-qwen-plan-v1"
-
-# Execution family selects the internal completion path; it never rewrites
-# UnifiedSample.task. 内部完成路径选择；绝不改写 UnifiedSample.task。
-ExecutionFamily = Literal["direct_vqa", "object_evidence_vqa"]
-
-_MAX_PLAN_COMPOSITE_CATEGORIES = 3
-
-_ROI_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.-]*$"
+VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v2"
 
 
-class RoiRegion(BaseModel):
-    """One semantic attention ROI in the frozen normalized [0,1] top-left
-    xyxy frame. image_id must reference an existing UnifiedSample image id
-    (enforced by the planner); the full image is expressed as [0,0,1,1].
-    Geometric validity (range, degeneracy) is NOT rejected here: per 14B
-    §6.2 the planner collapses an invalid ROI plan to the unique full-image
-    ROI instead of rejecting it; non-finite coordinates stay a strict
-    schema rejection (a value that is not even a number cannot be parsed
-    into geometry). 一条使用冻结 [0,1] top-left xyxy 制式的语义注意 ROI。
-    image_id 必须引用已存在 UnifiedSample 的图像 id（由 Planner 强制校验）；
-    整图表示为 [0,0,1,1]。几何合法性（范围、退化）不在此拒绝：按 14B §6.2
-    规划器将非法 ROI 计划折叠为唯一整图 ROI 而非拒绝；非有限坐标仍属 schema
-    严格拒绝（连数字都算不上的值无法解析成几何）。"""
+class RegionRequest(BaseModel):
+    """Optional explicit visual focus expressed in normalized image space.
+    使用归一化图像坐标表达的可选显式视觉焦点。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    roi_id: str = Field(min_length=1, pattern=_ROI_ID_PATTERN)
-    image_id: str = Field(min_length=1)
-    xyxy: tuple[float, float, float, float]
+    explicit: bool = False
+    image_index: int | None = Field(default=None, ge=0)
+    focus_xy_norm: tuple[float, float] | None = None
 
     @model_validator(mode="after")
-    def validate_xyxy(self) -> "RoiRegion":
-        """Require finite coordinates; the [0,1] range and degeneracy are
-        decided by the planner per 14B §6.2. 要求坐标有限；[0,1] 范围与退化
-        由规划器按 14B §6.2 决定。"""
-        if not all(math.isfinite(value) for value in self.xyxy):
-            raise ValueError("ROI xyxy must be finite")
+    def validate_linkage(self) -> "RegionRequest":
+        """Keep explicit focus fields all-or-nothing and finite.
+        保持显式焦点字段要么全部存在、要么全部缺省，并拒绝非有限值。"""
+        if not self.explicit:
+            if self.image_index is not None or self.focus_xy_norm is not None:
+                raise ValueError("implicit region_request must not carry focus fields")
+            return self
+        if self.image_index is None or self.focus_xy_norm is None:
+            raise ValueError("explicit region_request requires image_index and focus")
+        if not all(math.isfinite(value) for value in self.focus_xy_norm):
+            raise ValueError("region focus must be finite")
+        if not all(0.0 <= value <= 1.0 for value in self.focus_xy_norm):
+            raise ValueError("region focus must be within [0, 1]")
         return self
 
 
-class RoiPlan(BaseModel):
-    """Validated ROI plan: zero ROIs mean "no reliable spatial constraint"
-    (the geometry layer maps this to the unique full-image ROI), otherwise
-    the attention ROIs. The count is not capped here: per 14B §6.2 an
-    over-limit, out-of-range, or degenerate plan collapses to the unique
-    full-image ROI in the planner — never truncated, never re-called.
-    校验后的 ROI 计划：零 ROI 表示“无可靠空间约束”（几何层映射为唯一整图
-    ROI），否则为注意 ROI。数量不在此封顶：按 14B §6.2，超限、越界或退化
-    的计划在规划器中折叠为唯一整图 ROI——绝不截断、绝不重调。"""
+class VisualTaskPlan(BaseModel):
+    """Strict output of the single visual-only planning call.
+    单次纯视觉规划调用的严格输出。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    rois: list[RoiRegion] = Field(default_factory=list)
-
-
-class ObjectEvidenceRequest(BaseModel):
-    """Requested closed composite categories for object-evidence VQA. The
-    planner validates every category against the same-version catalog and
-    deduplicates them; the schema enforces only the count and string shape.
-    对象证据 VQA 请求的封闭组合类别。Planner 使用同版本目录校验每个类别并
-    去重；schema 只强制数量与字符串形状。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    composite_categories: list[str] = Field(
-        min_length=1, max_length=_MAX_PLAN_COMPOSITE_CATEGORIES
-    )
-
-    @model_validator(mode="after")
-    def validate_categories(self) -> "ObjectEvidenceRequest":
-        """Reject blank, control-character, or path-like category names.
-        拒绝空白、控制字符或类路径的类别名。"""
-        for category in self.composite_categories:
-            stripped = category.strip()
-            if not stripped or any(ord(character) < 32 for character in category):
-                raise ValueError(f"invalid composite category: {category!r}")
-            if "/" in category or "\\" in category:
-                raise ValueError(f"composite category must not be path-like: {category!r}")
-        return self
-
-
-class FirstQwenVisualPlan(BaseModel):
-    """Strict first-Qwen planning output. version is frozen; execution_family
-    selects the internal completion path without ever rewriting
-    UnifiedSample.task; no backend/checkpoint/device or final answer is
-    allowed here. object_evidence_vqa requires an evidence request while
-    direct_vqa must not carry one; the plan never reads Ground Truth.
-    严格的第一次 Qwen 规划输出。version 冻结；execution_family 选择内部完成
-    路径，绝不改写 UnifiedSample.task；此处不允许 backend/checkpoint/device
-    或最终答案。object_evidence_vqa 必须携带 evidence request，direct_vqa
-    不得携带；本计划绝不读取 Ground Truth。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    version: Literal[PLAN_SCHEMA_VERSION]  # type: ignore[valid-type]
-    execution_family: ExecutionFamily
+    version: Literal[VISUAL_TASK_PLAN_SCHEMA_VERSION]  # type: ignore[valid-type]
+    task: TaskName
+    needs_visual_assistance: bool = False
+    object_categories: list[str] = Field(default_factory=list, max_length=3)
+    region_request: RegionRequest = Field(default_factory=RegionRequest)
     confidence: float = Field(ge=0.0, le=1.0)
-    roi_plan: RoiPlan
-    evidence_request: ObjectEvidenceRequest | None = None
     reason_codes: list[str] = Field(default_factory=list, max_length=8)
 
     @model_validator(mode="after")
-    def validate_family_linkage(self) -> "FirstQwenVisualPlan":
-        """Enforce the required linkage between execution family and evidence
-        request: object evidence implies categories, direct VQA forbids them.
-        强制执行家族与证据请求的联动：对象证据必须携带类别，直接 VQA 禁止
-        携带类别。"""
-        if self.execution_family == "object_evidence_vqa" and self.evidence_request is None:
-            raise ValueError("object_evidence_vqa requires an evidence_request")
-        if self.execution_family == "direct_vqa" and self.evidence_request is not None:
-            raise ValueError("direct_vqa must not carry an evidence_request")
+    def validate_assistance_linkage(self) -> "VisualTaskPlan":
+        """Require executable object categories exactly when assistance is on.
+        只有启用视觉辅助时才允许携带对象类别，并要求类别非空。"""
+        if self.needs_visual_assistance and not self.object_categories:
+            raise ValueError("visual assistance requires object_categories")
+        if not self.needs_visual_assistance and self.object_categories:
+            raise ValueError("object_categories require visual assistance")
+        for category in self.object_categories:
+            stripped = category.strip()
+            if not stripped or any(ord(character) < 32 for character in category):
+                raise ValueError(f"invalid object category: {category!r}")
+            if "/" in category or "\\" in category:
+                raise ValueError(f"object category must not be path-like: {category!r}")
+        for reason_code in self.reason_codes:
+            if (
+                not reason_code
+                or len(reason_code) > 64
+                or any(
+                    character not in "abcdefghijklmnopqrstuvwxyz0123456789_.:-"
+                    for character in reason_code
+                )
+            ):
+                raise ValueError("reason_codes must contain stable code strings")
         return self
 
 
-# ── Joint task + visual planning contract (doc 15) ────────────────────────
-# One schema-validated Qwen call returns the authoritative execution task and
-# the reusable visual-plan substructure together. The task becomes the
-# materialized/routed/executed task; a dataset-supplied source task is audit
-# only and never overrides it. The substructure reuses the frozen
-# FirstQwenVisualPlan contract (ROI, evidence request, execution family) — no
-# parallel ROI or coordinate implementation is created here. 单次 schema 校验
-# 的 Qwen 调用同时返回权威执行 task 与可复用的视觉计划子结构。该 task 成为
-# 物化、路由与执行使用的 task；数据集提供的来源 task 只作审计保留，绝不
-# 覆盖它。子结构复用冻结的 FirstQwenVisualPlan 契约（ROI、证据请求、
-# execution family）——不创建平行的 ROI 或坐标实现。
+class MaterializedVisualView(BaseModel):
+    """Immutable geometry record for the exact image sent to final agents.
+    发送给最终 Agent 的精确图像视图的不可变几何记录。"""
 
-# Frozen joint schema version; the model output must match it exactly.
-# 冻结的联合 schema 版本；模型输出必须精确匹配。
-JOINT_PLAN_SCHEMA_VERSION = "joint-qwen-plan-v1"
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
+    image_id: str = Field(min_length=1)
+    view_mode: Literal["full_image", "fixed_roi"]
+    source_size: tuple[int, int]
+    crop_xyxy: tuple[int, int, int, int]
+    crop_size: tuple[int, int]
 
-class JointQwenVisualPlan(BaseModel):
-    """Versioned strict joint planning output: the authoritative execution
-    task plus the reusable visual-plan substructure. task must belong to the
-    closed data.schema.TaskName set; the visual_plan substructure is a
-    validated FirstQwenVisualPlan (family/evidence linkage, ROI frame, and
-    closed-category membership are enforced by that contract plus the
-    planner). The plan never carries a final answer, backend, checkpoint,
-    device, path, secret, or Ground Truth; extra="forbid" rejects undeclared
-    fields. 版本化严格联合规划输出：权威执行 task 加可复用视觉计划子结构。
-    task 必须属于封闭 data.schema.TaskName 集合；visual_plan 子结构是已校验
-    的 FirstQwenVisualPlan（family/证据联动、ROI 制式与封闭类别归属由该契约
-    与规划器共同强制）。计划绝不携带最终答案、backend、checkpoint、device、
-    路径、secret 或 Ground Truth；extra="forbid" 拒绝未声明字段。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    version: Literal[JOINT_PLAN_SCHEMA_VERSION]  # type: ignore[valid-type]
-    task: TaskName
-    visual_plan: FirstQwenVisualPlan
+    @model_validator(mode="after")
+    def validate_geometry(self) -> "MaterializedVisualView":
+        """Validate exact half-open bounds and the fixed 1024 ROI contract.
+        校验精确的半开区间边界与固定 1024 ROI 契约。"""
+        width, height = self.source_size
+        x0, y0, x1, y1 = self.crop_xyxy
+        crop_width, crop_height = self.crop_size
+        if width <= 0 or height <= 0:
+            raise ValueError("source_size must be positive")
+        if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
+            raise ValueError("crop_xyxy must be inside source_size")
+        if (x1 - x0, y1 - y0) != (crop_width, crop_height):
+            raise ValueError("crop_size must match crop_xyxy")
+        if self.view_mode == "full_image":
+            if self.crop_xyxy != (0, 0, width, height):
+                raise ValueError("full_image view must cover the source")
+        elif self.crop_size != (1024, 1024):
+            raise ValueError("fixed_roi view must be exactly 1024x1024")
+        return self
