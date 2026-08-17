@@ -23,7 +23,7 @@ from agents.general_vqa.evidence.rendering import (
     normalized_image_size,
     preview_from_path,
 )
-from agents.schema import MaterializedVisualView, VisualTaskPlan
+from agents.schema import COUNTING_TASKS, MaterializedVisualView, VisualTaskPlan
 from data.schema import SampleDraft, TaskName, UnifiedSample
 from models.base import (
     MissingModelCacheIdentityError,
@@ -34,7 +34,6 @@ from models.base import (
 )
 
 _ALL_TASK_NAMES = frozenset(get_args(TaskName))
-_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 _VISUAL_CAPABILITY_TASKS = (
     "counting",
     "fine_grained_counting",
@@ -355,7 +354,7 @@ class VisualTaskPlanner:
             deduped = list(dict.fromkeys(plan.object_categories))
             if deduped != plan.object_categories:
                 plan = plan.model_copy(update={"object_categories": deduped})
-        if plan.task in _COUNTING_TASKS:
+        if plan.task in COUNTING_TASKS:
             try:
                 expected = self._catalog.executable_leaves_for_target(
                     plan.count_target or "",

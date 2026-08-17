@@ -253,7 +253,7 @@ def _repair_severity(normalizations: list[str]) -> str:
 # 输出只表达任务和辅助意图，绝不携带答案、实现选择或主观置信度。
 
 VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v4"
-_COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
+COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
 
 class RegionRequest(BaseModel):
@@ -313,7 +313,7 @@ class VisualTaskPlan(BaseModel):
                 raise ValueError(f"object category must not be path-like: {category!r}")
         if len(set(self.object_categories)) != len(self.object_categories):
             raise ValueError("object_categories must not contain duplicates")
-        if self.task in _COUNTING_TASKS:
+        if self.task in COUNTING_TASKS:
             if self.count_target is None or not self.count_target.strip():
                 raise ValueError("counting task requires count_target")
         elif self.count_target is not None:
