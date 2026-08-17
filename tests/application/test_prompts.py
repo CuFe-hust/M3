@@ -94,6 +94,7 @@ def test_change_prompt_v3_keeps_auxiliary_evidence_non_authoritative() -> None:
         "raw_full_t1",
         "raw_full_t2",
         "proposal-driven semantic confirmer",
+        "no significant semantic change detected",
     ):
         assert required in prompt
 

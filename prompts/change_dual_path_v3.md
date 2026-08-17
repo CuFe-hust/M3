@@ -18,12 +18,13 @@ Proposal masks are attention hints, not proof. SegFormer labels, semantic
 transitions, reliability scores, boxes, and masks are auxiliary model evidence
 only. If an
 auxiliary transition conflicts with raw imagery, prefer the raw imagery and
-express uncertainty in the requested answer. Do not infer no change only from
+state `No significant semantic change detected.` when no semantic change can
+be confirmed. Do not infer no change only from
 an empty proposal list; inspect the raw full pair. Do not call brightness,
 color, shadow, seasonal, blur, or registration artifacts a semantic change by
 themselves.
 
 For `change_caption`, provide a concise caption. For `change_qa`, answer only
-the user's question. If evidence is insufficient, say `uncertain`. Return
+the user's question. If evidence is insufficient, say `No significant semantic change detected.` Return
 JSON matching the supplied schema only, keep evidence boxes tied to proposal
 IDs, and do not invent evidence outside the supplied manifest.
