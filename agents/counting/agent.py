@@ -30,7 +30,11 @@ from agents.counting.schema import (
     CountingExecutionAudit,
     CountingResult,
 )
-from agents.counting.target_parser import CountTargetResolver, ResolvedCountTarget
+from agents.counting.target_parser import (
+    CountTargetResolutionError,
+    CountTargetResolver,
+    ResolvedCountTarget,
+)
 from agents.errors import (
     AgentExecutionError,
     AgentTaskMismatchError,
@@ -102,6 +106,8 @@ class CountingAgent:
             )
         try:
             resolution = self._target_resolution(sample, context)
+        except CountTargetResolutionError:
+            raise
         except Exception as exc:
             raise AgentExecutionError(
                 self.name, sample.sample_id, cause="TARGET_PARSE_FAILED"
@@ -241,6 +247,7 @@ class CountingAgent:
         )
         plan = context.visual_task_plan
         return self._target_resolver.resolve(
+            task=sample.task,
             question=sample.question,
             planner_target=plan.count_target if plan is not None else None,
             planner_object_categories=tuple(

@@ -25,7 +25,7 @@ from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.expert_catalog import ExpertCatalog
 from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
 from agents.counting.settings import CountingSettings
-from agents.counting.target_parser import CountTargetResolver
+from agents.counting.target_parser import CountTargetResolutionError, CountTargetResolver
 from agents.evidence_catalog import EvidenceCatalog
 from agents.errors import (
     AgentExecutionError,
@@ -257,7 +257,7 @@ def test_run_returns_counting_result_payload(tmp_path: Path) -> None:
     assert execution.trace["fallback_triggered"] is False
     assert execution.trace["yolo"] == {"attempted": False, "used_for_final": False}
     assert execution.trace["target"] == "small-vehicle"
-    assert execution.trace["target_source"] == "explicit_hint"
+    assert execution.trace["target_source"] == "legacy_direct_hint"
     assert execution.trace["planner_target"] is None
     assert execution.trace["planner_object_categories"] == []
     assert execution.trace["executable_leaf_categories"] == ["small-vehicle"]
@@ -533,6 +533,41 @@ def test_agent_injects_catalog_target_hints_without_model_selection(tmp_path: Pa
     forbidden = {"selected_model", "selected_backend", "checkpoint"}
     assert forbidden.isdisjoint(CountTargetSpec.model_fields)
     assert forbidden.isdisjoint(yolo.last_hints)
+
+
+def test_agent_preserves_stable_target_resolution_errors(tmp_path: Path) -> None:
+    class _FailingResolver:
+        def resolve(self, **kwargs):
+            raise CountTargetResolutionError("COUNT_TARGET_CONFLICT")
+
+    root = tmp_path / "data"
+    client = _FakeClient()
+    agent = _agent(
+        client,
+        _registry(_qwen_backend(client)),
+        target_resolver=_FailingResolver(),
+    )
+    with pytest.raises(CountTargetResolutionError) as caught:
+        asyncio.run(agent.run(_sample(root), _context(root)))
+    assert caught.value.code == "COUNT_TARGET_CONFLICT"
+
+
+def test_agent_safely_wraps_unknown_target_resolution_errors(tmp_path: Path) -> None:
+    class _BrokenResolver:
+        def resolve(self, **kwargs):
+            raise RuntimeError("private resolver detail")
+
+    root = tmp_path / "data"
+    client = _FakeClient()
+    agent = _agent(
+        client,
+        _registry(_qwen_backend(client)),
+        target_resolver=_BrokenResolver(),
+    )
+    with pytest.raises(AgentExecutionError) as caught:
+        asyncio.run(agent.run(_sample(root), _context(root)))
+    assert "TARGET_PARSE_FAILED" in str(caught.value)
+    assert "private resolver detail" not in str(caught.value)
 
 
 # ── 全路径主输出契约 / primary payload across all paths (25.5) ───────────

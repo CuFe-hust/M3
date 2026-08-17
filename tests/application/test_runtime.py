@@ -1657,9 +1657,12 @@ class _FakeCountClient:
     """Fake Qwen client for the counting pipeline: target spec, tile points.
     计数管线的 fake Qwen 客户端：目标规格与切片点。"""
 
-    def __init__(self, planned_task: str = "counting") -> None:
+    def __init__(
+        self, planned_task: str = "counting", tile_target: str = "vehicle",
+    ) -> None:
         self.calls: list[str] = []
         self.planned_task = planned_task
+        self.tile_target = tile_target
 
     @property
     def cache_identity(self) -> ModelCacheIdentity:
@@ -1697,7 +1700,7 @@ class _FakeCountClient:
         if name == "TileCountResponse":
             return response_model.model_validate(
                 {
-                    "target": "vehicle",
+                    "target": self.tile_target,
                     "tile_id": request_meta.tile_id,
                     "points": [
                         {
@@ -1816,6 +1819,40 @@ def test_count_image_produces_current_artifacts_and_overlay(
         "_CountProposalResult",
         "TileCountResponse",
     ]
+
+
+def test_count_image_planner_only_specificity_guard_narrows_vehicle(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    from application.commands import count_image as count_image_module
+    from application.commands.count_image import run_count_image
+
+    _make_images(tmp_path / "imgs", ["img.png"])
+    client = _FakeCountClient(tile_target="small-vehicle")
+    runtime = _count_image_runtime(tmp_path, client)
+    monkeypatch.setattr(
+        count_image_module.Runtime, "create", classmethod(lambda cls, **kw: runtime)
+    )
+    monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
+    code = run_count_image(
+        _count_image_args(
+            tmp_path,
+            image=tmp_path / "imgs" / "img.png",
+            question="How many small vehicals are visible?",
+        )
+    )
+    assert code == 0
+    capsys.readouterr()
+    trace = json.loads(
+        (_count_image_sample_dir(tmp_path) / "agent_trace.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert trace["planner_target"] == "vehicle"
+    assert trace["target"] == "small-vehicle"
+    assert trace["executable_leaf_categories"] == ["small-vehicle"]
+    assert trace["target_validation"] == "planner_scope_broadened_corrected"
+    assert "CountTargetSpec" not in client.calls
 
 
 def test_count_image_rejects_non_counting_planner_task(

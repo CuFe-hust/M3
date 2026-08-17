@@ -15,6 +15,7 @@ from types import SimpleNamespace
 import pytest
 
 from agents.base import AgentExecution
+from agents.counting.target_parser import CountTargetResolutionError
 from agents.errors import AgentTaskMismatchError
 from agents.registry import AgentRegistry
 from agents.schema import AgentResult, MaterializedVisualView, VisualTaskPlan
@@ -207,6 +208,25 @@ def test_failure_artifacts_contain_stable_code_only(tmp_path: Path) -> None:
     text = json.dumps(trace)
     assert "/private/model.pt" not in text
     assert "sk-secret" not in text
+
+
+def test_count_target_error_code_survives_persisted_sample_status(tmp_path: Path) -> None:
+    agent = _FakeAgent(
+        "counting_agent",
+        ("counting",),
+        error=CountTargetResolutionError("COUNT_TARGET_CONFLICT"),
+    )
+    outcome = _run(
+        _runner([agent]),
+        _sample(task="counting"),
+        tmp_path / "sample",
+    )
+    assert outcome.status.state == "failed"
+    assert outcome.status.error_code == "COUNT_TARGET_CONFLICT"
+    persisted = json.loads(
+        (tmp_path / "sample" / "status.json").read_text(encoding="utf-8")
+    )
+    assert persisted["error_code"] == "COUNT_TARGET_CONFLICT"
 
 
 def test_sample_state_mapping_is_closed() -> None:

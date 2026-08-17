@@ -19,6 +19,7 @@ def resolver() -> CountTargetResolver:
 
 def _resolve(resolver: CountTargetResolver, **overrides):
     values = {
+        "task": "counting",
         "question": "How many vehicles are visible?",
         "planner_target": "vehicle",
         "planner_object_categories": ("small-vehicle", "large-vehicle"),
@@ -27,6 +28,66 @@ def _resolve(resolver: CountTargetResolver, **overrides):
     }
     values.update(overrides)
     return resolver.resolve(**values)
+
+
+def test_planner_only_specificity_guard_repairs_approved_vehicle_scope(resolver) -> None:
+    for modifier in ("small", "large"):
+        result = _resolve(
+            resolver,
+            question=f"How many {modifier} vehicals are visible?",
+            planner_target="vehicle",
+            planner_object_categories=("small-vehicle", "large-vehicle"),
+            count_target_hint=None,
+        )
+        assert result.target.canonical_label == f"{modifier}-vehicle"
+        assert result.executable_leaf_categories == (f"{modifier}-vehicle",)
+        assert result.planner_target == "vehicle"
+        assert result.validation_status == "planner_scope_broadened_corrected"
+
+
+def test_planner_only_specificity_guard_does_not_guess_unapproved_modifier(resolver) -> None:
+    result = _resolve(
+        resolver,
+        question="How many tiny vehicles are visible?",
+        count_target_hint=None,
+    )
+    assert result.target.canonical_label == "vehicle"
+    assert result.executable_leaf_categories == (
+        "small-vehicle", "large-vehicle"
+    )
+
+
+def test_resolver_rejects_non_counting_task(resolver) -> None:
+    with pytest.raises(CountTargetResolutionError) as caught:
+        _resolve(resolver, task="general_vqa")
+    assert caught.value.code == "COUNT_TARGET_TASK_INVALID"
+
+
+def test_fine_grained_counting_uses_its_own_task_capability() -> None:
+    data = {
+        "catalog_version": "task-aware-test-v1",
+        "aliases": {},
+        "parents": {"vehicle": ["small-vehicle", "large-vehicle"]},
+        "leaves": {
+            "small-vehicle": {"yolo_labels": ["small vehicle"], "yolo_enabled": True},
+            "large-vehicle": {"yolo_labels": ["large vehicle"], "yolo_enabled": True},
+        },
+        "task_capabilities": {
+            "counting": ["small-vehicle", "large-vehicle"],
+            "fine_grained_counting": ["small-vehicle"],
+            "general_vqa": ["small-vehicle", "large-vehicle"],
+            "grounding": ["small-vehicle", "large-vehicle"],
+        },
+    }
+    task_resolver = CountTargetResolver(evidence_catalog=EvidenceCatalog(data))
+    result = _resolve(
+        task_resolver,
+        task="fine_grained_counting",
+        planner_object_categories=(),
+        count_target_hint=None,
+    )
+    assert result.executable_leaf_categories == ()
+    assert result.validation_status == "planner_only_no_visual_expert"
 
 
 def test_scenario_a_narrows_approved_vehicle_scope(resolver) -> None:
@@ -116,7 +177,7 @@ def test_scenario_d_direct_structured_hint_preserves_reviewed_fields(resolver) -
             "exclusion_rule": "Exclude shadows.", "ambiguity": ["partial wing"],
         },
     )
-    assert result.target_source == "explicit_hint"
+    assert result.target_source == "normalization_explicit_hint"
     assert result.target.canonical_label == "plane"
     assert result.target.required_attributes == ["visible fuselage"]
     assert result.executable_leaf_categories == ("plane",)
@@ -150,6 +211,18 @@ def test_legacy_hint_is_used_only_when_normalization_hint_is_absent(resolver) ->
     )
     assert result.target.canonical_label == "ship"
     assert result.verifier_source == "legacy_metadata.count_target_hint"
+
+
+def test_legacy_direct_hint_is_explicitly_audited(resolver) -> None:
+    result = _resolve(
+        resolver,
+        planner_target=None,
+        planner_object_categories=(),
+        count_target_hint=None,
+        legacy_metadata={"count_target_hint": "ships"},
+    )
+    assert result.target.canonical_label == "ship"
+    assert result.target_source == "legacy_direct_hint"
 
 
 def test_unknown_planner_target_without_verifier_is_preserved(resolver) -> None:
