@@ -593,6 +593,7 @@ def _run_transformers_inference(
             key: value.to(device) if hasattr(value, "to") else value
             for key, value in inputs.items()
         }
+    inputs = _cast_floating_inputs_to_model_dtype(inputs, model)
     with torch.inference_mode():
         outputs = model(**inputs)
         logits = getattr(outputs, "logits", None)
@@ -764,6 +765,38 @@ def _prepare_processor_inputs(
     }
 
 
+def _cast_floating_inputs_to_model_dtype(inputs: Any, model: Any) -> Any:
+    """Match floating processor tensors to the loaded checkpoint dtype.
+
+    Transformers processors intentionally emit float32 tensors.  A locally
+    loaded float16/bfloat16 SegFormer does not autocast those inputs, so CUDA
+    convolution otherwise fails before the first feature stage.  Integer
+    tensors and lightweight injected test doubles remain untouched.
+    """
+
+    if not isinstance(inputs, Mapping):
+        return inputs
+    dtype = getattr(model, "dtype", None)
+    if dtype is None:
+        parameters = getattr(model, "parameters", None)
+        if callable(parameters):
+            try:
+                dtype = next(parameters()).dtype
+            except (AttributeError, StopIteration, TypeError):
+                dtype = None
+    if dtype is None:
+        return inputs
+    converted: dict[str, Any] = {}
+    for key, value in inputs.items():
+        is_floating_point = getattr(value, "is_floating_point", None)
+        converted[key] = (
+            value.to(dtype=dtype)
+            if callable(is_floating_point) and is_floating_point()
+            else value
+        )
+    return converted
+
+
 def _extract_feature_grid(
     hidden_states: Any,
     feature_stage: int,
@@ -833,6 +866,7 @@ def _run_dense_transformers_pyramid_tile(
         ) from error
 
     inputs = _prepare_processor_inputs(processor, tile, device)
+    inputs = _cast_floating_inputs_to_model_dtype(inputs, model)
     with torch.inference_mode():
         outputs = model(
             **inputs,

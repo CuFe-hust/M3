@@ -217,6 +217,39 @@ def test_planner_calls_once_with_ordered_previews_and_raw_question(tmp_path: Pat
     assert client.calls[0]["request_meta"].request_id == "s1:visual_task_plan"
 
 
+def test_empty_question_two_image_pair_is_deterministically_change_caption(
+    tmp_path: Path,
+) -> None:
+    first = _make_image(tmp_path, name="t1.png", fill=7)
+    second = _make_image(tmp_path, name="t2.png", fill=17)
+    sample = UnifiedSample(
+        sample_id="change-1",
+        dataset="LEVIR-CC",
+        split="test",
+        task="change_caption",
+        images=[
+            ImageRef(image_id="t1", path=first.name, role="t1"),
+            ImageRef(image_id="t2", path=second.name, role="t2"),
+        ],
+        question="",
+        ground_truth=None,
+        metadata={},
+        normalization=None,
+    )
+    client = _FakeClient(identity=_identity(), response=_response(task="general_vqa"))
+
+    plan, views = _run(_planner(client), sample, tmp_path)
+
+    assert len(client.calls) == 1
+    assert plan.task == "change_caption"
+    assert plan.needs_visual_assistance is False
+    assert plan.object_categories == []
+    assert plan.count_target is None
+    assert plan.region_request.explicit is False
+    assert "deterministic_empty_question_task" in plan.reason_codes
+    assert len(views) == 2
+
+
 def test_planner_request_excludes_gt_paths_and_runtime_choices(tmp_path: Path) -> None:
     client = _FakeClient(identity=_identity(), response=_response())
     sample = _sample(

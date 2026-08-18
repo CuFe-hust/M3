@@ -30,6 +30,7 @@ from models.segformer_transformers import (
     SegFormerLoadError,
     SegFormerMetadataError,
     SegFormerTransformersClient,
+    _cast_floating_inputs_to_model_dtype,
     _extract_feature_grid,
     _load_transformers_runtime,
     _prepare_processor_inputs,
@@ -168,6 +169,33 @@ def test_module_import_does_not_import_heavy_dependencies() -> None:
     )
 
     assert completed.stdout.strip() == "[]"
+
+
+def test_processor_float_tensor_is_cast_to_loaded_model_dtype() -> None:
+    class Tensor:
+        def __init__(self, *, floating: bool) -> None:
+            self.floating = floating
+            self.cast_to: object | None = None
+
+        def is_floating_point(self) -> bool:
+            return self.floating
+
+        def to(self, *, dtype: object) -> "Tensor":
+            self.cast_to = dtype
+            return self
+
+    floating = Tensor(floating=True)
+    integer = Tensor(floating=False)
+    dtype = object()
+
+    converted = _cast_floating_inputs_to_model_dtype(
+        {"pixel_values": floating, "pixel_mask": integer},
+        SimpleNamespace(dtype=dtype),
+    )
+
+    assert converted == {"pixel_values": floating, "pixel_mask": integer}
+    assert floating.cast_to is dtype
+    assert integer.cast_to is None
 
 
 def test_constructor_does_not_load_and_first_predict_loads_once(tmp_path: Path) -> None:
