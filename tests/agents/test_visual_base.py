@@ -8,6 +8,8 @@ truth、budget 消费、data_root 显式解析与逃逸防护、正确 MIME、Ag
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 from pathlib import Path
 from typing import Any
@@ -18,10 +20,11 @@ from pydantic import BaseModel
 from agents.base import AgentContext, AgentExecution
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.registry import AgentRegistry
-from agents.schema import AgentName, AgentResult
+from agents.schema import AgentName, AgentResult, MaterializedVisualView, VisualTaskPlan
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import GroundTruth, ImageRef, TaskNormalization, UnifiedSample
 from models.base import ModelCacheIdentity
+from models.images import materialize_quantized_roi
 
 
 class _FakeBudget:
@@ -264,6 +267,47 @@ def test_images_encoded_as_data_urls_with_correct_mime(tmp_path: Path) -> None:
     assert content[0]["image_url"]["url"].startswith("data:image/png;base64,")
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
     assert content[2]["type"] == "text"
+
+
+def test_direct_agent_receives_the_exact_rectangular_quantized_crop(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    sample = _sample(root)
+    source = Image.new("RGB", (2048, 1536), (17, 18, 19))
+    source.save(root / "img.png", format="PNG")
+    geometry = materialize_quantized_roi((2048, 1536), (500, 500, 999, 999))
+    view = MaterializedVisualView(
+        image_id="i1",
+        view_mode="quantized_roi",
+        source_size=(2048, 1536),
+        crop_xyxy=geometry.crop_xyxy,
+        crop_size=geometry.crop_size,
+        requested_roi_xyxy_0_999=geometry.requested_roi_xyxy_0_999,
+        requested_pixel_xyxy=geometry.requested_pixel_xyxy,
+        roi_quantum=geometry.roi_quantum,
+        quantized_side=geometry.quantized_side,
+        ideal_square_xyxy=geometry.ideal_square_xyxy,
+        was_clipped=geometry.was_clipped,
+    )
+    plan = VisualTaskPlan(version="visual-task-plan-v5", task="general_vqa")
+    client = _RecordingClient()
+    execution = asyncio.run(
+        _base(client).run(
+            sample,
+            AgentContext(
+                artifact_dir=root / "artifacts",
+                qwen_client=None,
+                call_budget=_FakeBudget(),
+                data_root=root,
+                visual_task_plan=plan,
+                visual_views=(view,),
+            ),
+        )
+    )
+    assert execution.payload.answer == "yes"
+    encoded = client.calls[0]["messages"][1]["content"][0]["image_url"]["url"]
+    received = Image.open(io.BytesIO(base64.b64decode(encoded.split(",", 1)[1])))
+    assert received.size == geometry.crop_size == (1024, 896)
+    assert received.tobytes() == source.crop(geometry.crop_xyxy).tobytes()
 
 
 def test_data_root_required_for_relative_paths(tmp_path: Path) -> None:

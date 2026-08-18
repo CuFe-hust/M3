@@ -139,10 +139,14 @@ class DatasetRunOptions:
     # never reconstructs it from current defaults.
     # 新鲜数据集运行在此冻结规范规划器身份，使 resume 绝不从当前默认值猜测。
     planning_mode: Literal[
-        "visual-task-plan-v4", "visual-task-plan-v3", "visual-task-plan-v2", "direct", "legacy"
-    ] = "visual-task-plan-v4"
+        "visual-task-plan-v5", "visual-task-plan-v4", "visual-task-plan-v3",
+        "visual-task-plan-v2", "direct", "legacy"
+    ] = "visual-task-plan-v5"
+    task_prompt_version: str = "v5"
     preview_max_side: int = 1080
-    roi_size: int = 1024
+    roi_coordinate_frame: str = "normalized_0_999_top_left"
+    roi_quantum: int = 1024
+    roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip"
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
     auto_task: bool = False
 
@@ -160,8 +164,16 @@ class DatasetRunOptions:
             0.0 <= self.judge_sample_rate <= 1.0
         ):
             raise ValueError("judge_sample_rate must be within [0.0, 1.0]")
-        if self.preview_max_side <= 0 or self.roi_size <= 0:
+        if self.preview_max_side <= 0 or self.roi_quantum <= 0:
             raise ValueError("planner preview and ROI sizes must be positive")
+        if not self.task_prompt_version:
+            raise ValueError("task_prompt_version must not be empty")
+        if self.roi_quantum != 1024:
+            raise ValueError("roi_quantum is frozen at 1024")
+        if self.roi_coordinate_frame != "normalized_0_999_top_left":
+            raise ValueError("unsupported ROI coordinate frame")
+        if self.roi_materialization_policy != "longest-side-ceil-quantum-center-clip":
+            raise ValueError("unsupported ROI materialization policy")
         if not self.large_image_policy:
             raise ValueError("large_image_policy must not be empty")
 
@@ -208,11 +220,20 @@ class RunRequest(BaseModel):
     # Frozen visual-only planner identity for fresh dataset runs.
     # 新鲜数据集运行冻结的纯视觉规划器身份。
     planning_mode: Literal[
-        "visual-task-plan-v4", "visual-task-plan-v3", "visual-task-plan-v2", "direct", "legacy"
-    ] = "visual-task-plan-v4"
+        "visual-task-plan-v5", "visual-task-plan-v4", "visual-task-plan-v3",
+        "visual-task-plan-v2", "direct", "legacy"
+    ] = "visual-task-plan-v5"
+    task_prompt_version: str = "v5"
     preview_max_side: int = Field(default=1080, gt=0)
-    roi_size: int = Field(default=1024, gt=0)
+    roi_coordinate_frame: str = "normalized_0_999_top_left"
+    roi_quantum: int = Field(default=1024, gt=0)
+    roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip"
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
+    # v4/v3 historical run requests used roi_size. Accept it for read-only
+    # historical resume/reporting, but never serialize it for new runs.
+    # v4/v3 历史 run request 使用 roi_size；仅为只读历史 resume/reporting 接受，
+    # 新运行绝不序列化该字段。
+    roi_size: int | None = Field(default=None, exclude=True, gt=0)
     # Single-image invocation identity (count-image only; dataset runs leave
     # these None). 单图调用身份（仅 count-image；数据集运行保持 None）。
     command: str | None = None
@@ -278,6 +299,14 @@ class RunRequest(BaseModel):
             raise ValueError("count_max_qwen_calls must be positive")
         if self.count_max_deepseek_calls is not None and self.count_max_deepseek_calls < 0:
             raise ValueError("count_max_deepseek_calls must not be negative")
+        if self.roi_quantum != 1024:
+            raise ValueError("roi_quantum is frozen at 1024")
+        if not self.task_prompt_version:
+            raise ValueError("task_prompt_version must not be empty")
+        if self.roi_coordinate_frame != "normalized_0_999_top_left":
+            raise ValueError("unsupported ROI coordinate frame")
+        if self.roi_materialization_policy != "longest-side-ceil-quantum-center-clip":
+            raise ValueError("unsupported ROI materialization policy")
         return self
 
 

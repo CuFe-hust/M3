@@ -380,7 +380,7 @@ def _count_image_request(
         count_max_deepseek_calls=max_deepseek_calls,
         count_render=render,
         planning_mode=(
-            "direct" if target_spec is not None else "visual-task-plan-v4"
+            "direct" if target_spec is not None else "visual-task-plan-v5"
         ),
     )
 

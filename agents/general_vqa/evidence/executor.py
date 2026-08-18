@@ -1,9 +1,9 @@
-"""VQA object-evidence executor consuming validated v4 planner leaves.
+"""VQA object-evidence executor consuming validated v5 planner leaves.
 
 The evidence path is wired to ``GeneralVQAAgent`` and receives the exact
-materialized views plus canonical executable leaves from the v4 planner.
+materialized views plus canonical executable leaves from the v5 planner.
 
-VQA 对象证据执行器消费 v4 planner 已校验的 canonical leaves，并与 direct
+VQA 对象证据执行器消费 v5 planner 已校验的 canonical leaves，并与 direct
 inference 消费同一组精确物化视图。
 
 Frozen state machine / 冻结状态机：
@@ -276,8 +276,8 @@ class ObjectEvidenceExecutor:
         fallback_image_id: str,
         materialized_views: tuple[MaterializedVisualView, ...],
     ) -> EvidenceExecution:
-        """Execute evidence against the already materialized v2 views.
-        使用已物化的 v2 视图执行证据流程。"""
+        """Execute evidence against the already materialized views.
+        使用已物化的视图执行证据流程。"""
         return self._execute_plan(
             plan,
             images,
@@ -339,8 +339,8 @@ class ObjectEvidenceExecutor:
         views: tuple[MaterializedVisualView, ...],
         images: Mapping[str, Image.Image],
     ) -> list[RoiEvidenceRecord]:
-        """Convert frozen v2 views into exact evidence geometry.
-        将冻结的 v2 视图转换为精确证据几何。"""
+        """Convert frozen views into exact evidence geometry.
+        将冻结的视图转换为精确证据几何。"""
         if not views:
             raise ValueError("materialized views must not be empty")
         records: list[RoiEvidenceRecord] = []

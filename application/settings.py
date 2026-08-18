@@ -77,8 +77,8 @@ class AgentsSettings(BaseModel):
 
 
 class VisualPlannerSettings(BaseModel):
-    """Canonical v4 visual-only planner parameters.
-    规范 v4 纯视觉规划器参数。"""
+    """Canonical v5 visual-only planner parameters.
+    规范 v5 纯视觉规划器参数。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -86,13 +86,27 @@ class VisualPlannerSettings(BaseModel):
     # composition root verifies this binding for every fresh runtime.
     # 必须等于 agents/evidence_catalog.json 声明的版本；每次新鲜运行均由组合根校验。
     catalog_version: str = "visual-evidence-catalog-v3"
-    task_prompt_version: str = "v4"
-    planning_mode: Literal["visual-task-plan-v4"] = "visual-task-plan-v4"
+    task_prompt_version: str = "v5"
+    planning_mode: Literal["visual-task-plan-v5"] = "visual-task-plan-v5"
     preview_max_side: int = Field(default=1080, gt=0)
-    roi_size: int = Field(default=1024, gt=0)
+    roi_coordinate_frame: Literal["normalized_0_999_top_left"] = (
+        "normalized_0_999_top_left"
+    )
+    roi_quantum: int = Field(default=1024, gt=0)
+    roi_materialization_policy: Literal[
+        "longest-side-ceil-quantum-center-clip"
+    ] = "longest-side-ceil-quantum-center-clip"
     large_image_policy: Literal["both-dimensions-strictly-greater-than-1024"] = (
         "both-dimensions-strictly-greater-than-1024"
     )
+
+    @model_validator(mode="after")
+    def validate_v5_roi_identity(self) -> "VisualPlannerSettings":
+        """Keep the v5 geometry identity frozen at the approved quantum.
+        将 v5 几何身份冻结为已批准的量化单位。"""
+        if self.roi_quantum != 1024:
+            raise ValueError("roi_quantum is frozen at 1024")
+        return self
 
 
 class VisualDetectorSettings(BaseModel):

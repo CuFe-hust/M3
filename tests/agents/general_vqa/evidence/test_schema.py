@@ -1,6 +1,6 @@
-"""Contract tests for the v3 visual plan and strict VQA evidence schemas.
+"""Contract tests for the v5 visual plan and strict VQA evidence schemas.
 
-v3 视觉计划与严格 VQA 证据 schema 契约测试：计划与物化视图保持独立，证据
+v5 视觉计划与严格 VQA 证据 schema 契约测试：计划与物化视图保持独立，证据
 几何使用源像素坐标，mask 不转框且所有持久化字段 JSON-safe。
 """
 
@@ -26,7 +26,7 @@ from agents.schema import (
 
 def _plan(**overrides) -> VisualTaskPlan:
     data = {
-        "version": "visual-task-plan-v4",
+        "version": "visual-task-plan-v5",
         "task": "general_vqa",
         "needs_visual_assistance": True,
         "object_categories": ["small-vehicle"],
@@ -34,7 +34,7 @@ def _plan(**overrides) -> VisualTaskPlan:
         "region_request": {
             "explicit": True,
             "image_index": 0,
-            "focus_xy_norm": (0.5, 0.5),
+            "roi_xyxy": (400, 400, 600, 600),
         },
         "reason_codes": ["test"],
     }
@@ -44,7 +44,7 @@ def _plan(**overrides) -> VisualTaskPlan:
 
 def test_visual_task_plan_validates_assistance_linkage() -> None:
     plan = _plan()
-    assert plan.version == "visual-task-plan-v4"
+    assert plan.version == "visual-task-plan-v5"
     assert plan.task == "general_vqa"
     assert plan.object_categories == ["small-vehicle"]
     with pytest.raises(ValidationError, match="requires object_categories"):
@@ -58,13 +58,17 @@ def test_visual_task_plan_rejects_unknown_or_path_like_fields() -> None:
         _plan(task="not-a-task")
     with pytest.raises(ValidationError, match="path-like"):
         _plan(object_categories=["/models/vehicle"])
-    with pytest.raises(ValidationError, match="finite"):
-        _plan(region_request={"explicit": True, "image_index": 0, "focus_xy_norm": (float("nan"), 0.5)})
+    with pytest.raises(ValidationError, match="valid integer"):
+        _plan(region_request={"explicit": True, "image_index": 0, "roi_xyxy": (1.0, 2, 3, 4)})
+    with pytest.raises(ValidationError, match="within"):
+        _plan(region_request={"explicit": True, "image_index": 0, "roi_xyxy": (-1, 2, 3, 4)})
+    with pytest.raises(ValidationError, match="non-degenerate"):
+        _plan(region_request={"explicit": True, "image_index": 0, "roi_xyxy": (4, 2, 3, 4)})
     with pytest.raises(ValidationError):
-        _plan(version="visual-task-plan-v2")
+        _plan(version="visual-task-plan-v4")
 
 
-def test_visual_task_plan_v4_schema_has_count_target_linkage_and_no_confidence() -> None:
+def test_visual_task_plan_v5_schema_has_count_target_linkage_and_no_confidence() -> None:
     schema = VisualTaskPlan.model_json_schema()
     assert "confidence" not in schema["properties"]
     assert "confidence" not in schema.get("required", [])
@@ -85,12 +89,12 @@ def test_visual_task_plan_v4_schema_has_count_target_linkage_and_no_confidence()
 
 
 @pytest.mark.parametrize("target", ["", " vehicle", "vehicle ", "../vehicle", "3", "ship\n"])
-def test_visual_task_plan_v4_rejects_unsafe_count_target(target: str) -> None:
+def test_visual_task_plan_v5_rejects_unsafe_count_target(target: str) -> None:
     with pytest.raises(ValidationError):
         _plan(task="counting", count_target=target)
 
 
-def test_visual_task_plan_v4_allows_at_most_eight_leaf_categories() -> None:
+def test_visual_task_plan_v5_allows_at_most_eight_leaf_categories() -> None:
     categories = [f"leaf-{index}" for index in range(8)]
     assert _plan(object_categories=categories).object_categories == categories
     with pytest.raises(ValidationError):
@@ -102,12 +106,29 @@ def test_visual_task_plan_v4_allows_at_most_eight_leaf_categories() -> None:
 def test_materialized_view_is_exact_source_pixel_geometry() -> None:
     view = MaterializedVisualView(
         image_id="img1",
-        view_mode="fixed_roi",
+        view_mode="quantized_roi",
         source_size=(2048, 1536),
-        crop_xyxy=(1024, 512, 2048, 1536),
-        crop_size=(1024, 1024),
+        crop_xyxy=(1024, 640, 2048, 1536),
+        crop_size=(1024, 896),
+        requested_roi_xyxy_0_999=(500, 500, 999, 999),
+        requested_pixel_xyxy=(1025, 768, 2048, 1536),
+        roi_quantum=1024,
+        quantized_side=1024,
+        ideal_square_xyxy=(1024, 640, 2048, 1664),
+        was_clipped=True,
     )
-    assert view.model_dump(mode="json")["crop_xyxy"] == [1024, 512, 2048, 1536]
+    dumped = view.model_dump(mode="json")
+    assert dumped["crop_xyxy"] == [1024, 640, 2048, 1536]
+    assert dumped["crop_size"] == [1024, 896]
+    assert dumped["was_clipped"] is True
+    with pytest.raises(ValidationError):
+        MaterializedVisualView(
+            image_id="img1",
+            view_mode="fixed_roi",
+            source_size=(2048, 1536),
+            crop_xyxy=(1024, 512, 2048, 1536),
+            crop_size=(1024, 1024),
+        )
     with pytest.raises(ValidationError, match="full_image"):
         MaterializedVisualView(
             image_id="img1",

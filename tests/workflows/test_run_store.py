@@ -15,6 +15,7 @@ import pytest
 
 from workflows.events import EventWriter
 from workflows.run_store import RunManifest, RunStore
+from workflows.schema import RunRequest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -175,6 +176,25 @@ def test_generated_prompt_snapshot_is_hashed_and_copied(tmp_path: Path) -> None:
     copied = run_dir / "prompts.snapshot" / "visual_task_plan_v3.runtime.md"
     assert copied.read_text(encoding="utf-8") == body
     assert len(manifest.prompt_hashes["visual_task_plan_v3.runtime.md"]) == 64
+
+
+def test_historical_v4_run_request_reads_without_reinterpreting_roi() -> None:
+    request = RunRequest.model_validate(
+        {
+            "dataset": "demo",
+            "dataset_root": "data",
+            "split": "test",
+            "task_mode": "explicit",
+            "tasks": ["general_vqa"],
+            "auto_task": False,
+            "planning_mode": "visual-task-plan-v4",
+            "roi_size": 1024,
+        }
+    )
+    assert request.planning_mode == "visual-task-plan-v4"
+    assert request.roi_size == 1024
+    assert request.roi_quantum == 1024
+    assert "roi_size" not in request.model_dump(mode="json")
 
 
 # ── 密钥安全 / secret safety ───────────────────────────────────────────────

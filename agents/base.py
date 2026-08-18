@@ -35,8 +35,8 @@ class CallBudget(Protocol):
 
 @runtime_checkable
 class VqaEvidenceService(Protocol):
-    """Prepare evidence from the canonical v3 plan and decoded images.
-    从规范 v3 计划与解码图像准备证据。"""
+    """Prepare evidence from the canonical v5 plan and decoded images.
+    从规范 v5 计划与解码图像准备证据。"""
 
     def execute(
         self,
@@ -71,11 +71,11 @@ class GroundingEvidenceService(Protocol):
 
 @dataclass(frozen=True)
 class VisualPlanBindings:
-    """Light service bindings travelling with a v3 visual task plan (C7, 14A2).
+    """Light service bindings travelling with a v5 visual task plan (C7, 14A2).
     Injected by the composition root; never carries AppSettings,
     PromptCatalog, API keys, model weights, PIL images, Base64, or full
     masks. The protocol owner consumes only the service matching its task.
-    随 v3 visual task plan 同行的轻量服务绑定（C7，14A2）。组合根注入；绝不携带
+    随 v5 visual task plan 同行的轻量服务绑定（C7，14A2）。组合根注入；绝不携带
     AppSettings、PromptCatalog、密钥、模型权重、PIL 图像、Base64 或完整掩膜。
     协议 owner 只消费与其 task 匹配的服务。"""
 
@@ -101,8 +101,8 @@ class AgentContext:
     judge_client: Any | None = None
     request_context: dict[str, Any] = field(default_factory=dict)
     visual_bindings: VisualPlanBindings | None = None
-    # Canonical v3 plan and deterministic final-agent views.
-    # 规范 v3 计划与最终 Agent 的确定性视图。
+    # Canonical v5 plan and deterministic final-agent views.
+    # 规范 v5 计划与最终 Agent 的确定性视图。
     visual_task_plan: VisualTaskPlan | None = None
     visual_views: tuple[MaterializedVisualView, ...] = ()
 

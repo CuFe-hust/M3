@@ -238,8 +238,8 @@ class SampleRunner:
         self.judge_service = judge_service
         self.fallback_on_partial = fallback_on_partial
         self.data_root = data_root
-        # Bindings are lightweight services for the already materialized v3 plan.
-        # 绑定只携带已物化 v3 计划所需的轻量服务。
+        # Bindings are lightweight services for the already materialized v5 plan.
+        # 绑定只携带已物化 v5 计划所需的轻量服务。
         self.visual_bindings = visual_bindings
 
     async def run_one(
@@ -256,9 +256,9 @@ class SampleRunner:
         """Execute one already-materialized task route and persist its result.
         执行一条已经物化的 task 路由并持久化结果。
 
-        Dataset runs pass the v3 plan and frozen views. Direct tools may omit
+        Dataset runs pass the v5 plan and frozen views. Direct tools may omit
         them for an explicitly selected sample task; such calls never plan.
-        数据集运行传入 v3 计划与冻结视图；显式选择 task 的直连工具可以省略，
+        数据集运行传入 v5 计划与冻结视图；显式选择 task 的直连工具可以省略，
         这类调用绝不在此规划。
         """
 
@@ -287,7 +287,7 @@ class SampleRunner:
                 sample=sample,
                 sample_dir=sample_dir,
                 base_task=base_task,
-                planning_mode="visual-task-plan-v4" if visual_task_plan is not None else "direct",
+                planning_mode="visual-task-plan-v5" if visual_task_plan is not None else "direct",
                 started_at=started_at,
                 attempts=[],
                 skipped=skipped,
@@ -349,7 +349,7 @@ class SampleRunner:
                 sample=sample,
                 sample_dir=sample_dir,
                 base_task=base_task,
-                planning_mode="visual-task-plan-v4" if visual_task_plan is not None else "direct",
+                planning_mode="visual-task-plan-v5" if visual_task_plan is not None else "direct",
                 started_at=started_at,
                 attempts=attempts,
                 skipped=skipped,
@@ -376,7 +376,7 @@ class SampleRunner:
             execution,
             executed_attempt,
             executed_task=executed_agent_attempt.task,
-            planning_mode="visual-task-plan-v4" if visual_task_plan is not None else "direct",
+            planning_mode="visual-task-plan-v5" if visual_task_plan is not None else "direct",
             resolved_task=base_task,
             inference_seconds=round(time.perf_counter() - started_at, 6),
             evaluation=evaluation,
@@ -387,7 +387,7 @@ class SampleRunner:
             failure_code=None,
         )
         if visual_task_plan is not None:
-            trace["planning_mode"] = "visual-task-plan-v4"
+            trace["planning_mode"] = "visual-task-plan-v5"
             trace["visual_task_plan_version"] = visual_task_plan.version
         self.artifact_writer.write_trace(sample_dir, trace)
         # result_path is the sample-relative result artifact (the declared

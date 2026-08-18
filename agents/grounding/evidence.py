@@ -1,9 +1,9 @@
-"""Grounding evidence executor consuming validated v4 planner leaves.
+"""Grounding evidence executor consuming validated v5 planner leaves.
 
 The evidence path is wired to ``GroundingAgent`` and uses canonical executable
 leaves plus the exact planner crop without halo expansion.
 
-Grounding 证据执行器消费 v4 planner 已校验的 canonical leaves，并使用规划器
+Grounding 证据执行器消费 v5 planner 已校验的 canonical leaves，并使用规划器
 精确裁片且不扩张 halo。
 
 Flow / 流程:
@@ -511,8 +511,8 @@ class GroundingEvidenceExecutor:
         views: tuple[MaterializedVisualView, ...],
         sizes: Mapping[str, tuple[int, int]],
     ) -> list[GroundingRoiRecord]:
-        """Build exact fixed/full ROI records from v2 materialized views.
-        从 v2 物化视图构建精确的固定/整图 ROI 记录。"""
+        """Build exact quantized/full ROI records from materialized views.
+        从物化视图构建精确的量化/整图 ROI 记录。"""
         if not views:
             raise ValueError("materialized views must not be empty")
         records: list[GroundingRoiRecord] = []

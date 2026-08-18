@@ -439,9 +439,10 @@ normalized image previews + raw question
     -> deterministic TaskRouter
 ```
 
-规划输出版本为 `visual-task-plan-v4`。显式 CLI/dataset task 只作审计，不发送给
-第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域只在目标图像
-宽高都大于 1024 时生成一个固定 1024×1024 ROI。
+规划输出版本为 `visual-task-plan-v5`。显式 CLI/dataset task 只作审计，不发送给
+第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域输出严格整数
+`0..999` `xyxy`，运行时按最长边向上量化到 1024 整数倍，再直接截断越界的理想正方形。
+最终裁片可以是长方形；direct、VQA evidence 与 Grounding 共享同一个实际裁片。
 
 `SampleDraft` 路径也由同一规划调用物化，不再单独走文本任务解析路径。
 
@@ -997,7 +998,7 @@ review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset
 目标来源与核验规则：
 
 ```text
-VisualTaskPlanner v4 count_target
+VisualTaskPlanner v5 count_target
     -> normalization.count_target_hint（确定性 verifier）
     -> legacy metadata count_target_hint（兼容 verifier）
     -> deterministic CountTargetResolver

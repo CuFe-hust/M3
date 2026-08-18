@@ -1,7 +1,7 @@
 """Resume integration for the versioned DatasetRunner path.
 
-版本化 DatasetRunner resume 集成测试：succeeded 只做无模型补评测，v3
-partial/failed 可重走 planner，历史 v2/legacy 非成功重跑稳定拒绝。
+版本化 DatasetRunner resume 集成测试：succeeded 只做无模型补评测，v5
+partial/failed 可重走 planner，历史 v4/v2/legacy 非成功重跑稳定拒绝。
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ class _FakePlanner:
         size = Image.open(data_root / ref.path).size
         return (
             VisualTaskPlan(
-                version="visual-task-plan-v4",
+                version="visual-task-plan-v5",
                 task="general_vqa",
                 reason_codes=["test"],
             ),
@@ -143,7 +143,7 @@ def _setup(
     tmp_path: Path,
     *,
     client_status: str = "completed",
-    planning_mode: str = "visual-task-plan-v4",
+    planning_mode: str = "visual-task-plan-v5",
     adapter=None,
 ):
     root = tmp_path / "data"
@@ -225,7 +225,7 @@ def test_v2_succeeded_resume_supplements_without_model(tmp_path: Path) -> None:
     assert client.calls == 1 and planner.calls == 1
 
 
-def test_resume_partial_reruns_v3_planner_and_agent(tmp_path: Path) -> None:
+def test_resume_partial_reruns_v5_planner_and_agent(tmp_path: Path) -> None:
     root, run_dir, runner, client, planner = _setup(tmp_path)
     _run(runner, root)
     status_path = _sample_dir(run_dir) / "status.json"
@@ -290,6 +290,30 @@ def test_v2_resume_rejects_non_successful_rerun_without_model(tmp_path: Path) ->
     root, run_dir, runner, client, planner = _setup(tmp_path, client_status="failed")
     first = _run(runner, root)
     assert first.failed == 1
+    assert client.calls == 1 and planner.calls == 1
+
+
+def test_v4_resume_rejects_non_successful_rerun_without_reinterpreting_roi(
+    tmp_path: Path,
+) -> None:
+    root, run_dir, runner, client, planner = _setup(tmp_path, client_status="failed")
+    first = _run(runner, root)
+    assert first.failed == 1
+    persisted = SampleRunStatus.model_validate(
+        json.loads((_sample_dir(run_dir) / "status.json").read_text(encoding="utf-8"))
+    )
+    ArtifactWriter().write_final_status(
+        _sample_dir(run_dir),
+        persisted.model_copy(update={"task": "caption", "state": "partial"}),
+    )
+    runner.planning_mode = "visual-task-plan-v4"
+    status = _run(runner, root, resume=True)
+    persisted_payload = json.loads(
+        (_sample_dir(run_dir) / "status.json").read_text(encoding="utf-8")
+    )
+    assert status.failed == 1
+    assert persisted_payload["error_code"] == "LEGACY_PLANNING_RESUME_UNSUPPORTED"
+    assert persisted_payload["task"] == "caption"
     assert client.calls == 1 and planner.calls == 1
     persisted = SampleRunStatus.model_validate(
         json.loads((_sample_dir(run_dir) / "status.json").read_text(encoding="utf-8"))

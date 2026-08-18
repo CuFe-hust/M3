@@ -78,9 +78,12 @@ def build_dataset_run_options(
     judge_sample_rate: float | None = None,
     render_errors: bool = False,
     fail_fast: bool = False,
-    planning_mode: str = "visual-task-plan-v4",
+    planning_mode: str = "visual-task-plan-v5",
+    task_prompt_version: str = "v5",
     preview_max_side: int = 1080,
-    roi_size: int = 1024,
+    roi_coordinate_frame: str = "normalized_0_999_top_left",
+    roi_quantum: int = 1024,
+    roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip",
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
 ) -> DatasetRunOptions:
     """Thin options construction for the public entry point: the architecture
@@ -111,8 +114,11 @@ def build_dataset_run_options(
         render_errors=render_errors,
         fail_fast=fail_fast,
         planning_mode=planning_mode,  # type: ignore[arg-type]
+        task_prompt_version=task_prompt_version,
         preview_max_side=preview_max_side,
-        roi_size=roi_size,
+        roi_coordinate_frame=roi_coordinate_frame,
+        roi_quantum=roi_quantum,
+        roi_materialization_policy=roi_materialization_policy,
         large_image_policy=large_image_policy,
     )
 
@@ -419,8 +425,11 @@ def reconstruct_dataset_resume_options(
         render_errors=request.render_errors,
         fail_fast=request.fail_fast,
         planning_mode=request.planning_mode,
+        task_prompt_version=request.task_prompt_version,
         preview_max_side=request.preview_max_side,
-        roi_size=request.roi_size,
+        roi_coordinate_frame=request.roi_coordinate_frame,
+        roi_quantum=request.roi_quantum,
+        roi_materialization_policy=request.roi_materialization_policy,
         large_image_policy=request.large_image_policy,
     )
 
@@ -469,10 +478,15 @@ def _validate_resume_match(
     if supplied.fail_fast != persisted.fail_fast:
         raise ValueError("resume fail fast mismatch")
     if supplied.planning_mode not in (
-        "visual-task-plan-v4",
+        "visual-task-plan-v5",
         persisted.planning_mode,
     ):
         raise ValueError("resume planning mode mismatch")
+    if (
+        supplied.task_prompt_version != "v5"
+        and supplied.task_prompt_version != persisted.task_prompt_version
+    ):
+        raise ValueError("resume task prompt version mismatch")
     if persisted.planning_mode != "legacy":
         # The CLI does not expose planner geometry knobs. A caller-provided
         # non-default override is compared; omitted/default values defer to
@@ -484,8 +498,19 @@ def _validate_resume_match(
             and supplied.preview_max_side != persisted.preview_max_side
         ):
             raise ValueError("resume preview size mismatch")
-        if supplied.roi_size != 1024 and supplied.roi_size != persisted.roi_size:
-            raise ValueError("resume ROI size mismatch")
+        if (
+            supplied.roi_coordinate_frame != "normalized_0_999_top_left"
+            and supplied.roi_coordinate_frame != persisted.roi_coordinate_frame
+        ):
+            raise ValueError("resume ROI coordinate frame mismatch")
+        if supplied.roi_quantum != 1024 and supplied.roi_quantum != persisted.roi_quantum:
+            raise ValueError("resume ROI quantum mismatch")
+        if (
+            supplied.roi_materialization_policy
+            != "longest-side-ceil-quantum-center-clip"
+            and supplied.roi_materialization_policy != persisted.roi_materialization_policy
+        ):
+            raise ValueError("resume ROI materialization policy mismatch")
         if (
             supplied.large_image_policy != "both-dimensions-strictly-greater-than-1024"
             and supplied.large_image_policy != persisted.large_image_policy
@@ -528,8 +553,11 @@ def _build_run_request(options: DatasetRunOptions) -> RunRequest:
         render_errors=options.render_errors,
         fail_fast=options.fail_fast,
         planning_mode=options.planning_mode,
+        task_prompt_version=options.task_prompt_version,
         preview_max_side=options.preview_max_side,
-        roi_size=options.roi_size,
+        roi_coordinate_frame=options.roi_coordinate_frame,
+        roi_quantum=options.roi_quantum,
+        roi_materialization_policy=options.roi_materialization_policy,
         large_image_policy=options.large_image_policy,
     )
 
@@ -600,14 +628,17 @@ class Runtime:
             root=options.root.expanduser().resolve(),
         )
         if not options.resume:
-            if options.planning_mode != "visual-task-plan-v4":
-                raise ValueError("fresh dataset runs require visual-task-plan-v4")
+            if options.planning_mode != "visual-task-plan-v5":
+                raise ValueError("fresh dataset runs require visual-task-plan-v5")
             planner_settings = self.settings.visual_planning.planner
             options = dataclasses.replace(
                 options,
                 planning_mode=planner_settings.planning_mode,
+                task_prompt_version=planner_settings.task_prompt_version,
                 preview_max_side=planner_settings.preview_max_side,
-                roi_size=planner_settings.roi_size,
+                roi_coordinate_frame=planner_settings.roi_coordinate_frame,
+                roi_quantum=planner_settings.roi_quantum,
+                roi_materialization_policy=planner_settings.roi_materialization_policy,
                 large_image_policy=planner_settings.large_image_policy,
             )
         if options.resume:
@@ -631,12 +662,15 @@ class Runtime:
             _validate_resume_match(options, persisted)
             options = persisted
             self._validate_existing_run(run_dir, options, run_id)
-        if options.planning_mode == "visual-task-plan-v4":
+        if options.planning_mode == "visual-task-plan-v5":
             planner = self.components.visual_task_planner
             if planner is None or planner.planning_parameters != {
                 "planning_mode": options.planning_mode,
+                "task_prompt_version": options.task_prompt_version,
                 "preview_max_side": options.preview_max_side,
-                "roi_size": options.roi_size,
+                "roi_coordinate_frame": options.roi_coordinate_frame,
+                "roi_quantum": options.roi_quantum,
+                "roi_materialization_policy": options.roi_materialization_policy,
                 "large_image_policy": options.large_image_policy,
             }:
                 raise ValueError("visual task planner identity does not match run request")
@@ -957,7 +991,7 @@ class Runtime:
             "question": question,
             "requested_task": task,
             "resolved_task": resolved_task,
-            "planning_mode": "visual-task-plan-v4",
+            "planning_mode": "visual-task-plan-v5",
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)

@@ -138,7 +138,7 @@ class DatasetRunner:
         judge_sample_rate: float | None = None,
         call_budget_factory: CallBudgetFactory | None = None,
         visual_task_planner: VisualTaskPlanner | None = None,
-        planning_mode: str = "visual-task-plan-v4",
+        planning_mode: str = "visual-task-plan-v5",
         data_root: Path | None = None,
     ) -> None:
         self.adapter = adapter
@@ -181,8 +181,8 @@ class DatasetRunner:
             raise ValueError("shard_index must be within [0, shard_count)")
         if sample_concurrency < 1:
             raise ValueError("sample_concurrency must be >= 1")
-        if not resume and self.planning_mode != "visual-task-plan-v4":
-            raise ValueError("fresh dataset runs require visual-task-plan-v4")
+        if not resume and self.planning_mode != "visual-task-plan-v5":
+            raise ValueError("fresh dataset runs require visual-task-plan-v5")
         if not resume and (
             self.call_budget_factory is None
             or self.visual_task_planner is None
@@ -404,7 +404,7 @@ class DatasetRunner:
                 # Supplement by persisted execution task; this path never
                 # calls a model. 按持久化执行 task 补判；此路径绝不调用模型。
                 return await self._resume_supplement(sample, sample_dir, persisted.task)
-            if self.planning_mode != "visual-task-plan-v4":
+            if self.planning_mode != "visual-task-plan-v5":
                 return self._write_planning_resume_failure(
                     sample,
                     sample_dir,
@@ -480,8 +480,8 @@ class DatasetRunner:
         *,
         resume: bool,
     ) -> SampleRunStatus:
-        """Plan, materialize, and execute one draft through the v4 seam.
-        通过 v4 seam 规划、物化并执行一条 draft。
+        """Plan, materialize, and execute one draft through the v5 seam.
+        通过 v5 seam 规划、物化并执行一条 draft。
         """
 
         sample_dir = samples_root / storage_key(draft.sample_id)
@@ -493,7 +493,7 @@ class DatasetRunner:
                     return await self._resume_supplement(
                         persisted_sample, sample_dir, persisted.task
                     )
-            if self.planning_mode != "visual-task-plan-v4":
+            if self.planning_mode != "visual-task-plan-v5":
                 return self._write_planning_resume_failure(
                     draft,
                     sample_dir,
@@ -507,8 +507,8 @@ class DatasetRunner:
         draft: SampleDraft,
         sample_dir: Path,
     ) -> SampleRunStatus:
-        """Plan and materialize one draft with the same v4 call as all entries.
-        用与所有入口相同的 v4 调用规划并物化一条 draft。"""
+        """Plan and materialize one draft with the same v5 call as all entries.
+        用与所有入口相同的 v5 调用规划并物化一条 draft。"""
         if (
             self.call_budget_factory is None
             or self.data_root is None

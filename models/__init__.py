@@ -27,11 +27,13 @@ from models.base import (
 )
 from models.cache import CacheEntry, CacheWriteError, JsonResponseCache, ModelCacheError
 from models.images import (
+    QuantizedRoi,
     UnsupportedImageFormatError,
     crop_image_region,
     detect_image_mime,
     image_sha256,
     image_to_data_url,
+    materialize_quantized_roi,
     read_normalized_image,
 )
 from models.settings import DeepSeekSettings, ModelSettings, QwenSettings, SegFormerSettings
@@ -55,6 +57,7 @@ __all__ = [
     "ObjectDetectionClient",
     "ObjectDetectionOutput",
     "QwenSettings",
+    "QuantizedRoi",
     "RequestMeta",
     "RuntimeObjectDetectionClient",
     "SegFormerSettings",
@@ -67,6 +70,7 @@ __all__ = [
     "detect_image_mime",
     "image_sha256",
     "image_to_data_url",
+    "materialize_quantized_roi",
     "read_normalized_image",
     "sanitize_messages",
 ]

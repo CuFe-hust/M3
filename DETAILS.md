@@ -48,37 +48,37 @@ git diff --check: clean
 pytest 全绿。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按
 具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
 
-### Doc 18 当前执行事实
+### Doc 20 当前执行事实
 
-Doc 18 离线验证（2026-08-17）：planner/runtime/resume/reporting 目标回归为
-`446 passed, 8 failed`；8 个失败均为当前沙箱禁止 HTTP harness 绑定
-`127.0.0.1`。detector/counting/evidence 代表性回归为 `176 passed`；
-`python3 -m compileall` 与 `git diff --check` 通过。架构门为 `41 passed, 1 failed`，
-唯一失败是 HEAD 已存在但不在冻结白名单中的 8 个 scripts/tests Python 文件。
-完整 pytest 受缺失 `safetensors` 阻断；排除该独立 checkpoint 导出收集后为
-`1960 passed, 33 failed, 1 skipped`，剩余失败来自上述沙箱 HTTP、既有 allowlist
-漂移及未安装的 `peft`/`transformers`/`safetensors` 等可选依赖。
+Doc 20 离线验证：v5 planner/schema/geometry、direct/evidence、runtime/resume
+目标回归通过；HTTP harness 仍受当前沙箱禁止绑定 `127.0.0.1` 限制，架构 allowlist
+仍有 HEAD 既存的越界 Python 文件。真实模型、真实数据集、云端 API 或目标
+Spark/部署环境相关验证仍应按具体环境单独执行。
 
 新鲜的 manual `ask` 与 dataset（explicit/default/auto）入口统一使用
 `workflows.visual_planner.VisualTaskPlanner`。当前配置不含
-`visual_planning.enabled` 字段；composition root 只组装 v3 planner。旧 Resolver、旧 gate、联合
+`visual_planning.enabled` 字段；composition root 只组装 v5 planner。旧 Resolver、旧 gate、联合
 planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 reporting/迁移审计。
 
 第一次规划调用的 user content 严格为按源顺序排列的内存图像 block，随后是未经
 包装的原始 question 文本。输出 schema 是 `VisualTaskPlan`，版本为
-`visual-task-plan-v4`，表达 task、canonical leaf、计数语义目标和显式焦点，不携带答案、GT、
-路径、backend、checkpoint、device、secret 或 planner confidence。v2/legacy 只用于
+`visual-task-plan-v5`，表达 task、canonical leaf、计数语义目标和可选严格整数 `roi_xyxy`，不携带
+答案、GT、路径、backend、checkpoint、device、secret 或 planner confidence。v2/v3/v4/legacy 只用于
 读取历史 run request；历史非终态需要重新推理时稳定拒绝。
 
-图像先做 EXIF transpose/RGB 规范化；规划预览最长边为 1080 且不放大。显式区域
-只在目标图像宽高都严格大于 1024 时生成一个固定 1024×1024 ROI，按焦点居中并
-clamp；否则使用整图。`MaterializedVisualView` 记录 source/crop 几何，最终
-Agent 与 evidence executor 消费同一视图。
+图像先做 EXIF transpose/RGB 规范化；规划预览最长边为 1080 且不放大。显式合法区域
+在 EXIF/RGB 规范化源尺寸上按 `0..999` 框向外映射，最长边向上量化到 1024
+整数倍，生成允许越界的理想正方形，再直接与源图求交；不平移、不缩小、不回退整图。
+历史 large-image policy 仍写入 run identity 供兼容审计，但不再阻止 v5 显式 ROI 物化。
+因此实际裁片可以是长方形且不必是 1024 倍数。`MaterializedVisualView` 同时记录请求框、
+请求像素框、量化边长、理想框、实际裁片和 `was_clipped`，最终 Agent 与 evidence executor
+消费同一视图。
 
 样本产物使用 `visual_task_plan.json`，只保存已校验计划与安全几何。dataset
-`run_request.json` 保存 `planning_mode`、preview/ROI 参数和 large-image policy；
-v3 succeeded resume 不调用模型，v2/legacy 成功样本同样只允许无模型补评测，v2/legacy
-需要重新推理时返回 `LEGACY_PLANNING_RESUME_UNSUPPORTED`。
+`run_request.json` 保存 `planning_mode`、`task_prompt_version`、preview、坐标制式、
+`roi_quantum`、materialization policy 和兼容的 large-image policy；v5 succeeded resume
+不调用模型，v4 及更早成功样本同样只允许无模型补评测，v4 及更早需要重新推理时返回
+`LEGACY_PLANNING_RESUME_UNSUPPORTED`。
 
 ---
 
@@ -890,14 +890,16 @@ visual_planning
 
 ### `VisualPlanningSettings`（`application.visual_planning`）
 
-v3 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag：
+v5 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag：
 
 ```text
-planning_mode = "visual-task-plan-v4"
-task_prompt_version = "v3"
-catalog_version = "first-qwen-evidence-catalog-v2"
+planning_mode = "visual-task-plan-v5"
+task_prompt_version = "v5"
+catalog_version = "visual-evidence-catalog-v3"
 preview_max_side = 1080
-roi_size = 1024
+roi_coordinate_frame = "normalized_0_999_top_left"
+roi_quantum = 1024
+roi_materialization_policy = "longest-side-ceil-quantum-center-clip"
 large_image_policy = "both-dimensions-strictly-greater-than-1024"
 detectors: 每类别策略；None = 未校准 = 能力关闭
 segmenters: 同上；启用必须携带已验证 class map
@@ -1451,7 +1453,7 @@ Detection zero review 使用 ordered chain 中下一位实际支持的专家，t
 
 ## 25.4 Deterministic count target resolver
 
-fresh counting 的语义 target 来自 VisualTaskPlanner v4；normalization 与 legacy
+fresh counting 的语义 target 来自 VisualTaskPlanner v5；normalization 与 legacy
 metadata hint 只作为确定性 verifier。无 plan 的 direct 兼容边界为：
 
 ```text
@@ -1956,7 +1958,7 @@ append execution index
 ```
 
 所有 fresh 样本都由 `VisualTaskPlanner` 先消费一次共享 Qwen budget，产出
-`visual-task-plan-v4`，再由纯转换生成 routing decision。planner 失败稳定写入
+`visual-task-plan-v5`，再由纯转换生成 routing decision。planner 失败稳定写入
 `state=failed`，不重试、不 legacy 回退；模型 task 在物化后成为执行 task。
 
 `visual_task_plan.json` 保存已校验计划与 `MaterializedVisualView` 几何；
@@ -3396,7 +3398,7 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 ### 79.4 Doc 16 visual-only planner; runtime evidence remains fail-closed
 
 `VisualTaskPlanner` 对所有 fresh manual/dataset 入口始终启用；旧的
-当前配置不再提供 `visual_planning.enabled` 开关；所有 fresh 入口都先经过 v3
+当前配置不再提供 `visual_planning.enabled` 开关；所有 fresh 入口都先经过 v5
 规划器。
 `first-qwen-evidence-catalog-v2` 已根据当前 DOTA-v2 YOLO 与经验证的 iSAID
 SegFormer class map 声明以下类别映射：

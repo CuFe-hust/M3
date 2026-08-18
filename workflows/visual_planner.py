@@ -1,10 +1,10 @@
 """Canonical visual-only task planner and deterministic view materialization.
 规范纯视觉任务规划器与确定性视图物化。
 
-The v4 planner is the only fresh-inference planning seam. It performs one
-schema-validated call, then materializes exact full-image or fixed-ROI views.
-v4 规划器是所有新鲜推理唯一的规划 seam：执行一次 schema 校验调用，然后
-物化精确整图或固定 ROI 视图。
+The v5 planner is the only fresh-inference planning seam. It performs one
+schema-validated call, then materializes exact full-image or quantized-ROI
+views. v5 规划器是所有新鲜推理唯一的规划 seam：执行一次 schema 校验调用，
+然后物化精确整图或量化 ROI 视图。
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from pydantic import ValidationError
 from agents.base import CallBudget
 from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from agents.general_vqa.evidence.rendering import (
-    materialize_fixed_roi,
+    materialize_quantized_roi,
     normalized_image_size,
     preview_from_path,
 )
@@ -40,6 +40,10 @@ _VISUAL_CAPABILITY_TASKS = (
     "general_vqa",
     "grounding",
 )
+_ROI_COORDINATE_FRAME = "normalized_0_999_top_left"
+_ROI_MATERIALIZATION_POLICY = "longest-side-ceil-quantum-center-clip"
+
+
 class VisualTaskPlanError(ValueError):
     """Stable failure for the visual-only task planner.
     纯视觉任务规划器的稳定失败类型。"""
@@ -58,17 +62,25 @@ class VisualTaskPlanner:
         client: VisionLanguageClient,
         *,
         system_prompt: str,
-        prompt_version: str = "v4",
+        prompt_version: str = "v5",
         catalog: EvidenceCatalog,
         executable_categories_by_task: Mapping[str, tuple[str, ...]] | None = None,
         max_side: int = 1080,
-        roi_size: int = 1024,
+        roi_quantum: int = 1024,
+        roi_coordinate_frame: str = _ROI_COORDINATE_FRAME,
+        roi_materialization_policy: str = _ROI_MATERIALIZATION_POLICY,
         large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
     ) -> None:
-        if max_side <= 0 or roi_size <= 0:
+        if max_side <= 0 or roi_quantum <= 0:
             raise ValueError("preview and ROI sizes must be positive")
-        if roi_size != 1024:
-            raise ValueError("roi_size is frozen at 1024")
+        if prompt_version != "v5":
+            raise ValueError("visual task planner prompt_version must be v5")
+        if roi_quantum != 1024:
+            raise ValueError("roi_quantum is frozen at 1024")
+        if roi_coordinate_frame != _ROI_COORDINATE_FRAME:
+            raise ValueError("unsupported ROI coordinate frame")
+        if roi_materialization_policy != _ROI_MATERIALIZATION_POLICY:
+            raise ValueError("unsupported ROI materialization policy")
         if not large_image_policy:
             raise ValueError("large_image_policy must not be empty")
         self._client = client
@@ -84,7 +96,9 @@ class VisualTaskPlanner:
             for task in _VISUAL_CAPABILITY_TASKS
         }
         self._max_side = max_side
-        self._roi_size = roi_size
+        self._roi_quantum = roi_quantum
+        self._roi_coordinate_frame = roi_coordinate_frame
+        self._roi_materialization_policy = roi_materialization_policy
         self._large_image_policy = large_image_policy
 
     @property
@@ -97,9 +111,12 @@ class VisualTaskPlanner:
         """Return JSON-safe parameters frozen into run identity.
         返回写入运行身份的 JSON 安全冻结参数。"""
         return {
-            "planning_mode": "visual-task-plan-v4",
+            "planning_mode": "visual-task-plan-v5",
+            "task_prompt_version": self._prompt_version,
             "preview_max_side": self._max_side,
-            "roi_size": self._roi_size,
+            "roi_coordinate_frame": self._roi_coordinate_frame,
+            "roi_quantum": self._roi_quantum,
+            "roi_materialization_policy": self._roi_materialization_policy,
             "large_image_policy": self._large_image_policy,
         }
 
@@ -107,7 +124,7 @@ class VisualTaskPlanner:
     def prompt_snapshot_filename(self) -> str:
         """Stable basename for the capability-bound prompt snapshot.
         能力绑定 Prompt 快照使用稳定 basename。"""
-        return "visual_task_plan_v4.runtime.md"
+        return "visual_task_plan_v5.runtime.md"
 
     @property
     def system_prompt(self) -> str:
@@ -233,8 +250,8 @@ class VisualTaskPlanner:
         *,
         data_root: Path,
     ) -> tuple[MaterializedVisualView, ...]:
-        """Materialize one full view per image and at most one fixed ROI.
-        为每张图像物化整图，最多额外物化一个固定 ROI。"""
+        """Materialize one full view per image and at most one quantized ROI.
+        为每张图像物化整图，最多额外物化一个量化 ROI。"""
         root = data_root.resolve()
         normalized_sizes: list[tuple[str, tuple[int, int]]] = []
         for image_ref in view.images:
@@ -253,32 +270,39 @@ class VisualTaskPlanner:
         )
         if target_index is not None and target_index >= len(normalized_sizes):
             raise VisualTaskPlanError("IMAGE_INDEX_INVALID")
-        focus = plan.region_request.focus_xy_norm
+        requested_roi = plan.region_request.roi_xyxy
         materialized: list[MaterializedVisualView] = []
         for index, (image_id, source_size) in enumerate(normalized_sizes):
             width, height = source_size
-            is_fixed = (
+            # A legal explicit ROI is materialized at every source size; direct
+            # clipping, never a full-image fallback, handles small sources.
+            # 任意源尺寸的合法显式 ROI 都要物化；小图由直接截断处理，绝不回退整图。
+            is_quantized = (
                 target_index == index
-                and focus is not None
-                and width > self._roi_size
-                and height > self._roi_size
+                and requested_roi is not None
             )
-            if is_fixed:
+            if is_quantized:
                 try:
-                    box = materialize_fixed_roi(
+                    geometry = materialize_quantized_roi(
                         source_size,
-                        focus,
-                        roi_size=self._roi_size,
+                        requested_roi,
+                        roi_quantum=self._roi_quantum,
                     )
                 except ValueError as exc:
                     raise VisualTaskPlanError("ROI_MATERIALIZATION_FAILED") from exc
                 materialized.append(
                     MaterializedVisualView(
                         image_id=image_id,
-                        view_mode="fixed_roi",
+                        view_mode="quantized_roi",
                         source_size=source_size,
-                        crop_xyxy=box,
-                        crop_size=(self._roi_size, self._roi_size),
+                        crop_xyxy=geometry.crop_xyxy,
+                        crop_size=geometry.crop_size,
+                        requested_roi_xyxy_0_999=geometry.requested_roi_xyxy_0_999,
+                        requested_pixel_xyxy=geometry.requested_pixel_xyxy,
+                        roi_quantum=geometry.roi_quantum,
+                        quantized_side=geometry.quantized_side,
+                        ideal_square_xyxy=geometry.ideal_square_xyxy,
+                        was_clipped=geometry.was_clipped,
                     )
                 )
             else:
@@ -334,8 +358,8 @@ class VisualTaskPlanner:
         plan: VisualTaskPlan,
         view: SampleDraft | UnifiedSample,
     ) -> VisualTaskPlan:
-        """Apply v4 leaf/category consistency and image-index policy.
-        执行 v4 叶子类别一致性与图像索引策略校验。"""
+        """Apply v5 leaf/category consistency and image-index policy.
+        执行 v5 叶子类别一致性与图像索引策略校验。"""
         if plan.needs_visual_assistance:
             try:
                 self._catalog.validate_plan_leaves(

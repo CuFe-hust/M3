@@ -42,11 +42,12 @@ from workflows.run_store import RunStore
 from workflows.schema import SampleRunStatus
 
 
-def test_reporting_recognizes_v2_v3_and_v4_planner_traces(
+def test_reporting_recognizes_historical_and_v5_planner_traces(
     tmp_path: Path,
 ) -> None:
     for mode in (
         "visual-task-plan-v2", "visual-task-plan-v3", "visual-task-plan-v4",
+        "visual-task-plan-v5",
     ):
         path = _execution_path(
             tmp_path,

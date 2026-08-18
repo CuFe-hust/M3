@@ -10,6 +10,7 @@ import base64
 import hashlib
 import math
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -42,35 +43,92 @@ CoordinateFrame = Literal[
 ]
 
 
-def materialize_fixed_roi(
-    source_size: tuple[int, int],
-    focus_xy_norm: Sequence[float],
-    *,
-    roi_size: int = 1024,
-) -> tuple[int, int, int, int]:
-    """Return the deterministic fixed-size ROI centered on a normalized focus.
-    按归一化焦点返回确定性的固定尺寸 ROI。"""
-    width, height = source_size
-    if width <= roi_size or height <= roi_size:
-        raise ValueError("fixed ROI requires both source dimensions to exceed roi_size")
-    if roi_size <= 0:
-        raise ValueError("roi_size must be positive")
-    if len(focus_xy_norm) != 2:
-        raise ValueError("focus_xy_norm must contain exactly two values")
-    try:
-        focus_x, focus_y = (float(value) for value in focus_xy_norm)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("focus_xy_norm must be numeric") from exc
-    if not all(math.isfinite(value) for value in (focus_x, focus_y)):
-        raise ValueError("focus_xy_norm must be finite")
-    if not all(0.0 <= value <= 1.0 for value in (focus_x, focus_y)):
-        raise ValueError("focus_xy_norm must be within [0, 1]")
+@dataclass(frozen=True)
+class QuantizedRoi:
+    """Deterministic audit geometry for one quantized ROI.
+    一个量化 ROI 的确定性审计几何。"""
 
-    center_x = round(focus_x * width)
-    center_y = round(focus_y * height)
-    x0 = max(0, min(center_x - roi_size // 2, width - roi_size))
-    y0 = max(0, min(center_y - roi_size // 2, height - roi_size))
-    return (x0, y0, x0 + roi_size, y0 + roi_size)
+    requested_roi_xyxy_0_999: tuple[int, int, int, int]
+    requested_pixel_xyxy: tuple[int, int, int, int]
+    roi_quantum: int
+    quantized_side: int
+    ideal_square_xyxy: tuple[int, int, int, int]
+    crop_xyxy: tuple[int, int, int, int]
+    crop_size: tuple[int, int]
+    was_clipped: bool
+
+
+def materialize_quantized_roi(
+    source_size: tuple[int, int],
+    roi_xyxy: Sequence[int],
+    *,
+    roi_quantum: int = 1024,
+) -> QuantizedRoi:
+    """Map a strict 0..999 box to a quantized, center-preserving ROI.
+    将严格 0..999 矩形映射为中心保持、按量化单位扩展的 ROI。
+
+    The model rectangle is mapped outward to source pixels, the longest side
+    is rounded up to a positive multiple of roi_quantum, and the ideal square
+    is clipped directly against the source. It is intentionally not shifted
+    or resized after clipping. 模型矩形先向外映射到源图像素，最长边向上量化
+    为 roi_quantum 的正整数倍，再与源图直接求交；截断后绝不平移或二次缩放。
+    """
+    width, height = source_size
+    if width <= 0 or height <= 0:
+        raise ValueError("source_size must be positive")
+    if roi_quantum <= 0:
+        raise ValueError("roi_quantum must be positive")
+    values = tuple(roi_xyxy)
+    if len(values) != 4 or any(
+        not isinstance(value, int) or isinstance(value, bool) for value in values
+    ):
+        raise ValueError("roi_xyxy must contain four strict integers")
+    x0, y0, x1, y1 = values
+    if not (0 <= x0 < x1 <= 999 and 0 <= y0 < y1 <= 999):
+        raise ValueError("roi_xyxy must be a non-degenerate box within [0, 999]")
+
+    left = (x0 * width) // 999
+    top = (y0 * height) // 999
+    right = (x1 * width + 998) // 999
+    bottom = (y1 * height + 998) // 999
+    requested_pixel = (left, top, right, bottom)
+    requested_width = right - left
+    requested_height = bottom - top
+    longest_side = max(requested_width, requested_height)
+    quantized_side = max(
+        roi_quantum,
+        ((longest_side + roi_quantum - 1) // roi_quantum) * roi_quantum,
+    )
+
+    # Integer floor division exactly implements floor for the possibly
+    # negative ideal origin, avoiding float tie drift. 使用整数向下除法精确
+    # 实现可能为负的理想原点 floor，避免浮点边界漂移。
+    ideal_left = (left + right - quantized_side) // 2
+    ideal_top = (top + bottom - quantized_side) // 2
+    ideal = (
+        ideal_left,
+        ideal_top,
+        ideal_left + quantized_side,
+        ideal_top + quantized_side,
+    )
+    crop = (
+        max(0, ideal[0]),
+        max(0, ideal[1]),
+        min(width, ideal[2]),
+        min(height, ideal[3]),
+    )
+    if crop[0] >= crop[2] or crop[1] >= crop[3]:
+        raise ValueError("quantized ROI does not intersect source image")
+    return QuantizedRoi(
+        requested_roi_xyxy_0_999=values,
+        requested_pixel_xyxy=requested_pixel,
+        roi_quantum=roi_quantum,
+        quantized_side=quantized_side,
+        ideal_square_xyxy=ideal,
+        crop_xyxy=crop,
+        crop_size=(crop[2] - crop[0], crop[3] - crop[1]),
+        was_clipped=ideal != crop,
+    )
 
 
 def crop_image_box(

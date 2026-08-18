@@ -228,6 +228,7 @@ def _execution_path(
         "visual-task-plan-v2",
         "visual-task-plan-v3",
         "visual-task-plan-v4",
+        "visual-task-plan-v5",
     }:
         path.append("workflows.visual_planner.VisualTaskPlanner")
     elif current.get("joint_plan") is True:
