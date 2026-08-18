@@ -58,7 +58,7 @@ class _FakePlanner:
     async def plan_with_views(self, view, *, data_root, artifact_dir, budget):
         self.calls.append(view)
         plan = VisualTaskPlan(
-            version="visual-task-plan-v4",
+            version="visual-task-plan-v5",
             task="general_vqa",
             reason_codes=["test"],
         )
@@ -124,7 +124,7 @@ def _setup(tmp_path: Path) -> tuple[Path, Path, _FakePlanner, _FakeAgent, _FakeA
     registry.register(agent)
     run_store = RunStore(tmp_path / "runs", tmp_path)
     run_store.create_run(
-        config_payload={"planning_mode": "visual-task-plan-v4"},
+        config_payload={"planning_mode": "visual-task-plan-v5"},
         model_ids={"qwen": "logical-qwen"},
         prompt_paths=[],
         run_id="auto-run",
@@ -211,7 +211,7 @@ def test_draft_auto_task_materializes_after_v3_planning(tmp_path: Path) -> None:
     assert isinstance(planner.calls[0], SampleDraft)
     assert agent.calls[0].task == "general_vqa"
     plan_payload = json.loads((sample_dir / "visual_task_plan.json").read_text(encoding="utf-8"))
-    assert plan_payload["version"] == "visual-task-plan-v4"
+    assert plan_payload["version"] == "visual-task-plan-v5"
     assert "confidence" not in plan_payload
     assert not (sample_dir / "visual_plan.json").exists()
     assert not (sample_dir / "joint_visual_plan.json").exists()

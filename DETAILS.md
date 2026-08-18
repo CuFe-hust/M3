@@ -5,6 +5,8 @@
 它主要面向 AI 编码代理和需要理解系统内部结构的开发者。
 
 - 编码行为边界：见 `AGENTS.md`
+- Python 文件最终批准范围：见 `architecture/allowed_python_files.txt`
+- 当前实现状态：见 `architecture/implementation_status.json`
 - import DAG：见 `architecture/import_rules.json`
 - 迁移历史：见 `docs/migration/`
 - 重要架构决策：见 `docs/architecture/`
@@ -29,6 +31,8 @@ legacy behavior reference:
 长期架构以仓库主线 `main` 为事实来源。`new_structure` 是迁移期的历史名称，不是
 当前公共分支，也不是运行时依赖。
 
+当前 `architecture/implementation_status.json` 中生产 Python 文件已全部实现，`pending_files` 为空。
+
 Doc 17 离线质量门记录：
 
 ```text
@@ -39,43 +43,42 @@ compileall: clean
 git diff --check: clean
 ```
 
-剩余失败来自 HTTP socket/超大请求传输、当时仍启用的重构期路径门禁漂移、缺失可选依赖（如
+剩余失败来自 HTTP socket/超大请求传输、既有 allowlist 漂移、缺失可选依赖（如
 `safetensors`/`peft`/`transformers`）及未参与本任务的模型测试；不能表述为全仓
 pytest 全绿。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按
 具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
 
-### Doc 18 当前执行事实
+### Doc 20 当前执行事实
 
-Doc 18 离线验证（2026-08-17）：planner/runtime/resume/reporting 目标回归为
-`446 passed, 8 failed`；8 个失败均为当前沙箱禁止 HTTP harness 绑定
-`127.0.0.1`。detector/counting/evidence 代表性回归为 `176 passed`；
-`python3 -m compileall` 与 `git diff --check` 通过。架构门为 `41 passed, 1 failed`，
-唯一失败是 HEAD 已存在但不在当时冻结的重构期路径门禁中的 8 个 scripts/tests Python 文件；
-该门禁现已退役。
-完整 pytest 受缺失 `safetensors` 阻断；排除该独立 checkpoint 导出收集后为
-`1960 passed, 33 failed, 1 skipped`，剩余失败来自上述沙箱 HTTP、当时仍启用且现已退役的
-重构期路径门禁漂移及未安装的 `peft`/`transformers`/`safetensors` 等可选依赖。
+Doc 20 离线验证：v5 planner/schema/geometry、direct/evidence、runtime/resume
+目标回归通过；HTTP harness 仍受当前沙箱禁止绑定 `127.0.0.1` 限制，架构 allowlist
+仍有 HEAD 既存的越界 Python 文件。真实模型、真实数据集、云端 API 或目标
+Spark/部署环境相关验证仍应按具体环境单独执行。
 
 新鲜的 manual `ask` 与 dataset（explicit/default/auto）入口统一使用
 `workflows.visual_planner.VisualTaskPlanner`。当前配置不含
-`visual_planning.enabled` 字段；composition root 只组装 v4 planner。旧 Resolver、旧 gate、联合
+`visual_planning.enabled` 字段；composition root 只组装 v5 planner。旧 Resolver、旧 gate、联合
 planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 reporting/迁移审计。
 
 第一次规划调用的 user content 严格为按源顺序排列的内存图像 block，随后是未经
 包装的原始 question 文本。输出 schema 是 `VisualTaskPlan`，版本为
-`visual-task-plan-v4`，表达 task、canonical leaf、计数语义目标和显式焦点，不携带答案、GT、
-路径、backend、checkpoint、device、secret 或 planner confidence。v2/legacy 只用于
+`visual-task-plan-v5`，表达 task、canonical leaf、计数语义目标和可选严格整数 `roi_xyxy`，不携带
+答案、GT、路径、backend、checkpoint、device、secret 或 planner confidence。v2/v3/v4/legacy 只用于
 读取历史 run request；历史非终态需要重新推理时稳定拒绝。
 
-图像先做 EXIF transpose/RGB 规范化；规划预览最长边为 1080 且不放大。显式区域
-只在目标图像宽高都严格大于 1024 时生成一个固定 1024×1024 ROI，按焦点居中并
-clamp；否则使用整图。`MaterializedVisualView` 记录 source/crop 几何，最终
-Agent 与 evidence executor 消费同一视图。
+图像先做 EXIF transpose/RGB 规范化；规划预览最长边为 1080 且不放大。显式合法区域
+在 EXIF/RGB 规范化源尺寸上按 `0..999` 框向外映射，最长边向上量化到 1024
+整数倍，生成允许越界的理想正方形，再直接与源图求交；不平移、不缩小、不回退整图。
+历史 large-image policy 仍写入 run identity 供兼容审计，但不再阻止 v5 显式 ROI 物化。
+因此实际裁片可以是长方形且不必是 1024 倍数。`MaterializedVisualView` 同时记录请求框、
+请求像素框、量化边长、理想框、实际裁片和 `was_clipped`，最终 Agent 与 evidence executor
+消费同一视图。
 
 样本产物使用 `visual_task_plan.json`，只保存已校验计划与安全几何。dataset
-`run_request.json` 保存 `planning_mode`、preview/ROI 参数和 large-image policy；
-v4 succeeded resume 不调用模型，v2/legacy 成功样本同样只允许无模型补评测，v2/legacy
-需要重新推理时返回 `LEGACY_PLANNING_RESUME_UNSUPPORTED`。
+`run_request.json` 保存 `planning_mode`、`task_prompt_version`、preview、坐标制式、
+`roi_quantum`、materialization policy 和兼容的 large-image policy；v5 succeeded resume
+不调用模型，v4 及更早成功样本同样只允许无模型补评测，v4 及更早需要重新推理时返回
+`LEGACY_PLANNING_RESUME_UNSUPPORTED`。
 
 ---
 
@@ -95,7 +98,7 @@ v4 succeeded resume 不调用模型，v2/legacy 成功样本同样只允许无�
 - 测试；
 - offline；
 - secret；
-- architecture tests。
+- allowlist。
 
 ### `DETAILS.md`
 
@@ -108,7 +111,10 @@ v4 succeeded resume 不调用模型，v2/legacy 成功样本同样只允许无�
 机器约束：
 
 ```text
+allowed_python_files.txt
+implementation_status.json
 import_rules.json
+ALLOWLIST_CHANGE_POLICY.md
 ```
 
 ### `docs/migration/`
@@ -286,8 +292,13 @@ M3/
 └── tests/
 ```
 
-完整 Python 文件列表不在文档中重复维护。当前文件结构以仓库实际目录为准；
-模块间依赖边界以 `architecture/import_rules.json` 和 architecture tests 为机器约束。
+完整 Python 路径不要复制维护在本文档中；以：
+
+```text
+architecture/allowed_python_files.txt
+```
+
+为唯一白名单来源。
 
 ---
 
@@ -487,7 +498,7 @@ change_caption
 
 其他 UnifiedSample task 要求非空问题。
 
-空问题的 `caption` / `change_caption` 规则现在由 v4 system prompt 约束，并在
+空问题的 `caption` / `change_caption` 规则现在由 v3 system prompt 约束，并在
 `materialize_sample(...)` 边界校验图像角色与数量。
 
 ## 7.3 Normalization 一致性
@@ -879,14 +890,16 @@ visual_planning
 
 ### `VisualPlanningSettings`（`application.visual_planning`）
 
-v4 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag：
+v5 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag：
 
 ```text
-planning_mode = "visual-task-plan-v4"
-task_prompt_version = "v4"
-catalog_version = "first-qwen-evidence-catalog-v2"
+planning_mode = "visual-task-plan-v5"
+task_prompt_version = "v5"
+catalog_version = "visual-evidence-catalog-v3"
 preview_max_side = 1080
-roi_size = 1024
+roi_coordinate_frame = "normalized_0_999_top_left"
+roi_quantum = 1024
+roi_materialization_policy = "longest-side-ceil-quantum-center-clip"
 large_image_policy = "both-dimensions-strictly-greater-than-1024"
 detectors: 每类别策略；None = 未校准 = 能力关闭
 segmenters: 同上；启用必须携带已验证 class map
@@ -993,7 +1006,7 @@ prompts.snapshot/
 涉及模型输出行为的 Prompt 修改必须被视为行为变化，而不只是文案修改。
 
 当前 active planner binding 为 `"visual_task_plan"` → 版本化
-`visual_task_plan_v4.md`（v4）。旧 resolver/gate/joint prompt 不在 active
+`visual_task_plan_v3.md`（v3）。旧 resolver/gate/joint prompt 不在 active
 catalog 中；历史 prompt 文件不参与新鲜规划。
 
 ---
@@ -1026,7 +1039,7 @@ call_budget
 data_root
 judge_client
 request_context
-visual_task_plan     # v4 VisualTaskPlan；fresh Agent execution 必须有 materialized views
+visual_task_plan     # v3 VisualTaskPlan；fresh Agent execution 必须有 materialized views
 visual_views         # tuple[MaterializedVisualView, ...]
 visual_bindings      # 轻量 evidence service bindings
 ```
@@ -1087,7 +1100,7 @@ spatial_relation
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
 
-v4 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 且 task 为
+v3 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 且 task 为
 `general_vqa` 时，GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
 `VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜），按 14B §10 契约
 组装唯一一次 final Qwen 调用：clean ROI 图在前、逐 ROI 掩膜 overlay 按
@@ -1118,7 +1131,7 @@ grounding
 
 completed 结果需要合法定位证据。
 
-v4 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
+v3 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
 GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
 唯一一次 final Grounding Qwen 调用（evidence 管线在 Agent 外执行），
 返回确定性整图框 `WholeImageBox`。`AgentResult.answer` 为
@@ -1310,7 +1323,7 @@ reason_codes
 doc 16 的 fresh dataset 与 manual ask 不走本历史解析路径：单次
 `VisualTaskPlanner` 调用同时产出 task 与视觉辅助意图，模型选定 task 对
 routing/materialization/execution 权威，源 task 只做审计。历史 v2 计划曾将低置信度
-作为稳定失败；当前 v4 不输出或评估 planner confidence，也不回退到另一个规划模型。
+作为稳定失败；当前 v3 不输出或评估 planner confidence，也不回退到另一个规划模型。
 
 ---
 
@@ -1325,7 +1338,7 @@ routing/materialization/execution 权威，源 task 只做审计。历史 v2 计
 - 真正执行由 SampleRunner 完成。
 
 该节只解释旧 run 的候选审计；doc 16 历史 v2 `VisualTaskPlanner` 的低置信度曾直接
-稳定失败，当前 v4 不再输出该分数，也不启动旧候选路径。候选 fallback 不等于“多
+稳定失败，当前 v3 不再输出该分数，也不启动旧候选路径。候选 fallback 不等于“多
 Agent 全跑”。
 
 SampleRunner 会按 AgentName 稳定去重，避免多个 candidate task 实际映射同一 Agent 时重复执行。
@@ -1440,7 +1453,7 @@ Detection zero review 使用 ordered chain 中下一位实际支持的专家，t
 
 ## 25.4 Deterministic count target resolver
 
-fresh counting 的语义 target 来自 VisualTaskPlanner v4；normalization 与 legacy
+fresh counting 的语义 target 来自 VisualTaskPlanner v5；normalization 与 legacy
 metadata hint 只作为确定性 verifier。无 plan 的 direct 兼容边界为：
 
 ```text
@@ -1945,7 +1958,7 @@ append execution index
 ```
 
 所有 fresh 样本都由 `VisualTaskPlanner` 先消费一次共享 Qwen budget，产出
-`visual-task-plan-v4`，再由纯转换生成 routing decision。planner 失败稳定写入
+`visual-task-plan-v5`，再由纯转换生成 routing decision。planner 失败稳定写入
 `state=failed`，不重试、不 legacy 回退；模型 task 在物化后成为执行 task。
 
 `visual_task_plan.json` 保存已校验计划与 `MaterializedVisualView` 几何；
@@ -2124,7 +2137,7 @@ outputs/runs/<run_id>/
                 └── optional model/judge artifacts
 ```
 
-当前 v4 证据路径（规划请求视觉辅助时）可能另存 additional result：
+当前 v3 证据路径（规划请求视觉辅助时）可能另存 additional result：
 
 ```text
 vqa_evidence.json     # object_evidence_vqa bundle (JSON-safe)
@@ -2993,7 +3006,7 @@ POST /ask
 
 `--task auto` 时：
 
-- 空问题规则由 v4 VisualTaskPlanner 的冻结 system prompt 处理；
+- 空问题规则由 v3 VisualTaskPlanner 的冻结 system prompt 处理；
 - 显式 task 也先经过同一个 VisualTaskPlanner，requested task 只作审计；
 - 规划 task 后才物化 UnifiedSample；
 - 一次手动请求只执行一个主业务路径；
@@ -3286,6 +3299,8 @@ tests/parity/
 保证：
 
 ```text
+allowlist
+implementation status
 import DAG
 __init__ no side effects
 package discovery
@@ -3338,20 +3353,27 @@ Golden fixture 不属于“修实现时可以跟着一起改”的普通测试�
 
 ---
 
-# 78. Architecture boundaries
+# 78. Architecture allowlist
 
-项目不使用 Python 文件路径白名单，也不维护中央 implemented/pending 文件清单。
+`architecture/allowed_python_files.txt`：
 
-新增模块是否合法由以下因素决定：
+```text
+final approved paths
+```
 
-1. 文件所在 package 的职责；
-2. `architecture/import_rules.json`；
-3. architecture tests；
-4. `AGENTS.md` 的长期架构约束。
+`architecture/implementation_status.json`：
 
-普通新增 Python 文件无需单独登记。
+```text
+what is actually implemented now
+```
 
-新增顶层 package、改变既有 package 职责、改变 import DAG 等仍属于架构变更。
+当前：
+
+```text
+pending_files = []
+```
+
+以后新增 Python 路径必须遵循独立架构批准流程。
 
 ---
 
@@ -3376,7 +3398,7 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 ### 79.4 Doc 16 visual-only planner; runtime evidence remains fail-closed
 
 `VisualTaskPlanner` 对所有 fresh manual/dataset 入口始终启用；旧的
-当前配置不再提供 `visual_planning.enabled` 开关；所有 fresh 入口都先经过 v4
+当前配置不再提供 `visual_planning.enabled` 开关；所有 fresh 入口都先经过 v5
 规划器。
 `first-qwen-evidence-catalog-v2` 已根据当前 DOTA-v2 YOLO 与经验证的 iSAID
 SegFormer class map 声明以下类别映射：
@@ -3397,7 +3419,7 @@ aviation_infrastructure
 SegFormer 的运行绑定仍默认关闭（None）。没有完整校准的对象证据服务时，planner
 binding 不声明可执行类别；模型请求视觉辅助会稳定失败，绝不静默回退 direct。
 Grounding 的未校准 seam 仍可作为显式能力边界，但不会使 planner 宣布对象辅助
-可执行。检测器一律惰性接线，组合期绝不加载 YOLO 权重。新 v4 ROI 只按规范化
+可执行。检测器一律惰性接线，组合期绝不加载 YOLO 权重。新 v3 ROI 只按规范化
 EXIF/RGB 源尺寸生成一个固定 1024×1024 视图，禁止旧 multi-ROI 与 halo 语义；
 历史 `visual_plan.json` / `joint_visual_plan.json` 仅供 reporting 只读展示。
 真实 Qwen3-VL live gate 与校准策略仍需单独验证。
@@ -3420,9 +3442,8 @@ EXIF/RGB 源尺寸生成一个固定 1024×1024 视图，禁止旧 multi-ROI 与
 
 ### 79.7 OEM class labels
 
-OEM 9-channel checkpoint 的分类头维度已核验，并以 OpenEarthMap 官方八类顺序
-（加 index 0 background）写入版本化 `classes.json`；runtime 只读取该映射，不再
-暴露旧的 `LABEL_0..8` 占位名。
+迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`，没有经训练
+语义验证的 `classes.json`。当前 runtime 保留该事实，不用网络资料猜测类别顺序。
 
 ### 79.8 Semantic connected-component counting
 
@@ -3616,8 +3637,7 @@ tests/integration/
 | dependency assembly | `application/bootstrap.py` |
 | 顶层命令参数 | `main.py` |
 
-新增文件应优先放入职责对应的现有 package；如果需要新增顶层 package 或改变已有职责边界，
-再按架构变更处理。
+如果目标文件不在 allowlist，先做架构批准，不直接新建。
 
 ---
 

@@ -207,7 +207,7 @@ class _FakeVisualPlanner:
         task = task or "caption"
         return (
             VisualTaskPlan(
-                version="visual-task-plan-v4",
+                version="visual-task-plan-v5",
                 task=task,
                 reason_codes=["fake_test_plan"],
             ),

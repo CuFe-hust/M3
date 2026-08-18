@@ -48,6 +48,22 @@ def test_default_settings() -> None:
     assert settings.counting.fallback_on_backend_unavailable is True
     assert settings.counting.verify_empty_detection is True
     assert settings.counting.verify_empty_semantic is False
+    assert settings.visual_planning.planner.task_prompt_version == "v5"
+    assert settings.visual_planning.planner.planning_mode == "visual-task-plan-v5"
+    assert settings.visual_planning.planner.roi_coordinate_frame == (
+        "normalized_0_999_top_left"
+    )
+    assert settings.visual_planning.planner.roi_quantum == 1024
+    assert settings.visual_planning.planner.roi_materialization_policy == (
+        "longest-side-ceil-quantum-center-clip"
+    )
+
+
+def test_visual_planner_rejects_unapproved_roi_quantum() -> None:
+    with pytest.raises(ValueError, match="roi_quantum"):
+        AppSettings.model_validate(
+            {"visual_planning": {"planner": {"roi_quantum": 2048}}}
+        )
 
 
 def test_local_config_declares_detector_inventory() -> None:
@@ -372,21 +388,23 @@ def test_change_ablation_presets_are_valid_partial_app_settings(
 # ── visual planning group (C7, 14A2) / 视觉规划配置组 ─────────────────────
 
 
-def test_visual_planning_defaults_to_v4_planner_state() -> None:
-    """Fresh execution defaults to the canonical v4 planner configuration.
-    新鲜执行默认使用规范 v4 规划器配置。"""
+def test_visual_planning_defaults_to_v5_planner_state() -> None:
+    """Fresh execution defaults to the canonical v5 planner configuration.
+    新鲜执行默认使用规范 v5 规划器配置。"""
     settings = AppSettings()
     planner = settings.visual_planning.planner
     assert not hasattr(settings.visual_planning, "enabled")
-    assert planner.planning_mode == "visual-task-plan-v4"
-    assert planner.task_prompt_version == "v4"
+    assert planner.planning_mode == "visual-task-plan-v5"
+    assert planner.task_prompt_version == "v5"
     assert (
         planner.catalog_version
         == "visual-evidence-catalog-v3"
     )
     assert not hasattr(planner, "confidence_threshold")
     assert planner.preview_max_side == 1080
-    assert planner.roi_size == 1024
+    assert planner.roi_coordinate_frame == "normalized_0_999_top_left"
+    assert planner.roi_quantum == 1024
+    assert planner.roi_materialization_policy == "longest-side-ceil-quantum-center-clip"
     assert settings.visual_planning.detectors == {}
     assert settings.visual_planning.segmenters == {}
 

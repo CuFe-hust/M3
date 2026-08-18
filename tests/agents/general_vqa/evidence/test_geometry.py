@@ -19,7 +19,7 @@ from agents.general_vqa.evidence.schema import RoiEvidenceRecord
 
 def _record() -> RoiEvidenceRecord:
     return RoiEvidenceRecord(
-        roi_id="fixed_roi-0",
+        roi_id="quantized_roi-0",
         image_id="img1",
         source_size=(2048, 1536),
         core_xyxy=(1024, 512, 2048, 1536),

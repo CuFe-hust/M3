@@ -100,8 +100,8 @@ class RuntimeComponents:
     run_store: RunStore
     build_report: Callable[[Path], Report]
     render_overlay: Callable[..., Path]
-    # Canonical v4 planner and shared evidence bindings for every fresh entry.
-    # 所有新鲜入口共用的 v4 规划器与视觉证据绑定。
+    # Canonical v5 planner and shared evidence bindings for every fresh entry.
+    # 所有新鲜入口共用的 v5 规划器与视觉证据绑定。
     visual_task_planner: VisualTaskPlanner
     visual_bindings: VisualPlanBindings
     dataset_runner_factory: Callable[..., DatasetRunner] = field(
@@ -234,7 +234,7 @@ def assemble_runtime(
         judge_policy: str,
         judge_sample_rate: float | None = None,
         data_root: Path,
-        planning_mode: str = "visual-task-plan-v4",
+        planning_mode: str = "visual-task-plan-v5",
     ) -> DatasetRunner:
         return DatasetRunner(
             adapter,
@@ -812,8 +812,8 @@ def _build_visual_task_planning(
     expert_catalog: ExpertCatalog,
     project_root: Path,
 ) -> tuple[VisualTaskPlanner, VisualPlanBindings]:
-    """Assemble the always-on v4 planner and shared evidence bindings.
-    组装始终启用的 v4 规划器与共享证据绑定。"""
+    """Assemble the always-on v5 planner and shared evidence bindings.
+    组装始终启用的 v5 规划器与共享证据绑定。"""
     evidence_catalog = _load_evidence_catalog(project_root)
     planner_settings = settings.visual_planning.planner
     if planner_settings.catalog_version != evidence_catalog.catalog_version:
@@ -865,7 +865,9 @@ def _build_visual_task_planning(
         catalog=evidence_catalog,
         executable_categories_by_task=executable_categories_by_task,
         max_side=planner_settings.preview_max_side,
-        roi_size=planner_settings.roi_size,
+        roi_quantum=planner_settings.roi_quantum,
+        roi_coordinate_frame=planner_settings.roi_coordinate_frame,
+        roi_materialization_policy=planner_settings.roi_materialization_policy,
         large_image_policy=planner_settings.large_image_policy,
     )
     return planner, bindings

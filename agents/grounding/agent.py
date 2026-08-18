@@ -76,11 +76,11 @@ class GroundingAgent(VisualAgentBase):
         )
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
-        """Protocol-owner entry for the v3 plan and injected grounding service.
+        """Protocol-owner entry for the v5 plan and injected grounding service.
         The direct path remains the explicit no-assistance branch. The trace is
         always enriched with a stable agent class and route; no request
         construction happens here.
-        v3 计划与注入 Grounding 服务的协议 owner 入口。direct 路径是显式的无
+        v5 计划与注入 Grounding 服务的协议 owner 入口。direct 路径是显式的无
         辅助分支。trace 始终补充稳定的 agent class 与 route；本处不做请求构造。"""
         task_plan = context.visual_task_plan
         bindings = context.visual_bindings

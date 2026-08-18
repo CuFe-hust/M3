@@ -10,9 +10,10 @@ from __future__ import annotations
 import math
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, model_validator
 
 from data.schema import TaskName
+from models.images import materialize_quantized_roi as _materialize_quantized_roi
 
 AgentName = Literal[
     "counting_agent",
@@ -246,40 +247,44 @@ def _repair_severity(normalizations: list[str]) -> str:
     return "none"
 
 
-# ── Visual-only task planning contract (doc 19) ───────────────────────────
-# The v4 planner receives only normalized image previews and the raw question.
-# Its output contains task/assistance intent, never an answer or implementation
-# choice or subjective confidence. v4 规划器只接收规范化图像预览与原始问题；
-# 输出只表达任务和辅助意图，绝不携带答案、实现选择或主观置信度。
+# ── Visual-only task planning contract (doc 20) ───────────────────────────
+# The v5 planner receives only normalized image previews and the raw question.
+# Its output contains task/assistance intent and an optional strict 0..999 ROI;
+# it never carries an answer or implementation choice. v5 规划器只接收规范化
+# 图像预览与原始问题；输出任务/辅助意图及可选严格 0..999 ROI，绝不携带答案
+# 或实现选择。
 
-VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v4"
+VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v5"
 COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
 
 class RegionRequest(BaseModel):
-    """Optional explicit visual focus expressed in normalized image space.
-    使用归一化图像坐标表达的可选显式视觉焦点。"""
+    """Optional explicit attention rectangle in 0..999 image space.
+    使用 0..999 图像坐标表达的可选显式注意力矩形。"""
 
     model_config = ConfigDict(extra="forbid")
 
     explicit: bool = False
     image_index: int | None = Field(default=None, ge=0)
-    focus_xy_norm: tuple[float, float] | None = None
+    roi_xyxy: tuple[StrictInt, StrictInt, StrictInt, StrictInt] | None = None
 
     @model_validator(mode="after")
     def validate_linkage(self) -> "RegionRequest":
-        """Keep explicit focus fields all-or-nothing and finite.
-        保持显式焦点字段要么全部存在、要么全部缺省，并拒绝非有限值。"""
+        """Keep explicit ROI fields all-or-nothing and strictly integral.
+        保持显式 ROI 字段要么全部存在、要么全部缺省，并严格要求整数。"""
         if not self.explicit:
-            if self.image_index is not None or self.focus_xy_norm is not None:
-                raise ValueError("implicit region_request must not carry focus fields")
+            if self.image_index is not None or self.roi_xyxy is not None:
+                raise ValueError("implicit region_request must not carry ROI fields")
             return self
-        if self.image_index is None or self.focus_xy_norm is None:
-            raise ValueError("explicit region_request requires image_index and focus")
-        if not all(math.isfinite(value) for value in self.focus_xy_norm):
-            raise ValueError("region focus must be finite")
-        if not all(0.0 <= value <= 1.0 for value in self.focus_xy_norm):
-            raise ValueError("region focus must be within [0, 1]")
+        if self.image_index is None or self.roi_xyxy is None:
+            raise ValueError("explicit region_request requires image_index and roi_xyxy")
+        if any(isinstance(value, bool) for value in self.roi_xyxy):
+            raise ValueError("roi_xyxy must contain strict integers")
+        if not all(0 <= value <= 999 for value in self.roi_xyxy):
+            raise ValueError("roi_xyxy must be within [0, 999]")
+        x0, y0, x1, y1 = self.roi_xyxy
+        if x0 >= x1 or y0 >= y1:
+            raise ValueError("roi_xyxy must be non-degenerate with x0<x1 and y0<y1")
         return self
 
 
@@ -349,15 +354,24 @@ class MaterializedVisualView(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     image_id: str = Field(min_length=1)
-    view_mode: Literal["full_image", "fixed_roi"]
+    view_mode: Literal["full_image", "quantized_roi"]
     source_size: tuple[int, int]
     crop_xyxy: tuple[int, int, int, int]
     crop_size: tuple[int, int]
+    # These fields make quantized ROI materialization auditable without
+    # persisting raw model output, image bytes, or paths. 这些字段用于审计量化
+    # ROI 物化过程，不持久化原始模型响应、图像字节或路径。
+    requested_roi_xyxy_0_999: tuple[StrictInt, StrictInt, StrictInt, StrictInt] | None = None
+    requested_pixel_xyxy: tuple[int, int, int, int] | None = None
+    roi_quantum: StrictInt | None = None
+    quantized_side: StrictInt | None = None
+    ideal_square_xyxy: tuple[int, int, int, int] | None = None
+    was_clipped: bool | None = None
 
     @model_validator(mode="after")
     def validate_geometry(self) -> "MaterializedVisualView":
-        """Validate exact half-open bounds and the fixed 1024 ROI contract.
-        校验精确的半开区间边界与固定 1024 ROI 契约。"""
+        """Validate exact half-open bounds and v5 ROI audit geometry.
+        校验精确的半开区间边界与 v5 ROI 审计几何。"""
         width, height = self.source_size
         x0, y0, x1, y1 = self.crop_xyxy
         crop_width, crop_height = self.crop_size
@@ -370,6 +384,82 @@ class MaterializedVisualView(BaseModel):
         if self.view_mode == "full_image":
             if self.crop_xyxy != (0, 0, width, height):
                 raise ValueError("full_image view must cover the source")
-        elif self.crop_size != (1024, 1024):
-            raise ValueError("fixed_roi view must be exactly 1024x1024")
+            if any(
+                value is not None
+                for value in (
+                    self.requested_roi_xyxy_0_999,
+                    self.requested_pixel_xyxy,
+                    self.roi_quantum,
+                    self.quantized_side,
+                    self.ideal_square_xyxy,
+                    self.was_clipped,
+                )
+            ):
+                raise ValueError("full_image view must not carry ROI audit geometry")
+            return self
+
+        audit_fields = (
+            self.requested_roi_xyxy_0_999,
+            self.requested_pixel_xyxy,
+            self.roi_quantum,
+            self.quantized_side,
+            self.ideal_square_xyxy,
+            self.was_clipped,
+        )
+        if any(value is None for value in audit_fields):
+            raise ValueError("quantized_roi view requires complete ROI audit geometry")
+        assert self.requested_roi_xyxy_0_999 is not None
+        assert self.requested_pixel_xyxy is not None
+        assert self.roi_quantum is not None
+        assert self.quantized_side is not None
+        assert self.ideal_square_xyxy is not None
+        assert self.was_clipped is not None
+        if self.roi_quantum <= 0 or self.roi_quantum != 1024:
+            raise ValueError("roi_quantum must equal 1024")
+        rx0, ry0, rx1, ry1 = self.requested_roi_xyxy_0_999
+        if not (0 <= rx0 < rx1 <= 999 and 0 <= ry0 < ry1 <= 999):
+            raise ValueError("requested_roi_xyxy_0_999 is invalid")
+        requested = self.requested_pixel_xyxy
+        if not (
+            0 <= requested[0] < requested[2] <= width
+            and 0 <= requested[1] < requested[3] <= height
+        ):
+            raise ValueError("requested_pixel_xyxy must be inside source_size")
+        if self.quantized_side < self.roi_quantum or self.quantized_side % self.roi_quantum:
+            raise ValueError("quantized_side must be a positive quantum multiple")
+        ideal = self.ideal_square_xyxy
+        if (
+            ideal[2] - ideal[0] != self.quantized_side
+            or ideal[3] - ideal[1] != self.quantized_side
+        ):
+            raise ValueError("ideal_square_xyxy must match quantized_side")
+        expected_crop = (
+            max(0, ideal[0]),
+            max(0, ideal[1]),
+            min(width, ideal[2]),
+            min(height, ideal[3]),
+        )
+        if self.crop_xyxy != expected_crop:
+            raise ValueError("crop_xyxy must be the clipped ideal square")
+        if self.was_clipped != (ideal != self.crop_xyxy):
+            raise ValueError("was_clipped does not match ideal/crop geometry")
+        try:
+            expected = _materialize_quantized_roi(
+                self.source_size,
+                self.requested_roi_xyxy_0_999,
+                roi_quantum=self.roi_quantum,
+            )
+        except ValueError as exc:
+            raise ValueError("quantized ROI audit geometry is invalid") from exc
+        if (
+            self.requested_pixel_xyxy != expected.requested_pixel_xyxy
+            or self.quantized_side != expected.quantized_side
+            or self.ideal_square_xyxy != expected.ideal_square_xyxy
+            or self.crop_xyxy != expected.crop_xyxy
+            or self.crop_size != expected.crop_size
+            or self.was_clipped != expected.was_clipped
+        ):
+            raise ValueError(
+                "quantized ROI audit geometry does not match shared materialization"
+            )
         return self

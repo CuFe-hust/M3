@@ -107,7 +107,7 @@ def _sample(tmp_path: Path, size: tuple[int, int] = (100, 80)) -> UnifiedSample:
 
 def _plan() -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v4",
+        version="visual-task-plan-v5",
         task="grounding",
         needs_visual_assistance=True,
         object_categories=["building-outline"],
@@ -121,12 +121,25 @@ def _view(
     box: tuple[int, int, int, int] = (0, 0, 100, 80),
     source_size: tuple[int, int] = (100, 80),
 ) -> MaterializedVisualView:
+    audit = (
+        {
+            "requested_roi_xyxy_0_999": (500, 500, 999, 999),
+            "requested_pixel_xyxy": (1025, 768, 2048, 1536),
+            "roi_quantum": 1024,
+            "quantized_side": 1024,
+            "ideal_square_xyxy": (1024, 640, 2048, 1664),
+            "was_clipped": True,
+        }
+        if mode == "quantized_roi"
+        else {}
+    )
     return MaterializedVisualView(
         image_id="img1",
         view_mode=mode,  # type: ignore[arg-type]
         source_size=source_size,
         crop_xyxy=box,
         crop_size=(box[2] - box[0], box[3] - box[1]),
+        **audit,
     )
 
 
@@ -187,12 +200,12 @@ def test_v2_executor_calls_each_model_once_and_returns_whole_image_box(tmp_path:
     assert "base64" not in payload
 
 
-def test_v2_executor_uses_exact_fixed_roi_pixels(tmp_path: Path) -> None:
+def test_v2_executor_uses_exact_quantized_roi_pixels(tmp_path: Path) -> None:
     yolo = _FakeYolo()
-    qwen = _FakeQwen({"selected_box_ids": ["fixed_roi-0-box-1"], "fallback_boxes": []})
+    qwen = _FakeQwen({"selected_box_ids": ["quantized_roi-0-box-1"], "fallback_boxes": []})
     view = _view(
-        mode="fixed_roi",
-        box=(1024, 512, 2048, 1536),
+        mode="quantized_roi",
+        box=(1024, 640, 2048, 1536),
         source_size=(2048, 1536),
     )
     result = _run(
@@ -201,8 +214,8 @@ def test_v2_executor_uses_exact_fixed_roi_pixels(tmp_path: Path) -> None:
         view=view,
         source_size=(2048, 1536),
     )
-    assert yolo.calls[0].size == (1024, 1024)
-    assert result.bundle.rois[0].core_xyxy == (1024, 512, 2048, 1536)
+    assert yolo.calls[0].size == (1024, 896)
+    assert result.bundle.rois[0].core_xyxy == (1024, 640, 2048, 1536)
 
 
 def test_uncalibrated_detector_allows_authorized_missing_leaf_fallback(tmp_path: Path) -> None:

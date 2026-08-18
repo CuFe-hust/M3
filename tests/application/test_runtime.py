@@ -64,7 +64,7 @@ class _FakeQwenClient:
                 task = {1: "caption", 2: "change_caption"}.get(image_count, task)
             return response_model.model_validate(
                 {
-                    "version": "visual-task-plan-v4",
+                    "version": "visual-task-plan-v5",
                     "task": task,
                     "needs_visual_assistance": False,
                     "object_categories": [],
@@ -150,7 +150,7 @@ def test_runtime_run_dataset_delegates_to_dataset_runner(tmp_path: Path) -> None
     RunManifest.model_validate_json((run_dir / "manifest.json").read_text(encoding="utf-8"))
     snapshot = json.loads((run_dir / "config.snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["runs"]["root"] == (tmp_path / "runs").as_posix()
-    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v4.runtime.md").is_file()
+    assert (run_dir / "prompts.snapshot" / "visual_task_plan_v5.runtime.md").is_file()
     assert (run_dir / "tasks" / "auto" / "dataset_probe.json").is_file()
     assert (run_dir / "predictions.jsonl").is_file()
 
@@ -159,7 +159,7 @@ def test_fresh_v2_planning_mode_is_rejected_before_run_creation(tmp_path: Path) 
     data_root = tmp_path / "data"
     _make_dataset(data_root)
     runtime = _runtime(tmp_path)
-    with pytest.raises(ValueError, match="visual-task-plan-v4"):
+    with pytest.raises(ValueError, match="visual-task-plan-v5"):
         _run(
             runtime,
             DatasetRunOptions(
@@ -686,7 +686,7 @@ def test_ask_v3_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
     visual_plan = json.loads(
         (request_dir / "visual_task_plan.json").read_text(encoding="utf-8")
     )
-    assert visual_plan["version"] == "visual-task-plan-v4"
+    assert visual_plan["version"] == "visual-task-plan-v5"
     assert "confidence" not in visual_plan
     assert visual_plan["task"] == "general_vqa"
 
@@ -1677,7 +1677,7 @@ class _FakeCountClient:
             counting = self.planned_task == "counting"
             return response_model.model_validate(
                 {
-                    "version": "visual-task-plan-v4",
+                    "version": "visual-task-plan-v5",
                     "task": self.planned_task,
                     "needs_visual_assistance": counting,
                     "object_categories": (
@@ -1802,7 +1802,7 @@ def test_count_image_produces_current_artifacts_and_overlay(
             "counting_result.json", "agent_trace.json", "overlay.png"} <= names
     assert "target_parse" not in names
     trace = json.loads((sample_dir / "agent_trace.json").read_text(encoding="utf-8"))
-    assert trace["planning_mode"] == "visual-task-plan-v4"
+    assert trace["planning_mode"] == "visual-task-plan-v5"
     assert trace["target_source"] == "visual_task_plan"
     assert trace["planner_target"] == "vehicle"
     assert trace["planner_object_categories"] == ["small-vehicle", "large-vehicle"]
@@ -3412,6 +3412,13 @@ def test_run_request_persists_actual_root_and_resume_reconstructs(
     assert request["evaluate"] is True
     assert request["judge_policy"] == "all"
     assert request["judge_sample_rate"] == 0.5
+    assert request["planning_mode"] == "visual-task-plan-v5"
+    assert request["task_prompt_version"] == "v5"
+    assert request["roi_coordinate_frame"] == "normalized_0_999_top_left"
+    assert request["roi_quantum"] == 1024
+    assert request["roi_materialization_policy"] == (
+        "longest-side-ceil-quantum-center-clip"
+    )
     # resume reconstructs the actual invocation / resume 重建实际调用
     monkeypatch.setenv("OUTPUT_ROOT", str(tmp_path / "runs"))
     captured = {}
@@ -3436,6 +3443,8 @@ def test_run_request_persists_actual_root_and_resume_reconstructs(
     assert options.auto_task is True
     assert options.tasks == ()
     assert options.resume is True
+    assert options.task_prompt_version == "v5"
+    assert options.roi_quantum == 1024
 
 
 def test_run_request_judge_errors_only_survives_resume(tmp_path, monkeypatch) -> None:
@@ -4516,6 +4525,12 @@ def test_run_dataset_resume_uses_run_request_and_rejects_drift(
         asyncio.run(
             runtime.run_dataset(
                 resume_with(judge_policy="none", judge_sample_rate=None)
+            )
+        )
+    with pytest.raises(ValueError, match="task prompt version mismatch"):
+        asyncio.run(
+            runtime.run_dataset(
+                resume_with(task_prompt_version="v4")
             )
         )
     assert client.calls == calls_after_fresh  # zero Qwen before failure

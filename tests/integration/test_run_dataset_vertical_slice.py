@@ -41,7 +41,7 @@ class _FakeQwenClient:
         if response_model.__name__ == "VisualTaskPlan":
             return response_model.model_validate(
                 {
-                    "version": "visual-task-plan-v4",
+                    "version": "visual-task-plan-v5",
                     "task": "general_vqa",
                     "needs_visual_assistance": False,
                     "object_categories": [],

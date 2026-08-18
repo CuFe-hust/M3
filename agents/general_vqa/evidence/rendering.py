@@ -25,8 +25,9 @@ from models.images import (
     crop_image_box,
     image_to_data_url,
     image_sha256,
+    materialize_quantized_roi as _materialize_quantized_roi,
     read_normalized_image,
-    materialize_fixed_roi as _materialize_fixed_roi,
+    QuantizedRoi,
 )
 
 # Internal overlay transparency; the frozen palette/persistence parameters are
@@ -42,18 +43,18 @@ def normalized_image_size(path: Path) -> tuple[int, int]:
     return read_normalized_image(path).size
 
 
-def materialize_fixed_roi(
+def materialize_quantized_roi(
     source_size: tuple[int, int],
-    focus_xy_norm: tuple[float, float],
+    roi_xyxy: tuple[int, int, int, int],
     *,
-    roi_size: int = 1024,
-) -> tuple[int, int, int, int]:
-    """Expose the shared fixed-ROI primitive through the agents seam.
-    通过 agents seam 暴露共享的固定 ROI 原语。"""
-    return _materialize_fixed_roi(
+    roi_quantum: int = 1024,
+) -> QuantizedRoi:
+    """Expose the shared quantized-ROI primitive through the agents seam.
+    通过 agents seam 暴露共享的量化 ROI 原语。"""
+    return _materialize_quantized_roi(
         source_size,
-        focus_xy_norm,
-        roi_size=roi_size,
+        roi_xyxy,
+        roi_quantum=roi_quantum,
     )
 
 
@@ -61,8 +62,8 @@ def render_roi_crop(
     image: Image.Image,
     record: RoiEvidenceRecord,
 ) -> Image.Image:
-    """Render the exact source-pixel box recorded by the v3 planner.
-    按 v3 规划器记录的精确源像素框渲染图像。"""
+    """Render the exact source-pixel box recorded by the materialized view.
+    按已物化视图记录的精确源像素框渲染图像。"""
 
     crop = crop_image_box(image, record.expanded_xyxy)
     if crop.size != record.crop_size:

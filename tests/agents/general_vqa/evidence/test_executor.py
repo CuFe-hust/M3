@@ -93,7 +93,7 @@ def _plan(
     ),
 ) -> VisualTaskPlan:
     return VisualTaskPlan(
-        version="visual-task-plan-v4",
+        version="visual-task-plan-v5",
         task="general_vqa",
         needs_visual_assistance=True,
         object_categories=list(categories),
@@ -109,12 +109,25 @@ def _view(
     box: tuple[int, int, int, int] | None = None,
 ) -> MaterializedVisualView:
     crop = box or (0, 0, *source_size)
+    audit = (
+        {
+            "requested_roi_xyxy_0_999": (500, 500, 999, 999),
+            "requested_pixel_xyxy": (1025, 768, 2048, 1536),
+            "roi_quantum": 1024,
+            "quantized_side": 1024,
+            "ideal_square_xyxy": (1024, 640, 2048, 1664),
+            "was_clipped": True,
+        }
+        if mode == "quantized_roi"
+        else {}
+    )
     return MaterializedVisualView(
         image_id=image_id,
         view_mode=mode,  # type: ignore[arg-type]
         source_size=source_size,
         crop_xyxy=crop,
         crop_size=(crop[2] - crop[0], crop[3] - crop[1]),
+        **audit,
     )
 
 
@@ -195,12 +208,12 @@ def test_yolo_runs_once_per_materialized_view_and_keeps_requested_leaves() -> No
     assert execution.bundle.rois[0].expanded_xyxy == (0, 0, 1000, 800)
 
 
-def test_executor_consumes_exact_fixed_roi_pixels() -> None:
+def test_executor_consumes_exact_quantized_roi_pixels() -> None:
     yolo = _FakeYolo(("small_vehicle", "large_vehicle"))
     view = _view(
         source_size=(2048, 1536),
-        mode="fixed_roi",
-        box=(1024, 512, 2048, 1536),
+        mode="quantized_roi",
+        box=(1024, 640, 2048, 1536),
     )
     execution = _execute(
         _executor(yolo=yolo),
@@ -208,13 +221,13 @@ def test_executor_consumes_exact_fixed_roi_pixels() -> None:
         images={"img1": _image((2048, 1536))},
         views=(view,),
     )
-    assert yolo.calls[0].size == (1024, 1024)
-    assert execution.bundle.rois[0].core_xyxy == (1024, 512, 2048, 1536)
+    assert yolo.calls[0].size == (1024, 896)
+    assert execution.bundle.rois[0].core_xyxy == (1024, 640, 2048, 1536)
 
 
 def test_executor_requires_assistance_and_materialized_views() -> None:
     direct = VisualTaskPlan(
-        version="visual-task-plan-v4",
+        version="visual-task-plan-v5",
         task="general_vqa",
     )
     with pytest.raises(ValueError, match="visual assistance"):

@@ -339,8 +339,8 @@ class VisualAgentBase:
         *,
         sample_id: str,
     ) -> Image.Image:
-        """Apply the frozen full-image or fixed ROI geometry in memory.
-        在内存中应用冻结的整图或固定 ROI 几何。"""
+        """Apply the frozen full-image or quantized ROI geometry in memory.
+        在内存中应用冻结的整图或量化 ROI 几何。"""
         if context.visual_task_plan is None:
             return image
         view = self._view_for_image(image_id, context, sample_id=sample_id)
