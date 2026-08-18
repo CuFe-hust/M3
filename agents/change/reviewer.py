@@ -21,10 +21,19 @@ def review_result(
     if not settings.enabled:
         return result, []
     warnings: list[str] = []
-    answer = result.answer.lower()
+    answer = result.answer.casefold()
     no_change = any(
         token in answer
-        for token in ("no visible change", "no change", "未见变化", "没有变化")
+        for token in (
+            "no visible change",
+            "no change",
+            "no significant semantic change",
+            "no significant change",
+            "未见变化",
+            "没有变化",
+            "无显著语义变化",
+            "无明显变化",
+        )
     )
     if (
         settings.require_proposal_evidence
@@ -33,7 +42,16 @@ def review_result(
         and not result.evidence_items
     ):
         warnings.append("CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE")
-    if no_change and sum(item.score >= 0.5 for item in proposals) >= 2:
+    meaningful_proposals = [
+        item
+        for item in proposals
+        if item.score >= settings.no_change_conflict_min_score
+    ]
+    if no_change and (
+        len(meaningful_proposals) >= settings.no_change_conflict_min_proposals
+        or sum(item.area_ratio for item in meaningful_proposals)
+        >= settings.no_change_conflict_min_total_area_ratio
+    ):
         warnings.append("CHANGE_RESULT_CONFLICT")
     proposal_boxes = [item.box for item in proposals]
     for evidence in result.evidence_items:
@@ -68,6 +86,18 @@ def review_result(
             warnings.append("EVIDENCE_REFERENCES_UNKNOWN_PROPOSAL")
         if any(token in image_id.casefold() for token in ("invalid", "non_overlap", "non-overlap")):
             warnings.append("EVIDENCE_REFERENCES_INVALID_OVERLAP")
+    temporal_sides = {
+        side
+        for evidence in result.evidence_items
+        if isinstance(evidence.image_id, str)
+        if (side := _temporal_side(evidence.image_id)) is not None
+    }
+    if (
+        settings.require_temporal_pair_evidence
+        and temporal_sides
+        and temporal_sides != {"t1", "t2"}
+    ):
+        warnings.append("EVIDENCE_MISSING_TEMPORAL_PAIR")
     warnings = list(dict.fromkeys(warnings))
     geometry.update(
         {
@@ -98,3 +128,21 @@ def _iou(first: list[int] | list[float], second: list[int] | list[float]) -> flo
         - intersection
     )
     return float(intersection / union) if union > 0 else 0.0
+
+
+def _temporal_side(image_id: str) -> str | None:
+    normalized = image_id.casefold()
+    t1_tokens = ("raw_full_t1", "reference_t1", "harmonized_t1", "_t1_crop")
+    t2_tokens = (
+        "raw_full_t2",
+        "registered_t2",
+        "harmonized_t2",
+        "t2_registered",
+        "t2_raw_fallback",
+        "_t2_crop",
+    )
+    if any(token in normalized for token in t1_tokens):
+        return "t1"
+    if any(token in normalized for token in t2_tokens):
+        return "t2"
+    return None

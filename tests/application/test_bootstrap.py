@@ -644,9 +644,13 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
 
 def test_disabled_change_semantic_ignores_injected_dense_client(tmp_path: Path) -> None:
     injected = object()
+    settings = _settings(tmp_path)
+    settings.agents.change.semantic = ChangeSemanticSettings(enabled=False)
 
-    components = _assemble(
-        tmp_path,
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
         semantic_client=injected,
     )

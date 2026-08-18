@@ -67,6 +67,8 @@ def _settings(*, policy: str = "fallback_legacy", enabled: bool = True) -> Agent
         harmonization=ChangeHarmonizationSettings(min_pif_pixels=32),
         semantic=ChangeSemanticSettings(
             enabled=enabled,
+            feature_stages=(1,),
+            feature_stage_weights={1: 1.0},
             local_match_radius=0,
             min_pif_feature_cells=16,
             failure_policy=policy,
@@ -314,20 +316,23 @@ def test_enabled_learned_change_fail_policy_is_strict() -> None:
         ChangePerceptionPipeline(_DenseClient(), settings).run(_prepared())
 
 
-def test_invalid_pif_falls_back_before_dense_inference() -> None:
+def test_invalid_pif_keeps_semantic_inference_and_skips_feature_residual() -> None:
     client = _DenseClient()
     prepared = replace(_prepared(), pif_valid=False)
 
     result = ChangePerceptionPipeline(client, _settings()).run(prepared)
 
-    assert client.calls == []
-    assert result.diagnostics["semantic_status"] == "fallback"
-    assert (
-        result.diagnostics["semantic_reason_code"]
-        == "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
-    )
-    assert result.diagnostics["proposal_source"] == "difference_map_v1"
+    assert len(client.calls) == 2
+    assert result.diagnostics["semantic_status"] == "success"
+    assert result.diagnostics["proposal_source"] == "fused_change_v2"
     assert result.diagnostics["pif_valid"] is False
+    assert result.diagnostics["pif_used_for_feature_alignment"] is False
+    assert result.diagnostics["feature_residual"]["alignment_status"] == "insufficient_pif"
+    assert "feature" not in result.diagnostics["score_maps"]
+    assert "semantic" in result.diagnostics["score_maps"]
+    assert result.diagnostics["fusion"]["fallback_reason"] == (
+        "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+    )
 
 
 def test_invalid_pif_fail_policy_raises_before_dense_inference() -> None:

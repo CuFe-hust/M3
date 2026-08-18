@@ -47,8 +47,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v4.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
-    assert catalog.version("change") == "v3"
-    assert catalog.asset("change").path.name == "change_dual_path_v3.md"
+    assert catalog.version("change") == "v4"
+    assert catalog.asset("change").path.name == "change_dual_path_v4.md"
     assert catalog.asset("seam").path.name == "seam_review_v2.md"
     assert catalog.asset("vqa_judge").path.name == "deepseek_vqa_judge_v2.md"
     assert (REPO_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").is_file()
@@ -77,17 +77,22 @@ def test_vqa_judge_v2_declares_semantic_text_only_rules() -> None:
         assert required in prompt
 
 
-def test_change_prompt_v3_keeps_auxiliary_evidence_non_authoritative() -> None:
+def test_change_prompt_v4_uses_full_path_and_rejects_mismatch_shortcuts() -> None:
     prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
     for required in (
         "raw t1/t2 images",
         "authoritative",
-        "segformer labels and features are attention hints",
-        "proposal masks are attention hints",
-        "not proof",
+        "segformer labels, features, semantic transitions",
+        "attention hints rather than",
+        "ground truth",
+        "never treat a mask or derived image as proof",
         "raw_full_t1",
         "raw_full_t2",
-        "proposal-driven semantic confirmer",
+        "full-path semantic change analyst",
+        "registration failure",
+        "are not evidence of no change",
+        "do not relabel it as a scene mismatch",
+        "both temporal sides",
         "no significant semantic change detected",
     ):
         assert required in prompt
@@ -167,7 +172,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "count_localize_v1.md",
         "target_parse_v1.md",
         "missing_point_review_v3.md",
-            "change_dual_path_v3.md",
+            "change_dual_path_v4.md",
         "general_vqa_v3.md",
         "caption_v1.md",
         "seam_review_v2.md",
