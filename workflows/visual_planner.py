@@ -336,6 +336,37 @@ class VisualTaskPlanner:
     ) -> VisualTaskPlan:
         """Apply v4 leaf/category consistency and image-index policy.
         执行 v4 叶子类别一致性与图像索引策略校验。"""
+        # Empty-question caption routing is structural, not semantic: one
+        # ordered image is a caption request and two ordered images are a
+        # change-caption request.  Enforce the same invariant stated in the
+        # planner prompt so a single model classification slip cannot divert
+        # an explicit LEVIR-CC pair into general VQA before Change Agent runs.
+        deterministic_task = None
+        if not view.question.strip():
+            if len(view.images) == 1:
+                deterministic_task = "caption"
+            elif len(view.images) == 2:
+                deterministic_task = "change_caption"
+        if deterministic_task is not None and plan.task != deterministic_task:
+            reason_codes = [
+                *plan.reason_codes[:7],
+                "deterministic_empty_question_task",
+            ]
+            plan = VisualTaskPlan.model_validate(
+                {
+                    **plan.model_dump(mode="python"),
+                    "task": deterministic_task,
+                    "needs_visual_assistance": False,
+                    "object_categories": [],
+                    "count_target": None,
+                    "region_request": {
+                        "explicit": False,
+                        "image_index": None,
+                        "focus_xy_norm": None,
+                    },
+                    "reason_codes": reason_codes,
+                }
+            )
         if plan.needs_visual_assistance:
             try:
                 self._catalog.validate_plan_leaves(
