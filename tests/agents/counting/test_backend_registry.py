@@ -112,6 +112,7 @@ def test_request_and_outcome_use_new_schema() -> None:
         sample=_sample(),
         image=Image.new("RGB", (4, 4)),
         target=_TARGET,
+        executable_leaf_categories=("car",),
         artifact_dir=Path("/tmp/run"),
     )
     assert isinstance(request.sample, UnifiedSample)

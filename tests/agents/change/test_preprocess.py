@@ -487,12 +487,16 @@ def test_prepared_pair_keeps_runtime_arrays_outside_serializable_result(
         )
 
 
-def test_semantic_settings_default_disabled_and_validate_geometry() -> None:
+def test_semantic_settings_default_to_full_multiscale_and_validate_geometry() -> None:
     settings = AgentChangeSettings()
-    assert settings.semantic.enabled is False
+    assert settings.semantic.enabled is True
     assert settings.semantic.feature_stage == 1
-    assert settings.semantic.feature_stages == (1,)
-    assert settings.semantic.feature_stage_weights == {1: 1.0}
+    assert settings.semantic.feature_stages == (1, 2, 3)
+    assert settings.semantic.feature_stage_weights == {
+        1: pytest.approx(1 / 3),
+        2: pytest.approx(1 / 3),
+        3: pytest.approx(1 / 3),
+    }
     assert settings.semantic.tile_size == 768
     assert settings.semantic.tile_overlap == 64
     assert settings.proposals.pif_threshold_k == 4.5

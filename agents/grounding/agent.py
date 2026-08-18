@@ -19,7 +19,12 @@ from agents.grounding.evidence import (
     GroundingEvidenceError,
     GroundingEvidenceResult,
 )
-from agents.schema import AgentName, AgentResult, FirstQwenVisualPlan, VisualEvidence
+from agents.schema import (
+    AgentName,
+    AgentResult,
+    VisualEvidence,
+    VisualTaskPlan,
+)
 from agents.visual_base import PromptBinding, VisualAgentBase
 from data.schema import UnifiedSample
 from models.base import VisionLanguageClient
@@ -71,36 +76,50 @@ class GroundingAgent(VisualAgentBase):
         )
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
-        """Protocol-owner entry (14A2 §4.3): when the feature is on (typed plan
-        carrying an evidence request plus the injected grounding service), run
-        the C6 grounding evidence seam; every other sample keeps the legacy
-        direct path byte-identical. The trace is always enriched with a stable
-        agent class and route; no request construction happens here.
-        协议 owner 入口（14A2 §4.3）：特性开启（携带 evidence request 的 typed
-        plan 加注入的 grounding 服务）时运行 C6 Grounding 证据 seam；其余样本
-        保持旧直接路径逐字节一致。trace 始终补充稳定的 agent class 与 route；
-        本处不做任何请求构造。"""
-        plan = context.visual_plan
+        """Protocol-owner entry for the v3 plan and injected grounding service.
+        The direct path remains the explicit no-assistance branch. The trace is
+        always enriched with a stable agent class and route; no request
+        construction happens here.
+        v3 计划与注入 Grounding 服务的协议 owner 入口。direct 路径是显式的无
+        辅助分支。trace 始终补充稳定的 agent class 与 route；本处不做请求构造。"""
+        task_plan = context.visual_task_plan
         bindings = context.visual_bindings
-        if (
-            plan is not None
-            and plan.evidence_request is not None
-            and bindings is not None
-            and bindings.grounding_evidence is not None
-        ):
+        if task_plan is not None:
+            if not task_plan.needs_visual_assistance:
+                execution = await super().run(sample, context)
+                return replace(
+                    execution,
+                    trace={
+                        **execution.trace,
+                        "agent_class": f"{type(self).__module__}.{type(self).__qualname__}",
+                        "route": f"{type(self).__name__}.run -> VisualAgentBase.run -> complete_json",
+                    },
+                )
+            if bindings is None or bindings.grounding_evidence is None:
+                raise AgentExecutionError(
+                    self.name,
+                    sample.sample_id,
+                    cause="grounding_evidence_service_unavailable",
+                )
             execution = await self._run_grounding_evidence(
-                sample, context, plan, bindings.grounding_evidence
+                sample, context, task_plan, bindings.grounding_evidence
             )
-            route = f"{type(self).__name__}.run -> GroundingEvidenceExecutor.run"
-        else:
-            execution = await super().run(sample, context)
-            route = f"{type(self).__name__}.run -> VisualAgentBase.run -> complete_json"
+            return replace(
+                execution,
+                trace={
+                    **execution.trace,
+                    "agent_class": f"{type(self).__module__}.{type(self).__qualname__}",
+                    "route": f"{type(self).__name__}.run -> GroundingEvidenceExecutor.run",
+                },
+            )
+
+        execution = await super().run(sample, context)
         return replace(
             execution,
             trace={
                 **execution.trace,
                 "agent_class": f"{type(self).__module__}.{type(self).__qualname__}",
-                "route": route,
+                "route": f"{type(self).__name__}.run -> VisualAgentBase.run -> complete_json",
             },
         )
 
@@ -108,7 +127,7 @@ class GroundingAgent(VisualAgentBase):
         self,
         sample: UnifiedSample,
         context: AgentContext,
-        plan: FirstQwenVisualPlan,
+        plan: VisualTaskPlan,
         service: GroundingEvidenceService,
     ) -> AgentExecution:
         """Run the C6 seam (per-ROI YOLO + exactly one final Grounding Qwen
@@ -128,13 +147,14 @@ class GroundingAgent(VisualAgentBase):
             )
         images = self._read_evidence_images(sample, context)
         try:
-            result: GroundingEvidenceResult = await service.run(
+            result = await service.run(
                 plan,
                 sample,
                 images,
                 fallback_image_id=sample.images[0].image_id,
                 artifact_dir=context.artifact_dir,
                 budget=context.call_budget,
+                materialized_views=context.visual_views,
             )
         except GroundingEvidenceError as exc:
             raise AgentExecutionError(

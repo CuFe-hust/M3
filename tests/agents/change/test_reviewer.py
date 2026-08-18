@@ -20,13 +20,14 @@ def _proposal(
     proposal_id: str = "p1",
     box: list[int] | None = None,
     score: float = 0.9,
+    area_ratio: float = 0.05,
 ) -> ChangeProposal:
     return ChangeProposal(
         proposal_id=proposal_id,
         box=box or [100, 100, 300, 300],
         pixel_box=box or [100, 100, 300, 300],
         score=score,
-        area_ratio=0.05,
+        area_ratio=area_ratio,
     )
 
 
@@ -64,9 +65,23 @@ def test_no_change_with_high_score_proposals_is_conflict() -> None:
 def test_no_change_with_single_proposal_is_not_conflict() -> None:
     result = _result(answer="No visible change.")
     _, warnings = review_result(
-        result, [_proposal("p1", score=0.9)], ChangeReviewSettings()
+        result, [_proposal("p1", score=0.9, area_ratio=0.001)], ChangeReviewSettings()
     )
     assert "CHANGE_RESULT_CONFLICT" not in warnings
+
+
+def test_canonical_no_change_phrase_uses_current_proposal_score_scale() -> None:
+    result = _result(answer="No significant semantic change detected.")
+    _, warnings = review_result(
+        result,
+        [
+            _proposal("p1", score=0.23, area_ratio=0.006),
+            _proposal("p2", score=0.20, area_ratio=0.005),
+        ],
+        ChangeReviewSettings(),
+    )
+    assert "CHANGE_RESULT_CONFLICT" in warnings
+    assert "CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE" not in warnings
 
 
 def test_evidence_box_outside_proposals_is_warned() -> None:
@@ -177,6 +192,25 @@ def test_invalid_overlap_evidence_reference_is_warned() -> None:
         result, [_proposal("p1")], ChangeReviewSettings()
     )
     assert "EVIDENCE_REFERENCES_INVALID_OVERLAP" in warnings
+
+
+def test_one_sided_temporal_evidence_is_warned() -> None:
+    result = _result(
+        answer="No significant semantic change detected.",
+        evidence_items=[
+            VisualEvidence(
+                label="No visible change.",
+                image_id="raw_full_t1",
+                box=[100, 100, 200, 200],
+            )
+        ],
+    )
+    _, warnings = review_result(
+        result,
+        [_proposal("p1", box=[100, 100, 300, 300], area_ratio=0.001)],
+        ChangeReviewSettings(),
+    )
+    assert "EVIDENCE_MISSING_TEMPORAL_PAIR" in warnings
 
 
 def test_reviewer_never_calls_models_or_dataset_logic() -> None:

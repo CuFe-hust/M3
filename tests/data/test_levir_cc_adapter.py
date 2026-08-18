@@ -72,6 +72,8 @@ def test_t1_t2_strict_mapping_and_order(tmp_path: Path) -> None:
     assert t2.path.name == "0001.png" and "B" in t2.path.parts
     # The pair must never be swapped: A stays t1, B stays t2. / 绝不交换顺序。
     assert t1.path != t2.path
+    assert sample.metadata["geometry_aligned"] is True
+    assert sample.metadata["alignment_source"] == "official-levir-cc-pair"
 
 
 def test_sample_passes_temporal_validation(tmp_path: Path) -> None:

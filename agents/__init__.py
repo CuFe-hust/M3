@@ -26,7 +26,14 @@ from agents.errors import (
     UnsupportedAgentError,
 )
 from agents.registry import AgentRegistry
-from agents.schema import AgentName, AgentResult, VisualEvidence
+from agents.schema import (
+    AgentName,
+    AgentResult,
+    MaterializedVisualView,
+    RegionRequest,
+    VisualEvidence,
+    VisualTaskPlan,
+)
 
 __all__ = [
     "Agent",
@@ -48,5 +55,8 @@ __all__ = [
     "OptionalDependencyMissingError",
     "UnsupportedAgentError",
     "VisualEvidence",
+    "VisualTaskPlan",
+    "MaterializedVisualView",
+    "RegionRequest",
     "validate_agent_execution",
 ]

@@ -153,6 +153,8 @@ def _settings(*, enabled: bool, policy: str = "fallback_legacy") -> AgentChangeS
     return AgentChangeSettings(
         semantic=ChangeSemanticSettings(
             enabled=enabled,
+            feature_stages=(1,),
+            feature_stage_weights={1: 1.0},
             local_match_radius=0,
             min_pif_feature_cells=16,
             failure_policy=policy,
@@ -413,7 +415,11 @@ def test_v2_trace_records_calibrated_identity_and_algorithm_settings(
     tmp_path: Path,
 ) -> None:
     settings = AgentChangeSettings(
-        semantic=ChangeSemanticSettings(enabled=True),
+        semantic=ChangeSemanticSettings(
+            enabled=True,
+            feature_stages=(1,),
+            feature_stage_weights={1: 1.0},
+        ),
         proposals=ChangeProposalSettings(
             min_component_area_ratio=0.001,
             max_component_area_ratio=0.50,

@@ -108,13 +108,14 @@ class DatasetRunOptions:
     not participate in numeric comparisons. auto_task is the explicit switch
     for the auto-task draft path: auto_task=True requires tasks to be empty.
     tasks=None is the adapter-default mode: run every adapter.supported_tasks
-    with no TaskResolver call. judge_sample_rate (0..1) deterministically
+    while the visual planner still receives each sample. judge_sample_rate (0..1)
+    deterministically
     samples judge participation from the run/sample identity and is persisted
     in the summary so resume is identical.
     用于 resume 和新运行的定型数据集运行选项。None 值不参与数值比较。
     auto_task 是 auto-task draft 路径的显式开关：auto_task=True 要求 tasks
     为空。tasks=None 是 adapter 默认模式：运行全部 adapter.supported_tasks，
-    不调用 TaskResolver。judge_sample_rate（0..1）按 run/sample 身份确定性
+    仍由视觉规划器处理每条样本。judge_sample_rate（0..1）按 run/sample 身份确定性
     抽样 judge 参与，并持久化在 summary 中使 resume 一致。"""
 
     dataset: str
@@ -134,6 +135,15 @@ class DatasetRunOptions:
     judge_sample_rate: float | None = None
     render_errors: bool = False
     fail_fast: bool = False
+    # Fresh dataset runs freeze the canonical planner identity here so resume
+    # never reconstructs it from current defaults.
+    # 新鲜数据集运行在此冻结规范规划器身份，使 resume 绝不从当前默认值猜测。
+    planning_mode: Literal[
+        "visual-task-plan-v4", "visual-task-plan-v3", "visual-task-plan-v2", "direct", "legacy"
+    ] = "visual-task-plan-v4"
+    preview_max_side: int = 1080
+    roi_size: int = 1024
+    large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
     auto_task: bool = False
 
     def __post_init__(self) -> None:
@@ -150,6 +160,10 @@ class DatasetRunOptions:
             0.0 <= self.judge_sample_rate <= 1.0
         ):
             raise ValueError("judge_sample_rate must be within [0.0, 1.0]")
+        if self.preview_max_side <= 0 or self.roi_size <= 0:
+            raise ValueError("planner preview and ROI sizes must be positive")
+        if not self.large_image_policy:
+            raise ValueError("large_image_policy must not be empty")
 
 
 class RunRequest(BaseModel):
@@ -191,6 +205,14 @@ class RunRequest(BaseModel):
     judge_sample_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     render_errors: bool = False
     fail_fast: bool = False
+    # Frozen visual-only planner identity for fresh dataset runs.
+    # 新鲜数据集运行冻结的纯视觉规划器身份。
+    planning_mode: Literal[
+        "visual-task-plan-v4", "visual-task-plan-v3", "visual-task-plan-v2", "direct", "legacy"
+    ] = "visual-task-plan-v4"
+    preview_max_side: int = Field(default=1080, gt=0)
+    roi_size: int = Field(default=1024, gt=0)
+    large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
     # Single-image invocation identity (count-image only; dataset runs leave
     # these None). 单图调用身份（仅 count-image；数据集运行保持 None）。
     command: str | None = None

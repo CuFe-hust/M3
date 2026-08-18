@@ -43,6 +43,7 @@ class CountingRequest:
     sample: UnifiedSample
     image: Image.Image
     target: CountTargetSpec
+    executable_leaf_categories: tuple[str, ...]
     artifact_dir: Path
 
 

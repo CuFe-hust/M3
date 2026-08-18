@@ -112,6 +112,7 @@ def _request(tmp_path: Path) -> CountingRequest:
         sample=_sample(),
         image=Image.new("RGB", (1000, 1000), (1, 2, 3)),
         target=_CAR,
+        executable_leaf_categories=("car",),
         artifact_dir=tmp_path / "run",
     )
 

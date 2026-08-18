@@ -196,7 +196,6 @@
   "workflows/run_store.py",
   "workflows/sample_runner.py",
   "workflows/schema.py",
-  "workflows/task_resolver.py",
   "workflows/visual_planner.py"
  ],
  "pending_files": [],

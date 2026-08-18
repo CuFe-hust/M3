@@ -111,8 +111,12 @@ class SemanticSegmentationCountingBackend:
         context: object,
     ) -> CountingBackendOutcome:
         del context
-        capability = self._capability(request.target)
-        if capability is None:
+        capabilities = tuple(
+            capability
+            for leaf in request.executable_leaf_categories
+            if (capability := self._capability(_leaf_target(leaf))) is not None
+        )
+        if not capabilities or len(capabilities) != len(request.executable_leaf_categories):
             raise ValueError("semantic segmentation backend selected for unsupported target")
 
         image = request.image.convert("RGB")
@@ -133,7 +137,7 @@ class SemanticSegmentationCountingBackend:
                     tile,
                     request,
                     target,
-                    capability,
+                    capabilities,
                     counters,
                 )
                 points.extend(tile_points)
@@ -216,7 +220,9 @@ class SemanticSegmentationCountingBackend:
             "semantic_instance_approximation": True,
             "touching_objects_may_undercount": True,
             "target": target,
-            "model_labels": list(capability.model_labels),
+            "model_labels": [
+                label for capability in capabilities for label in capability.model_labels
+            ],
             "tile_count": len(tiles),
             "succeeded_tile_count": len(succeeded),
             "failed_tile_count": len(failed),
@@ -286,41 +292,41 @@ class SemanticSegmentationCountingBackend:
         tile: TileSpec,
         request: CountingRequest,
         target: str,
-        capability: ExpertTargetSupportSpec,
+        capabilities: tuple[ExpertTargetSupportSpec, ...],
         counters: _Counters,
     ) -> tuple[list[GlobalPointObservation], str | None, str]:
         output = self._client.predict(crop)
         mask, confidence = _validated_dense_maps(output, crop.size)
-        label_ids = _resolve_label_ids(output.id_to_label, capability.model_labels)
-        _validate_model_identity(output, self._expert)
-        effective_confidence = max(
-            self._counting.min_confidence,
-            capability.policy.min_mean_confidence or 0.0,
+        model_labels = tuple(
+            label for capability in capabilities for label in capability.model_labels
         )
+        label_ids = _resolve_label_ids(output.id_to_label, model_labels)
+        _validate_model_identity(output, self._expert)
         local_points: list[LocalPointObservation] = []
-        for model_label in capability.model_labels:
-            class_id = label_ids[model_label]
-            components = _components_for_label(
-                mask,
-                confidence,
-                class_id=class_id,
-                model_label=model_label,
-                min_mean_confidence=effective_confidence,
-                open_kernel=capability.policy.morphology.open_kernel,
-                close_kernel=capability.policy.morphology.close_kernel,
-                counters=counters,
+        minimum_confidence = self._counting.min_confidence
+        for capability in capabilities:
+            effective_confidence = max(
+                minimum_confidence, capability.policy.min_mean_confidence or 0.0
             )
-            for component in components:
-                if (
-                    component.area_px < (capability.policy.min_component_area_px or 1)
-                    or component.area_px / (crop.width * crop.height)
-                    > (capability.policy.max_component_area_ratio or 1.0)
-                ):
-                    counters.area_rejected += 1
-                    continue
-                local_points.append(
-                    _component_point(component, len(local_points), crop.size)
+            for model_label in capability.model_labels:
+                components = _components_for_label(
+                    mask, confidence, class_id=label_ids[model_label],
+                    model_label=model_label, min_mean_confidence=effective_confidence,
+                    open_kernel=capability.policy.morphology.open_kernel,
+                    close_kernel=capability.policy.morphology.close_kernel,
+                    counters=counters,
                 )
+                for component in components:
+                    if (
+                        component.area_px < (capability.policy.min_component_area_px or 1)
+                        or component.area_px / (crop.width * crop.height)
+                        > (capability.policy.max_component_area_ratio or 1.0)
+                    ):
+                        counters.area_rejected += 1
+                        continue
+                    local_points.append(
+                        _component_point(component, len(local_points), crop.size)
+                    )
 
         global_points: list[GlobalPointObservation] = []
         for local_point in local_points:
@@ -344,7 +350,7 @@ class SemanticSegmentationCountingBackend:
             if not point.ownership_valid:
                 counters.ownership_rejected += 1
             global_points.append(
-                apply_acceptance_policy(point, min_confidence=effective_confidence)
+                apply_acceptance_policy(point, min_confidence=minimum_confidence)
             )
         return global_points, output.model_revision, output.weights_sha256
 
@@ -517,3 +523,11 @@ def _evidence_label(value: str) -> str | None:
 
 def _normalize_target_label(value: str) -> str:
     return re.sub(r"[-_\s]+", "-", value.strip().casefold()).strip("-")
+
+
+def _leaf_target(leaf: str) -> CountTargetSpec:
+    return CountTargetSpec(
+        canonical_label=leaf,
+        inclusion_rule="Count the exact canonical leaf.",
+        exclusion_rule="Exclude every other category.",
+    )

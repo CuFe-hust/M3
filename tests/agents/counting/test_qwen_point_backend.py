@@ -106,6 +106,7 @@ def _request(tmp_path: Path, *, dataset: str = "parity") -> CountingRequest:
         sample=_sample(dataset=dataset),
         image=Image.new("RGB", (200, 200), (1, 2, 3)),
         target=_TARGET,
+        executable_leaf_categories=("car",),
         artifact_dir=tmp_path / "run",
     )
 
@@ -215,6 +216,7 @@ def test_small_object_strategy_enforces_minimum_scan_depth(tmp_path: Path) -> No
         sample=_sample(),
         image=Image.new("RGB", (1000, 1000), (1, 2, 3)),
         target=_TARGET,
+        executable_leaf_categories=("car",),
         artifact_dir=tmp_path / "run",
     )
     outcome = asyncio.run(backend.count(request, _context(_FakeBudget())))
@@ -334,6 +336,7 @@ def test_budget_consumed_per_model_call(tmp_path: Path) -> None:
         sample=_sample(),
         image=Image.new("RGB", (2000, 2000), (1, 2, 3)),
         target=_TARGET,
+        executable_leaf_categories=("car",),
         artifact_dir=tmp_path / "run",
     )
     outcome = asyncio.run(backend.count(request, _context(budget)))

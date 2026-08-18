@@ -148,7 +148,7 @@ def _selector(*backends, default_backend: str = "auto") -> BackendSelector:
 
 def test_auto_prefers_highest_priority_supported_detector() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(), _FakeQuantityBackend())
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan is not None
     assert plan.primary_backend_name == "det-a"
     assert plan.fallback_backend_names == ("quantity_proposal", "qwen_point")
@@ -157,7 +157,7 @@ def test_auto_prefers_highest_priority_supported_detector() -> None:
 
 def test_auto_falls_back_to_qwen_without_supported_detector() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(supported=False))
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "qwen_point"
     assert plan.fallback_backend_names == ()
     assert "no_supported_specialist_qwen" in plan.reason_codes
@@ -165,7 +165,7 @@ def test_auto_falls_back_to_qwen_without_supported_detector() -> None:
 
 def test_auto_plan_keeps_enabled_but_unavailable_detector() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(available=False))
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "det-a"
 
 
@@ -194,7 +194,7 @@ def test_unavailable_detector_still_becomes_primary_in_plan() -> None:
     已配置+支持但权重缺失的检测器仍必须成为计划主后端，使 Agent 能在运行时
     显式回退。"""
     selector = _selector(_FakeQwenBackend(), _FakeYoloMissingWeights())
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "det-a"
     assert plan.fallback_backend_names == ("qwen_point",)
     assert "explicit_yolo_unsupported_target_qwen" not in plan.reason_codes
@@ -204,7 +204,7 @@ def test_explicit_yolo_mode_plans_supported_but_unavailable_detector() -> None:
     selector = _selector(
         _FakeQwenBackend(), _FakeYoloMissingWeights(), default_backend="yolo_obb"
     )
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "det-a"
     assert plan.fallback_backend_names == ("qwen_point",)
     assert "explicit_yolo" in plan.reason_codes
@@ -212,7 +212,7 @@ def test_explicit_yolo_mode_plans_supported_but_unavailable_detector() -> None:
 
 def test_disabled_detector_is_excluded_from_plan() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(enabled=False))
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "qwen_point"
 
 
@@ -221,7 +221,7 @@ def test_disabled_detector_is_excluded_from_plan() -> None:
 
 def test_explicit_qwen_point_mode() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(), default_backend="qwen_point")
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "qwen_point"
     assert plan.fallback_backend_names == ()
     assert "explicit_qwen_point" in plan.reason_codes
@@ -229,14 +229,14 @@ def test_explicit_qwen_point_mode() -> None:
 
 def test_explicit_yolo_mode_with_supported_detector() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(), default_backend="yolo_obb")
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "det-a"
     assert "explicit_yolo" in plan.reason_codes
 
 
 def test_explicit_yolo_mode_without_supported_detector() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(supported=False), default_backend="yolo_obb")
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "qwen_point"
     assert "explicit_yolo_unsupported_target_qwen" in plan.reason_codes
 
@@ -246,13 +246,17 @@ def test_explicit_yolo_mode_without_supported_detector() -> None:
 
 def test_non_counting_task_yields_no_plan() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend())
-    assert selector.plan(_TARGET, task="general_vqa") is None
-    assert selector.plan(_TARGET, task="caption") is None
+    assert selector.plan(
+        _TARGET, task="general_vqa", executable_leaf_categories=("car",)
+    ) is None
+    assert selector.plan(
+        _TARGET, task="caption", executable_leaf_categories=("car",)
+    ) is None
 
 
 def test_fine_grained_counting_is_counting_task() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend())
-    assert selector.plan(_TARGET, task="fine_grained_counting") is not None
+    assert selector.plan(_TARGET, task="fine_grained_counting", executable_leaf_categories=("car",)) is not None
 
 
 def test_default_hints_enable_hint_gated_backends() -> None:
@@ -260,13 +264,13 @@ def test_default_hints_enable_hint_gated_backends() -> None:
     neutral hints provide it. quantity 后端需要可靠 hint；选择器的默认中性
     hints 提供之。"""
     selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend())
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "quantity_proposal"
 
 
 def test_caller_hints_override_defaults() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend())
-    plan = selector.plan(_TARGET, task="counting", hints={})
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",), hints={})
     assert plan.primary_backend_name == "qwen_point"
 
 
@@ -274,14 +278,14 @@ def test_select_returns_none_when_primary_unavailable() -> None:
     """Availability affects legacy select but never removes the plan.
     availability 影响旧 select，但绝不从 plan 中移除 backend。"""
     selector = _selector(_FakeYoloBackend(available=False))
-    assert selector.plan(_TARGET, task="counting").primary_backend_name == "det-a"
-    assert selector.select(_TARGET, task="counting") is None
+    assert selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",)).primary_backend_name == "det-a"
+    assert selector.select(_TARGET, task="counting", executable_leaf_categories=("car",)) is None
     assert selector.select(_TARGET, task="general_vqa") is None  # non-counting / 非计数
 
 
 def test_select_returns_single_selection() -> None:
     selector = _selector(_FakeQwenBackend())
-    selection = selector.select(_TARGET, task="counting")
+    selection = selector.select(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert selection is not None
     assert selection.backend_name == "qwen_point"
     assert selector.backend_by_name("qwen_point") is not None
@@ -316,7 +320,7 @@ def test_quantity_proposal_is_not_a_yolo_candidate() -> None:
 
 def test_auto_prefers_yolo_over_quantity() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeYoloBackend(), _FakeQuantityBackend())
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "det-a"
     assert plan.fallback_backend_names == ("quantity_proposal", "qwen_point")
 
@@ -329,7 +333,7 @@ def test_auto_orders_detection_segmentation_quantity_qwen() -> None:
         _FakeYoloBackend(priority=1),
     )
 
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
     assert plan.primary_backend_name == "det-a"
     assert plan.fallback_backend_names == (
@@ -346,7 +350,7 @@ def test_semantic_priority_cannot_outrank_detection_kind() -> None:
         _FakeYoloBackend(priority=0),
     )
 
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
     assert (plan.primary_backend_name, *plan.fallback_backend_names) == (
         "det-a",
@@ -363,7 +367,7 @@ def test_same_kind_uses_priority_then_stable_name_tie_break() -> None:
         _FakeYoloBackend(name="det-a", priority=100),
     )
 
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
     assert (plan.primary_backend_name, *plan.fallback_backend_names) == (
         "det-a",
@@ -380,7 +384,7 @@ def test_segmentation_is_primary_when_detection_has_no_label() -> None:
         _FakeSemanticBackend(),
     )
 
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
     assert plan.primary_backend_name == "segmenter-a"
     assert plan.fallback_backend_names == ("qwen_point",)
@@ -388,7 +392,7 @@ def test_segmentation_is_primary_when_detection_has_no_label() -> None:
 
 def test_auto_falls_back_to_quantity_without_yolo() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend())
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "quantity_proposal"
     assert plan.fallback_backend_names == ("qwen_point",)
     assert "target_supported_by_quantity_proposal" in plan.reason_codes
@@ -396,13 +400,13 @@ def test_auto_falls_back_to_quantity_without_yolo() -> None:
 
 def test_auto_falls_back_to_qwen_without_detectors() -> None:
     selector = _selector(_FakeQwenBackend())
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "qwen_point"
 
 
 def test_explicit_yolo_never_selects_quantity_proposal() -> None:
     selector = _selector(_FakeQwenBackend(), _FakeQuantityBackend(), default_backend="yolo_obb")
-    plan = selector.plan(_TARGET, task="counting")
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     assert plan.primary_backend_name == "qwen_point"
     assert "explicit_yolo_unsupported_target_qwen" in plan.reason_codes
 
@@ -417,7 +421,7 @@ def test_unknown_kind_fails_stably() -> None:
 
     selector = _selector(_FakeQwenBackend(), _UnknownKindBackend())
     with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_KIND"):
-        selector.plan(_TARGET, task="counting")
+        selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
 
 def test_invalid_backend_contract_is_terminal() -> None:
@@ -435,7 +439,7 @@ def test_invalid_backend_contract_is_terminal() -> None:
     selector = _selector(_FakeQwenBackend(), _InvalidContractBackend())
 
     with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_CONTRACT"):
-        selector.plan(_TARGET, task="counting")
+        selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
 
 # ── 25.7 未知 kind 安全 / unknown kind safety ─────────────────────────────
@@ -464,7 +468,7 @@ def test_unknown_kind_error_never_echoes_raw_values() -> None:
 
     selector = _selector(_FakeQwenBackend(), _UnsafeBackend())
     with pytest.raises(CountingBackendUnavailableError, match="INVALID_BACKEND_KIND") as info:
-        selector.plan(_TARGET, task="counting")
+        selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
     text = str(info.value)
     for token in ("/home/user", "sk-secret", "Bearer abcdef", "base64,AAAA"):
         assert token not in text, token

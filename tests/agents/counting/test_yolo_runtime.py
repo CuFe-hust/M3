@@ -116,6 +116,7 @@ def _request(tmp_path: Path, image: Image.Image) -> CountingRequest:
         sample=_sample(),
         image=image,
         target=_TARGET,
+        executable_leaf_categories=(_TARGET.canonical_label,),
         artifact_dir=tmp_path / "run",
     )
 
@@ -250,18 +251,15 @@ def test_resolve_target_classes_direct_and_plural() -> None:
     assert backend.resolve_target_classes(plural) == frozenset({"car"})
 
 
-def test_resolve_target_classes_alias_and_composite() -> None:
-    detector = _detector_without_file(
-        aliases={"vehicle": "car"},
-        composite_targets={"convoy": ["car", "truck"]},
-    )
+def test_resolve_target_classes_raw_alias_without_parent_expansion() -> None:
+    detector = _detector_without_file(aliases={"passenger car": "car"})
     backend = YoloOBBCountingBackend(
         detector, counting=CountingSettings(), model_store=YoloModelStore()
     )
-    alias_target = CountTargetSpec(canonical_label="vehicle", inclusion_rule="r", exclusion_rule="e")
+    alias_target = CountTargetSpec(canonical_label="passenger-car", inclusion_rule="r", exclusion_rule="e")
     assert backend.resolve_target_classes(alias_target) == frozenset({"car"})
-    composite_target = CountTargetSpec(canonical_label="convoy", inclusion_rule="r", exclusion_rule="e")
-    assert backend.resolve_target_classes(composite_target) == frozenset({"car", "truck"})
+    parent_target = CountTargetSpec(canonical_label="vehicle", inclusion_rule="r", exclusion_rule="e")
+    assert backend.resolve_target_classes(parent_target) == frozenset()
     unknown = CountTargetSpec(canonical_label="plane", inclusion_rule="r", exclusion_rule="e")
     assert backend.resolve_target_classes(unknown) == frozenset()
     assert backend.supports(unknown) is False
@@ -352,6 +350,7 @@ def test_count_unsupported_target_raises(tmp_path: Path) -> None:
         sample=_sample(),
         image=Image.new("RGB", (100, 100)),
         target=CountTargetSpec(canonical_label="plane", inclusion_rule="r", exclusion_rule="e"),
+        executable_leaf_categories=("plane",),
         artifact_dir=tmp_path / "run",
     )
     with pytest.raises(ValueError, match="unsupported target"):

@@ -353,6 +353,7 @@ _STRUCTURED_ARTIFACT_FILENAMES = (
     "grounding_evidence.json",
     "visual_plan.json",
     "joint_visual_plan.json",
+    "visual_task_plan.json",
 )
 
 

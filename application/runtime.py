@@ -30,13 +30,20 @@ from agents.schema import AgentResult
 from application.bootstrap import RuntimeComponents, assemble_runtime
 from application.settings import AppSettings, load_settings
 from data.registry import DatasetRegistry, build_default_registry
-from data.schema import CHANGE_TASKS, GroundTruth, ImageRef, SampleDraft, TaskName, UnifiedSample
+from data.schema import (
+    CHANGE_TASKS,
+    GroundTruth,
+    ImageRef,
+    SampleDraft,
+    TaskName,
+    UnifiedSample,
+    materialize_sample,
+)
 from reporting.schema import Report
-from routing.schema import SampleCapabilities, TaskResolutionRequest
+from routing.schema import SampleCapabilities
 from workflows.artifact_writer import atomic_write_json
 from workflows.run_store import RunManifest, RunStore
 from workflows.schema import DatasetRunOptions, DatasetRunSummary, RunRequest
-from workflows.task_resolver import materialize_sample
 
 # Only the first level of a manual image directory is scanned. / 手动图片目录只扫描第一层。
 MAX_MANUAL_IMAGES = 8
@@ -71,6 +78,10 @@ def build_dataset_run_options(
     judge_sample_rate: float | None = None,
     render_errors: bool = False,
     fail_fast: bool = False,
+    planning_mode: str = "visual-task-plan-v4",
+    preview_max_side: int = 1080,
+    roi_size: int = 1024,
+    large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
 ) -> DatasetRunOptions:
     """Thin options construction for the public entry point: the architecture
     rule forbids main.py from importing workflows, so construction lives here.
@@ -99,6 +110,10 @@ def build_dataset_run_options(
         judge_sample_rate=judge_sample_rate if evaluate else None,
         render_errors=render_errors,
         fail_fast=fail_fast,
+        planning_mode=planning_mode,  # type: ignore[arg-type]
+        preview_max_side=preview_max_side,
+        roi_size=roi_size,
+        large_image_policy=large_image_policy,
     )
 
 
@@ -403,6 +418,10 @@ def reconstruct_dataset_resume_options(
         judge_sample_rate=request.judge_sample_rate,
         render_errors=request.render_errors,
         fail_fast=request.fail_fast,
+        planning_mode=request.planning_mode,
+        preview_max_side=request.preview_max_side,
+        roi_size=request.roi_size,
+        large_image_policy=request.large_image_policy,
     )
 
 
@@ -440,7 +459,8 @@ def _validate_resume_match(
         raise ValueError("resume sample concurrency mismatch")
     if supplied.evaluate != persisted.evaluate:
         raise ValueError("resume evaluate mismatch")
-    if supplied.judge_policy != persisted.judge_policy:
+    supplied_judge_policy = supplied.judge_policy if supplied.evaluate else "none"
+    if supplied_judge_policy != persisted.judge_policy:
         raise ValueError("resume judge policy mismatch")
     if supplied.judge_sample_rate != persisted.judge_sample_rate:
         raise ValueError("resume judge sample rate mismatch")
@@ -448,6 +468,29 @@ def _validate_resume_match(
         raise ValueError("resume render errors mismatch")
     if supplied.fail_fast != persisted.fail_fast:
         raise ValueError("resume fail fast mismatch")
+    if supplied.planning_mode not in (
+        "visual-task-plan-v4",
+        persisted.planning_mode,
+    ):
+        raise ValueError("resume planning mode mismatch")
+    if persisted.planning_mode != "legacy":
+        # The CLI does not expose planner geometry knobs. A caller-provided
+        # non-default override is compared; omitted/default values defer to
+        # the persisted run request as the authority.
+        # CLI 不暴露规划器几何参数；调用方明确提供的非默认值才比较，未提供的
+        # 默认值服从持久化 run_request 权威。
+        if (
+            supplied.preview_max_side != 1080
+            and supplied.preview_max_side != persisted.preview_max_side
+        ):
+            raise ValueError("resume preview size mismatch")
+        if supplied.roi_size != 1024 and supplied.roi_size != persisted.roi_size:
+            raise ValueError("resume ROI size mismatch")
+        if (
+            supplied.large_image_policy != "both-dimensions-strictly-greater-than-1024"
+            and supplied.large_image_policy != persisted.large_image_policy
+        ):
+            raise ValueError("resume large-image policy mismatch")
 
 
 def _build_run_request(options: DatasetRunOptions) -> RunRequest:
@@ -484,6 +527,10 @@ def _build_run_request(options: DatasetRunOptions) -> RunRequest:
         judge_sample_rate=options.judge_sample_rate,
         render_errors=options.render_errors,
         fail_fast=options.fail_fast,
+        planning_mode=options.planning_mode,
+        preview_max_side=options.preview_max_side,
+        roi_size=options.roi_size,
+        large_image_policy=options.large_image_policy,
     )
 
 
@@ -552,6 +599,17 @@ class Runtime:
             options,
             root=options.root.expanduser().resolve(),
         )
+        if not options.resume:
+            if options.planning_mode != "visual-task-plan-v4":
+                raise ValueError("fresh dataset runs require visual-task-plan-v4")
+            planner_settings = self.settings.visual_planning.planner
+            options = dataclasses.replace(
+                options,
+                planning_mode=planner_settings.planning_mode,
+                preview_max_side=planner_settings.preview_max_side,
+                roi_size=planner_settings.roi_size,
+                large_image_policy=planner_settings.large_image_policy,
+            )
         if options.resume:
             if options.run_id is None:
                 raise ValueError("resume requires an explicit run_id")
@@ -573,7 +631,16 @@ class Runtime:
             _validate_resume_match(options, persisted)
             options = persisted
             self._validate_existing_run(run_dir, options, run_id)
-        else:
+        if options.planning_mode == "visual-task-plan-v4":
+            planner = self.components.visual_task_planner
+            if planner is None or planner.planning_parameters != {
+                "planning_mode": options.planning_mode,
+                "preview_max_side": options.preview_max_side,
+                "roi_size": options.roi_size,
+                "large_image_policy": options.large_image_policy,
+            }:
+                raise ValueError("visual task planner identity does not match run request")
+        if not options.resume:
             manifest = self.components.run_store.create_run(
                 config_payload=self.settings.to_config_payload(),
                 model_ids={
@@ -581,6 +648,14 @@ class Runtime:
                     "deepseek": self.settings.models.deepseek.model,
                 },
                 prompt_paths=self.components.prompt_catalog.snapshot_paths(),
+                prompt_texts=(
+                    {
+                        self.components.visual_task_planner.prompt_snapshot_filename:
+                        self.components.visual_task_planner.system_prompt
+                    }
+                    if self.components.visual_task_planner is not None
+                    else None
+                ),
                 run_id=options.run_id,
                 dataset=options.dataset,
                 split=options.split,
@@ -605,8 +680,9 @@ class Runtime:
             task_names: list[str | None] = [None]
         elif options.tasks is None:
             # Adapter-default mode: run every supported task with no
-            # TaskResolver involvement. / adapter 默认模式：运行全部受支持
-            # 任务，不涉及 TaskResolver。
+            # The adapter already supplies its supported task set; no task
+            # inference is needed in this explicit adapter-default mode.
+            # adapter 已提供支持的 task 集合；显式默认模式无需任务推断。
             task_names = sorted(adapter.supported_tasks)
         else:
             task_names = list(options.tasks)
@@ -618,6 +694,7 @@ class Runtime:
                 judge_policy=judge_policy,
                 judge_sample_rate=options.judge_sample_rate,
                 data_root=options.root,
+                planning_mode=options.planning_mode,
             )
             results[task or "auto"] = await runner.run(
                 root=options.root,
@@ -781,18 +858,12 @@ class Runtime:
         针对一个本地图片目录执行恰好一个主 Agent。手动路径无 Judge、评测、
         fallback 或重载。
 
-        Explicit tasks skip the TaskResolver; auto resolves through the
-        current TaskResolver (deterministic rules for empty questions, one
-        model call otherwise). Low-confidence manual requests still execute
-        only the resolved primary task — no multi-attempt fallback.
-        In joint mode (doc 15, flag on) the whole decision is one
-        schema-validated planner call over a placeholder-role draft view; the
-        model task is authoritative and the source task is never sent to the
-        model. 显式任务跳过 TaskResolver；auto 经当前 TaskResolver 解析（空
-        问题走确定性规则，否则一次模型调用）。低置信度手动请求仍只执行解析出
-        的主任务——无多尝试兜底。联合模式（doc 15，flag 开启）下整个决策是
-        对占位角色 draft 视图的一次 schema 校验规划调用；模型 task 权威，来源
-        task 绝不发给模型。"""
+        Every manual request uses the same visual-only planner, regardless of
+        whether the caller supplied ``auto`` or an explicit task. The model
+        task is authoritative and the source task is retained only for audit;
+        no second planning call is used. 每条手动请求都使用同一个纯视觉规划器，
+        不区分 auto 或显式 task。模型 task 权威，来源 task 只作审计，不进行第二次
+        规划调用。"""
 
         if task != "auto" and task not in _ALL_TASK_NAMES:
             raise ValueError(
@@ -809,65 +880,43 @@ class Runtime:
             item.width * item.height > self.settings.counting.max_pixels_without_tiling
             for item in collected
         )
-        joint_mode = self.components.joint_planner is not None
-
-        visual_plan = None
-        bindings = None
-        joint_plan = None
-        budget = None
-        sample: UnifiedSample | None = None
-        if joint_mode:
-            # One shared budget spans the planner call and the agent
-            # execution. / 一个共享预算贯穿规划调用与 Agent 执行。
-            budget = self.components.call_budget_factory.create_for_sample("draft")
-            draft = SampleDraft(
-                sample_id=request_id,
-                dataset="manual",
-                split="user",
-                # Placeholder-role refs (image-0 / context-N); the roles are
-                # rebuilt for the model-selected task at materialization.
-                # 占位角色引用（image-0 / context-N）；角色在物化时按模型选定
-                # 任务重建。
-                images=build_image_refs("general_vqa", collected, image_root),
-                question=question,
-                explicit_task=task if task != "auto" else None,
-                ground_truth=GroundTruth(),
-                metadata={
-                    "source": source,
-                    "image_dir": "manual://input",
-                },
-            )
-            joint_plan = await self.components.joint_planner.plan(
-                draft,
-                data_root=image_root,
-                artifact_dir=request_dir,
-                budget=budget,
-            )
-            resolved_task = joint_plan.task
-            # Materialization with the model-selected task; an incompatible
-            # draft fails closed with a stable code, like the dataset path.
-            # 按模型选定任务物化；不兼容 draft 与数据集路径一样严格失败。
-            sample = materialize_sample(draft, resolved_task)
-            visual_plan = joint_plan.visual_plan
-            bindings = self.components.joint_planner.bindings
-            self.components.artifact_writer.write_joint_visual_plan(
-                request_dir, joint_plan
-            )
-        elif task == "auto":
-            resolution = await self.components.task_resolver.resolve(
-                TaskResolutionRequest(
-                    question=question,
-                    image_count=len(collected),
-                ),
-                sample_id=request_id,
-                artifact_dir=request_dir,
-                budget=self.components.call_budget_factory.create_for_sample(
-                    "general_vqa"
-                ),
-            )
-            resolved_task = resolution.task
-        else:
-            resolved_task = task
+        # All fresh manual requests use one visual-only planner. The requested
+        # task is retained for audit only and is never sent in the first call.
+        # 所有新鲜手动请求都使用一次纯视觉规划；requested task 只作审计，绝不
+        # 发送给第一次调用。
+        planner = self.components.visual_task_planner
+        if planner is None:
+            raise RuntimeError("visual task planner is not assembled")
+        budget = self.components.call_budget_factory.create_for_sample("draft")
+        draft = SampleDraft(
+            sample_id=request_id,
+            dataset="manual",
+            split="user",
+            # Placeholder roles are rebuilt after the planner selects a task.
+            # 占位角色在规划器选定 task 后重建。
+            images=build_image_refs("general_vqa", collected, image_root),
+            question=question,
+            explicit_task=None,
+            ground_truth=GroundTruth(),
+            metadata={
+                "source": source,
+                "image_dir": "manual://input",
+            },
+        )
+        visual_task_plan, visual_views = await planner.plan_with_views(
+            draft,
+            data_root=image_root,
+            artifact_dir=request_dir,
+            budget=budget,
+        )
+        resolved_task = visual_task_plan.task
+        sample = materialize_sample(draft, resolved_task)
+        self.components.artifact_writer.write_visual_task_plan(
+            request_dir,
+            visual_task_plan,
+            materialized_views=visual_views,
+        )
+        bindings = self.components.visual_bindings
         decision = self.components.router.route(
             resolved_task,
             capabilities=SampleCapabilities(high_resolution=high_resolution),
@@ -908,7 +957,7 @@ class Runtime:
             "question": question,
             "requested_task": task,
             "resolved_task": resolved_task,
-            "joint_plan": joint_mode,
+            "planning_mode": "visual-task-plan-v4",
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)
@@ -925,7 +974,8 @@ class Runtime:
             ),
             data_root=image_root,
             judge_client=None,
-            visual_plan=visual_plan,
+            visual_task_plan=visual_task_plan,
+            visual_views=visual_views,
             visual_bindings=bindings,
         )
         agent = self.components.agent_registry.get(primary_agent)

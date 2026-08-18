@@ -130,14 +130,11 @@ class ChangePerceptionPipeline:
                 pif_valid=prepared.pif_valid,
             )
 
-        if not prepared.pif_valid:
-            return self._handle_failure(
-                ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF"),
-                low_level_map=low_level_map,
-                legacy_proposals=legacy_proposals,
-                identity=None,
-                pif_valid=False,
-            )
+        if (
+            not prepared.pif_valid
+            and self._settings.semantic.failure_policy == "fail"
+        ):
+            raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
 
         if self._semantic_client is None:
             return self._handle_failure(
@@ -211,35 +208,50 @@ class ChangePerceptionPipeline:
                 first_output,
                 second_output,
             )
-            if len(requested_stages) > 1:
-                feature_result = compute_multiscale_feature_residual(
-                    first_output.features_by_stage,
-                    second_output.features_by_stage,
-                    prepared.pif_mask,
-                    feature_stages=requested_stages,
-                    feature_stage_weights=semantic_settings.feature_stage_weights,
-                    feature_strides_by_stage=first_output.feature_strides_by_stage,
-                    image_size=expected_size,
-                    valid_mask=getattr(prepared, "registration_valid_mask", None),
-                    local_match_radius=semantic_settings.local_match_radius,
-                    min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
-                    feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
+            feature_result = None
+            if prepared.pif_valid:
+                if len(requested_stages) > 1:
+                    feature_result = compute_multiscale_feature_residual(
+                        first_output.features_by_stage,
+                        second_output.features_by_stage,
+                        prepared.pif_mask,
+                        feature_stages=requested_stages,
+                        feature_stage_weights=semantic_settings.feature_stage_weights,
+                        feature_strides_by_stage=first_output.feature_strides_by_stage,
+                        image_size=expected_size,
+                        valid_mask=getattr(prepared, "registration_valid_mask", None),
+                        local_match_radius=semantic_settings.local_match_radius,
+                        min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
+                        feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
+                    )
+                else:
+                    feature_result = compute_feature_residual(
+                        first_output.features,
+                        second_output.features,
+                        prepared.pif_mask,
+                        local_match_radius=semantic_settings.local_match_radius,
+                        min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
+                        feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
+                    )
+                if feature_result.diagnostics["alignment_status"] != "aligned":
+                    raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
+                feature_diagnostics = dict(feature_result.diagnostics)
+                feature_diagnostics["valid_feature_fraction"] = float(
+                    np.mean(np.asarray(feature_result.valid_mask, dtype=bool))
                 )
             else:
-                feature_result = compute_feature_residual(
-                    first_output.features,
-                    second_output.features,
-                    prepared.pif_mask,
-                    local_match_radius=semantic_settings.local_match_radius,
-                    min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
-                    feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
-                )
-            if feature_result.diagnostics["alignment_status"] != "aligned":
-                raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
-            feature_diagnostics = dict(feature_result.diagnostics)
-            feature_diagnostics["valid_feature_fraction"] = float(
-                np.mean(np.asarray(feature_result.valid_mask, dtype=bool))
-            )
+                # PIFs calibrate feature residuals, but they are not required
+                # for per-frame semantic segmentation.  Keep SegFormer active
+                # and fuse the semantic and low-level maps instead of dropping
+                # the entire dense branch on large, genuine scene changes.
+                feature_diagnostics = {
+                    "alignment_status": "insufficient_pif",
+                    "reason_code": "FEATURE_RESIDUAL_INSUFFICIENT_PIF",
+                    "pif_feature_cells": 0,
+                    "valid_feature_fraction": 0.0,
+                    "effective_stages": [],
+                    "missing_stages": list(requested_stages),
+                }
             semantic_result = compute_semantic_difference(
                 first_output.probabilities,
                 second_output.probabilities,
@@ -264,11 +276,16 @@ class ChangePerceptionPipeline:
             )
             fusion_result = fuse_change_proposals(
                 low_level_map,
-                feature_result.score_map,
+                feature_result.score_map if feature_result is not None else None,
                 semantic_result.score_map,
                 prepared.pif_mask,
                 self._settings.proposals,
                 min_pif_pixels=self._settings.harmonization.min_pif_pixels,
+                fallback_reason=(
+                    "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+                    if feature_result is None
+                    else None
+                ),
                 reliability=reliability,
                 valid_overlap_mask=getattr(prepared, "registration_valid_mask", None),
                 registration_confidence=reliability["registration"],
@@ -313,7 +330,7 @@ class ChangePerceptionPipeline:
             identity=identity,
             weights_sha256=weights_sha256,
             pif_valid=prepared.pif_valid,
-            pif_used_for_feature_alignment=True,
+            pif_used_for_feature_alignment=feature_result is not None,
             pif_used_for_threshold=(
                 fusion_result.diagnostics.get("threshold_mode") == "pif_robust"
             ),
@@ -330,7 +347,15 @@ class ChangePerceptionPipeline:
                 "fusion": fusion_result.diagnostics,
                 "score_maps": {
                     "low_level": _score_statistics(low_level_map, np=np),
-                    "feature": _score_statistics(feature_result.score_map, np=np),
+                    **(
+                        {
+                            "feature": _score_statistics(
+                                feature_result.score_map, np=np
+                            )
+                        }
+                        if feature_result is not None
+                        else {}
+                    ),
                     "semantic": _score_statistics(semantic_result.score_map, np=np),
                     "fused": _score_statistics(fusion_result.fused_score_map, np=np),
                     **(
@@ -347,7 +372,11 @@ class ChangePerceptionPipeline:
             diagnostics=diagnostics,
             component_maps={
                 "low_level_difference_map": low_level_map,
-                "feature_residual_map": feature_result.score_map,
+                **(
+                    {"feature_residual_map": feature_result.score_map}
+                    if feature_result is not None
+                    else {}
+                ),
                 "semantic_difference_map": semantic_result.score_map,
                 "binary_change_mask": fusion_result.binary_change_mask,
                 **(

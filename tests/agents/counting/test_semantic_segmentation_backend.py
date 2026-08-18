@@ -123,6 +123,7 @@ def _request(tmp_path: Path, *, width: int = 8, height: int = 8) -> CountingRequ
         sample=_sample(),
         image=Image.new("RGB", (width, height), "white"),
         target=_TARGET,
+        executable_leaf_categories=(_TARGET.canonical_label,),
         artifact_dir=tmp_path / "artifacts",
     )
 
@@ -138,6 +139,7 @@ def _request_for(
     return replace(
         request,
         target=_TARGET.model_copy(update={"canonical_label": target}),
+        executable_leaf_categories=(target,),
     )
 
 
@@ -209,17 +211,26 @@ def test_composite_labels_are_componentized_separately_when_touching(
         model_revision="test-revision",
         weights_sha256=_DIGEST,
     )
+    expert_payload = _expert().model_dump(mode="json")
+    base_support = expert_payload["supports"]["small-vehicle"]
+    expert_payload["supports"] = {
+        "small-vehicle": {**base_support, "model_labels": ["Small_Vehicle"]},
+        "large-vehicle": {**base_support, "model_labels": ["Large_Vehicle"]},
+    }
     backend = SemanticSegmentationCountingBackend(
         _FakeClient([output]),
-        _expert(
-            target="vehicle",
-            model_labels=("Small_Vehicle", "Large_Vehicle"),
-        ),
+        ExpertSpec.model_validate(expert_payload),
         _settings(),
     )
 
     outcome = asyncio.run(
-        backend.count(_request_for(tmp_path, "vehicle"), object())
+        backend.count(
+            replace(
+                _request_for(tmp_path, "vehicle"),
+                executable_leaf_categories=("small-vehicle", "large-vehicle"),
+            ),
+            object(),
+        )
     )
 
     assert outcome.counting.final_count == 2

@@ -17,11 +17,14 @@ from agents.change.settings import ChangeSemanticSettings
 from agents.counting.expert_catalog import ExpertCatalog, ExpertCatalogError
 from agents.counting.schema import CountTargetSpec
 from agents.counting.settings import YoloDetectorSettings
+from agents.evidence_catalog import EvidenceCatalog
+import application.bootstrap as bootstrap_module
 from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
     _build_segformer_clients,
     _catalog_validated_yolo_detector,
+    _enabled_counting_catalog_leaves,
     _resolve_yolo_detector,
     assemble_runtime,
 )
@@ -84,7 +87,7 @@ def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
         "caption_agent",
     )
     assert components.prompt_catalog is not None
-    assert components.task_resolver is not None
+    assert components.visual_task_planner is not None
     assert components.judge_service is not None
     assert components.dataset_runner_factory is not None
     change_agent = components.agent_registry.get("change_agent")
@@ -333,7 +336,12 @@ def test_segformer_catalog_label_mismatch_fails_without_absolute_path(
 def test_yolo_catalog_class_mismatch_fails_fast(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "yolo.example.yaml", environ={})
     detector = settings.backend.yolo.detectors[0].model_copy(
-        update={"composite_targets": {"vehicle": ["small vehicle"]}}
+        update={
+            "classes": [
+                value for value in settings.backend.yolo.detectors[0].classes
+                if value != "small vehicle"
+            ]
+        }
     )
     yolo = settings.backend.yolo.model_copy(update={"detectors": [detector]})
     settings = settings.model_copy(
@@ -471,7 +479,10 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     )
     hints = {"quantity_estimation": True, **catalog.target_hints(target)}
 
-    plan = selector.plan(target, task="counting", hints=hints)
+    plan = selector.plan(
+        target, task="counting",
+        executable_leaf_categories=("small-vehicle",), hints=hints,
+    )
 
     assert plan is not None
     assert plan.primary_backend_name == "detector_obb_csl_001"
@@ -486,13 +497,15 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
         "quantity_estimation": True,
         **catalog.target_hints(vehicle),
     }
-    vehicle_plan = selector.plan(vehicle, task="counting", hints=vehicle_hints)
+    vehicle_plan = selector.plan(
+        vehicle, task="counting",
+        executable_leaf_categories=("small-vehicle", "large-vehicle"),
+        hints=vehicle_hints,
+    )
     assert vehicle_plan is not None
     assert vehicle_plan.primary_backend_name == "detector_obb_csl_001"
     assert vehicle_plan.fallback_backend_names == (
-        "segmenter_mitb2_001",
-        "quantity_proposal",
-        "qwen_point",
+        "segmenter_mitb2_001", "quantity_proposal", "qwen_point",
     )
 
     aircraft = target.model_copy(update={"canonical_label": "aircraft"})
@@ -500,12 +513,14 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
         "quantity_estimation": True,
         **catalog.target_hints(aircraft),
     }
-    aircraft_plan = selector.plan(aircraft, task="counting", hints=aircraft_hints)
+    aircraft_plan = selector.plan(
+        aircraft, task="counting",
+        executable_leaf_categories=("plane", "helicopter"), hints=aircraft_hints,
+    )
     assert aircraft_plan is not None
     assert aircraft_plan.primary_backend_name == "detector_obb_csl_001"
     assert aircraft_plan.fallback_backend_names == (
-        "segmenter_mitb2_001",
-        "qwen_point",
+        "segmenter_mitb2_001", "qwen_point",
     )
 
 
@@ -526,14 +541,20 @@ def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
         "quantity_estimation": True,
         **catalog.target_hints(swimming_pool),
     }
-    pool_plan = selector.plan(swimming_pool, task="counting", hints=pool_hints)
+    pool_plan = selector.plan(
+        swimming_pool, task="counting",
+        executable_leaf_categories=("swimming-pool",), hints=pool_hints,
+    )
     assert pool_plan is not None
     assert pool_plan.primary_backend_name == "segmenter_mitb2_001"
     assert pool_plan.fallback_backend_names == ("qwen_point",)
 
     crane = swimming_pool.model_copy(update={"canonical_label": "crane"})
     crane_hints = {"quantity_estimation": True, **catalog.target_hints(crane)}
-    crane_plan = selector.plan(crane, task="counting", hints=crane_hints)
+    crane_plan = selector.plan(
+        crane, task="counting",
+        executable_leaf_categories=("container-crane",), hints=crane_hints,
+    )
     assert crane_plan is not None
     assert crane_plan.primary_backend_name == "qwen_point"
     assert crane_plan.fallback_backend_names == ()
@@ -623,9 +644,13 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
 
 def test_disabled_change_semantic_ignores_injected_dense_client(tmp_path: Path) -> None:
     injected = object()
+    settings = _settings(tmp_path)
+    settings.agents.change.semantic = ChangeSemanticSettings(enabled=False)
 
-    components = _assemble(
-        tmp_path,
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
         semantic_client=injected,
     )
@@ -703,25 +728,21 @@ def _calibrated_detector(tmp_path: Path, name: str = "fake-det") -> YoloDetector
     )
 
 
-def test_visual_planning_flag_off_wires_none(tmp_path: Path) -> None:
-    """The feature flag off must leave the gate unwired so the legacy path
-    stays byte-identical. flag 关闭时门禁必须保持未接线，旧路径逐字节一致。"""
+def test_visual_planning_is_always_v4_and_injected(tmp_path: Path) -> None:
+    """Fresh composition always injects the v4 planner bindings.
+    新鲜组合始终注入 v4 规划器绑定。"""
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
     runner = components.sample_runner_factory(data_root=tmp_path)
-    assert runner.visual_planning is None
+    assert components.visual_task_planner is not None
+    assert runner.visual_bindings is components.visual_bindings
 
 
-def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
+def test_visual_planning_uses_v4_with_uncalibrated_bindings(
     tmp_path: Path,
 ) -> None:
-    """Enabled with default (uncalibrated) policies: the doc 15 joint planner
-    is wired (the legacy gate is not), the joint prompt/catalog version
-    binding holds, the VQA evidence service stays absent (fail closed at
-    runtime), and the grounding seam runs with the explicit all-None policy.
-    默认（未校准）策略下启用：doc 15 联合规划器接线（旧 gate 不接线）、联合
-    prompt/catalog 版本绑定成立、VQA 证据服务保持缺失（运行时严格失败）、
-    grounding seam 以显式全 None 策略运行。"""
-    settings = _visual_settings(tmp_path, visual_planning={"enabled": True})
+    """The v4 planner is always assembled; uncalibrated evidence stays closed.
+    v4 规划器始终组装；未校准的证据能力保持关闭。"""
+    settings = _visual_settings(tmp_path, visual_planning={})
     components = assemble_runtime(
         settings,
         project_root=tmp_path,
@@ -729,27 +750,117 @@ def test_visual_planning_enabled_wires_gate_with_uncalibrated_bindings(
         qwen_client=_FakeQwenClient(),
     )
     runner = components.sample_runner_factory(data_root=tmp_path)
-    # Joint mode replaces the gate: exactly one of them is ever wired.
-    # 联合模式取代 gate：两者绝不并存。
-    assert runner.visual_planning is None
-    planner = components.joint_planner
+    assert runner.visual_bindings is components.visual_bindings
+    planner = components.visual_task_planner
     assert planner is not None
     # The settings-declared versions must bind the real prompt/catalog assets.
     # settings 声明版本必须绑定真实 prompt/catalog 资产。
-    assert planner._prompt_version == components.prompt_catalog.version("joint_plan")
+    assert planner.prompt_version == components.prompt_catalog.version("visual_task_plan")
     assert planner._catalog.catalog_version == (
         settings.visual_planning.planner.catalog_version
     )
-    assert runner.joint_bindings is planner.bindings
-    assert planner.bindings is not None
-    assert planner.bindings.vqa_evidence is None
-    assert planner.bindings.grounding_evidence is not None
-    grounding = planner.bindings.grounding_evidence
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    assert len(binding["canonical_leaf_categories"]) == 18
+    assert "vehicle" not in binding["canonical_leaf_categories"]
+    assert binding["parent_expansions"]["vehicle"] == [
+        "small-vehicle", "large-vehicle"
+    ]
+    assert len(binding["task_executable_categories"]["counting"]) == 13
+    assert components.visual_bindings is not None
+    assert components.visual_bindings.vqa_evidence is None
+    assert components.visual_bindings.grounding_evidence is not None
+    grounding = components.visual_bindings.grounding_evidence
     assert grounding._policy.yolo_enabled is False
     # Uncalibrated means the YOLO phase is off: no detector is wired at all,
     # so nothing is ever loaded for it. 未校准即 YOLO 阶段关闭：完全不接线检测
     # 器，因此永远不会为它加载任何东西。
     assert grounding._yolo_client is None
+
+
+def test_counting_planner_leaves_require_real_specialist_support(tmp_path: Path) -> None:
+    evidence = EvidenceCatalog.from_file(REPO_ROOT / "agents" / "evidence_catalog.json")
+    experts = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
+
+    semantic_only = _visual_settings(
+        tmp_path,
+        yolo={"enabled": False, "detectors": []},
+    )
+    semantic_leaves = _enabled_counting_catalog_leaves(
+        semantic_only, evidence, experts, task="counting"
+    )
+    assert "small-vehicle" in semantic_leaves
+    assert "bridge" not in semantic_leaves
+    assert "harbor" not in semantic_leaves
+
+    yolo_enabled = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    yolo_leaves = _enabled_counting_catalog_leaves(
+        yolo_enabled, evidence, experts, task="counting"
+    )
+    assert "bridge" in yolo_leaves
+    assert "harbor" in yolo_leaves
+
+
+def test_counting_planner_leaves_are_independent_per_counting_task(
+    tmp_path: Path,
+) -> None:
+    data = json.loads(
+        (REPO_ROOT / "agents" / "evidence_catalog.json").read_text(encoding="utf-8")
+    )
+    data["catalog_version"] = "task-split-test-v1"
+    data["task_capabilities"]["counting"] = [
+        "small-vehicle", "large-vehicle"
+    ]
+    data["task_capabilities"]["fine_grained_counting"] = ["small-vehicle"]
+    evidence = EvidenceCatalog(data)
+    experts = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+
+    counting = _enabled_counting_catalog_leaves(
+        settings, evidence, experts, task="counting"
+    )
+    fine = _enabled_counting_catalog_leaves(
+        settings, evidence, experts, task="fine_grained_counting"
+    )
+    assert counting == ("small-vehicle", "large-vehicle")
+    assert fine == ("small-vehicle",)
+
+    with pytest.raises(RuntimeCompositionError, match="unsupported counting planner task"):
+        _enabled_counting_catalog_leaves(
+            settings, evidence, experts, task="general_vqa"
+        )
+
+
+def test_visual_planner_binding_keeps_counting_task_capabilities_separate(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    data = json.loads(
+        (REPO_ROOT / "agents" / "evidence_catalog.json").read_text(encoding="utf-8")
+    )
+    data["catalog_version"] = "task-split-binding-v1"
+    data["task_capabilities"]["counting"] = [
+        "small-vehicle", "large-vehicle"
+    ]
+    data["task_capabilities"]["fine_grained_counting"] = ["small-vehicle"]
+    evidence = EvidenceCatalog(data)
+    monkeypatch.setattr(
+        bootstrap_module, "_load_evidence_catalog", lambda _root: evidence
+    )
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={"planner": {"catalog_version": evidence.catalog_version}},
+        yolo={"enabled": False, "detectors": []},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    planner = components.visual_task_planner
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    by_task = binding["task_executable_categories"]
+    assert by_task["counting"] == ["small-vehicle", "large-vehicle"]
+    assert by_task["fine_grained_counting"] == ["small-vehicle"]
 
 
 def test_visual_planning_catalog_version_mismatch_fails_closed(
@@ -761,7 +872,6 @@ def test_visual_planning_catalog_version_mismatch_fails_closed(
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "planner": {"catalog_version": "bogus-catalog-v1"},
         },
     )
@@ -782,7 +892,7 @@ def test_visual_planning_prompt_version_mismatch_fails_closed(
     定漂移时必须在组装时严格失败。"""
     settings = _visual_settings(
         tmp_path,
-        visual_planning={"enabled": True, "planner": {"prompt_version": "v99"}},
+        visual_planning={"planner": {"task_prompt_version": "v99"}},
     )
     with pytest.raises(RuntimeCompositionError):
         assemble_runtime(
@@ -800,7 +910,6 @@ def test_visual_planning_partial_calibration_fails_closed(tmp_path: Path) -> Non
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {"small_vehicle": {"confidence_threshold": 0.5}},
         },
     )
@@ -820,7 +929,6 @@ def test_visual_planning_multiple_calibration_fails_closed(tmp_path: Path) -> No
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {
                 "small_vehicle": {
                     "confidence_threshold": 0.5,
@@ -853,7 +961,6 @@ def test_visual_planning_calibrated_without_detector_fails_closed(
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {
                 "small_vehicle": {
                     "confidence_threshold": 0.5,
@@ -880,7 +987,6 @@ def test_visual_planning_enabled_segmenter_fails_closed(tmp_path: Path) -> None:
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "segmenters": {
                 "building": {"enabled": True, "class_map_version": "isaid-v2"}
             },
@@ -921,7 +1027,6 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
     settings = _visual_settings(
         tmp_path,
         visual_planning={
-            "enabled": True,
             "detectors": {
                 "small_vehicle": {
                     "confidence_threshold": 0.5,
@@ -938,10 +1043,10 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
         prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
     )
-    planner = components.joint_planner
-    assert planner is not None and planner.bindings is not None
+    planner = components.visual_task_planner
+    assert planner is not None and components.visual_bindings is not None
     assert get_calls == []  # assembly never loads / 组合期绝不加载
-    vqa = planner.bindings.vqa_evidence
+    vqa = components.visual_bindings.vqa_evidence
     assert vqa is not None
     with pytest.raises(Exception) as exc_info:
         vqa._yolo_client.detect(  # type: ignore[attr-defined]

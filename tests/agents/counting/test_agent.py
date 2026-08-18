@@ -25,6 +25,8 @@ from agents.counting.backends.qwen_point import QwenPointCountingBackend
 from agents.counting.expert_catalog import ExpertCatalog
 from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
 from agents.counting.settings import CountingSettings
+from agents.counting.target_parser import CountTargetResolutionError, CountTargetResolver
+from agents.evidence_catalog import EvidenceCatalog
 from agents.errors import (
     AgentExecutionError,
     AgentTaskMismatchError,
@@ -74,7 +76,7 @@ class _FakeClient:
         if response_model is CountTargetSpec:
             return response_model.model_validate(
                 {
-                    "canonical_label": "car",
+                    "canonical_label": "small-vehicle",
                     "inclusion_rule": "visible vehicle",
                     "exclusion_rule": "occluded more than half",
                 }
@@ -84,7 +86,7 @@ class _FakeClient:
 
             return response_model.model_validate(
                 {
-                    "target": "car",
+                    "target": "small-vehicle",
                     "tile_id": request_meta.tile_id,
                     "reported_count": len(self._tile_points),
                     "points": [
@@ -176,6 +178,11 @@ class _FakeYoloBackend:
 
 
 def _sample(root: Path, **metadata) -> UnifiedSample:
+    metadata.setdefault("count_target_hint", {
+        "canonical_label": "small-vehicle",
+        "inclusion_rule": "Count visible small vehicles.",
+        "exclusion_rule": "Exclude other objects.",
+    })
     return UnifiedSample(
         sample_id="s1",
         dataset="parity",
@@ -212,7 +219,14 @@ def _registry(*backends) -> BackendRegistry:
 
 
 def _agent(client: _FakeClient, registry: BackendRegistry, **overrides) -> CountingAgent:
-    values = dict(target_prompt="Parse the target.", backend_registry=registry)
+    values = dict(
+        target_resolver=CountTargetResolver(
+            evidence_catalog=EvidenceCatalog.from_file(
+                REPO_ROOT / "agents" / "evidence_catalog.json"
+            )
+        ),
+        backend_registry=registry,
+    )
     values.update(overrides)
     return CountingAgent(client, **values)
 
@@ -242,7 +256,15 @@ def test_run_returns_counting_result_payload(tmp_path: Path) -> None:
     assert execution.trace["executed_backend"] == "qwen_point"
     assert execution.trace["fallback_triggered"] is False
     assert execution.trace["yolo"] == {"attempted": False, "used_for_final": False}
-    assert "target_classes" in execution.trace
+    assert execution.trace["target"] == "small-vehicle"
+    assert execution.trace["target_source"] == "legacy_direct_hint"
+    assert execution.trace["planner_target"] is None
+    assert execution.trace["planner_object_categories"] == []
+    assert execution.trace["executable_leaf_categories"] == ["small-vehicle"]
+    assert execution.trace["target_classes"] == ["small-vehicle"]
+    assert execution.trace["target_validation"] == "explicit_hint"
+    assert execution.trace["verifier_source"] == "legacy_metadata.count_target_hint"
+    assert "s1:target" not in client.calls
 
 
 def test_run_agent_result_mode_uses_additional_agent_result(tmp_path: Path) -> None:
@@ -414,9 +436,11 @@ def test_qwen_primary_runtime_error_is_not_swallowed(tmp_path: Path) -> None:
         async def complete_json(self, **kwargs):
             raise RuntimeError("qwen boom")
 
-    agent = _agent(_BrokenQwen(), registry)
-    with pytest.raises(AgentExecutionError, match="TARGET_PARSE_FAILED"):
-        asyncio.run(agent.run(_sample(root), _context(root)))
+    broken = _BrokenQwen()
+    agent = _agent(broken, _registry(_qwen_backend(broken)))
+    execution = asyncio.run(agent.run(_sample(root), _context(root)))
+    assert execution.trace["primary_backend"] == "qwen_point"
+    assert execution.payload.status == "failed"
 
 
 # ── zero review / 零计数复核 ──────────────────────────────────────────────
@@ -509,6 +533,41 @@ def test_agent_injects_catalog_target_hints_without_model_selection(tmp_path: Pa
     forbidden = {"selected_model", "selected_backend", "checkpoint"}
     assert forbidden.isdisjoint(CountTargetSpec.model_fields)
     assert forbidden.isdisjoint(yolo.last_hints)
+
+
+def test_agent_preserves_stable_target_resolution_errors(tmp_path: Path) -> None:
+    class _FailingResolver:
+        def resolve(self, **kwargs):
+            raise CountTargetResolutionError("COUNT_TARGET_CONFLICT")
+
+    root = tmp_path / "data"
+    client = _FakeClient()
+    agent = _agent(
+        client,
+        _registry(_qwen_backend(client)),
+        target_resolver=_FailingResolver(),
+    )
+    with pytest.raises(CountTargetResolutionError) as caught:
+        asyncio.run(agent.run(_sample(root), _context(root)))
+    assert caught.value.code == "COUNT_TARGET_CONFLICT"
+
+
+def test_agent_safely_wraps_unknown_target_resolution_errors(tmp_path: Path) -> None:
+    class _BrokenResolver:
+        def resolve(self, **kwargs):
+            raise RuntimeError("private resolver detail")
+
+    root = tmp_path / "data"
+    client = _FakeClient()
+    agent = _agent(
+        client,
+        _registry(_qwen_backend(client)),
+        target_resolver=_BrokenResolver(),
+    )
+    with pytest.raises(AgentExecutionError) as caught:
+        asyncio.run(agent.run(_sample(root), _context(root)))
+    assert "TARGET_PARSE_FAILED" in str(caught.value)
+    assert "private resolver detail" not in str(caught.value)
 
 
 # ── 全路径主输出契约 / primary payload across all paths (25.5) ───────────
@@ -679,9 +738,8 @@ def test_quantity_proposal_zero_does_not_trigger_zero_review(tmp_path: Path) -> 
     assert execution.trace["review_backend"] is None
     assert execution.trace["fallback_triggered"] is False
     assert execution.trace["yolo"] == {"attempted": False, "used_for_final": False}
-    # Only the Qwen target parse call happens; no review or tile calls.
-    # 仅发生 Qwen target 解析调用；绝无复核或 tile 调用。
-    assert client.calls == ["s1:target"]
+    # Target resolution is deterministic; no review or tile call occurs.
+    assert client.calls == []
 
 
 def test_quantity_proposal_positive_result_payload(tmp_path: Path) -> None:
@@ -778,7 +836,7 @@ def _real_yolo_backend(tmp_path: Path, *, exploding: bool) -> Any:
 
     class _FakePredictModel:
         task = "obb"
-        names = {0: "car"}
+        names = {0: "small vehicle"}
         providers = ("CPUExecutionProvider",)
         requested_provider = "CPUExecutionProvider"
         requested_device = "cpu"
@@ -797,7 +855,7 @@ def _real_yolo_backend(tmp_path: Path, *, exploding: bool) -> Any:
         weights=tmp_path / "det.pt",
         model_id="m1",
         sha256=hashlib.sha256(b"fake").hexdigest(),
-        classes=["car"],
+        classes=["small vehicle"],
         device="cpu",
         require_cuda=False,
         allow_cpu_fallback=False,
@@ -870,7 +928,7 @@ def test_counting_agent_public_signatures_avoid_any() -> None:
     init_hints = typing.get_type_hints(CountingAgent.__init__)
     assert init_hints["client"] is VisionLanguageClient
 
-    target_hints = typing.get_type_hints(CountingAgent._target)
+    target_hints = typing.get_type_hints(CountingAgent._target_resolution)
     assert target_hints["sample"] is UnifiedSample
 
     resolve_hints = typing.get_type_hints(_resolve_sample_image)

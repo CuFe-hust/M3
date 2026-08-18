@@ -115,17 +115,18 @@ class ChangeProposalSettings(BaseModel):
 
 
 class ChangeSemanticSettings(BaseModel):
-    """Optional Change V2 dense-semantic strategy; disabled by default."""
+    """Default Change dense-semantic strategy with audited legacy fallback."""
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = True
     feature_stage: int = 1
-    # The V2 default remains one stage.  Callers can opt into the V3 pyramid
-    # explicitly with ``feature_stages: [1, 2, 3]``; an empty tuple migrates
-    # the legacy ``feature_stage`` setting.
-    feature_stages: tuple[int, ...] = (1,)
-    feature_stage_weights: dict[int, float] = Field(default_factory=lambda: {1: 1.0})
+    # Full perception defaults to the V3 feature pyramid.  An empty tuple
+    # still migrates the legacy ``feature_stage`` setting.
+    feature_stages: tuple[int, ...] = (1, 2, 3)
+    feature_stage_weights: dict[int, float] = Field(
+        default_factory=lambda: {1: 1.0, 2: 1.0, 3: 1.0}
+    )
     tile_size: int = Field(default=768, ge=128)
     tile_overlap: int = Field(default=64, ge=0)
     local_match_radius: int = Field(default=1, ge=0, le=3)
@@ -210,6 +211,12 @@ class ChangeReviewSettings(BaseModel):
 
     enabled: bool = True
     require_proposal_evidence: bool = True
+    no_change_conflict_min_score: float = Field(default=0.18, ge=0.0, le=1.0)
+    no_change_conflict_min_proposals: int = Field(default=2, ge=1)
+    no_change_conflict_min_total_area_ratio: float = Field(
+        default=0.01, ge=0.0, le=1.0
+    )
+    require_temporal_pair_evidence: bool = True
 
 
 class AgentChangeSettings(BaseModel):

@@ -4,6 +4,7 @@
     "aircraft": {
       "aliases": [],
       "countable": true,
+      "executable_leaf": false,
       "hints": ["multi_label", "verify_empty"]
     },
     "airport": {
@@ -14,6 +15,7 @@
     "background": {
       "aliases": [],
       "countable": false,
+      "executable_leaf": false,
       "hints": ["stuff_class", "unsupported"]
     },
     "baseball-diamond": {
@@ -28,8 +30,8 @@
     },
     "bridge": {
       "aliases": ["bridges"],
-      "countable": false,
-      "hints": ["ambiguous_extent", "unsupported"]
+      "countable": true,
+      "hints": ["ambiguous_extent", "verify_empty"]
     },
     "container-crane": {
       "aliases": ["container crane"],
@@ -43,8 +45,8 @@
     },
     "harbor": {
       "aliases": ["harbour"],
-      "countable": false,
-      "hints": ["ambiguous_extent", "unsupported"]
+      "countable": true,
+      "hints": ["ambiguous_extent", "verify_empty"]
     },
     "helicopter": {
       "aliases": ["helicopters"],
@@ -104,6 +106,7 @@
     "vehicle": {
       "aliases": ["vehicles"],
       "countable": true,
+      "executable_leaf": false,
       "hints": ["multi_label", "dense_instances", "verify_empty"]
     }
   },
@@ -123,12 +126,13 @@
       },
       "verification": {"class_map": "verified"},
       "supports": {
-        "aircraft": {"model_labels": ["plane", "helicopter"], "counting_mode": "native_detection"},
         "airport": {"model_labels": ["airport"], "counting_mode": "native_detection"},
         "baseball-diamond": {"model_labels": ["baseball diamond"], "counting_mode": "native_detection"},
         "basketball-court": {"model_labels": ["basketball court"], "counting_mode": "native_detection"},
+        "bridge": {"model_labels": ["bridge"], "counting_mode": "native_detection"},
         "container-crane": {"model_labels": ["container crane"], "counting_mode": "native_detection"},
         "ground-track-field": {"model_labels": ["ground track field"], "counting_mode": "native_detection"},
+        "harbor": {"model_labels": ["harbor"], "counting_mode": "native_detection"},
         "helicopter": {"model_labels": ["helicopter"], "counting_mode": "native_detection"},
         "helipad": {"model_labels": ["helipad"], "counting_mode": "native_detection"},
         "large-vehicle": {"model_labels": ["large vehicle"], "counting_mode": "native_detection"},
@@ -139,8 +143,7 @@
         "soccer-ball-field": {"model_labels": ["soccer ball field"], "counting_mode": "native_detection"},
         "storage-tank": {"model_labels": ["storage tank"], "counting_mode": "native_detection"},
         "swimming-pool": {"model_labels": ["swimming pool"], "counting_mode": "native_detection"},
-        "tennis-court": {"model_labels": ["tennis court"], "counting_mode": "native_detection"},
-        "vehicle": {"model_labels": ["small vehicle", "large vehicle"], "counting_mode": "native_detection"}
+        "tennis-court": {"model_labels": ["tennis court"], "counting_mode": "native_detection"}
       }
     },
     {
@@ -158,8 +161,6 @@
       },
       "verification": {"class_map": "verified"},
       "supports": {
-        "aircraft": {"model_labels": ["plane", "Helicopter"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 12, "max_component_area_ratio": 0.15, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
-        "background": {"model_labels": ["background"], "counting_mode": "unsupported"},
         "baseball-diamond": {"model_labels": ["baseball_diamond"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "basketball-court": {"model_labels": ["basketball_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "bridge": {"model_labels": ["Bridge"], "counting_mode": "unsupported"},
@@ -174,8 +175,7 @@
         "soccer-ball-field": {"model_labels": ["Soccer_ball_field"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 96, "max_component_area_ratio": 0.20, "min_mean_confidence": 0.55, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "storage-tank": {"model_labels": ["storage_tank"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 20, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.48, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "swimming-pool": {"model_labels": ["Swimming_pool"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 32, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
-        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
-        "vehicle": {"model_labels": ["Small_Vehicle", "Large_Vehicle"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 16, "max_component_area_ratio": 0.15, "min_mean_confidence": 0.45, "morphology": {"open_kernel": 0, "close_kernel": 0}}}
+        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}}
       }
     },
     {

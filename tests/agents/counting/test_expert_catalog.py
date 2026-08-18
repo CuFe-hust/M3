@@ -38,7 +38,7 @@ def test_semantic_label_absent_from_verified_class_map_fails_closed(
     tmp_path: Path,
 ) -> None:
     payload = _payload()
-    payload["experts"][1]["supports"]["vehicle"]["model_labels"] = [
+    payload["experts"][1]["supports"]["small-vehicle"]["model_labels"] = [
         "not_a_verified_label"
     ]
 
@@ -57,19 +57,17 @@ def test_valid_catalog_loads_and_exposes_capability_specs() -> None:
     assert expert.supports["small-vehicle"].counting_mode == "connected_components"
 
 
-def test_catalog_declares_vehicle_and_aircraft_composite_semantic_support() -> None:
-    expert = ExpertCatalog.load(CATALOG_PATH).expert("segmenter_mitb2_001")
-
-    assert expert.supports["vehicle"].model_labels == (
-        "Small_Vehicle",
-        "Large_Vehicle",
-    )
-    assert expert.supports["aircraft"].model_labels == ("plane", "Helicopter")
-    assert expert.supports["vehicle"].counting_mode == "connected_components"
-    assert expert.supports["aircraft"].counting_mode == "connected_components"
+def test_expert_supports_are_physical_canonical_leaves_only() -> None:
+    catalog = ExpertCatalog.load(CATALOG_PATH)
+    for expert in catalog.experts(enabled_only=False):
+        assert "vehicle" not in expert.supports
+        assert "aircraft" not in expert.supports
+        assert "background" not in expert.supports
+    assert catalog.candidates(_target("vehicle")) == ()
+    assert catalog.candidates(_target("aircraft")) == ()
 
 
-def test_duplicate_or_placeholder_composite_model_labels_fail_closed(
+def test_duplicate_or_placeholder_leaf_model_labels_fail_closed(
     tmp_path: Path,
 ) -> None:
     for labels in (
@@ -77,7 +75,7 @@ def test_duplicate_or_placeholder_composite_model_labels_fail_closed(
         ["Small_Vehicle", "LABEL_7"],
     ):
         payload = _payload()
-        payload["experts"][1]["supports"]["vehicle"]["model_labels"] = labels
+        payload["experts"][1]["supports"]["small-vehicle"]["model_labels"] = labels
         with pytest.raises(ExpertCatalogError, match="validation failed"):
             _load_payload(tmp_path, payload)
 
@@ -235,10 +233,22 @@ def test_unsupported_target_has_no_candidates_or_hints() -> None:
 
     assert catalog.candidates(_target("water")) == ()
     assert catalog.target_hints(_target("water")) == {}
-    assert catalog.candidates(_target("bridge")) == ()
-    assert isaid.supports["background"].counting_mode == "unsupported"
+    assert tuple(
+        expert.backend_name for expert in catalog.candidates(_target("bridge"))
+    ) == ("detector_obb_csl_001",)
+    assert "background" not in isaid.supports
     assert isaid.supports["bridge"].counting_mode == "unsupported"
     assert isaid.supports["harbor"].counting_mode == "unsupported"
+
+
+def test_parent_target_cannot_be_added_to_physical_support(tmp_path: Path) -> None:
+    payload = _payload()
+    payload["experts"][0]["supports"]["vehicle"] = {
+        "model_labels": ["small vehicle"],
+        "counting_mode": "native_detection",
+    }
+    with pytest.raises(ExpertCatalogError, match="validation failed"):
+        _load_payload(tmp_path, payload)
 
 
 def test_parse_error_does_not_leak_absolute_path(tmp_path: Path) -> None:

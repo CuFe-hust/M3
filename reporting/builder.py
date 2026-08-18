@@ -224,7 +224,13 @@ def _execution_path(
         "workflows.sample_runner.SampleRunner",
     ])
     resolution_source = _value_str(current.get("resolution_source"))
-    if current.get("joint_plan") is True:
+    if current.get("planning_mode") in {
+        "visual-task-plan-v2",
+        "visual-task-plan-v3",
+        "visual-task-plan-v4",
+    }:
+        path.append("workflows.visual_planner.VisualTaskPlanner")
+    elif current.get("joint_plan") is True:
         path.append("workflows.visual_planner.JointVisualPlanner")
     elif resolution_source == "model":
         path.append("workflows.task_resolver.TaskResolver")
