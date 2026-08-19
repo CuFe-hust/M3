@@ -20,8 +20,8 @@ from agents.change.perception import (
 )
 from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.registration import RegistrationError
-from agents.change.reviewer import has_no_change_conflict, meaningful_proposals, review_result
-from agents.change.schema import ChangeAdjudicationResult, ChangePreprocessResult, SemanticTransition
+from agents.change.reviewer import meaningful_proposals, review_outcome, review_result
+from agents.change.schema import ChangeAdjudicationResult, ChangeInitialResult, ChangePreprocessResult, SemanticTransition
 from agents.change.settings import AgentChangeSettings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentName, AgentResult
@@ -130,23 +130,27 @@ class ChangeAgent:
         content.append({"type": "text", "text": json.dumps(payload, ensure_ascii=False)})
         result, request_hash = await self._call_vlm_json(
             sample=sample, context=context, identity=identity, content=content,
-            image_hashes=image_hashes, response_model=AgentResult, decision_stage="initial",
+            image_hashes=image_hashes, response_model=ChangeInitialResult, decision_stage="initial",
         )
         if result.agent_name != self.name:
             raise AgentExecutionError(self.name, sample.sample_id, cause=f"model returned agent_name {result.agent_name!r}")
 
-        reviewed, initial_warnings = review_result(result, preprocess.proposals, settings.review)
+        result = _normalize_positive_caption(result)
+        review = review_outcome(result, preprocess.proposals, settings.review, task=sample.task)
+        reviewed, initial_warnings = review.result, list(review.warnings)
         adjudication_used = False
         adjudication_request_hash: str | None = None
         adjudication_candidate_ids: list[str] = []
         adjudication_global_verdict: str | None = None
         adjudication_verdicts: dict[str, str] = {}
         adjudication_outcome: str | None = None
+        consistency_warnings: list[str] = []
         final_warnings = initial_warnings
-        if settings.review.adjudication_enabled and has_no_change_conflict(result, preprocess.proposals, settings.review):
-            selected = sorted(
-                meaningful_proposals(preprocess.proposals, settings.review), key=_proposal_priority
-            )[: settings.evidence.adjudication_max_proposals]
+        if settings.review.adjudication_enabled and review.route != "accept":
+            selected = self._select_proposals(
+                meaningful_proposals(preprocess.proposals, settings.review) or preprocess.proposals,
+                limit=settings.evidence.adjudication_max_proposals,
+            )
             adjudication_candidate_ids = [item.proposal_id for item in selected]
             content, image_hashes, image_manifest, adjudication_audit = self._build_evidence(
                 sample, context, preprocess, mode, stage="adjudication", selected_proposals=selected
@@ -154,7 +158,7 @@ class ChangeAgent:
             adjudication_payload = self._request_payload(
                 sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_audit,
                 image_manifest=image_manifest, evidence_audit=adjudication_audit, stage="adjudication",
-                first_pass={"answer": result.answer, "review_warnings": initial_warnings},
+                first_pass={"answer": result.answer, "review_warnings": initial_warnings, "review_route_reasons": list(review.route_reasons)},
                 selected_proposals=selected,
             )
             content.append({"type": "text", "text": json.dumps(adjudication_payload, ensure_ascii=False)})
@@ -162,8 +166,8 @@ class ChangeAgent:
                 sample=sample, context=context, identity=identity, content=content, image_hashes=image_hashes,
                 response_model=ChangeAdjudicationResult, decision_stage="adjudication",
             )
-            self._validate_adjudication(adjudication, adjudication_candidate_ids, sample.sample_id)
-            reviewed, adjudication_outcome = self._merge_adjudication(adjudication, sample.task)
+            consistency_warnings = self._validate_adjudication(adjudication, adjudication_candidate_ids)
+            reviewed, adjudication_outcome = self._merge_adjudication(adjudication, sample.task, consistency_warnings)
             reviewed, final_warnings = review_result(reviewed, preprocess.proposals, settings.review)
             if adjudication_outcome == "negative":
                 final_warnings = [warning for warning in final_warnings if warning != "CHANGE_RESULT_CONFLICT"]
@@ -207,7 +211,7 @@ class ChangeAgent:
             "review_warnings": final_warnings,
             "adjudication_enabled": settings.review.adjudication_enabled,
             "adjudication_used": adjudication_used,
-            "adjudication_trigger": "CHANGE_RESULT_CONFLICT" if adjudication_used else None,
+            "adjudication_trigger": ("negative_conflict" if review.route == "adjudicate_negative" else "positive_conflict") if adjudication_used else None,
             "adjudication_request_hash": adjudication_request_hash,
             "adjudication_candidate_ids": adjudication_candidate_ids,
             "adjudication_global_verdict": adjudication_global_verdict,
@@ -215,6 +219,11 @@ class ChangeAgent:
             "adjudication_outcome": adjudication_outcome,
             "initial_review_warnings": initial_warnings,
             "final_review_warnings": final_warnings,
+            "review_route": review.route,
+            "review_route_reasons": list(review.route_reasons),
+            "initial_result_normalizations": result.geometry.get("change_input_normalizations", []),
+            "adjudication_consistency_warnings": consistency_warnings if adjudication_used else [],
+            "final_merge_reason": adjudication_outcome,
             "preprocess_artifacts": preprocess.artifact_files,
             "perception_artifacts": preprocess.artifact_files,
         }
@@ -280,6 +289,9 @@ class ChangeAgent:
         }
         if stage == "adjudication":
             payload["first_pass"] = first_pass or {}
+            payload["adjudication_trigger"] = "positive_conflict" if any(
+                str(item).startswith("POSITIVE_") for item in (first_pass or {}).get("review_route_reasons", [])
+            ) else "negative_conflict"
             payload["adjudication_candidates"] = [self._proposal_payload(item) for item in proposals]
         return payload
 
@@ -296,29 +308,35 @@ class ChangeAgent:
         }
 
     def _validate_adjudication(
-        self, result: ChangeAdjudicationResult, selected_ids: list[str], sample_id: str
-    ) -> None:
+        self, result: ChangeAdjudicationResult, selected_ids: list[str]
+    ) -> list[str]:
+        warnings: list[str] = []
         if result.agent_name != self.name:
-            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_INVALID_AGENT")
+            warnings.append("ADJUDICATION_INVALID_AGENT")
         ids = [item.proposal_id for item in result.candidate_reviews]
         if len(ids) != len(set(ids)):
-            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_DUPLICATE_PROPOSAL")
+            warnings.append("ADJUDICATION_DUPLICATE_PROPOSAL_ID")
         if set(ids) - set(selected_ids):
-            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_UNKNOWN_PROPOSAL")
+            warnings.append("ADJUDICATION_UNKNOWN_PROPOSAL_ID")
         if set(selected_ids) - set(ids):
-            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_MISSING_PROPOSAL")
+            warnings.append("ADJUDICATION_MISSING_PROPOSAL_ID")
         positive = result.global_review.verdict == "persistent_change" or any(
             item.verdict == "persistent_change" for item in result.candidate_reviews
         )
         if positive and (result.answer.strip() == "No significant semantic change detected." or result.answer.strip().upper() in {"CHANGE", "NO_CHANGE", "YES", "NO"}):
-            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_INVALID_POSITIVE_ANSWER")
+            warnings.append("ADJUDICATION_POSITIVE_WITH_CANONICAL_NEGATIVE_ANSWER")
+        nuisance = ("seasonal", "greener", "brown", "water-filled", "vehicle", "truck", "car", "brightness", "shadow")
+        for item in [result.global_review, *result.candidate_reviews]:
+            if item.verdict == "persistent_change" and any(token in item.reason.casefold() for token in nuisance):
+                warnings.append("ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON")
+        return list(dict.fromkeys(warnings))
 
     def _merge_adjudication(
-        self, result: ChangeAdjudicationResult, task: str
+        self, result: ChangeAdjudicationResult, task: str, consistency_warnings: list[str]
     ) -> tuple[AgentResult, Literal["positive", "negative", "unresolved"]]:
-        positive = result.global_review.verdict == "persistent_change" or any(
+        positive = not consistency_warnings and (result.global_review.verdict == "persistent_change" or any(
             item.verdict == "persistent_change" for item in result.candidate_reviews
-        )
+        ))
         unresolved = result.global_review.verdict == "insufficient_visual_evidence" or any(
             item.verdict == "insufficient_visual_evidence" for item in result.candidate_reviews
         )
@@ -334,6 +352,22 @@ class ChangeAgent:
             answer = "No significant semantic change detected." if task == "change_caption" else result.answer
         return AgentResult(agent_name=self.name, answer=answer, boxes=result.boxes, evidence=result.evidence,
                            evidence_items=result.evidence_items, geometry=dict(result.geometry), status=status), outcome
+
+    def _select_proposals(self, proposals: list[Any], *, limit: int) -> list[Any]:
+        ranked = sorted(proposals, key=_proposal_priority)
+        selected: list[Any] = []
+        if ranked:
+            selected.append(ranked[0])
+        edge = next((item for item in ranked if item not in selected and _is_edge_proposal(item, self._settings.evidence.edge_margin_ratio)), None)
+        if edge is not None and len(selected) < limit:
+            selected.append(edge)
+        diverse = next((item for item in ranked if item not in selected and all(_box_iou(item.box, other.box) < 0.5 for other in selected)), None)
+        if diverse is not None and len(selected) < limit:
+            selected.append(diverse)
+        for item in ranked:
+            if item not in selected and len(selected) < limit:
+                selected.append(item)
+        return selected
 
     def _prepare_perception_and_publish(
         self,
@@ -455,9 +489,10 @@ class ChangeAgent:
                 ("proposal_overlay", context.artifact_dir / overlay, "artifact")
             )
             proposal_evidence_count += 1
-        selected = selected_proposals if selected_proposals is not None else sorted(
-            preprocess.proposals, key=_proposal_priority
-        )[: (self._settings.evidence.initial_max_proposals if stage == "initial" else self._settings.evidence.adjudication_max_proposals)]
+        selected = selected_proposals if selected_proposals is not None else self._select_proposals(
+            preprocess.proposals,
+            limit=self._settings.evidence.initial_max_proposals if stage == "initial" else self._settings.evidence.adjudication_max_proposals,
+        )
         skipped_incomplete: list[str] = []
         attached_ids: list[str] = []
         for proposal in selected:
@@ -717,6 +752,35 @@ def _proposal_priority(proposal: Any) -> tuple[float, str]:
     ]
     confidence = sum(values) / len(values) if values else 1.0
     return (-float(proposal.score) * confidence, str(proposal.proposal_id))
+
+
+def _is_edge_proposal(proposal: Any, margin_ratio: float) -> bool:
+    margin = round(999 * margin_ratio)
+    x1, y1, x2, y2 = proposal.box
+    return x1 <= margin or y1 <= margin or x2 >= 999 - margin or y2 >= 999 - margin
+
+
+def _box_iou(first: list[int], second: list[int]) -> float:
+    x1, y1 = max(first[0], second[0]), max(first[1], second[1])
+    x2, y2 = min(first[2], second[2]), min(first[3], second[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    union = (first[2] - first[0]) * (first[3] - first[1]) + (second[2] - second[0]) * (second[3] - second[1]) - intersection
+    return intersection / union if union else 0.0
+
+
+def _normalize_positive_caption(result: AgentResult) -> AgentResult:
+    answer = result.answer.strip()
+    lowered = answer.casefold()
+    for prefix in ("persistent change detected:", "change detected:", "significant change detected:"):
+        if lowered.startswith(prefix):
+            caption = answer[len(prefix):].strip()
+            if caption:
+                geometry = dict(result.geometry)
+                values = list(geometry.get("change_input_normalizations") or [])
+                values.append("generic_positive_prefix_stripped")
+                geometry["change_input_normalizations"] = list(dict.fromkeys(values))
+                return result.model_copy(update={"answer": caption, "geometry": geometry})
+    return result
 
 
 def _semantic_support_payload(

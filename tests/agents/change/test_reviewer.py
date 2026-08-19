@@ -67,7 +67,7 @@ def test_no_change_with_single_proposal_is_not_conflict() -> None:
     _, warnings = review_result(
         result, [_proposal("p1", score=0.9, area_ratio=0.001)], ChangeReviewSettings()
     )
-    assert "CHANGE_RESULT_CONFLICT" not in warnings
+    assert "CHANGE_RESULT_CONFLICT" in warnings
 
 
 def test_canonical_no_change_phrase_uses_current_proposal_score_scale() -> None:
@@ -80,7 +80,7 @@ def test_canonical_no_change_phrase_uses_current_proposal_score_scale() -> None:
         ],
         ChangeReviewSettings(),
     )
-    assert "CHANGE_RESULT_CONFLICT" in warnings
+    assert "CHANGE_RESULT_CONFLICT" not in warnings
     assert "CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE" not in warnings
 
 

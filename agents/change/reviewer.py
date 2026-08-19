@@ -6,13 +6,40 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from agents.change.schema import ChangeProposal
 from agents.change.settings import ChangeReviewSettings
 from agents.schema import AgentResult
 
+ReviewRoute = Literal["accept", "adjudicate_negative", "adjudicate_positive"]
+
+
+@dataclass(frozen=True)
+class ChangeReviewOutcome:
+    result: AgentResult
+    warnings: tuple[str, ...]
+    route: ReviewRoute
+    route_reasons: tuple[str, ...]
+
+
+def is_canonical_no_change(answer: str) -> bool:
+    return answer.strip() == "No significant semantic change detected."
+
+
+def is_unresolved_change_answer(answer: str) -> bool:
+    return answer.strip() == "Unable to confirm a persistent semantic change from the available evidence."
+
+
+def is_positive_change_answer(answer: str) -> bool:
+    return bool(answer.strip()) and not is_canonical_no_change(answer) and not is_unresolved_change_answer(answer)
+
 
 def is_no_change_answer(answer: str) -> bool:
     """Recognize completed no-change wording without treating uncertainty as negative."""
+    if is_canonical_no_change(answer):
+        return True
     normalized = answer.casefold()
     return any(token in normalized for token in (
         "no visible change", "no change", "no significant semantic change",
@@ -31,11 +58,70 @@ def has_no_change_conflict(
 ) -> bool:
     if not settings.enabled or not is_no_change_answer(result.answer):
         return False
-    meaningful = meaningful_proposals(proposals, settings)
-    return (
-        len(meaningful) >= settings.no_change_conflict_min_proposals
-        or sum(item.area_ratio for item in meaningful) >= settings.no_change_conflict_min_total_area_ratio
-    )
+    return _negative_conflict_reasons(proposals, settings) != []
+
+
+def _is_edge(proposal: ChangeProposal, margin_ratio: float) -> bool:
+    margin = round(999 * margin_ratio)
+    x1, y1, x2, y2 = proposal.box
+    return x1 <= margin or y1 <= margin or x2 >= 999 - margin or y2 >= 999 - margin
+
+
+def _negative_conflict_reasons(
+    proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> list[str]:
+    reasons: list[str] = []
+    for proposal in proposals:
+        adjusted = proposal.score * (
+            sum(proposal.reliability.values()) / len(proposal.reliability)
+            if proposal.reliability else 1.0
+        )
+        active = sum(1 for value in proposal.component_scores.values() if value > 0.0)
+        if adjusted >= settings.negative_strong_score:
+            reasons.append("NEGATIVE_STRONG_PROPOSAL")
+        if adjusted >= settings.negative_moderate_score and active >= settings.negative_min_reliable_components:
+            reasons.append("NEGATIVE_CROSS_BRANCH_SUPPORT")
+        if _is_edge(proposal, settings.negative_edge_margin_ratio) and adjusted >= settings.negative_edge_score:
+            reasons.append("NEGATIVE_EDGE_RESCUE")
+    if sum(item.area_ratio for item in meaningful_proposals(proposals, settings)) >= settings.negative_large_total_area_ratio:
+        reasons.append("NEGATIVE_LARGE_COHERENT_SUPPORT")
+    return list(dict.fromkeys(reasons))
+
+
+def _positive_conflict_reasons(result: AgentResult, proposals: list[ChangeProposal], task: str) -> list[str]:
+    if task != "change_caption" or not is_positive_change_answer(result.answer):
+        return []
+    answer = result.answer.casefold()
+    reasons: list[str] = []
+    persistent = ("building", "structure", "road", "cleared", "vegetation", "wooded", "land", "basin", "shoreline", "infrastructure")
+    transient = ("vehicle", "truck", "car", "equipment")
+    water_state = ("water-filled", "filled", "dry", "wet", "turbidity", "reflection")
+    appearance = ("greener", "brown", "brightness", "brighter", "darker", "shadow", "color", "seasonal")
+    if any(token in answer for token in transient) and not any(token in answer for token in persistent):
+        reasons.append("POSITIVE_TRANSIENT_ONLY")
+    if any(token in answer for token in water_state) and not any(token in answer for token in ("shoreline", "boundary", "basin", "constructed", "removed", "expanded", "contracted")):
+        reasons.append("POSITIVE_WATER_STATE_ONLY")
+    if any(token in answer for token in appearance) and not any(token in answer for token in ("cleared", "removed", "replaced", "extent")):
+        reasons.append("POSITIVE_APPEARANCE_ONLY")
+    local = any(token in answer for token in ("building", "structure", "road"))
+    temporal = {_temporal_side(item.image_id) for item in result.evidence_items if item.image_id}
+    if local and result.evidence_items and temporal != {"t1", "t2"}:
+        reasons.append("POSITIVE_MISSING_TEMPORAL_PAIR")
+    if local and proposals and result.evidence_items and all(
+        item.box is None or not any(_iou(item.box, proposal.box) > 0.05 for proposal in proposals)
+        for item in result.evidence_items
+    ):
+        reasons.append("POSITIVE_LOCAL_CLAIM_OUTSIDE_ATTENTION")
+    return reasons
+
+
+def review_outcome(result: AgentResult, proposals: list[ChangeProposal], settings: ChangeReviewSettings, *, task: str) -> ChangeReviewOutcome:
+    reviewed, warnings = review_result(result, proposals, settings)
+    negative = _negative_conflict_reasons(proposals, settings) if is_canonical_no_change(result.answer) else []
+    positive = _positive_conflict_reasons(result, proposals, task)
+    reasons = negative or positive
+    route: ReviewRoute = "adjudicate_negative" if negative else "adjudicate_positive" if positive else "accept"
+    return ChangeReviewOutcome(reviewed, tuple(warnings), route, tuple(reasons))
 
 
 def review_result(

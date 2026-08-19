@@ -218,6 +218,12 @@ class ChangeReviewSettings(BaseModel):
     )
     require_temporal_pair_evidence: bool = True
     adjudication_enabled: bool = True
+    negative_strong_score: float = Field(default=0.35, ge=0.0, le=1.0)
+    negative_moderate_score: float = Field(default=0.24, ge=0.0, le=1.0)
+    negative_min_reliable_components: int = Field(default=2, ge=1)
+    negative_large_total_area_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
+    negative_edge_score: float = Field(default=0.20, ge=0.0, le=1.0)
+    negative_edge_margin_ratio: float = Field(default=0.06, ge=0.0, le=0.5)
 
 
 class ChangeEvidenceSettings(BaseModel):
@@ -225,11 +231,12 @@ class ChangeEvidenceSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    initial_max_proposals: int = Field(default=2, ge=0, le=6)
+    initial_max_proposals: int = Field(default=3, ge=0, le=6)
     adjudication_max_proposals: int = Field(default=3, ge=1, le=6)
     attach_proposal_overlay: bool = True
     attach_registered_global: bool = False
     attach_harmonized_global: bool = False
+    edge_margin_ratio: float = Field(default=0.06, ge=0.0, le=0.5)
 
 
 class AgentChangeSettings(BaseModel):

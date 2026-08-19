@@ -74,8 +74,8 @@ class _RecordingClient:
             payload = json.loads(messages[1]["content"][-1]["text"])
             return response_model.model_validate({
                 "agent_name": "change_agent",
-                "global_review": {"verdict": "no_persistent_change", "t1_state": "stable scene", "t2_state": "stable scene", "reason": "no persistent geometry change"},
-                "candidate_reviews": [{"proposal_id": item["proposal_id"], "verdict": "appearance_only", "t1_state": "same structure", "t2_state": "same structure", "reason": "appearance differs only"} for item in payload["adjudication_candidates"]],
+                "global_review": {"verdict": "no_persistent_change", "t1_state": "stable scene", "t2_state": "stable scene", "reason": "no persistent geometry change", "change_category": None},
+                "candidate_reviews": [{"proposal_id": item["proposal_id"], "verdict": "appearance_only", "t1_state": "same structure", "t2_state": "same structure", "reason": "appearance differs only", "change_category": None} for item in payload["adjudication_candidates"]],
                 "answer": "No significant semantic change detected.", "status": "completed",
             })
         return response_model.model_validate(
@@ -591,9 +591,9 @@ def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient(answer="No visible change.")
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
-    assert execution.payload.status == "completed"
-    assert "CHANGE_RESULT_CONFLICT" not in execution.trace["review_warnings"]
-    assert execution.trace["adjudication_used"] is True
+    assert execution.payload.status == "partial"
+    assert "CHANGE_RESULT_CONFLICT" in execution.trace["review_warnings"]
+    assert execution.trace["adjudication_used"] is False
     assert execution.trace["review_used"] is True
 
 

@@ -12,7 +12,33 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from agents.counting.schema import IssueRecord
-from agents.schema import VisualEvidence
+from agents.schema import AgentResult, VisualEvidence
+
+CANONICAL_NO_CHANGE = "No significant semantic change detected."
+
+
+class ChangeInitialResult(AgentResult):
+    """Change-only tolerant initial schema for canonical negative outputs."""
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_canonical_negative(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if (
+            data.get("agent_name") == "change_agent"
+            and str(data.get("answer", "")).strip() == CANONICAL_NO_CHANGE
+        ):
+            data["boxes"] = []
+            data["evidence"] = []
+            data["evidence_items"] = []
+            geometry = dict(data.get("geometry") or {})
+            normalizations = list(geometry.get("change_input_normalizations") or [])
+            normalizations.append("canonical_no_change_cleared_model_evidence")
+            geometry["change_input_normalizations"] = list(dict.fromkeys(normalizations))
+            data["geometry"] = geometry
+        return data
 
 
 RegistrationModel = Literal["identity", "similarity", "affine", "homography", "none"]
@@ -246,7 +272,12 @@ CandidateVerdict = Literal[
     "insufficient_visual_evidence",
 ]
 GlobalVerdict = Literal[
-    "persistent_change", "no_persistent_change", "insufficient_visual_evidence",
+    "persistent_change", "no_persistent_change", "appearance_only",
+    "registration_artifact", "insufficient_visual_evidence",
+]
+PersistentChangeCategory = Literal[
+    "building_structure", "road_network", "vegetation_extent", "land_use_conversion",
+    "water_geometry", "other_persistent_infrastructure",
 ]
 
 
@@ -257,6 +288,13 @@ class ChangeCandidateReview(BaseModel):
     t1_state: str
     t2_state: str
     reason: str
+    change_category: PersistentChangeCategory | None = None
+
+    @model_validator(mode="after")
+    def validate_category(self) -> "ChangeCandidateReview":
+        if (self.verdict == "persistent_change") != (self.change_category is not None):
+            raise ValueError("persistent candidate verdict requires category only")
+        return self
 
 
 class ChangeGlobalReview(BaseModel):
@@ -265,6 +303,13 @@ class ChangeGlobalReview(BaseModel):
     t1_state: str
     t2_state: str
     reason: str
+    change_category: PersistentChangeCategory | None = None
+
+    @model_validator(mode="after")
+    def validate_category(self) -> "ChangeGlobalReview":
+        if (self.verdict == "persistent_change") != (self.change_category is not None):
+            raise ValueError("persistent global verdict requires category only")
+        return self
 
 
 class ChangeAdjudicationResult(BaseModel):
