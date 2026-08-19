@@ -24,6 +24,11 @@ from agents.counting.settings import (
     CountingSettings,
     YoloCountingSettings,
 )
+from models.base import (
+    OUTLINES_ADAPTER_VERSION,
+    PINNED_OUTLINES_VERSION,
+    json_schema_sha256,
+)
 from models.settings import ModelSettings
 
 
@@ -99,6 +104,15 @@ class VisualPlannerSettings(BaseModel):
     large_image_policy: Literal["both-dimensions-strictly-greater-than-1024"] = (
         "both-dimensions-strictly-greater-than-1024"
     )
+    structured_decoding: Literal["native", "outlines-json-schema"] = (
+        "outlines-json-schema"
+    )
+    # These are derived into the snapshot from the exact planner schema. They
+    # remain optional inputs only for round-tripping an existing snapshot.
+    # 这些字段由精确规划器 Schema 派生写入快照；保留可选输入仅用于快照往返。
+    outlines_adapter_version: str | None = None
+    pinned_outlines_version: str | None = None
+    schema_sha256: str | None = None
 
     @model_validator(mode="after")
     def validate_v5_roi_identity(self) -> "VisualPlannerSettings":
@@ -261,6 +275,21 @@ class AppSettings(BaseModel):
             serialized["model_path"] = _posix(profile.model_path)
             if profile.processor_path is not None:
                 serialized["processor_path"] = _posix(profile.processor_path)
+        planner = payload["visual_planning"]["planner"]
+        if planner["structured_decoding"] == "outlines-json-schema":
+            planner["outlines_adapter_version"] = OUTLINES_ADAPTER_VERSION
+            planner["pinned_outlines_version"] = PINNED_OUTLINES_VERSION
+        else:
+            planner["outlines_adapter_version"] = None
+            planner["pinned_outlines_version"] = None
+        # Keep the exact runtime response schema in the reproducibility
+        # snapshot without making settings import the planner implementation.
+        # 在复现快照中记录运行时精确响应 Schema，同时不让 settings 依赖规划器实现。
+        from agents.schema import VisualTaskPlan
+
+        planner["schema_sha256"] = json_schema_sha256(
+            VisualTaskPlan.model_json_schema()
+        )
         return payload
 
     def safe_snapshot(self) -> dict[str, Any]:

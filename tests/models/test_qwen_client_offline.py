@@ -8,13 +8,23 @@ Qwen Transformers 客户端离线测试：注入 fake processor/model（不下�
 from __future__ import annotations
 
 import json
+import sys
+import types
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pydantic import BaseModel, ConfigDict
 
-from models.base import RequestMeta, VisionLanguageClient, build_request_hash
+from models.base import (
+    JsonDecodingPolicy,
+    OUTLINES_ADAPTER_VERSION,
+    PINNED_OUTLINES_VERSION,
+    RequestMeta,
+    VisionLanguageClient,
+    build_request_hash,
+    json_schema_sha256,
+)
 from models.cache import JsonResponseCache
 from models.qwen_transformers import QwenTransformersClient, QwenTransformersError
 from models.settings import QwenSettings
@@ -74,6 +84,18 @@ class _FakeModel:
         return [_FakeOutput()]
 
 
+class _RecordingModel(_FakeModel):
+    """Record generation kwargs for native/constrained seam assertions.
+    记录生成参数，用于 native/约束解码 seam 断言。"""
+
+    def __init__(self) -> None:
+        self.generate_kwargs: list[dict[str, Any]] = []
+
+    def generate(self, **kwargs):
+        self.generate_kwargs.append(kwargs)
+        return [_FakeOutput()]
+
+
 def _meta(artifact_dir: Path, digest: str | None = None) -> RequestMeta:
     return RequestMeta(
         request_id="test:qwen",
@@ -84,6 +106,58 @@ def _meta(artifact_dir: Path, digest: str | None = None) -> RequestMeta:
         prompt_version="v1",
         artifact_dir=artifact_dir,
     )
+
+
+def _constrained_meta(artifact_dir: Path, digest: str | None = None) -> RequestMeta:
+    schema_sha256 = json_schema_sha256(_BoxResult.model_json_schema())
+    request_hash = digest or build_request_hash(
+        model="fake",
+        generation={"max_tokens": 8},
+        prompt_version="v1",
+        messages=[{"content": "x"}],
+        image_sha256=None,
+        response_schema=_BoxResult.model_json_schema(),
+        structured_decoding=JsonDecodingPolicy.OUTLINES_JSON_SCHEMA.value,
+        outlines_adapter_version=OUTLINES_ADAPTER_VERSION,
+        pinned_outlines_version=PINNED_OUTLINES_VERSION,
+        schema_sha256=schema_sha256,
+    )
+    return RequestMeta(
+        request_id="test:qwen:constrained",
+        request_hash=request_hash,
+        prompt_version="v1",
+        artifact_dir=artifact_dir,
+        decoding_policy=JsonDecodingPolicy.OUTLINES_JSON_SCHEMA,
+        outlines_adapter_version=OUTLINES_ADAPTER_VERSION,
+        pinned_outlines_version=PINNED_OUTLINES_VERSION,
+        schema_sha256=schema_sha256,
+    )
+
+
+def _install_fake_outlines(monkeypatch, model: Any, processor: Any) -> None:
+    """Install a tiny API-compatible Outlines seam without importing the package.
+    注入微型 API 兼容 Outlines seam，且不导入真实依赖。"""
+    outlines = types.ModuleType("outlines")
+    outlines.__version__ = PINNED_OUTLINES_VERSION
+
+    def from_transformers(existing_model, existing_processor):
+        existing_processor.padding_side = "left"
+        existing_processor.pad_token = "[PAD]"
+        return types.SimpleNamespace(model=existing_model, processor=existing_processor)
+
+    outlines.from_transformers = from_transformers
+    backends = types.ModuleType("outlines.backends")
+
+    def get_json_schema_logits_processor(backend_name, adapter, schema_text):
+        assert backend_name is None
+        assert adapter.model is model
+        assert adapter.processor is processor
+        assert "properties" in schema_text
+        return object()
+
+    backends.get_json_schema_logits_processor = get_json_schema_logits_processor
+    monkeypatch.setitem(sys.modules, "outlines", outlines)
+    monkeypatch.setitem(sys.modules, "outlines.backends", backends)
 
 
 def test_client_implements_vision_language_protocol() -> None:
@@ -100,6 +174,164 @@ def test_client_accepts_injected_model_and_processor(tmp_path: Path) -> None:
         processor=processor,
     )
     assert client.model is not None and client.processor is processor
+
+
+def test_constrained_generation_fails_closed_without_outlines(tmp_path: Path) -> None:
+    """Missing Outlines must not silently fall back or invoke native generation.
+    缺少 Outlines 时不得静默回退，也不得调用 native 生成。"""
+    processor = _FakeProcessor(['{"label": "a", "box": [1, 2, 3, 4]}'])
+    model = _RecordingModel()
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=model,
+        processor=processor,
+        repair_prompt="Repair the JSON.",
+    )
+    import asyncio
+
+    with pytest.raises(QwenTransformersError) as raised:
+        asyncio.run(
+            client.complete_json(
+                messages=[{"role": "user", "content": "Q"}],
+                response_model=_BoxResult,
+                request_meta=_constrained_meta(tmp_path / "artifacts"),
+            )
+        )
+    assert raised.value.code == "OUTLINES_UNAVAILABLE"
+    assert model.generate_kwargs == []
+    metadata = json.loads(
+        (tmp_path / "artifacts" / "validation.json").read_text(encoding="utf-8")
+    )
+    assert metadata["validation_error"] == "OUTLINES_UNAVAILABLE"
+    assert all(
+        "error" not in attempt
+        for attempt in metadata["response_metadata"]["attempt_errors"]
+    )
+
+
+def test_direct_decoding_policy_cannot_change_request_identity(tmp_path: Path) -> None:
+    """An explicit policy must agree with durable request metadata.
+    显式策略必须与持久化请求元数据一致。"""
+    model = _RecordingModel()
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=model,
+        processor=_FakeProcessor(['{"label": "a", "box": [1, 2, 3, 4]}']),
+    )
+    import asyncio
+
+    with pytest.raises(QwenTransformersError) as raised:
+        asyncio.run(
+            client.complete_json(
+                messages=[{"role": "user", "content": "planner"}],
+                response_model=_BoxResult,
+                request_meta=_meta(tmp_path / "artifacts"),
+                decoding_policy=JsonDecodingPolicy.OUTLINES_JSON_SCHEMA,
+            )
+        )
+    assert raised.value.code == "DECODING_POLICY_MISMATCH"
+    assert model.generate_kwargs == []
+
+
+def test_outlines_adapter_reuses_loaded_objects_and_restores_processor_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """The optional adapter is lazy, identity-preserving, and isolated.
+    可选适配器必须惰性创建、保持对象身份并隔离处理器状态。"""
+    processor = _FakeProcessor([])
+    processor.padding_side = "right"
+    processor.pad_token = "<old>"
+    model = _RecordingModel()
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=model,
+        processor=processor,
+    )
+    _install_fake_outlines(monkeypatch, model, processor)
+
+    logits_processor, metadata = client._build_outlines_logits_processor(_BoxResult)
+
+    assert logits_processor is not None
+    assert metadata["schema_compilation"] == "created"
+    assert client._outlines_model.model is model
+    assert client._outlines_model.processor is processor
+    assert processor.padding_side == "right"
+    assert processor.pad_token == "<old>"
+
+
+def test_constrained_generation_is_single_pass_and_native_is_unconstrained(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """Planner constraints apply once while a native child call stays native.
+    规划器约束只应用一次，而 native 子 Agent 调用保持原路径。"""
+    model = _RecordingModel()
+    processor = _FakeProcessor([
+        '{"label": "a", "box": [1, 2, 3, 4]}',
+        '{"label": "b", "box": [5, 6, 7, 8]}',
+    ])
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=model,
+        processor=processor,
+        repair_prompt="Repair the JSON.",
+    )
+    _install_fake_outlines(monkeypatch, model, processor)
+    import asyncio
+
+    constrained = asyncio.run(
+        client.complete_json(
+            messages=[{"role": "user", "content": "planner"}],
+            response_model=_BoxResult,
+            request_meta=_constrained_meta(tmp_path / "constrained"),
+        )
+    )
+    native = asyncio.run(
+        client.complete_json(
+            messages=[{"role": "user", "content": "child"}],
+            response_model=_BoxResult,
+            request_meta=_meta(tmp_path / "native"),
+        )
+    )
+
+    assert constrained.label == "a"
+    assert native.label == "b"
+    assert len(model.generate_kwargs) == 2
+    assert "logits_processor" in model.generate_kwargs[0]
+    assert "logits_processor" not in model.generate_kwargs[1]
+    constrained_metadata = json.loads(
+        (tmp_path / "constrained" / "validation.json").read_text(encoding="utf-8")
+    )
+    decoding = constrained_metadata["response_metadata"]["decoding"]
+    assert decoding["structured_decoding"] == "outlines-json-schema"
+    assert decoding["schema_sha256"] == json_schema_sha256(_BoxResult.model_json_schema())
+
+
+def test_constrained_validation_never_uses_repair_generation(monkeypatch, tmp_path: Path) -> None:
+    """A constrained validation failure is terminal after one generation.
+    约束解码后的校验失败在一次生成后终止，不触发 repair。"""
+    model = _RecordingModel()
+    processor = _FakeProcessor(["not json"])
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=model,
+        processor=processor,
+        repair_prompt="Repair the JSON.",
+    )
+    _install_fake_outlines(monkeypatch, model, processor)
+    import asyncio
+
+    with pytest.raises(QwenTransformersError) as raised:
+        asyncio.run(
+            client.complete_json(
+                messages=[{"role": "user", "content": "planner"}],
+                response_model=_BoxResult,
+                request_meta=_constrained_meta(tmp_path / "artifacts"),
+            )
+        )
+    assert raised.value.code == "JSON_VALIDATION_FAILED"
+    assert len(model.generate_kwargs) == 1
 
 
 def test_complete_json_success_and_artifacts(tmp_path: Path) -> None:

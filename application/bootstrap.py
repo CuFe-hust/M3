@@ -224,6 +224,10 @@ def assemble_runtime(
         judge_sample_rate: float | None = None,
         data_root: Path,
         planning_mode: str = "visual-task-plan-v5",
+        structured_decoding: str | None = None,
+        outlines_adapter_version: str | None = None,
+        pinned_outlines_version: str | None = None,
+        schema_sha256: str | None = None,
     ) -> DatasetRunner:
         return DatasetRunner(
             adapter,
@@ -235,6 +239,10 @@ def assemble_runtime(
             call_budget_factory=call_budget_factory,
             visual_task_planner=visual_task_planner,
             planning_mode=planning_mode,
+            structured_decoding=structured_decoding,
+            outlines_adapter_version=outlines_adapter_version,
+            pinned_outlines_version=pinned_outlines_version,
+            schema_sha256=schema_sha256,
             data_root=data_root,
         )
 
@@ -712,6 +720,7 @@ def _build_visual_task_planning(
         roi_coordinate_frame=planner_settings.roi_coordinate_frame,
         roi_materialization_policy=planner_settings.roi_materialization_policy,
         large_image_policy=planner_settings.large_image_policy,
+        structured_decoding=planner_settings.structured_decoding,
     )
     return planner, bindings
 

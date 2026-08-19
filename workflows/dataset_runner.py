@@ -139,6 +139,10 @@ class DatasetRunner:
         call_budget_factory: CallBudgetFactory | None = None,
         visual_task_planner: VisualTaskPlanner | None = None,
         planning_mode: str = "visual-task-plan-v5",
+        structured_decoding: str | None = None,
+        outlines_adapter_version: str | None = None,
+        pinned_outlines_version: str | None = None,
+        schema_sha256: str | None = None,
         data_root: Path | None = None,
     ) -> None:
         self.adapter = adapter
@@ -150,6 +154,10 @@ class DatasetRunner:
         self.call_budget_factory = call_budget_factory
         self.visual_task_planner = visual_task_planner
         self.planning_mode = planning_mode
+        self.structured_decoding = structured_decoding
+        self.outlines_adapter_version = outlines_adapter_version
+        self.pinned_outlines_version = pinned_outlines_version
+        self.schema_sha256 = schema_sha256
         self.data_root = data_root
 
     async def run(

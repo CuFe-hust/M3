@@ -12,6 +12,7 @@ import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol, TypeVar
 from urllib.parse import urlparse
@@ -19,6 +20,31 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+
+class JsonDecodingPolicy(str, Enum):
+    """Per-request structured-decoding policy for JSON model calls.
+
+    JSON 模型调用的逐请求结构化解码策略。
+
+    ``native`` is the historical Transformers generation path. The Outlines
+    policy is deliberately a request option rather than a client-wide mode, so
+    one shared Qwen client can keep child-Agent calls native.
+    ``native`` 是历史 Transformers 生成路径；Outlines 策略刻意设计为逐请求
+    选项而非客户端全局模式，使同一个 Qwen 客户端中的子 Agent 仍保持 native。
+    """
+
+    NATIVE = "native"
+    OUTLINES_JSON_SCHEMA = "outlines-json-schema"
+
+
+# These identities are part of the persisted planner contract. Keep them in
+# the model-independent seam so workflows never import the concrete Qwen
+# implementation or the optional Outlines package.
+# 这些身份属于持久化规划器契约，放在模型无关 seam 中，使 workflows 不需
+# import 具体 Qwen 实现或可选 Outlines 包。
+OUTLINES_ADAPTER_VERSION = "qwen-transformers-outlines-v1"
+PINNED_OUTLINES_VERSION = "1.3.3"
 
 # Sensitive key names and high-risk value prefixes that must never appear in a
 # cache identity. Keys are matched after normalization; values after
@@ -398,6 +424,10 @@ class RequestMeta(BaseModel):
     tile_id: str | None = None
     image_sha256: str | None = None
     artifact_dir: Path | None = None
+    decoding_policy: JsonDecodingPolicy = JsonDecodingPolicy.NATIVE
+    outlines_adapter_version: str | None = None
+    pinned_outlines_version: str | None = None
+    schema_sha256: str | None = None
 
 
 class VisionLanguageClient(Protocol):
@@ -412,9 +442,16 @@ class VisionLanguageClient(Protocol):
         response_model: type[ModelT],
         request_meta: RequestMeta,
         max_tokens: int | None = None,
+        decoding_policy: JsonDecodingPolicy | None = None,
     ) -> ModelT:
         """Return one schema-validated JSON response.
-        返回一条经 Schema 校验的 JSON 响应。
+
+        ``request_meta.decoding_policy`` is the durable request identity. The
+        optional argument exists for direct clients and must not be used by
+        workflow layers to silently change a persisted request.
+        返回一条经 Schema 校验的 JSON 响应。``request_meta.decoding_policy``
+        是可持久化的调用身份；可选参数仅供直接客户端调用，workflow 不得用
+        它静默改变已持久化的调用。
         """
 
 
@@ -717,14 +754,20 @@ def build_request_hash(
     response_schema: Mapping[str, Any] | None = None,
     client_version: str | None = None,
     model_revision: str | None = None,
+    structured_decoding: str | None = None,
+    outlines_adapter_version: str | None = None,
+    pinned_outlines_version: str | None = None,
+    schema_sha256: str | None = None,
 ) -> str:
     """Hash cache inputs while replacing data URLs with their digest and size.
     The sanitized payload makes the hash stable across machines and runs.
     response_schema / client_version / model_revision are included so cache
-    keys cover the full inference semantics.
+    keys cover the full inference semantics. Structured-decoding fields are
+    added only when supplied, preserving native-Agent cache identities.
     对缓存输入计算哈希，同时以摘要和大小替换数据 URL；脱敏载荷使哈希
     跨机器、跨运行稳定。response_schema / client_version / model_revision
-    参与哈希，使缓存键覆盖完整推理语义。"""
+    参与哈希，使缓存键覆盖完整推理语义。仅在显式提供结构化解码字段时
+    将其加入载荷，从而保持 native Agent 的既有缓存身份不变。"""
 
     payload = {
         "model": model,
@@ -738,8 +781,39 @@ def build_request_hash(
         "client_version": client_version,
         "model_revision": model_revision,
     }
+    if any(
+        value is not None
+        for value in (
+            structured_decoding,
+            outlines_adapter_version,
+            pinned_outlines_version,
+            schema_sha256,
+        )
+    ):
+        payload.update(
+            {
+                "structured_decoding": structured_decoding,
+                "outlines_adapter_version": outlines_adapter_version,
+                "pinned_outlines_version": pinned_outlines_version,
+                "schema_sha256": schema_sha256,
+            }
+        )
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def json_schema_sha256(schema: Mapping[str, Any]) -> str:
+    """Return the stable digest used for a JSON response schema identity.
+
+    JSON response Schema 身份使用的稳定摘要。"""
+
+    encoded = json.dumps(
+        schema,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 

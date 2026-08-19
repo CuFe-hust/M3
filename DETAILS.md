@@ -80,6 +80,31 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 不调用模型，v4 及更早成功样本同样只允许无模型补评测，v4 及更早需要重新推理时返回
 `LEGACY_PLANNING_RESUME_UNSUPPORTED`。
 
+### Doc 21 当前执行事实
+
+Visual Planner 的第一次 Qwen 调用使用逐请求
+`JsonDecodingPolicy.OUTLINES_JSON_SCHEMA`；Counting tile、empty review、quantity proposal、
+Grounding evidence、Caption、Change 与其他子 Agent 调用继续使用 `native`。两条路径共享
+同一个 `QwenTransformersClient`、model、processor 与 generation lock；Outlines adapter 惰性
+创建且只引用已加载对象，不能触发第二次 `from_pretrained()`。Planner constrained 路径严格一次
+physical generation、无 generic JSON repair，Outlines 不可用/版本不符/约束编译失败时稳定
+fail closed，不回退 native；仍执行 Pydantic 与现有 planner post-validation。
+
+planner request hash、Qwen planner call artifacts、`run_request.json` 与 config snapshot 记录：
+
+```text
+structured_decoding = "outlines-json-schema"
+outlines_adapter_version = "qwen-transformers-outlines-v1"
+pinned_outlines_version = "1.3.3"
+schema_sha256 = sha256(VisualTaskPlan.model_json_schema())
+```
+
+Outlines 通过 `.[structured-generation]` 可选依赖组与 `outlines[transformers]==1.3.3` 精确
+声明；缺少该依赖不会破坏 core import。当前环境为 Python 3.14，未安装 Outlines，且工作树
+没有可用于 compatibility spike 的真实 Qwen3-VL/Qwen3.5 checkpoint，因此真实模型、显存/内存、
+Transformers processor/chat-template 与端到端对照 gate 尚未通过；离线 fake-object 测试只验证
+策略隔离、对象身份、一次 generation、无 repair 与稳定 fail-closed，不等价于 live gate。
+
 ---
 
 ## 2. 文档职责
@@ -901,6 +926,10 @@ roi_coordinate_frame = "normalized_0_999_top_left"
 roi_quantum = 1024
 roi_materialization_policy = "longest-side-ceil-quantum-center-clip"
 large_image_policy = "both-dimensions-strictly-greater-than-1024"
+structured_decoding = "outlines-json-schema"  # native 或 outlines-json-schema
+outlines_adapter_version = "qwen-transformers-outlines-v1"  # snapshot 派生字段
+pinned_outlines_version = "1.3.3"                       # snapshot 派生字段
+schema_sha256 = "<VisualTaskPlan.model_json_schema() 的 SHA-256>"  # snapshot 派生字段
 detectors: 每类别策略；None = 未校准 = 能力关闭
 segmenters: 同上；启用必须携带已验证 class map
 ```

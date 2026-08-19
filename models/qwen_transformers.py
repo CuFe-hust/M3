@@ -22,10 +22,14 @@ from pydantic import BaseModel, ValidationError
 
 from models.base import (
     CacheIdentifiedClient,
+    JsonDecodingPolicy,
     ModelCacheIdentity,
     ModelT,
+    OUTLINES_ADAPTER_VERSION,
+    PINNED_OUTLINES_VERSION,
     RequestMeta,
     VisionLanguageClient,
+    json_schema_sha256,
     sanitize_messages,
 )
 from models.cache import CacheEntry, JsonResponseCache, ModelCacheError
@@ -41,6 +45,10 @@ class QwenTransformersError(RuntimeError):
     """Report a visible local model loading, generation, or validation failure.
     报告可见的本地模型加载、生成或校验失败。
     """
+
+    def __init__(self, message: str, *, code: str = "QWEN_TRANSFORMERS_ERROR") -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
@@ -65,6 +73,11 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
             raise ValueError("model and processor must be supplied together")
         self.model, self.processor = (model, processor) if model is not None else self._load()
         self.load_seconds = round(time.perf_counter() - started, 6)
+        # The optional adapter is created lazily around these exact objects;
+        # it must never trigger a second model or processor load.
+        # 可选适配器只围绕这两个既有对象惰性创建，绝不能二次加载模型或处理器。
+        self._outlines_model: Any | None = None
+        self._outlines_logits_processors: dict[str, Any] = {}
         # Serializes generation on this single client instance; cache hits do
         # not acquire this lock. 序列化本客户端实例上的生成；缓存命中不占用锁。
         self._generation_lock = asyncio.Lock()
@@ -154,18 +167,25 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         response_model: type[ModelT],
         request_meta: RequestMeta,
         max_tokens: int | None = None,
+        decoding_policy: JsonDecodingPolicy | None = None,
     ) -> ModelT:
         """Generate once, validate JSON, and persist auditable local-call metadata.
         Corrupt or stale cache entries are recovered by regenerating.
         生成一次、校验 JSON，并保存可审计的本地调用元数据。损坏或过期的
         缓存条目通过重新生成恢复。"""
+        effective_meta = self._effective_request_meta(
+            request_meta,
+            response_model=response_model,
+            decoding_policy=decoding_policy,
+        )
+        policy = effective_meta.decoding_policy
         cache_error: str | None = None
         cached = None
         if self.cache is not None:
             try:
-                cached = self.cache.load(request_meta.request_hash)
+                cached = self.cache.load(effective_meta.request_hash)
             except ModelCacheError as error:
-                cache_error = str(error)
+                cache_error = _safe_cache_error("cache read failed", error)
         if cached is not None:
             try:
                 result = response_model.model_validate(cached.parsed)
@@ -177,7 +197,7 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         if cached is not None:
             result = response_model.model_validate(cached.parsed)
             self._write_artifacts(
-                request_meta,
+                effective_meta,
                 messages,
                 cached.raw_response,
                 result,
@@ -189,6 +209,7 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
                     "cache_read_error": cache_error,
                     "cache_write_error": None,
                     "cache_write_recovered": False,
+                    "decoding": self._decoding_metadata(effective_meta),
                 },
             )
             return result
@@ -196,76 +217,109 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         raw_responses: list[str] = []
         attempt_errors: list[dict[str, Any]] = []
         token_usage: dict[str, int] | None = None
+        generation_metadata: list[dict[str, Any]] = []
         try:
             # Primary generation and any repair share one lock acquisition so
             # no other request can interleave between them.
             # 首次生成与修复共用一次锁获取，避免其他请求插入其间。
             async with self._generation_lock:
-                raw_response, token_usage = await asyncio.to_thread(
-                    self._generate, messages, response_model, max_tokens
+                raw_response, token_usage, primary_metadata = await asyncio.to_thread(
+                    self._generate,
+                    messages,
+                    response_model,
+                    max_tokens,
+                    policy,
                 )
                 raw_responses.append(raw_response)
+                generation_metadata.append(primary_metadata)
                 try:
-                    result = _validate_response(raw_response, response_model)
+                    result = _validate_response(
+                        raw_response,
+                        response_model,
+                        allow_local_recovery=policy is JsonDecodingPolicy.NATIVE,
+                    )
                 except (json.JSONDecodeError, ValidationError, ValueError) as error:
                     attempt_errors.append(_validation_attempt_error(1, error))
-                    if self.repair_prompt is None:
+                    if (
+                        policy is not JsonDecodingPolicy.NATIVE
+                        or self.repair_prompt is None
+                    ):
                         raise
                     repair_messages = _repair_messages(self.repair_prompt, raw_response, str(error))
-                    repaired, repair_usage = await asyncio.to_thread(
-                        self._generate, repair_messages, response_model, max_tokens
+                    repaired, repair_usage, repair_metadata = await asyncio.to_thread(
+                        self._generate,
+                        repair_messages,
+                        response_model,
+                        max_tokens,
+                        JsonDecodingPolicy.NATIVE,
                     )
                     raw_responses.append(repaired)
+                    generation_metadata.append(repair_metadata)
                     token_usage = _sum_token_usage(token_usage, repair_usage)
                     result = _validate_response(repaired, response_model)
         except (json.JSONDecodeError, ValidationError, ValueError) as error:
-            if not attempt_errors or attempt_errors[-1]["error"] != str(error):
+            if len(attempt_errors) < len(raw_responses):
                 attempt_errors.append(_validation_attempt_error(len(raw_responses), error))
             self._write_artifacts(
-                request_meta,
+                effective_meta,
                 messages,
                 _render_raw_responses(raw_responses),
                 None,
                 cache_hit=False,
-                validation_error=f"{type(error).__name__}: {error}",
+                validation_error="JSON_VALIDATION_FAILED",
                 metadata={
                     "latency_seconds": round(time.perf_counter() - started, 6),
                     "token_usage": token_usage,
                     "attempt_errors": attempt_errors,
                     "repair_used": len(raw_responses) > 1,
                     "cache_read_error": cache_error,
+                    "decoding": self._decoding_metadata(
+                        effective_meta,
+                        generation_metadata=generation_metadata,
+                    ),
                 },
             )
             raise QwenTransformersError(
-                f"Local Qwen JSON validation failed after repair: {error}"
+                "Local Qwen JSON validation failed"
+                + (" after repair" if len(raw_responses) > 1 else ""),
+                code="JSON_VALIDATION_FAILED",
             ) from error
         except Exception as error:
             self._write_artifacts(
-                request_meta,
+                effective_meta,
                 messages,
                 _render_raw_responses(raw_responses),
                 None,
                 cache_hit=False,
-                validation_error=f"{type(error).__name__}: {error}",
+                validation_error=getattr(error, "code", "GENERATION_FAILED"),
                 metadata={
                     "latency_seconds": round(time.perf_counter() - started, 6),
                     "token_usage": token_usage,
                     "attempt_errors": attempt_errors,
                     "repair_used": len(raw_responses) > 1,
                     "cache_read_error": cache_error,
+                    "decoding": self._decoding_metadata(
+                        effective_meta,
+                        generation_metadata=generation_metadata,
+                    ),
                 },
             )
-            raise QwenTransformersError(f"Local Qwen generation failed: {error}") from error
+            if isinstance(error, QwenTransformersError):
+                raise
+            raise QwenTransformersError(
+                "Local Qwen generation failed",
+                code="GENERATION_FAILED",
+            ) from error
         rendered_raw = _render_raw_responses(raw_responses)
         cache_write_error: str | None = None
         if self.cache:
             cache_write_error = self._persist_cache_entry(
-                request_hash=request_meta.request_hash,
+                request_hash=effective_meta.request_hash,
                 raw_response=rendered_raw,
                 parsed=result.model_dump(mode="json"),
             )
         self._write_artifacts(
-            request_meta,
+            effective_meta,
             messages,
             rendered_raw,
             result,
@@ -280,16 +334,164 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
                 "cache_read_error": cache_error,
                 "cache_write_error": cache_write_error,
                 "cache_write_recovered": cache_write_error is not None,
+                "decoding": self._decoding_metadata(
+                    effective_meta,
+                    generation_metadata=generation_metadata,
+                ),
             },
         )
         return result
+
+    def _effective_request_meta(
+        self,
+        request_meta: RequestMeta,
+        *,
+        response_model: type[BaseModel],
+        decoding_policy: JsonDecodingPolicy | None,
+    ) -> RequestMeta:
+        """Normalize and verify the request's durable decoding identity.
+        规范化并校验请求持久化的解码身份。"""
+        meta_policy = JsonDecodingPolicy(request_meta.decoding_policy)
+        requested_policy = (
+            JsonDecodingPolicy(decoding_policy)
+            if decoding_policy is not None
+            else meta_policy
+        )
+        if decoding_policy is not None and meta_policy is not requested_policy:
+            raise QwenTransformersError(
+                "JSON decoding policy conflicts with request metadata",
+                code="DECODING_POLICY_MISMATCH",
+            )
+        expected_schema_sha256 = json_schema_sha256(response_model.model_json_schema())
+        updates: dict[str, Any] = {"decoding_policy": requested_policy}
+        if requested_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA:
+            expected_identity = {
+                "outlines_adapter_version": OUTLINES_ADAPTER_VERSION,
+                "pinned_outlines_version": PINNED_OUTLINES_VERSION,
+                "schema_sha256": expected_schema_sha256,
+            }
+            for field_name, expected in expected_identity.items():
+                actual = getattr(request_meta, field_name)
+                if actual is not None and actual != expected:
+                    raise QwenTransformersError(
+                        "Structured decoding identity conflicts with response schema",
+                        code="DECODING_IDENTITY_MISMATCH",
+                    )
+                if actual is None:
+                    raise QwenTransformersError(
+                        "Structured decoding identity is incomplete",
+                        code="DECODING_IDENTITY_INCOMPLETE",
+                    )
+                updates[field_name] = expected
+        return request_meta.model_copy(update=updates)
+
+    def _decoding_metadata(
+        self,
+        request_meta: RequestMeta,
+        *,
+        generation_metadata: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Return JSON-safe structured-decoding identity and audit metadata.
+        返回 JSON-safe 的结构化解码身份与审计元数据。"""
+        metadata: dict[str, Any] = {
+            "structured_decoding": request_meta.decoding_policy.value,
+            "outlines_adapter_version": request_meta.outlines_adapter_version,
+            "pinned_outlines_version": request_meta.pinned_outlines_version,
+            "schema_sha256": request_meta.schema_sha256,
+        }
+        if generation_metadata is not None:
+            metadata["generation"] = generation_metadata
+        return metadata
+
+    def _build_outlines_logits_processor(
+        self,
+        response_model: type[BaseModel],
+    ) -> tuple[Any, dict[str, Any]]:
+        """Build one Outlines JSON-schema processor around the loaded objects.
+        在已加载对象外创建一个 Outlines JSON-Schema processor。"""
+        schema = response_model.model_json_schema()
+        schema_sha256 = json_schema_sha256(schema)
+        cached_processor = self._outlines_logits_processors.get(schema_sha256)
+        if cached_processor is not None:
+            return cached_processor, {
+                "outlines_adapter_version": OUTLINES_ADAPTER_VERSION,
+                "pinned_outlines_version": PINNED_OUTLINES_VERSION,
+                "schema_sha256": schema_sha256,
+                "schema_compilation": "cached",
+            }
+        try:
+            outlines = importlib.import_module("outlines")
+            installed_version = getattr(outlines, "__version__", None)
+            if installed_version is None:
+                from importlib import metadata as importlib_metadata
+
+                installed_version = importlib_metadata.version("outlines")
+            if str(installed_version) != PINNED_OUTLINES_VERSION:
+                raise QwenTransformersError(
+                    "Installed Outlines version does not match the pinned planner identity",
+                    code="OUTLINES_VERSION_MISMATCH",
+                )
+            if self._outlines_model is None:
+                self._outlines_model = _create_outlines_adapter(
+                    outlines,
+                    self.model,
+                    self.processor,
+                )
+            adapter = self._outlines_model
+            if hasattr(adapter, "model") and adapter.model is not self.model:
+                raise QwenTransformersError(
+                    "Outlines adapter did not retain the loaded model object",
+                    code="OUTLINES_OBJECT_IDENTITY_MISMATCH",
+                )
+            if hasattr(adapter, "processor") and adapter.processor is not self.processor:
+                raise QwenTransformersError(
+                    "Outlines adapter did not retain the loaded processor object",
+                    code="OUTLINES_OBJECT_IDENTITY_MISMATCH",
+                )
+            backends = importlib.import_module("outlines.backends")
+            get_processor = getattr(backends, "get_json_schema_logits_processor")
+            schema_text = json.dumps(
+                schema,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            )
+            # Let the pinned Outlines release select its documented JSON-schema
+            # backend; "transformers" is the model adapter, not a backend name.
+            # 让固定版本 Outlines 按其文档选择 JSON-Schema backend；"transformers"
+            # 是模型适配器，不是 backend 名称。
+            logits_processor = get_processor(None, adapter, schema_text)
+            if logits_processor is None:
+                raise QwenTransformersError(
+                    "Outlines returned no JSON-schema logits processor",
+                    code="OUTLINES_CONSTRAINT_SETUP_FAILED",
+                )
+        except QwenTransformersError:
+            raise
+        except (ImportError, ModuleNotFoundError):
+            raise QwenTransformersError(
+                "Outlines is unavailable for structured planner decoding",
+                code="OUTLINES_UNAVAILABLE",
+            )
+        except Exception as error:
+            raise QwenTransformersError(
+                "Outlines JSON-schema constraint setup failed",
+                code="OUTLINES_CONSTRAINT_SETUP_FAILED",
+            ) from error
+        self._outlines_logits_processors[schema_sha256] = logits_processor
+        return logits_processor, {
+            "outlines_adapter_version": OUTLINES_ADAPTER_VERSION,
+            "pinned_outlines_version": PINNED_OUTLINES_VERSION,
+            "schema_sha256": schema_sha256,
+            "schema_compilation": "created",
+        }
 
     def _generate(
         self,
         messages: list[dict[str, Any]],
         response_model: type[BaseModel],
         max_tokens: int | None = None,
-    ) -> tuple[str, dict[str, int]]:
+        decoding_policy: JsonDecodingPolicy = JsonDecodingPolicy.NATIVE,
+    ) -> tuple[str, dict[str, int], dict[str, Any]]:
         """Convert data URLs to PIL images and run deterministic generation.
         将数据 URL 转为 PIL 图像并执行确定性生成。"""
         model_messages, images = _transformer_messages(messages, response_model)
@@ -306,11 +508,27 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         )
         inputs = self.processor(text=[text], images=images or None, padding=True, return_tensors="pt")
         inputs = _move_processor_inputs(inputs, self.model.device)
-        generated = self.model.generate(
-            **inputs,
-            max_new_tokens=max_tokens or self.settings.max_tokens,
-            do_sample=False,
-        )
+        generation_kwargs: dict[str, Any] = {
+            "max_new_tokens": max_tokens or self.settings.max_tokens,
+            "do_sample": False,
+        }
+        generation_metadata: dict[str, Any] = {
+            "structured_decoding": decoding_policy.value,
+            "constraint_applied": False,
+        }
+        if decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA:
+            logits_processor, constraint_metadata = self._build_outlines_logits_processor(
+                response_model
+            )
+            _reset_outlines_logits_processor(logits_processor)
+            generation_kwargs["logits_processor"] = [logits_processor]
+            generation_metadata.update(constraint_metadata)
+            generation_metadata["constraint_applied"] = True
+        try:
+            generated = self.model.generate(**inputs, **generation_kwargs)
+        finally:
+            if decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA:
+                _reset_outlines_logits_processor(logits_processor)
         input_tokens = int(inputs["input_ids"].shape[-1])
         trimmed = [output[input_tokens:] for output in generated]
         raw = self.processor.batch_decode(
@@ -323,7 +541,7 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
             "prompt_tokens": input_tokens,
             "completion_tokens": output_tokens,
             "total_tokens": input_tokens + output_tokens,
-        }
+        }, generation_metadata
 
     def _persist_cache_entry(
         self,
@@ -365,7 +583,12 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
             return
         directory = request_meta.artifact_dir
         directory.mkdir(parents=True, exist_ok=True)
-        _write_json(directory / "request_meta.json", request_meta.model_dump(mode="json"))
+        request_meta_payload = request_meta.model_dump(mode="json")
+        # artifact_dir is an execution handle, not durable model-call identity;
+        # never persist the host path in the request metadata artifact.
+        # artifact_dir 是执行句柄而非持久化调用身份；绝不把主机路径写入请求产物。
+        request_meta_payload["artifact_dir"] = None
+        _write_json(directory / "request_meta.json", request_meta_payload)
         _write_json(directory / "request.json", {"messages": sanitize_messages(messages)})
         (directory / "raw_response.txt").write_text(raw_response, encoding="utf-8")
         _write_json(
@@ -507,6 +730,61 @@ def _move_processor_inputs(inputs: Any, device: Any) -> Any:
     raise TypeError(f"Unsupported processor output type: {type(inputs).__name__}")
 
 
+def _create_outlines_adapter(outlines: Any, model: Any, processor: Any) -> Any:
+    """Create the optional adapter while restoring processor-owned state.
+    创建可选适配器，并恢复处理器自身状态。"""
+    factory = getattr(outlines, "from_transformers")
+    targets: list[Any] = []
+    for candidate in (processor, getattr(processor, "tokenizer", None)):
+        if candidate is not None and all(candidate is not item for item in targets):
+            targets.append(candidate)
+    saved: list[tuple[Any, str, Any]] = []
+    for target in targets:
+        for attribute in ("padding_side", "pad_token"):
+            if hasattr(target, attribute):
+                saved.append((target, attribute, getattr(target, attribute)))
+    restore_error = False
+    try:
+        adapter = factory(model, processor)
+    finally:
+        for target, attribute, value in saved:
+            try:
+                setattr(target, attribute, value)
+            except Exception:
+                restore_error = True
+    if restore_error:
+        raise QwenTransformersError(
+            "Outlines adapter changed processor state that could not be restored",
+            code="OUTLINES_PROCESSOR_STATE_LEAK",
+        )
+    if not hasattr(adapter, "model") or not hasattr(adapter, "processor"):
+        raise QwenTransformersError(
+            "Outlines adapter does not expose model and processor identity",
+            code="OUTLINES_OBJECT_IDENTITY_MISMATCH",
+        )
+    if adapter.model is not model or adapter.processor is not processor:
+        raise QwenTransformersError(
+            "Outlines adapter did not retain the loaded model and processor",
+            code="OUTLINES_OBJECT_IDENTITY_MISMATCH",
+        )
+    return adapter
+
+
+def _reset_outlines_logits_processor(processor: Any) -> None:
+    """Reset cached Outlines state before and after each physical generation.
+    在每次实际生成前后重置缓存的 Outlines 状态。"""
+    reset = getattr(processor, "reset", None)
+    if not callable(reset):
+        return
+    try:
+        reset()
+    except Exception as error:
+        raise QwenTransformersError(
+            "Outlines logits processor state could not be reset",
+            code="OUTLINES_PROCESSOR_STATE_RESET_FAILED",
+        ) from error
+
+
 class _KernelCacheLayerView:
     """Expose state zero as expected by the pinned Atlas kernel.
     按固定 Atlas kernel 的预期暴露第零号状态。"""
@@ -624,11 +902,16 @@ def _decode_data_url(value: str) -> Any:
         return opened.convert("RGB")
 
 
-def _validate_response(raw_response: str, response_model: type[ModelT]) -> ModelT:
+def _validate_response(
+    raw_response: str,
+    response_model: type[ModelT],
+    *,
+    allow_local_recovery: bool = True,
+) -> ModelT:
     """Validate an optional fenced JSON object without accepting surrounding prose.
     校验可选围栏 JSON 对象，不接受前后散文。"""
     stripped = raw_response.strip()
-    if stripped.startswith("```"):
+    if allow_local_recovery and stripped.startswith("```"):
         lines = stripped.splitlines()
         if len(lines) < 2:
             raise ValueError("Unterminated JSON fence")
@@ -637,6 +920,8 @@ def _validate_response(raw_response: str, response_model: type[ModelT]) -> Model
     try:
         payload = json.loads(stripped)
     except json.JSONDecodeError as error:
+        if not allow_local_recovery:
+            raise
         model_recover = getattr(response_model, "recover_json_payload", None)
         model_payload = model_recover(stripped) if callable(model_recover) else None
         if model_payload is not None:
@@ -797,7 +1082,6 @@ def _validation_attempt_error(attempt: int, error: Exception) -> dict[str, Any]:
     return {
         "attempt": attempt,
         "error_type": type(error).__name__,
-        "error": str(error),
         "retryable": False,
     }
 

@@ -57,6 +57,9 @@ def test_default_settings() -> None:
     assert settings.visual_planning.planner.roi_materialization_policy == (
         "longest-side-ceil-quantum-center-clip"
     )
+    assert settings.visual_planning.planner.structured_decoding == (
+        "outlines-json-schema"
+    )
 
 
 def test_visual_planner_rejects_unapproved_roi_quantum() -> None:

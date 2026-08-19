@@ -26,6 +26,7 @@ dev = [
   "huggingface_hub>=0.28.0",
   "transformers>=4.57.0",
 ]
+structured-generation = ["outlines[transformers]==1.3.3"]
 change = ["numpy>=1.26", "opencv-python>=4.8", "Pillow>=10.0.0"]
 yolo = ["ultralytics==8.4.102"]
 yolo-onnx = ["onnxruntime-gpu>=1.23", "numpy>=1.26", "opencv-python>=4.8"]

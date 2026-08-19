@@ -148,6 +148,13 @@ python -m pip install -e ".[dev,change]"          # offline/core tests
 python -m pip install -e ".[change-semantic]"    # explicit SegFormer runtime
 ```
 
+Visual Planner 的可选 Outlines constrained-decoding 依赖单独安装；未安装时 fresh
+planner 请求会 fail closed，不会静默回退到 native：
+
+```bash
+python -m pip install -e ".[structured-generation]"
+```
+
 迁移/部分离线工具需要 NumPy 时：
 
 ```bash

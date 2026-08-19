@@ -197,6 +197,45 @@ def test_historical_v4_run_request_reads_without_reinterpreting_roi() -> None:
     assert "roi_size" not in request.model_dump(mode="json")
 
 
+def test_run_request_persists_planner_structured_decoding_identity() -> None:
+    """Planner decoding identity is round-trippable and complete.
+    规划器结构化解码身份可往返且必须完整。"""
+    request = RunRequest.model_validate(
+        {
+            "dataset": "demo",
+            "dataset_root": "data",
+            "split": "test",
+            "task_mode": "explicit",
+            "tasks": ["general_vqa"],
+            "planning_mode": "visual-task-plan-v5",
+            "structured_decoding": "outlines-json-schema",
+            "outlines_adapter_version": "qwen-transformers-outlines-v1",
+            "pinned_outlines_version": "1.3.3",
+            "schema_sha256": "a" * 64,
+        }
+    )
+    payload = request.model_dump(mode="json")
+    assert payload["structured_decoding"] == "outlines-json-schema"
+    assert payload["outlines_adapter_version"] == "qwen-transformers-outlines-v1"
+    assert payload["pinned_outlines_version"] == "1.3.3"
+    assert payload["schema_sha256"] == "a" * 64
+
+
+def test_run_request_rejects_incomplete_planner_decoding_identity() -> None:
+    with pytest.raises(ValueError, match="adapter and version identities"):
+        RunRequest.model_validate(
+            {
+                "dataset": "demo",
+                "dataset_root": "data",
+                "split": "test",
+                "task_mode": "explicit",
+                "tasks": ["general_vqa"],
+                "structured_decoding": "outlines-json-schema",
+                "schema_sha256": "a" * 64,
+            }
+        )
+
+
 # ── 密钥安全 / secret safety ───────────────────────────────────────────────
 
 

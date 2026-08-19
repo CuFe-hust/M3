@@ -26,10 +26,14 @@ from agents.general_vqa.evidence.rendering import (
 from agents.schema import COUNTING_TASKS, MaterializedVisualView, VisualTaskPlan
 from data.schema import SampleDraft, TaskName, UnifiedSample
 from models.base import (
+    JsonDecodingPolicy,
     MissingModelCacheIdentityError,
+    OUTLINES_ADAPTER_VERSION,
+    PINNED_OUTLINES_VERSION,
     RequestMeta,
     VisionLanguageClient,
     build_request_hash,
+    json_schema_sha256,
     require_model_cache_identity,
 )
 
@@ -70,6 +74,7 @@ class VisualTaskPlanner:
         roi_coordinate_frame: str = _ROI_COORDINATE_FRAME,
         roi_materialization_policy: str = _ROI_MATERIALIZATION_POLICY,
         large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
+        structured_decoding: JsonDecodingPolicy | str = JsonDecodingPolicy.OUTLINES_JSON_SCHEMA,
     ) -> None:
         if max_side <= 0 or roi_quantum <= 0:
             raise ValueError("preview and ROI sizes must be positive")
@@ -83,6 +88,10 @@ class VisualTaskPlanner:
             raise ValueError("unsupported ROI materialization policy")
         if not large_image_policy:
             raise ValueError("large_image_policy must not be empty")
+        try:
+            decoding_policy = JsonDecodingPolicy(structured_decoding)
+        except ValueError as exc:
+            raise ValueError("unsupported visual planner structured decoding policy") from exc
         self._client = client
         self._system_prompt = system_prompt
         self._prompt_version = prompt_version
@@ -100,6 +109,7 @@ class VisualTaskPlanner:
         self._roi_coordinate_frame = roi_coordinate_frame
         self._roi_materialization_policy = roi_materialization_policy
         self._large_image_policy = large_image_policy
+        self._decoding_policy = decoding_policy
 
     @property
     def prompt_version(self) -> str:
@@ -118,6 +128,18 @@ class VisualTaskPlanner:
             "roi_quantum": self._roi_quantum,
             "roi_materialization_policy": self._roi_materialization_policy,
             "large_image_policy": self._large_image_policy,
+            "structured_decoding": self._decoding_policy.value,
+            "outlines_adapter_version": (
+                OUTLINES_ADAPTER_VERSION
+                if self._decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+                else None
+            ),
+            "pinned_outlines_version": (
+                PINNED_OUTLINES_VERSION
+                if self._decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+                else None
+            ),
+            "schema_sha256": json_schema_sha256(VisualTaskPlan.model_json_schema()),
         }
 
     @property
@@ -196,6 +218,18 @@ class VisualTaskPlanner:
             response_schema=VisualTaskPlan.model_json_schema(),
             client_version=identity.client_version,
             model_revision=identity.revision,
+            structured_decoding=self._decoding_policy.value,
+            outlines_adapter_version=(
+                OUTLINES_ADAPTER_VERSION
+                if self._decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+                else None
+            ),
+            pinned_outlines_version=(
+                PINNED_OUTLINES_VERSION
+                if self._decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+                else None
+            ),
+            schema_sha256=json_schema_sha256(VisualTaskPlan.model_json_schema()),
         )
         if budget is not None:
             try:
@@ -213,12 +247,27 @@ class VisualTaskPlanner:
                     sample_id=view.sample_id,
                     image_sha256=image_digest,
                     artifact_dir=artifact_dir / "visual_task_plan",
+                    decoding_policy=self._decoding_policy,
+                    outlines_adapter_version=(
+                        OUTLINES_ADAPTER_VERSION
+                        if self._decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+                        else None
+                    ),
+                    pinned_outlines_version=(
+                        PINNED_OUTLINES_VERSION
+                        if self._decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+                        else None
+                    ),
+                    schema_sha256=json_schema_sha256(VisualTaskPlan.model_json_schema()),
                 ),
             )
         except ValidationError as exc:
             raise VisualTaskPlanError("SCHEMA_INVALID") from exc
         except Exception as exc:
-            raise VisualTaskPlanError("CLIENT_ERROR") from exc
+            stable_code = getattr(exc, "code", None)
+            raise VisualTaskPlanError(
+                stable_code if isinstance(stable_code, str) and stable_code else "CLIENT_ERROR"
+            ) from exc
         try:
             plan = VisualTaskPlan.model_validate(plan)
         except ValidationError as exc:

@@ -110,6 +110,28 @@ def test_request_hash_changes_with_each_semantic_field() -> None:
     assert digest != build_request_hash(**{**base, "prompt_version": "v2"})
 
 
+def test_request_hash_changes_with_structured_decoding_identity() -> None:
+    """Planner decoding policy and schema identity are cache-key inputs.
+    规划器解码策略与 Schema 身份必须参与缓存键。"""
+    base = _hash_kwargs()
+    native = build_request_hash(**base)
+    constrained = build_request_hash(
+        **base,
+        structured_decoding="outlines-json-schema",
+        outlines_adapter_version="qwen-transformers-outlines-v1",
+        pinned_outlines_version="1.3.3",
+        schema_sha256="a" * 64,
+    )
+    assert native != constrained
+    assert constrained != build_request_hash(
+        **base,
+        structured_decoding="outlines-json-schema",
+        outlines_adapter_version="qwen-transformers-outlines-v1",
+        pinned_outlines_version="1.3.3",
+        schema_sha256="b" * 64,
+    )
+
+
 def test_request_hash_changes_with_image_digest_and_order() -> None:
     """Different image bytes and different image order must change the hash.
     图片内容不同与图片顺序不同都必须改变哈希。"""

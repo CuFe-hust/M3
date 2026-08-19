@@ -1,5 +1,6 @@
 -r requirements.txt
 transformers>=5.14.1,<5.15
+outlines[transformers]==1.3.3
 torch>=2.2
 safetensors>=0.4
 peft

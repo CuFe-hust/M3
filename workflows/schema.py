@@ -148,6 +148,13 @@ class DatasetRunOptions:
     roi_quantum: int = 1024
     roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip"
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
+    # Structured planner identity is None only for historical v5 runs that
+    # predate request-level constrained decoding.
+    # 结构化规划器身份仅在早于逐请求约束解码的历史 v5 run 中为 None。
+    structured_decoding: Literal["native", "outlines-json-schema"] | None = None
+    outlines_adapter_version: str | None = None
+    pinned_outlines_version: str | None = None
+    schema_sha256: str | None = None
     auto_task: bool = False
 
     def __post_init__(self) -> None:
@@ -176,6 +183,12 @@ class DatasetRunOptions:
             raise ValueError("unsupported ROI materialization policy")
         if not self.large_image_policy:
             raise ValueError("large_image_policy must not be empty")
+        _validate_structured_decoding_identity(
+            self.structured_decoding,
+            self.outlines_adapter_version,
+            self.pinned_outlines_version,
+            self.schema_sha256,
+        )
 
 
 class RunRequest(BaseModel):
@@ -229,6 +242,10 @@ class RunRequest(BaseModel):
     roi_quantum: int = Field(default=1024, gt=0)
     roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip"
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
+    structured_decoding: Literal["native", "outlines-json-schema"] | None = None
+    outlines_adapter_version: str | None = None
+    pinned_outlines_version: str | None = None
+    schema_sha256: str | None = None
     # v4/v3 historical run requests used roi_size. Accept it for read-only
     # historical resume/reporting, but never serialize it for new runs.
     # v4/v3 历史 run request 使用 roi_size；仅为只读历史 resume/reporting 接受，
@@ -307,7 +324,47 @@ class RunRequest(BaseModel):
             raise ValueError("unsupported ROI coordinate frame")
         if self.roi_materialization_policy != "longest-side-ceil-quantum-center-clip":
             raise ValueError("unsupported ROI materialization policy")
+        _validate_structured_decoding_identity(
+            self.structured_decoding,
+            self.outlines_adapter_version,
+            self.pinned_outlines_version,
+            self.schema_sha256,
+        )
         return self
+
+
+def _validate_structured_decoding_identity(
+    structured_decoding: str | None,
+    outlines_adapter_version: str | None,
+    pinned_outlines_version: str | None,
+    schema_sha256: str | None,
+) -> None:
+    """Require a complete, policy-consistent planner identity.
+    要求完整且与策略一致的规划器身份。"""
+    if structured_decoding is None:
+        if any(
+            value is not None
+            for value in (
+                outlines_adapter_version,
+                pinned_outlines_version,
+                schema_sha256,
+            )
+        ):
+            raise ValueError("structured decoding identity requires its policy")
+        return
+    if schema_sha256 is None:
+        raise ValueError("structured decoding identity requires schema_sha256")
+    if structured_decoding == "outlines-json-schema":
+        if outlines_adapter_version is None or pinned_outlines_version is None:
+            raise ValueError(
+                "outlines structured decoding requires adapter and version identities"
+            )
+        return
+    if structured_decoding == "native":
+        if outlines_adapter_version is not None or pinned_outlines_version is not None:
+            raise ValueError("native structured decoding cannot carry Outlines identity")
+        return
+    raise ValueError("unsupported structured decoding policy")
 
 
 @dataclass(frozen=True)

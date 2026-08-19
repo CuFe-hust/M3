@@ -21,7 +21,13 @@ from agents.schema import VisualTaskPlan
 from application.prompts import PromptCatalog
 from application.settings import VisualPlannerSettings
 from data.schema import ImageRef, SampleDraft, UnifiedSample
-from models.base import ModelCacheIdentity
+from models.base import (
+    JsonDecodingPolicy,
+    ModelCacheIdentity,
+    OUTLINES_ADAPTER_VERSION,
+    PINNED_OUTLINES_VERSION,
+    json_schema_sha256,
+)
 from models.images import image_sha256, materialize_quantized_roi
 from workflows.call_budget import CallBudget
 from workflows.visual_planner import VisualTaskPlanError, VisualTaskPlanner
@@ -214,7 +220,12 @@ def test_planner_calls_once_with_ordered_previews_and_raw_question(tmp_path: Pat
     assert content[-1]["text"] == "Are there any vehicles?"
     assert len(views) == 1
     assert Image.open(io.BytesIO(_preview_bytes(client.calls[0]))).size == (1080, 810)
-    assert client.calls[0]["request_meta"].request_id == "s1:visual_task_plan"
+    meta = client.calls[0]["request_meta"]
+    assert meta.request_id == "s1:visual_task_plan"
+    assert meta.decoding_policy is JsonDecodingPolicy.OUTLINES_JSON_SCHEMA
+    assert meta.outlines_adapter_version == OUTLINES_ADAPTER_VERSION
+    assert meta.pinned_outlines_version == PINNED_OUTLINES_VERSION
+    assert meta.schema_sha256 == json_schema_sha256(VisualTaskPlan.model_json_schema())
 
 
 def test_planner_request_excludes_gt_paths_and_runtime_choices(tmp_path: Path) -> None:
@@ -458,6 +469,12 @@ def test_planner_prompt_snapshot_and_artifact_payload_are_v5_only() -> None:
     assert planner.prompt_snapshot_filename == "visual_task_plan_v5.runtime.md"
     assert planner.planning_parameters["planning_mode"] == "visual-task-plan-v5"
     assert planner.planning_parameters["roi_quantum"] == 1024
+    assert planner.planning_parameters["structured_decoding"] == "outlines-json-schema"
+    assert planner.planning_parameters["outlines_adapter_version"] == OUTLINES_ADAPTER_VERSION
+    assert planner.planning_parameters["pinned_outlines_version"] == PINNED_OUTLINES_VERSION
+    assert planner.planning_parameters["schema_sha256"] == json_schema_sha256(
+        VisualTaskPlan.model_json_schema()
+    )
     assert PromptCatalog(REPO_ROOT / "prompts").version("visual_task_plan") == "v5"
 
 

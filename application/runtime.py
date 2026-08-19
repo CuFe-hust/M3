@@ -85,6 +85,10 @@ def build_dataset_run_options(
     roi_quantum: int = 1024,
     roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip",
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
+    structured_decoding: str | None = None,
+    outlines_adapter_version: str | None = None,
+    pinned_outlines_version: str | None = None,
+    schema_sha256: str | None = None,
 ) -> DatasetRunOptions:
     """Thin options construction for the public entry point: the architecture
     rule forbids main.py from importing workflows, so construction lives here.
@@ -120,6 +124,10 @@ def build_dataset_run_options(
         roi_quantum=roi_quantum,
         roi_materialization_policy=roi_materialization_policy,
         large_image_policy=large_image_policy,
+        structured_decoding=structured_decoding,  # type: ignore[arg-type]
+        outlines_adapter_version=outlines_adapter_version,
+        pinned_outlines_version=pinned_outlines_version,
+        schema_sha256=schema_sha256,
     )
 
 
@@ -431,6 +439,10 @@ def reconstruct_dataset_resume_options(
         roi_quantum=request.roi_quantum,
         roi_materialization_policy=request.roi_materialization_policy,
         large_image_policy=request.large_image_policy,
+        structured_decoding=request.structured_decoding,
+        outlines_adapter_version=request.outlines_adapter_version,
+        pinned_outlines_version=request.pinned_outlines_version,
+        schema_sha256=request.schema_sha256,
     )
 
 
@@ -477,6 +489,15 @@ def _validate_resume_match(
         raise ValueError("resume render errors mismatch")
     if supplied.fail_fast != persisted.fail_fast:
         raise ValueError("resume fail fast mismatch")
+    if supplied.structured_decoding is not None:
+        if supplied.structured_decoding != persisted.structured_decoding:
+            raise ValueError("resume structured decoding mismatch")
+        if supplied.outlines_adapter_version != persisted.outlines_adapter_version:
+            raise ValueError("resume Outlines adapter identity mismatch")
+        if supplied.pinned_outlines_version != persisted.pinned_outlines_version:
+            raise ValueError("resume Outlines version identity mismatch")
+        if supplied.schema_sha256 != persisted.schema_sha256:
+            raise ValueError("resume response schema identity mismatch")
     if supplied.planning_mode not in (
         "visual-task-plan-v5",
         persisted.planning_mode,
@@ -559,6 +580,10 @@ def _build_run_request(options: DatasetRunOptions) -> RunRequest:
         roi_quantum=options.roi_quantum,
         roi_materialization_policy=options.roi_materialization_policy,
         large_image_policy=options.large_image_policy,
+        structured_decoding=options.structured_decoding,
+        outlines_adapter_version=options.outlines_adapter_version,
+        pinned_outlines_version=options.pinned_outlines_version,
+        schema_sha256=options.schema_sha256,
     )
 
 
@@ -640,6 +665,28 @@ class Runtime:
                 roi_quantum=planner_settings.roi_quantum,
                 roi_materialization_policy=planner_settings.roi_materialization_policy,
                 large_image_policy=planner_settings.large_image_policy,
+                structured_decoding=planner_settings.structured_decoding,
+                outlines_adapter_version=(
+                    self.components.visual_task_planner.planning_parameters[
+                        "outlines_adapter_version"
+                    ]
+                    if self.components.visual_task_planner is not None
+                    else None
+                ),
+                pinned_outlines_version=(
+                    self.components.visual_task_planner.planning_parameters[
+                        "pinned_outlines_version"
+                    ]
+                    if self.components.visual_task_planner is not None
+                    else None
+                ),
+                schema_sha256=(
+                    self.components.visual_task_planner.planning_parameters[
+                        "schema_sha256"
+                    ]
+                    if self.components.visual_task_planner is not None
+                    else None
+                ),
             )
         if options.resume:
             if options.run_id is None:
@@ -664,7 +711,7 @@ class Runtime:
             self._validate_existing_run(run_dir, options, run_id)
         if options.planning_mode == "visual-task-plan-v5":
             planner = self.components.visual_task_planner
-            if planner is None or planner.planning_parameters != {
+            expected_planner_identity = {
                 "planning_mode": options.planning_mode,
                 "task_prompt_version": options.task_prompt_version,
                 "preview_max_side": options.preview_max_side,
@@ -672,7 +719,20 @@ class Runtime:
                 "roi_quantum": options.roi_quantum,
                 "roi_materialization_policy": options.roi_materialization_policy,
                 "large_image_policy": options.large_image_policy,
-            }:
+            }
+            if options.structured_decoding is not None:
+                expected_planner_identity.update(
+                    {
+                        "structured_decoding": options.structured_decoding,
+                        "outlines_adapter_version": options.outlines_adapter_version,
+                        "pinned_outlines_version": options.pinned_outlines_version,
+                        "schema_sha256": options.schema_sha256,
+                    }
+                )
+            if planner is None or any(
+                planner.planning_parameters.get(key) != value
+                for key, value in expected_planner_identity.items()
+            ):
                 raise ValueError("visual task planner identity does not match run request")
         if not options.resume:
             manifest = self.components.run_store.create_run(
@@ -729,6 +789,10 @@ class Runtime:
                 judge_sample_rate=options.judge_sample_rate,
                 data_root=options.root,
                 planning_mode=options.planning_mode,
+                structured_decoding=options.structured_decoding,
+                outlines_adapter_version=options.outlines_adapter_version,
+                pinned_outlines_version=options.pinned_outlines_version,
+                schema_sha256=options.schema_sha256,
             )
             results[task or "auto"] = await runner.run(
                 root=options.root,
@@ -991,7 +1055,7 @@ class Runtime:
             "question": question,
             "requested_task": task,
             "resolved_task": resolved_task,
-            "planning_mode": "visual-task-plan-v5",
+            **self.components.visual_task_planner.planning_parameters,
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)
