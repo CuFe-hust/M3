@@ -47,8 +47,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v4.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
-    assert catalog.version("change") == "v6"
-    assert catalog.asset("change").path.name == "change_dual_path_v6.md"
+    assert catalog.version("change") == "v7"
+    assert catalog.asset("change").path.name == "change_dual_path_v7.md"
     assert catalog.asset("seam").path.name == "seam_review_v2.md"
     assert catalog.asset("vqa_judge").path.name == "deepseek_vqa_judge_v2.md"
     assert (REPO_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").is_file()
@@ -77,40 +77,51 @@ def test_vqa_judge_v2_declares_semantic_text_only_rules() -> None:
         assert required in prompt
 
 
-def test_change_prompt_v6_balances_detection_and_filtering() -> None:
+def test_change_prompt_v7_requires_factual_caption_not_class_label() -> None:
     prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
     for required in (
+        "evidence-grounded semantic change analyst",
+        "non-negotiable answer rule",
+        "natural-language caption",
+        "never use a standalone decision token",
+        "must name at least one changed persistent entity",
+        "no significant semantic change detected.",
+    ):
+        assert required in prompt
+    for forbidden in (
         "balanced full-path semantic change analyst",
+        "conservative full-path semantic change analyst",
+    ):
+        assert forbidden not in prompt
+
+
+def test_change_prompt_v7_two_sided_confirmation_gate() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
+    for required in (
+        "two-sided confirmation gate",
+        "t1 state",
+        "t2 state",
+        "spatial correspondence",
+        "persistence",
         "raw_full_t1",
         "raw_full_t2",
-        "highest-priority rule",
-        "must be reported",
-        "takes precedence",
-        "forest / bare land",
-        "residential development",
-        "ignore a difference only when",
-        "required scan order",
-        "first search for persistent positive evidence",
-        "conservative naming, not conservative detection",
-        "new building",
-        "temporary vehicles",
-        "no significant semantic change detected.",
+        "authoritative temporal pair",
+        "image_manifest",
     ):
         assert required in prompt
 
 
-def test_change_prompt_v6_does_not_overrepeat_no_change_answer() -> None:
-    prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
-    assert prompt.count("no significant semantic change detected.") == 1
-
-
-def test_change_prompt_v6_has_positive_change_precedence() -> None:
+def test_change_prompt_v7_mandatory_visual_scan() -> None:
     prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
     for required in (
-        "must be reported",
-        "takes precedence over every appearance-ignore rule",
-        "unequivocally a semantic change",
-        "prefer the persistent structural change",
+        "mandatory visual scan",
+        "3-by-3",
+        "border and corner pass",
+        "vegetation-extent pass",
+        "artifact rejection pass",
+        "new or removed buildings",
+        "new/removed roads",
+        "exact no-change sentence",
     ):
         assert required in prompt
 
@@ -189,7 +200,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "count_localize_v1.md",
         "target_parse_v1.md",
         "missing_point_review_v3.md",
-            "change_dual_path_v6.md",
+            "change_dual_path_v7.md",
         "general_vqa_v3.md",
         "caption_v1.md",
         "seam_review_v2.md",
