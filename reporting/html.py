@@ -195,7 +195,7 @@ def _sample_card(sample: ReportSample) -> str:
         + f'<span>Fallback: {"Yes" if sample.fallback_used else "No"}</span>'
         + f'<span>Latency: {_esc(_seconds(sample.inference_seconds))}</span>'
         + '</span></span></summary><div class="sample-body">'
-        + _sample_hero(sample) + _execution_process(sample) + _model_calls(sample)
+        + _sample_hero(sample) + _task_routing_html(sample) + _execution_process(sample) + _model_calls(sample)
         + _execution_path_html(sample)
         + _technical_details(sample) + "</div></details></article>"
     )
@@ -355,23 +355,67 @@ def _sample_hero(sample: ReportSample) -> str:
     return '<section class="sample-hero"><div class="hero-visual">' + _visuals(sample) + '</div><div class="hero-answer">' + _common_detail(sample) + '</div></section>'
 
 
+def _task_routing_html(sample: ReportSample) -> str:
+    route = sample.task_routing
+    candidates = "".join(
+        f'<li class="route-candidate"><strong>{_esc(item.order)}. {_esc(item.task)}</strong>'
+        f' · {_esc(item.status)}'
+        f'{(" · " + _esc(", ".join(item.agent_names))) if item.agent_names else ""}'
+        f'{(" · " + _esc(item.reason_code)) if item.reason_code else ""}'
+        f'{" · selected" if item.selected else ""}{" · executed" if item.executed else ""}</li>'
+        for item in route.candidate_tasks
+    ) or '<li>not recorded</li>'
+    skipped = ", ".join(route.skipped_candidates) or "—"
+    return (
+        '<section class="detail-block routing-flow"><h4>Task Routing / 任务路由</h4>'
+        '<div class="route-chain">'
+        f'<span>{_esc(route.source_task or "not recorded")}</span><b>→</b>'
+        f'<span>{_esc(route.resolved_task or "not recorded")}</span><b>→</b>'
+        f'<span>{_esc(route.executed_agent or route.primary_agent or "not recorded")}</span><b>→</b>'
+        f'<span>{_esc(sample.routing.final_backend or "backend not recorded")}</span>'
+        '</div><dl>'
+        + _dl("Planning mode", route.planning_mode)
+        + _dl("Resolution source", route.resolution_source)
+        + _dl("Executed task", route.executed_task)
+        + _dl("Primary agent", route.primary_agent)
+        + _dl("Fallback agents", ", ".join(route.fallback_agents))
+        + _dl("Execution mode", route.execution_mode)
+        + _dl("Primary reason", route.primary_reason)
+        + _dl("Fallback from task", route.fallback_from_task)
+        + _dl("Skipped candidates", skipped)
+        + '</dl><h5>Task candidates</h5><ol>' + candidates + '</ol></section>'
+    )
+
+
 def _execution_process(sample: ReportSample) -> str:
-    if not sample.backend_stages:
-        return '<section class="detail-block execution-process"><h4>Execution Process / 执行过程</h4><p>Detailed per-backend outputs were not persisted for this run.</p></section>'
-    stages = []
-    for stage in sample.backend_stages:
-        fields = "".join(_dl(key, value) for key, value in sorted(stage.summary_fields.items()))
-        stages.append(
-            f'<article class="stage"><h4>{stage.order}. {_esc(stage.backend_name)} · {_esc(stage.backend_kind)}</h4>'
-            '<dl>' + _dl("Phase", stage.phase) + _dl("Status", stage.status)
-            + _dl("Reason", stage.reason_code) + _dl("Prediction", stage.predicted_count)
-            + _dl("Accepted", stage.accepted_count) + _dl("Rejected", stage.rejected_count)
-            + fields + '</dl>'
-            + (f'<figure class="stage-overlay"><img loading="lazy" src="{_attr(_safe_asset(stage.overlay_asset))}" alt="stage overlay {_attr(stage.backend_name)}"><figcaption>Stage Overlay</figcaption></figure>' if _safe_asset(stage.overlay_asset) else '')
-            + (f'<p class="stage-note">Warnings: {_esc(", ".join(stage.warning_codes))}</p>' if stage.warning_codes else '')
-            + '</article>'
+    if not sample.execution_steps and not sample.backend_stages:
+        return '<section class="detail-block execution-process"><h4>Execution Process / 执行过程</h4><p>not recorded</p></section>'
+    steps = []
+    for step in sample.execution_steps:
+        summary = "".join(_dl(key, value) for key, value in sorted(step.summary_fields.items()))
+        links = []
+        if step.request_id:
+            links.append(f"request={_esc(step.request_id)}")
+        if step.artifact_names:
+            links.append(f"artifacts={_esc(', '.join(step.artifact_names))}")
+        steps.append(
+            f'<article class="stage timeline-step"><h4>{step.order}. {_esc(step.phase)} · {_esc(step.component)}</h4><dl>'
+            + _dl("Operation", step.operation) + _dl("Status", step.status)
+            + _dl("Task", step.task) + _dl("Agent", step.agent_name)
+            + _dl("Backend", step.backend_name) + _dl("Reason", step.reason_code)
+            + ("<p class=\"stage-note\">" + _esc(" · ".join(links)) + "</p>" if links else "")
+            + summary + '</dl></article>'
         )
-    return '<section class="detail-block execution-process"><h4>Execution Process / 执行过程</h4>' + "".join(stages) + '</section>'
+    if not steps:
+        for stage in sample.backend_stages:
+            steps.append(
+                f'<article class="stage"><h4>{stage.order}. {_esc(stage.backend_name)} · {_esc(stage.backend_kind)}</h4><dl>'
+                + _dl("Phase", stage.phase) + _dl("Status", stage.status)
+                + _dl("Reason", stage.reason_code or stage.error_type)
+                + _dl("Prediction", stage.predicted_count) + _dl("Accepted", stage.accepted_count)
+                + _dl("Rejected", stage.rejected_count) + '</dl></article>'
+            )
+    return '<section class="detail-block execution-process"><h4>Execution Process / 执行过程</h4>' + "".join(steps) + '</section>'
 
 
 def _model_calls(sample: ReportSample) -> str:
@@ -699,7 +743,7 @@ def _attr(value: Any) -> str:
     return html.escape(_public_text(value), quote=True)
 
 
-_SECRET_RE = re.compile(r"(?i)(?:sk-[a-z0-9_-]{6,}|bearer\s+[a-z0-9._~+/-]{6,})")
+_SECRET_RE = re.compile(r"(?i)(?<![a-z0-9_-])(?:sk-[a-z0-9_-]{6,}|bearer\s+[a-z0-9._~+/-]{6,})")
 _WIN_PATH_RE = re.compile(r"(?i)[a-z]:[\\/][^\s\"'<>]+")
 _POSIX_PATH_RE = re.compile(r"(?:(?:/tmp|/home|/users)/[^\s\"'<>]+)", re.IGNORECASE)
 _URL_RE = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
@@ -722,7 +766,7 @@ table{width:100%;border-collapse:collapse;margin:.5rem 0 1rem}th,td{border-botto
 .sample{border:1px solid var(--line);border-radius:8px;margin:7px 0;background:#fff}.sample summary{display:grid;grid-template-columns:minmax(160px,1fr) 140px repeat(3,max-content) minmax(160px,1fr);gap:10px;align-items:center;cursor:pointer;padding:11px}.sample summary.sample-preview{display:grid;grid-template-columns:236px minmax(0,1fr);gap:14px;align-items:start;padding:10px}.sample-id{font-family:ui-monospace,monospace;font-weight:700}.backend{text-align:right;color:var(--muted)}.badge{font-size:.7rem;border-radius:999px;padding:3px 7px;background:#e2e8f0}.failed,.judge-incorrect{background:#fee2e2;color:#991b1b}.partial,.fallback,.judge-partial{background:#fef3c7;color:#92400e}.succeeded,.judge-correct{background:#dcfce7;color:#166534}.sample.result-correct{border-left:5px solid #16a34a;background:#f0fdf4}.sample.result-incorrect{border-left:5px solid #dc2626;background:#fff1f2}.sample.result-unknown{border-left:5px solid #d97706;background:#fffbeb}.sample[data-judge="correct"]{border-left:5px solid #16a34a;background:#f0fdf4}.sample[data-judge="incorrect"]{border-left:5px solid #dc2626;background:#fff1f2}.sample[data-judge="partial"]{border-left:5px solid #d97706;background:#fffbeb}.sample[data-judge="correct"] .sample-result-row{color:#166534}.sample[data-judge="incorrect"] .sample-result-row{color:#991b1b}.sample[data-judge="partial"] .sample-result-row{color:#92400e}.sample-result-row strong{font-size:1rem}.sample-body{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;border-top:1px solid var(--line);padding:12px}.detail-block{background:#f8fafc;border-radius:7px;padding:12px;overflow:auto}.visuals{grid-column:1/-1}.sample-thumbnails{display:flex;gap:6px;align-items:flex-start}.summary-visual{display:grid;gap:2px;justify-items:center;width:112px}.summary-visual small{font-size:.65rem;color:var(--muted);text-transform:uppercase}.sample-thumbnails .sample-thumb{flex:0 0 112px}dl{display:grid;grid-template-columns:minmax(130px,.4fr) 1fr;gap:4px 12px;margin:.4rem 0}dt{color:var(--muted)}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.image-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.image-button{display:block;width:100%;padding:0;border:1px solid var(--line);border-radius:6px;background:#fff;cursor:zoom-in;overflow:hidden}.image-button:hover{border-color:#2563eb;box-shadow:0 0 0 2px #bfdbfe}.detail-thumb{display:block;width:100%;height:240px;object-fit:contain;background:#e2e8f0}figure{margin:0}img{display:block;width:100%;max-height:620px;object-fit:contain;background:#e2e8f0}figcaption{text-align:center;color:var(--muted)}.legend{display:flex;gap:22px}.green{color:#22c55e}.red{color:#ef4444}.cyan{color:#38bdf8}.amber{color:#f59e0b}.purple{color:#a855f7}
 .bar-row{display:grid;grid-template-columns:minmax(140px,1fr) 3fr 45px;gap:8px;align-items:center;margin:7px 0}.bar-row i{display:block;height:8px;background:#e2e8f0;border-radius:99px;overflow:hidden}.bar-row b{display:block;height:100%;background:#2563eb}
 .code-buttons{display:flex;flex-wrap:wrap;gap:6px}.code-buttons button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 9px;cursor:pointer}
-.run-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-width:720px}.run-meta-item{min-width:0}.run-meta-item span{display:block;color:#cbd5e1;font-size:.72rem}.run-meta-value{display:block;overflow-wrap:anywhere;word-break:break-word}.mono{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.aggregate-panel{background:transparent;border:0;margin:14px 0;padding:0}.aggregate-panel>summary{cursor:pointer;font-weight:700;padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.sample-preview{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;align-items:start;min-width:0;cursor:pointer;padding:12px}.sample-thumb{width:112px;height:112px;object-fit:cover;background:#e2e8f0;border-radius:4px}.sample-thumb-empty{display:grid;place-items:center;color:var(--muted);font-size:.75rem;text-align:center}.sample-summary-main{display:grid;gap:8px;min-width:0}.sample-summary-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}.sample-question{font-size:.95rem;overflow-wrap:anywhere}.answer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}.answer-cell{display:grid;gap:3px;min-width:0;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.answer-cell small{color:var(--muted)}.answer-cell strong{overflow-wrap:anywhere;word-break:break-word}.sample-result-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);overflow-wrap:anywhere}.sample-result-row strong{color:var(--ink)}.sample-body{display:block;border-top:1px solid var(--line);padding:12px}.sample-hero{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(0,1.05fr);gap:12px;min-width:0}.sample-hero>*{min-width:0}.hero-visual,.hero-answer{min-width:0}.execution-process,.model-calls{margin-top:12px}.stage,.model-call{border-top:1px solid var(--line);padding:10px 0;min-width:0}.stage h4,.model-call h4{margin:.1rem 0 .5rem;overflow-wrap:anywhere}.technical-details{margin-top:12px}.technical-details>summary{cursor:pointer;font-weight:650}.table-scroll{width:100%;overflow-x:auto}.table-scroll table{min-width:640px}
+.run-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-width:720px}.run-meta-item{min-width:0}.run-meta-item span{display:block;color:#cbd5e1;font-size:.72rem}.run-meta-value{display:block;overflow-wrap:anywhere;word-break:break-word}.mono{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.aggregate-panel{background:transparent;border:0;margin:14px 0;padding:0}.aggregate-panel>summary{cursor:pointer;font-weight:700;padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.sample-preview{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;align-items:start;min-width:0;cursor:pointer;padding:12px}.sample-thumb{width:112px;height:112px;object-fit:cover;background:#e2e8f0;border-radius:4px}.sample-thumb-empty{display:grid;place-items:center;color:var(--muted);font-size:.75rem;text-align:center}.sample-summary-main{display:grid;gap:8px;min-width:0}.sample-summary-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}.sample-question{font-size:.95rem;overflow-wrap:anywhere}.answer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}.answer-cell{display:grid;gap:3px;min-width:0;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.answer-cell small{color:var(--muted)}.answer-cell strong{overflow-wrap:anywhere;word-break:break-word}.sample-result-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);overflow-wrap:anywhere}.sample-result-row strong{color:var(--ink)}.sample-body{display:block;border-top:1px solid var(--line);padding:12px}.sample-hero{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(0,1.05fr);gap:12px;min-width:0}.sample-hero>*{min-width:0}.hero-visual,.hero-answer{min-width:0}.routing-flow,.execution-process,.model-calls{margin-top:12px}.route-chain{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:.5rem 0 1rem}.route-chain span{padding:6px 9px;border:1px solid var(--line);border-radius:4px;background:#fff;font-family:ui-monospace,monospace;overflow-wrap:anywhere}.route-chain b{color:var(--muted)}.route-candidate{margin:.25rem 0;overflow-wrap:anywhere}.stage,.model-call{border-top:1px solid var(--line);padding:10px 0;min-width:0}.timeline-step{border-left:3px solid #94a3b8;padding-left:12px}.timeline-step h4{font-size:.92rem}.stage h4,.model-call h4{margin:.1rem 0 .5rem;overflow-wrap:anywhere}.technical-details{margin-top:12px}.technical-details>summary{cursor:pointer;font-weight:650}.table-scroll{width:100%;overflow-x:auto}.table-scroll table{min-width:640px}
 @media(max-width:900px){main{padding:10px}.filters{grid-template-columns:1fr 1fr}.sample summary.sample-preview{grid-template-columns:160px minmax(0,1fr)}.sample-thumb{width:76px;height:76px}.answer-grid{grid-template-columns:1fr}.sample-hero{grid-template-columns:1fr}.sample-body{grid-template-columns:1fr}.visuals{grid-column:auto}}
 @media(max-width:560px){header{display:block}.schema{display:inline-block;margin-top:12px}.filters{grid-template-columns:1fr}.sample summary.sample-preview{grid-template-columns:1fr}.sample-thumbnails{width:100%}.summary-visual{width:calc(50% - 3px)}.summary-visual .sample-thumb{width:100%;height:auto;aspect-ratio:1}.sample-result-row{gap:8px}}
 .execution-path{margin-top:12px}.execution-path ol{margin:.5rem 0 0;padding-left:1.5rem}.execution-path code{font-size:.85rem;overflow-wrap:anywhere;word-break:break-word}.image-modal{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:5vh 5vw;background:rgba(15,23,42,.86)}.image-modal[hidden]{display:none}.image-modal img{max-width:94vw;max-height:88vh;width:auto;height:auto;object-fit:contain;background:#fff;box-shadow:0 12px 50px rgba(0,0,0,.45)}.image-modal-close{position:fixed;top:18px;right:24px;width:40px;height:40px;border:0;border-radius:999px;background:#fff;color:#0f172a;font-size:28px;line-height:1;cursor:pointer}.modal-open{overflow:hidden}

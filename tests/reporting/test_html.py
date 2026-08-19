@@ -27,6 +27,9 @@ from reporting.schema import (
     RoutingAttemptView,
     RoutingView,
     StructuredArtifactView,
+    TaskCandidateView,
+    TaskRoutingView,
+    ExecutionStepView,
     TaskSummary,
     VisualAssetView,
 )
@@ -479,6 +482,72 @@ def test_v21_model_call_raw_and_parsed_text_are_escaped() -> None:
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in document
     assert "<b>yes</b>" not in document
     assert "&lt;b&gt;yes&lt;/b&gt;" in document
+
+
+def test_task_routing_and_execution_timeline_are_rendered() -> None:
+    sample = ReportSample(
+        sample_id="route-flow",
+        run_task="auto",
+        task="counting",
+        state="succeeded",
+        task_routing=TaskRoutingView(
+            source_task="auto",
+            resolved_task="counting",
+            executed_task="counting",
+            planning_mode="visual-task-plan-v4",
+            resolution_source="visual-task-plan-v4",
+            candidate_tasks=[TaskCandidateView(
+                order=1,
+                task="counting",
+                agent_names=["counting_agent"],
+                status="executed",
+                selected=True,
+                executed=True,
+            )],
+            primary_agent="counting_agent",
+            fallback_agents=["general_vqa_agent"],
+            executed_agent="counting_agent",
+            execution_mode="fallback",
+            primary_reason="ROUTE_POLICY",
+            reason_codes=["TASK_COUNTING"],
+        ),
+        execution_steps=[
+            ExecutionStepView(
+                order=1,
+                phase="routing",
+                component="routing.router.TaskRouter",
+                operation="route",
+                status="selected",
+                task="counting",
+                agent_name="counting_agent",
+                reason_code="TASK_COUNTING",
+            ),
+            ExecutionStepView(
+                order=2,
+                phase="model_call",
+                component="models.structured_client",
+                operation="complete_json",
+                status="succeeded",
+                request_id="route-flow:qwen",
+                artifact_names=["visual_task_plan.json"],
+            ),
+        ],
+        routing=RoutingView(final_backend="detector"),
+    )
+    document = build_html(Report(
+        run_id="route-flow", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[sample],
+    ))
+    for text in (
+        "Task Routing / 任务路由", "visual-task-plan-v4", "counting_agent",
+        "ROUTE_POLICY", "Task candidates", "Execution Process / 执行过程",
+        "routing.router.TaskRouter", "request=route-flow:qwen",
+        "artifacts=visual_task_plan.json",
+    ):
+        assert text in document
+    assert "Detailed per-backend outputs were not persisted" not in document
+    assert 'class="route-chain"' in document
+    assert 'class="stage timeline-step"' in document
 
 
 def test_report_v2_bundle_contains_offline_outputs_and_assets_directory(

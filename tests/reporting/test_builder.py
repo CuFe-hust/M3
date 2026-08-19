@@ -1281,6 +1281,7 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
             CountingBackendAttemptAudit(
                 backend_name="segmenter", backend_kind="semantic_segmentation",
                 phase="zero_review", status="succeeded", counting=positive,
+                error_type="ZeroReviewRecovery",
                 backend_trace={"raw_components": 2, "nested_not_public": {"mask": [1, 2, 3]},
                                "checkpoint": "C:/private/model.bin"},
             ),
@@ -1295,6 +1296,13 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
         (1, "detector", "primary"), (2, "segmenter", "zero_review")]
     assert [stage.predicted_count for stage in row.backend_stages] == [0, 1]
     assert row.backend_stages[1].accepted_count == 1
+    assert row.backend_stages[1].error_type == "ZeroReviewRecovery"
+    backend_steps = [step for step in row.execution_steps if step.phase == "backend"]
+    assert [(step.backend_name, step.operation) for step in backend_steps] == [
+        ("detector", "primary"), ("segmenter", "zero_review")]
+    assert backend_steps[1].reason_code == "ZeroReviewRecovery"
+    assert row.task_routing.resolved_task == "counting"
+    assert row.task_routing.executed_agent == "counting_agent"
     serialized = json.dumps(row.model_dump(mode="json"))
     assert "nested_not_public" not in serialized and "C:/private" not in serialized
 

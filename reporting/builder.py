@@ -47,6 +47,7 @@ from reporting.schema import (
     ChangeReportDetail,
     CountingReportDetail,
     CountingTargetSummary,
+    ExecutionStepView,
     FailureSummary,
     FallbackTransitionSummary,
     FallbackTransitionView,
@@ -62,6 +63,8 @@ from reporting.schema import (
     RoutingView,
     RunMetadata,
     SpatialReportDetail,
+    TaskCandidateView,
+    TaskRoutingView,
     TaskSummary,
     VisualAssetView,
 )
@@ -142,6 +145,24 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
     ground_truth = _ground_truth_view(sample)
     warnings = _warning_codes(payload, trace)
     task_detail = _task_detail(task, sample, payload, evaluation, trace, judge_status)
+    backend_stages = _backend_stages(counting_audit)
+    task_routing = _task_routing(
+        run_task=str(row.get("run_task", "")),
+        task=task,
+        trace=trace,
+        routing_decision=routing_decision,
+    )
+    execution_steps = _execution_steps(
+        run_dir,
+        task=task,
+        state=str(row.get("status", "")),
+        trace=trace,
+        task_routing=task_routing,
+        backend_stages=backend_stages,
+        model_calls=model_calls,
+        structured_artifacts=structured_artifacts,
+        evaluation=evaluation,
+    )
     return ReportSample(
         sample_id=str(row.get("sample_id", "")),
         run_task=str(row.get("run_task", "")),
@@ -162,6 +183,8 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         evaluation=evaluation,
         result_quality=_result_quality(evaluation, task_detail),
         routing=routing,
+        task_routing=task_routing,
+        execution_steps=execution_steps,
         execution_path=_execution_path(
             run_dir,
             run_task=str(row.get("run_task", "")),
@@ -172,7 +195,7 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
             evaluation=evaluation,
         ),
         routing_decision=routing_decision,
-        backend_stages=_backend_stages(counting_audit),
+        backend_stages=backend_stages,
         model_calls=model_calls,
         structured_artifacts=structured_artifacts,
         warnings=warnings,
@@ -187,6 +210,207 @@ def _build_sample(run_dir: Path, row: dict[str, Any]) -> ReportSample:
         ],
         task_detail=task_detail,
     )
+
+
+def _task_routing(
+    *,
+    run_task: str,
+    task: str,
+    trace: dict[str, Any] | None,
+    routing_decision: dict[str, Any] | None,
+) -> TaskRoutingView:
+    current = trace or {}
+    decision = routing_decision or {}
+    resolved_task = _value_str(current.get("resolved_task")) or _value_str(
+        decision.get("resolved_task")
+    ) or _value_str(decision.get("task")) or task
+    executed_task = _value_str(current.get("execution_task")) or resolved_task
+    executed_agent = _value_str(current.get("execution_agent"))
+    primary_agent = _value_str(decision.get("primary_agent"))
+    fallback_agents = _string_list(current.get("fallback_agents")) or _string_list(
+        decision.get("fallback_agents")
+    )
+    candidate_tasks = _string_list(current.get("candidate_tasks"))
+    attempt_agents = current.get("attempt_agents")
+    skipped = current.get("skipped_candidates")
+    skipped_by_task: dict[str, str | None] = {}
+    skipped_text: list[str] = []
+    if isinstance(skipped, list):
+        for item in skipped:
+            if isinstance(item, dict):
+                skipped_task = _value_str(item.get("task"))
+                reason = _value_str(item.get("reason_code")) or _value_str(item.get("reason"))
+                if skipped_task is not None:
+                    skipped_by_task[skipped_task] = reason
+                    skipped_text.append(
+                        f"{skipped_task}: {reason}" if reason is not None else skipped_task
+                    )
+    candidates: list[TaskCandidateView] = []
+    for index, candidate_task in enumerate(candidate_tasks, start=1):
+        agents: list[str] = []
+        if isinstance(attempt_agents, list) and index <= len(attempt_agents):
+            agents = _string_list(attempt_agents[index - 1])
+        reason = skipped_by_task.get(candidate_task)
+        executed = candidate_task == executed_task
+        selected = candidate_task == resolved_task
+        status = "executed" if executed else "selected" if selected else "skipped" if candidate_task in skipped_by_task else "considered"
+        candidates.append(TaskCandidateView(
+            order=index,
+            task=candidate_task,
+            agent_names=agents,
+            status=status,
+            reason_code=reason,
+            selected=selected,
+            executed=executed,
+        ))
+    return TaskRoutingView(
+        source_task=run_task or task,
+        resolved_task=resolved_task,
+        executed_task=executed_task,
+        planning_mode=_value_str(current.get("planning_mode")),
+        resolution_source=_value_str(current.get("resolution_source")),
+        candidate_tasks=candidates,
+        primary_agent=primary_agent,
+        fallback_agents=fallback_agents,
+        executed_agent=executed_agent,
+        execution_mode=_value_str(current.get("execution_mode")) or _value_str(
+            decision.get("execution_mode")
+        ),
+        primary_reason=_value_str(current.get("primary_reason")),
+        fallback_from_task=_value_str(current.get("fallback_from_task")),
+        skipped_candidates=skipped_text,
+        reason_codes=_string_list(decision.get("reason_codes")),
+    )
+
+
+def _execution_steps(
+    run_dir: Path,
+    *,
+    task: str,
+    state: str,
+    trace: dict[str, Any] | None,
+    task_routing: TaskRoutingView,
+    backend_stages: list[BackendStageView],
+    model_calls: list[Any],
+    structured_artifacts: list[Any],
+    evaluation: EvaluationRecord | None,
+) -> list[ExecutionStepView]:
+    current = trace or {}
+    rows: list[dict[str, Any]] = []
+
+    def add(phase: str, component: str, operation: str, **values: Any) -> None:
+        rows.append({
+            "phase": phase,
+            "component": component,
+            "operation": operation,
+            **values,
+        })
+
+    manifest = load_run_manifest(run_dir)
+    adapter = (
+        "data.adapters.vrsbench.adapter.VRSBenchAdapter"
+        if manifest is not None and manifest.dataset == "VRSBench"
+        else "data.adapters.base.DatasetAdapter"
+    )
+    add("input", adapter, "iter_samples", status="recorded", task=task)
+
+    planning_mode = task_routing.planning_mode
+    if planning_mode in {"visual-task-plan-v2", "visual-task-plan-v3", "visual-task-plan-v4"}:
+        add("planning", "workflows.visual_planner.VisualTaskPlanner", "plan", status="recorded", task=task_routing.resolved_task)
+    elif current.get("joint_plan") is True:
+        add("planning", "workflows.visual_planner.JointVisualPlanner", "plan", status="recorded", task=task_routing.resolved_task)
+    elif task_routing.resolution_source == "model":
+        add("planning", "workflows.task_resolver.TaskResolver", "resolve", status="recorded", task=task_routing.resolved_task)
+
+    add(
+        "routing",
+        "routing.router.TaskRouter",
+        "route",
+        status="selected" if task_routing.resolved_task else "not_recorded",
+        task=task_routing.resolved_task,
+        agent_name=task_routing.primary_agent,
+        reason_code=task_routing.primary_reason or (
+            ", ".join(task_routing.reason_codes) or None
+        ),
+    )
+    agent_component = _value_str(current.get("agent_class")) or "agents.registry.AgentRegistry"
+    add(
+        "agent",
+        agent_component,
+        "run",
+        status=state or "not_recorded",
+        task=task_routing.executed_task,
+        agent_name=task_routing.executed_agent,
+        reason_code=_value_str(current.get("failure_code")),
+    )
+
+    artifact_by_phase = {
+        "visual_task_plan.json": "planning",
+        "visual_plan.json": "planning",
+        "joint_visual_plan.json": "planning",
+        "vqa_evidence.json": "evidence",
+        "grounding_evidence.json": "evidence",
+    }
+    for artifact in structured_artifacts:
+        filename = _value_str(getattr(artifact, "filename", None))
+        if filename is None:
+            continue
+        add(
+            artifact_by_phase.get(filename, "artifact"),
+            "reporting.adapters.StructuredArtifactView",
+            "load",
+            status="recorded",
+            task=task_routing.executed_task,
+            artifact_names=[filename],
+        )
+
+    for stage in backend_stages:
+        summary: dict[str, Any] = {
+            "phase": stage.phase,
+            "backend_kind": stage.backend_kind,
+        }
+        if stage.predicted_count is not None:
+            summary["predicted_count"] = stage.predicted_count
+        if stage.accepted_count is not None:
+            summary["accepted_count"] = stage.accepted_count
+        if stage.rejected_count is not None:
+            summary["rejected_count"] = stage.rejected_count
+        add(
+            "backend",
+            "agents.counting.CountingAgent",
+            stage.phase,
+            status=stage.status,
+            task=task_routing.executed_task,
+            agent_name=task_routing.executed_agent,
+            backend_name=stage.backend_name,
+            reason_code=stage.reason_code or stage.error_type,
+            summary_fields=summary,
+        )
+
+    for call in model_calls:
+        summary = {
+            "prompt_version": call.prompt_version,
+            "valid": call.valid,
+            "cache_hit": call.cache_hit,
+            "repair_used": call.repair_used,
+        }
+        if call.latency_seconds is not None:
+            summary["latency_seconds"] = call.latency_seconds
+        add(
+            "model_call",
+            "models.structured_client",
+            "complete_json",
+            status="succeeded" if call.valid is True else "failed" if call.valid is False else "recorded",
+            task=task_routing.executed_task,
+            agent_name=task_routing.executed_agent,
+            request_id=call.request_id,
+            summary_fields=summary,
+        )
+
+    if evaluation is not None:
+        add("evaluation", "evaluation.records.EvaluationRecord", "evaluate", status="recorded", task=task_routing.executed_task)
+    add("reporting", "reporting.builder", "build_report", status="recorded", task=task_routing.executed_task)
+    return [ExecutionStepView(order=index, **row) for index, row in enumerate(rows, start=1)]
 
 
 def _execution_path(
@@ -299,6 +523,7 @@ def _backend_stages(audit: CountingExecutionAudit | None) -> list[BackendStageVi
             phase=attempt.phase,
             status=attempt.status,
             reason_code=attempt.reason_code,
+            error_type=attempt.error_type,
             predicted_count=counting.final_count if counting is not None else None,
             counting_status=counting.status if counting is not None else None,
             accepted_count=(sum(point.accepted for point in points) if counting is not None else None),
