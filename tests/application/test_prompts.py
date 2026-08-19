@@ -47,8 +47,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v4.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
-    assert catalog.version("change") == "v4"
-    assert catalog.asset("change").path.name == "change_dual_path_v4.md"
+    assert catalog.version("change") == "v5"
+    assert catalog.asset("change").path.name == "change_dual_path_v5.md"
     assert catalog.asset("seam").path.name == "seam_review_v2.md"
     assert catalog.asset("vqa_judge").path.name == "deepseek_vqa_judge_v2.md"
     assert (REPO_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").is_file()
@@ -77,25 +77,53 @@ def test_vqa_judge_v2_declares_semantic_text_only_rules() -> None:
         assert required in prompt
 
 
-def test_change_prompt_v4_uses_full_path_and_rejects_mismatch_shortcuts() -> None:
+def test_change_prompt_v5_enforces_persistent_change_policy() -> None:
     prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
     for required in (
         "raw t1/t2 images",
         "authoritative",
-        "segformer labels, features, semantic transitions",
-        "attention hints rather than",
-        "ground truth",
-        "never treat a mask or derived image as proof",
-        "raw_full_t1",
-        "raw_full_t2",
-        "full-path semantic change analyst",
-        "registration failure",
-        "are not evidence of no change",
-        "do not relabel it as a scene mismatch",
-        "both temporal sides",
+        "attention hints rather than ground truth",
+        "never treat a mask",
+        "persistent scene changes",
+        "presence or absence",
+        "footprint",
+        "connectivity",
+        "seasonal appearance",
+        "dry/brown",
+        "vehicles",
+        "road",
+        "appearance_or_transient_difference",
+        "persistent_semantic_change",
+        "re-scan the raw pair",
         "no significant semantic change detected",
     ):
         assert required in prompt
+
+
+def test_change_prompt_v5_distinguishes_appearance_from_persistent_change() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
+    for phrase in (
+        "dry/brown",
+        "green vegetation",
+        "road color",
+        "temporary vehicles",
+        "water-level",
+        "appearance_or_transient_difference",
+    ):
+        assert phrase in prompt
+
+
+def test_change_prompt_v5_preserves_real_structural_change() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
+    for phrase in (
+        "actual removal",
+        "new road",
+        "new house",
+        "new building",
+        "re-scan the raw pair",
+        "persistent structural changes",
+    ):
+        assert phrase in prompt
 
 
 def test_seam_review_v2_is_local_and_decision_only() -> None:
@@ -172,7 +200,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
         "count_localize_v1.md",
         "target_parse_v1.md",
         "missing_point_review_v3.md",
-            "change_dual_path_v4.md",
+            "change_dual_path_v5.md",
         "general_vqa_v3.md",
         "caption_v1.md",
         "seam_review_v2.md",
