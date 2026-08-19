@@ -11,6 +11,33 @@ from agents.change.settings import ChangeReviewSettings
 from agents.schema import AgentResult
 
 
+def is_no_change_answer(answer: str) -> bool:
+    """Recognize completed no-change wording without treating uncertainty as negative."""
+    normalized = answer.casefold()
+    return any(token in normalized for token in (
+        "no visible change", "no change", "no significant semantic change",
+        "no significant change", "未见变化", "没有变化", "无显著语义变化", "无明显变化",
+    ))
+
+
+def meaningful_proposals(
+    proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> list[ChangeProposal]:
+    return [item for item in proposals if item.score >= settings.no_change_conflict_min_score]
+
+
+def has_no_change_conflict(
+    result: AgentResult, proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> bool:
+    if not settings.enabled or not is_no_change_answer(result.answer):
+        return False
+    meaningful = meaningful_proposals(proposals, settings)
+    return (
+        len(meaningful) >= settings.no_change_conflict_min_proposals
+        or sum(item.area_ratio for item in meaningful) >= settings.no_change_conflict_min_total_area_ratio
+    )
+
+
 def review_result(
     result: AgentResult,
     proposals: list[ChangeProposal],
@@ -22,19 +49,7 @@ def review_result(
         return result, []
     warnings: list[str] = []
     answer = result.answer.casefold()
-    no_change = any(
-        token in answer
-        for token in (
-            "no visible change",
-            "no change",
-            "no significant semantic change",
-            "no significant change",
-            "未见变化",
-            "没有变化",
-            "无显著语义变化",
-            "无明显变化",
-        )
-    )
+    no_change = is_no_change_answer(result.answer)
     if (
         settings.require_proposal_evidence
         and not no_change
@@ -42,16 +57,7 @@ def review_result(
         and not result.evidence_items
     ):
         warnings.append("CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE")
-    meaningful_proposals = [
-        item
-        for item in proposals
-        if item.score >= settings.no_change_conflict_min_score
-    ]
-    if no_change and (
-        len(meaningful_proposals) >= settings.no_change_conflict_min_proposals
-        or sum(item.area_ratio for item in meaningful_proposals)
-        >= settings.no_change_conflict_min_total_area_ratio
-    ):
+    if has_no_change_conflict(result, proposals, settings):
         warnings.append("CHANGE_RESULT_CONFLICT")
     proposal_boxes = [item.box for item in proposals]
     for evidence in result.evidence_items:

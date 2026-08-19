@@ -12,6 +12,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
 
 from agents.counting.schema import IssueRecord
+from agents.schema import VisualEvidence
 
 
 RegistrationModel = Literal["identity", "similarity", "affine", "homography", "none"]
@@ -238,3 +239,42 @@ class ChangePreprocessResult(BaseModel):
     transform_summary: dict[str, object] = Field(default_factory=dict)
     diagnostics: dict[str, JsonValue] = Field(default_factory=dict)
     registration: RegistrationReport | None = None
+
+
+CandidateVerdict = Literal[
+    "persistent_change", "appearance_only", "registration_artifact", "transient",
+    "insufficient_visual_evidence",
+]
+GlobalVerdict = Literal[
+    "persistent_change", "no_persistent_change", "insufficient_visual_evidence",
+]
+
+
+class ChangeCandidateReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    proposal_id: str
+    verdict: CandidateVerdict
+    t1_state: str
+    t2_state: str
+    reason: str
+
+
+class ChangeGlobalReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    verdict: GlobalVerdict
+    t1_state: str
+    t2_state: str
+    reason: str
+
+
+class ChangeAdjudicationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    agent_name: Literal["change_agent"]
+    global_review: ChangeGlobalReview
+    candidate_reviews: list[ChangeCandidateReview]
+    answer: str
+    boxes: list[list[int]] = Field(default_factory=list)
+    evidence: list[str] = Field(default_factory=list)
+    evidence_items: list[VisualEvidence] = Field(default_factory=list)
+    geometry: dict[str, JsonValue] = Field(default_factory=dict)
+    status: Literal["completed", "partial"] = "completed"

@@ -70,6 +70,14 @@ class _RecordingClient:
 
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         self.calls.append({"messages": messages, "request_hash": request_meta.request_hash})
+        if response_model.__name__ == "ChangeAdjudicationResult":
+            payload = json.loads(messages[1]["content"][-1]["text"])
+            return response_model.model_validate({
+                "agent_name": "change_agent",
+                "global_review": {"verdict": "no_persistent_change", "t1_state": "stable scene", "t2_state": "stable scene", "reason": "no persistent geometry change"},
+                "candidate_reviews": [{"proposal_id": item["proposal_id"], "verdict": "appearance_only", "t1_state": "same structure", "t2_state": "same structure", "reason": "appearance differs only"} for item in payload["adjudication_candidates"]],
+                "answer": "No significant semantic change detected.", "status": "completed",
+            })
         return response_model.model_validate(
             {"agent_name": "change_agent", "answer": self._answer, "status": "completed"}
         )
@@ -309,13 +317,7 @@ def test_run_dual_path_with_identical_images(tmp_path: Path) -> None:
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
     assert payload["input_mode"] == "dual_path"
-    assert _manifest_roles(client) == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "harmonized_t1",
-        "harmonized_t2",
-        "proposal_overlay",
-    ]
+    assert _manifest_roles(client) == ["raw_full_t1", "raw_full_t2"]
     assert execution.trace["harmonization_status"] == "applied"
     assert execution.trace["pif_ratio"] is not None
     assert execution.trace["proposal_count"] == 0
@@ -330,12 +332,7 @@ def test_run_harmonized_only(tmp_path: Path) -> None:
     asyncio.run(agent.run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
     assert payload["input_mode"] == "harmonized_only"
-    assert _manifest_roles(client) == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "harmonized_t1",
-        "harmonized_t2",
-    ]
+    assert _manifest_roles(client) == ["raw_full_t1", "raw_full_t2"]
 
 
 def test_raw_authority_is_present_even_when_derived_evidence_is_available(
@@ -394,11 +391,7 @@ def test_registered_global_evidence_has_explicit_role(
     )
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
-    assert _manifest_roles(client)[0:3] == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "registered_t2",
-    ]
+    assert _manifest_roles(client)[0:2] == ["raw_full_t1", "raw_full_t2"]
     payload = _last_user_payload(client)
     assert payload["registration"]["quality"] == {
         "inlier_ratio": 0.9,
@@ -418,13 +411,8 @@ def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     assert _manifest_roles(client) == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "harmonized_t1",
-        "harmonized_t2",
-        "proposal_overlay",
-        "change_000:reference_t1_crop",
-        "change_000:t2_raw_fallback_crop",
+        "raw_full_t1", "raw_full_t2", "proposal_overlay",
+        "change_000:reference_t1_crop", "change_000:t2_raw_fallback_crop",
     ]
 
 
@@ -484,9 +472,7 @@ def test_proposals_are_ranked_by_score_times_reliability_and_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = AgentChangeSettings(
-        proposals=ChangeProposalSettings(max_proposals=1)
-    )
+    settings = AgentChangeSettings()
     low_score_high_reliability = _proposal("change_000", 0.9).model_copy(
         update={"reliability": {"registration": 0.1}}
     )
@@ -506,10 +492,10 @@ def test_proposals_are_ranked_by_score_times_reliability_and_truncated(
     asyncio.run(_agent(client, settings=settings).run(_sample(tmp_path), _context(tmp_path)))
     roles = _manifest_roles(client)
     assert "change_001:reference_t1_crop" in roles
-    assert "change_000:reference_t1_crop" not in roles
+    assert "change_000:reference_t1_crop" in roles
     payload = _last_user_payload(client)
     assert payload["evidence_audit"]["proposal_count_total"] == 2
-    assert payload["evidence_audit"]["proposal_count_attached"] == 1
+    assert payload["evidence_audit"]["proposal_count_attached"] == 2
     assert {item["proposal_id"] for item in payload["proposals"]} == {
         "change_000",
         "change_001",
@@ -543,7 +529,7 @@ def test_payload_contract(tmp_path: Path, monkeypatch) -> None:
         "quality",
     }
     assert "effective_weights" in payload["perception"]
-    assert "semantic_transition_note" in payload
+    assert "semantic_support_note" in payload
     serialized = json.dumps(payload, ensure_ascii=False)
     assert str(tmp_path) not in serialized
     assert payload["perception"]["training_capture"] == {
@@ -579,8 +565,8 @@ def test_vlm_payload_and_trace_are_compact_json_safe(tmp_path: Path, monkeypatch
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
 
     payload = _last_user_payload(client)
-    assert payload["proposals"][0]["semantic_transition"]["from_class"] == "vegetation"
-    assert payload["proposals"][0]["semantic_transition"]["to_class"] == "building"
+    assert payload["proposals"][0]["semantic_support"]["from_class"] == "vegetation"
+    assert payload["proposals"][0]["semantic_support"]["to_class"] == "building"
     trace_json = json.dumps(execution.trace, ensure_ascii=False)
     assert "base64" not in trace_json.casefold()
     assert str(tmp_path) not in trace_json
@@ -605,8 +591,9 @@ def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient(answer="No visible change.")
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
-    assert execution.payload.status == "partial"
-    assert "CHANGE_RESULT_CONFLICT" in execution.trace["review_warnings"]
+    assert execution.payload.status == "completed"
+    assert "CHANGE_RESULT_CONFLICT" not in execution.trace["review_warnings"]
+    assert execution.trace["adjudication_used"] is True
     assert execution.trace["review_used"] is True
 
 

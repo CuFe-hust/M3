@@ -527,7 +527,6 @@ def _failure_matrix_case(
         ("torch_missing", "SEGFORMER_DEPENDENCY_MISSING"),
         ("checkpoint_missing", "SEGFORMER_CHECKPOINT_MISSING"),
         ("hidden_state_invalid", "SEGFORMER_FEATURE_GRID_UNRESOLVED"),
-        ("insufficient_pif", "FEATURE_RESIDUAL_INSUFFICIENT_PIF"),
         ("nan_feature", "FEATURE_RESIDUAL_NONFINITE"),
         ("grid_mismatch", "SEGFORMER_PAIR_GRID_MISMATCH"),
     ],

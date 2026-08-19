@@ -20,8 +20,8 @@ from agents.change.perception import (
 )
 from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.registration import RegistrationError
-from agents.change.reviewer import review_result
-from agents.change.schema import ChangePreprocessResult
+from agents.change.reviewer import has_no_change_conflict, meaningful_proposals, review_result
+from agents.change.schema import ChangeAdjudicationResult, ChangePreprocessResult, SemanticTransition
 from agents.change.settings import AgentChangeSettings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentName, AgentResult
@@ -39,6 +39,7 @@ from models.images import UnsupportedImageFormatError, detect_image_mime, image_
 
 # Runtime prompt authority is injected from the versioned PromptCatalog.
 InputMode = Literal["raw_only", "harmonized_only", "dual_path"]
+EvidenceStage = Literal["initial", "adjudication"]
 
 
 def resolve_input_mode(settings: AgentChangeSettings) -> InputMode:
@@ -116,104 +117,65 @@ class ChangeAgent:
         # budget 或调用模型之前稳定失败。
         mode = resolve_input_mode(settings)
         content, image_hashes, image_manifest, evidence_audit = self._build_evidence(
-            sample, context, preprocess, mode
+            sample, context, preprocess, mode, stage="initial"
         )
         perception_audit = _perception_audit(
             preprocess,
             settings=settings,
         )
-        payload: dict[str, Any] = {
-            "question": sample.question,
-            "task": sample.task,
-            "coordinate_frame": "normalized_0_999_top_left",
-            "input_mode": mode,
-            "evidence_audit": evidence_audit,
-            "temporal_roles": [ref.role for ref in sample.images],
-            "image_manifest": image_manifest,
-            "harmonization": {
-                "status": preprocess.decision.status,
-                "reason_codes": preprocess.decision.reason_codes,
-                "used_for_proposal": preprocess.decision.used_for_proposal,
-            },
-            "registration": _registration_payload(preprocess),
-            "perception": perception_audit,
-            "proposals": [
-                {
-                    "proposal_id": item.proposal_id,
-                    "box": item.box,
-                    "score": round(item.score, 6),
-                    "source": item.source,
-                    "component_scores": {
-                        name: round(score, 6)
-                        for name, score in item.component_scores.items()
-                    },
-                    "semantic_transition": (
-                        item.semantic_transition.model_dump(mode="json")
-                        if item.semantic_transition is not None
-                        else None
-                    ),
-                    "effective_weights": item.effective_weights,
-                    "reliability": item.reliability,
-                    "registration_confidence": item.registration_confidence,
-                }
-                for item in preprocess.proposals
-            ],
-            "semantic_transition_note": (
-                "Semantic transitions are auxiliary model evidence, not ground truth; "
-                "inspect raw T1/T2 evidence before confirming or explaining change."
-            ),
-            "empty_proposals_instruction": (
-                "Inspect raw full T1/T2; do not infer no change from an empty proposal list."
-            ),
-        }
+        payload = self._request_payload(
+            sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_audit,
+            image_manifest=image_manifest, evidence_audit=evidence_audit, stage="initial",
+        )
         content.append({"type": "text", "text": json.dumps(payload, ensure_ascii=False)})
-        structured_prompt = (
-            self._prompt.text
-            + "\n\nReturn valid JSON only. Set agent_name to 'change_agent'; "
-            "put the concise final answer in answer, retain relevant labeled boxes "
-            "in evidence_items and boxes, use concise factual evidence strings, "
-            "treat semantic_transition as auxiliary evidence rather than ground truth "
-            "and verify it against raw T1/T2 crops, "
-            "record proposal ids and evidence path types in geometry, and set "
-            "status to 'completed'."
-        )
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": structured_prompt},
-            {"role": "user", "content": content},
-        ]
-        request_hash = build_request_hash(
-            model=identity.model,
-            generation=identity.generation_payload(),
-            prompt_version=self._prompt.version,
-            messages=messages,
-            image_sha256="|".join(image_hashes),
-            response_schema=AgentResult.model_json_schema(),
-            client_version=identity.client_version,
-            model_revision=identity.revision,
-        )
-
-        # Consume exactly one Qwen budget entry before the call.
-        # 调用前恰好消费一次 Qwen budget。
-        context.call_budget.reserve_qwen()
-        result = await self._client.complete_json(
-            messages=messages,
-            response_model=AgentResult,
-            request_meta=RequestMeta(
-                request_id=f"{sample.sample_id}:{self.name}",
-                request_hash=request_hash,
-                prompt_version=self._prompt.version,
-                sample_id=sample.sample_id,
-                artifact_dir=context.artifact_dir / self.name,
-            ),
+        result, request_hash = await self._call_vlm_json(
+            sample=sample, context=context, identity=identity, content=content,
+            image_hashes=image_hashes, response_model=AgentResult, decision_stage="initial",
         )
         if result.agent_name != self.name:
-            raise AgentExecutionError(
-                self.name,
-                sample.sample_id,
-                cause=f"model returned agent_name {result.agent_name!r}",
-            )
+            raise AgentExecutionError(self.name, sample.sample_id, cause=f"model returned agent_name {result.agent_name!r}")
 
-        reviewed, review_warnings = review_result(result, preprocess.proposals, settings.review)
+        reviewed, initial_warnings = review_result(result, preprocess.proposals, settings.review)
+        adjudication_used = False
+        adjudication_request_hash: str | None = None
+        adjudication_candidate_ids: list[str] = []
+        adjudication_global_verdict: str | None = None
+        adjudication_verdicts: dict[str, str] = {}
+        adjudication_outcome: str | None = None
+        final_warnings = initial_warnings
+        if settings.review.adjudication_enabled and has_no_change_conflict(result, preprocess.proposals, settings.review):
+            selected = sorted(
+                meaningful_proposals(preprocess.proposals, settings.review), key=_proposal_priority
+            )[: settings.evidence.adjudication_max_proposals]
+            adjudication_candidate_ids = [item.proposal_id for item in selected]
+            content, image_hashes, image_manifest, adjudication_audit = self._build_evidence(
+                sample, context, preprocess, mode, stage="adjudication", selected_proposals=selected
+            )
+            adjudication_payload = self._request_payload(
+                sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_audit,
+                image_manifest=image_manifest, evidence_audit=adjudication_audit, stage="adjudication",
+                first_pass={"answer": result.answer, "review_warnings": initial_warnings},
+                selected_proposals=selected,
+            )
+            content.append({"type": "text", "text": json.dumps(adjudication_payload, ensure_ascii=False)})
+            adjudication, adjudication_request_hash = await self._call_vlm_json(
+                sample=sample, context=context, identity=identity, content=content, image_hashes=image_hashes,
+                response_model=ChangeAdjudicationResult, decision_stage="adjudication",
+            )
+            self._validate_adjudication(adjudication, adjudication_candidate_ids, sample.sample_id)
+            reviewed, adjudication_outcome = self._merge_adjudication(adjudication, sample.task)
+            reviewed, final_warnings = review_result(reviewed, preprocess.proposals, settings.review)
+            if adjudication_outcome == "negative":
+                final_warnings = [warning for warning in final_warnings if warning != "CHANGE_RESULT_CONFLICT"]
+                if not final_warnings:
+                    reviewed = reviewed.model_copy(update={"status": "completed"})
+            if adjudication_outcome == "unresolved":
+                final_warnings = list(dict.fromkeys([*final_warnings, "CHANGE_ADJUDICATION_UNRESOLVED"]))
+                reviewed = reviewed.model_copy(update={"status": "partial"})
+            adjudication_used = True
+            evidence_audit = adjudication_audit
+            adjudication_global_verdict = adjudication.global_review.verdict
+            adjudication_verdicts = {item.proposal_id: item.verdict for item in adjudication.candidate_reviews}
         metrics = preprocess.decision.metrics
         trace = {
             "prompt_version": self._prompt.version,
@@ -242,7 +204,17 @@ class ChangeAgent:
             ),
             "segformer_model": preprocess.diagnostics.get("semantic_model"),
             "review_used": settings.review.enabled,
-            "review_warnings": review_warnings,
+            "review_warnings": final_warnings,
+            "adjudication_enabled": settings.review.adjudication_enabled,
+            "adjudication_used": adjudication_used,
+            "adjudication_trigger": "CHANGE_RESULT_CONFLICT" if adjudication_used else None,
+            "adjudication_request_hash": adjudication_request_hash,
+            "adjudication_candidate_ids": adjudication_candidate_ids,
+            "adjudication_global_verdict": adjudication_global_verdict,
+            "adjudication_verdicts": adjudication_verdicts,
+            "adjudication_outcome": adjudication_outcome,
+            "initial_review_warnings": initial_warnings,
+            "final_review_warnings": final_warnings,
             "preprocess_artifacts": preprocess.artifact_files,
             "perception_artifacts": preprocess.artifact_files,
         }
@@ -252,6 +224,116 @@ class ChangeAgent:
             result_filename="agent_result.json",
             trace=trace,
         )
+
+    async def _call_vlm_json(
+        self, *, sample: UnifiedSample, context: AgentContext, identity: ModelCacheIdentity,
+        content: list[dict[str, Any]], image_hashes: list[str], response_model: Any,
+        decision_stage: EvidenceStage,
+    ) -> tuple[Any, str]:
+        suffix = (
+            "Decision stage is initial. Return valid JSON matching AgentResult only. "
+            "Set agent_name to change_agent and status to completed."
+            if decision_stage == "initial" else
+            "Decision stage is adjudication. Return valid JSON matching ChangeAdjudicationResult only. "
+            "Review the global raw pair and every supplied adjudication candidate exactly once."
+        )
+        messages = [
+            {"role": "system", "content": self._prompt.text + "\n\n" + suffix},
+            {"role": "user", "content": content},
+        ]
+        request_hash = build_request_hash(
+            model=identity.model, generation=identity.generation_payload(), prompt_version=self._prompt.version,
+            messages=messages, image_sha256="|".join(image_hashes),
+            response_schema=response_model.model_json_schema(), client_version=identity.client_version,
+            model_revision=identity.revision,
+        )
+        context.call_budget.reserve_qwen()
+        result = await self._client.complete_json(
+            messages=messages, response_model=response_model,
+            request_meta=RequestMeta(
+                request_id=f"{sample.sample_id}:{self.name}" + ("" if decision_stage == "initial" else ":adjudication"),
+                request_hash=request_hash, prompt_version=self._prompt.version, sample_id=sample.sample_id,
+                artifact_dir=context.artifact_dir / self.name,
+            ),
+        )
+        return result, request_hash
+
+    def _request_payload(
+        self, *, sample: UnifiedSample, preprocess: ChangePreprocessResult, mode: InputMode,
+        perception_audit: dict[str, object], image_manifest: list[dict[str, str]],
+        evidence_audit: dict[str, object], stage: EvidenceStage,
+        first_pass: dict[str, object] | None = None,
+        selected_proposals: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        proposals = selected_proposals if stage == "adjudication" and selected_proposals is not None else preprocess.proposals
+        payload: dict[str, Any] = {
+            "decision_stage": stage, "question": sample.question, "task": sample.task,
+            "coordinate_frame": "normalized_0_999_top_left", "input_mode": mode,
+            "evidence_audit": evidence_audit, "temporal_roles": [ref.role for ref in sample.images],
+            "image_manifest": image_manifest,
+            "harmonization": {"status": preprocess.decision.status, "reason_codes": preprocess.decision.reason_codes,
+                               "used_for_proposal": preprocess.decision.used_for_proposal},
+            "registration": _registration_payload(preprocess), "perception": perception_audit,
+            "proposals": [self._proposal_payload(item) for item in proposals],
+            "semantic_support_note": "semantic_support is auxiliary attention evidence only; unavailable or uninformative support is neutral.",
+            "empty_proposals_instruction": "Inspect raw full T1/T2; do not infer no change from an empty proposal list.",
+        }
+        if stage == "adjudication":
+            payload["first_pass"] = first_pass or {}
+            payload["adjudication_candidates"] = [self._proposal_payload(item) for item in proposals]
+        return payload
+
+    def _proposal_payload(self, item: Any) -> dict[str, object]:
+        return {
+            "proposal_id": item.proposal_id, "box": item.box, "score": round(item.score, 6),
+            "source": item.source,
+            "component_scores": {name: round(score, 6) for name, score in item.component_scores.items()},
+            "semantic_support": _semantic_support_payload(
+                item.semantic_transition, confidence_floor=self._settings.semantic.semantic_confidence_floor
+            ),
+            "effective_weights": item.effective_weights, "reliability": item.reliability,
+            "registration_confidence": item.registration_confidence,
+        }
+
+    def _validate_adjudication(
+        self, result: ChangeAdjudicationResult, selected_ids: list[str], sample_id: str
+    ) -> None:
+        if result.agent_name != self.name:
+            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_INVALID_AGENT")
+        ids = [item.proposal_id for item in result.candidate_reviews]
+        if len(ids) != len(set(ids)):
+            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_DUPLICATE_PROPOSAL")
+        if set(ids) - set(selected_ids):
+            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_UNKNOWN_PROPOSAL")
+        if set(selected_ids) - set(ids):
+            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_MISSING_PROPOSAL")
+        positive = result.global_review.verdict == "persistent_change" or any(
+            item.verdict == "persistent_change" for item in result.candidate_reviews
+        )
+        if positive and (result.answer.strip() == "No significant semantic change detected." or result.answer.strip().upper() in {"CHANGE", "NO_CHANGE", "YES", "NO"}):
+            raise AgentExecutionError(self.name, sample_id, cause="CHANGE_ADJUDICATION_INVALID_POSITIVE_ANSWER")
+
+    def _merge_adjudication(
+        self, result: ChangeAdjudicationResult, task: str
+    ) -> tuple[AgentResult, Literal["positive", "negative", "unresolved"]]:
+        positive = result.global_review.verdict == "persistent_change" or any(
+            item.verdict == "persistent_change" for item in result.candidate_reviews
+        )
+        unresolved = result.global_review.verdict == "insufficient_visual_evidence" or any(
+            item.verdict == "insufficient_visual_evidence" for item in result.candidate_reviews
+        )
+        if positive:
+            outcome: Literal["positive", "negative", "unresolved"] = "positive"
+            status = "completed"
+            answer = result.answer
+        elif unresolved:
+            outcome = "unresolved"; status = "partial"
+            answer = "Unable to confirm a persistent semantic change from the available evidence." if task == "change_caption" else result.answer
+        else:
+            outcome = "negative"; status = "completed"
+            answer = "No significant semantic change detected." if task == "change_caption" else result.answer
+        return AgentResult(agent_name=self.name, answer=answer, boxes=result.boxes, evidence=result.evidence,
+                           evidence_items=result.evidence_items, geometry=dict(result.geometry), status=status), outcome
 
     def _prepare_perception_and_publish(
         self,
@@ -316,6 +398,9 @@ class ChangeAgent:
         context: AgentContext,
         preprocess: ChangePreprocessResult,
         mode: InputMode,
+        *,
+        stage: EvidenceStage,
+        selected_proposals: list[Any] | None = None,
     ) -> tuple[
         list[dict[str, Any]],
         list[str],
@@ -354,10 +439,9 @@ class ChangeAgent:
         # absent, rejected, or stale; the VLM must still see the source pair.
         raw_authority_required = True
         paths.extend(raw)
-        if mode == "raw_only":
-            pass
-        else:
+        if self._settings.evidence.attach_registered_global and mode != "raw_only":
             paths.extend(registered)
+        if self._settings.evidence.attach_harmonized_global and mode != "raw_only":
             paths.extend(harmonized)
 
         proposal_evidence_count = 0
@@ -366,28 +450,36 @@ class ChangeAgent:
         # attaching meaningful proposal evidence in every base mode.
         # 保留既有 dual-path 空 overlay 契约，同时在任意 base mode 下独立附加
         # 有意义的 proposal evidence。
-        if overlay and (preprocess.proposals or (mode == "dual_path" and harmonized)):
+        if self._settings.evidence.attach_proposal_overlay and overlay and preprocess.proposals:
             paths.append(
                 ("proposal_overlay", context.artifact_dir / overlay, "artifact")
             )
             proposal_evidence_count += 1
-        selected_proposals = sorted(
-            preprocess.proposals,
-            key=_proposal_priority,
-        )[: self._settings.proposals.max_proposals]
-        for proposal in selected_proposals:
+        selected = selected_proposals if selected_proposals is not None else sorted(
+            preprocess.proposals, key=_proposal_priority
+        )[: (self._settings.evidence.initial_max_proposals if stage == "initial" else self._settings.evidence.adjudication_max_proposals)]
+        skipped_incomplete: list[str] = []
+        attached_ids: list[str] = []
+        for proposal in selected:
+            choices: dict[str, tuple[str, Path, str]] = {}
             for relative in proposal.evidence_filenames:
-                paths.append(
-                    (
-                        _proposal_manifest_role(proposal, relative, preprocess),
-                        context.artifact_dir / relative,
-                        "artifact",
-                    )
-                )
-                proposal_evidence_count += 1
+                role = _proposal_manifest_role(proposal, relative, preprocess)
+                if role.endswith(":reference_t1_crop"):
+                    choices["t1"] = (role, context.artifact_dir / relative, "artifact")
+                elif role.endswith(":t2_registered_crop"):
+                    choices["t2"] = (role, context.artifact_dir / relative, "artifact")
+                elif role.endswith(":t2_raw_fallback_crop") and "t2" not in choices:
+                    choices["t2"] = (role, context.artifact_dir / relative, "artifact")
+            if set(choices) != {"t1", "t2"}:
+                skipped_incomplete.append(proposal.proposal_id)
+                continue
+            paths.extend([choices["t1"], choices["t2"]])
+            attached_ids.append(proposal.proposal_id)
+            proposal_evidence_count += 2
         content: list[dict[str, Any]] = []
         hashes: list[str] = []
         manifest: list[dict[str, str]] = []
+        content.append({"type": "text", "text": f"Decision stage: {stage}. Compare the next two authoritative raw images first."})
         for index, (role, path, kind) in enumerate(paths):
             data = self._read_artifact(path, sample.sample_id, kind=kind)
             try:
@@ -398,6 +490,7 @@ class ChangeAgent:
                     sample.sample_id,
                     cause=f"image_format_error:{type(error).__name__}",
                 ) from error
+            content.append({"type": "text", "text": _evidence_label(role)})
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}})
             hashes.append(hashlib.sha256(data).hexdigest())
             manifest.append({"index": str(index), "role": role})
@@ -414,8 +507,17 @@ class ChangeAgent:
             "proposal_evidence_attached": proposal_evidence_count > 0,
             "proposal_evidence_count": proposal_evidence_count,
             "proposal_count_total": len(preprocess.proposals),
-            "proposal_count_attached": len(selected_proposals),
+            "proposal_count_attached": len(attached_ids),
             "image_manifest_roles": [item["role"] for item in manifest],
+            "evidence_stage": stage,
+            "image_count_attached": len(manifest),
+            "initial_max_proposals": self._settings.evidence.initial_max_proposals,
+            "adjudication_max_proposals": self._settings.evidence.adjudication_max_proposals,
+            "selected_proposal_ids": attached_ids,
+            "skipped_incomplete_proposal_ids": skipped_incomplete,
+            "registered_global_attached": self._settings.evidence.attach_registered_global and bool(registered),
+            "harmonized_global_attached": self._settings.evidence.attach_harmonized_global and bool(harmonized),
+            "proposal_overlay_attached": bool(self._settings.evidence.attach_proposal_overlay and overlay and preprocess.proposals),
         }
         return content, hashes, manifest, evidence_audit
 
@@ -615,6 +717,39 @@ def _proposal_priority(proposal: Any) -> tuple[float, str]:
     ]
     confidence = sum(values) / len(values) if values else 1.0
     return (-float(proposal.score) * confidence, str(proposal.proposal_id))
+
+
+def _semantic_support_payload(
+    transition: SemanticTransition | None, *, confidence_floor: float
+) -> dict[str, object]:
+    """Make auxiliary class evidence neutral unless it is a confident transition."""
+    if transition is None:
+        return {"status": "unavailable"}
+    if transition.from_class.casefold() == transition.to_class.casefold():
+        return {"status": "uninformative", "reason": "same_auxiliary_class"}
+    if transition.from_confidence < confidence_floor or transition.to_confidence < confidence_floor:
+        return {"status": "uninformative", "reason": "low_auxiliary_class_confidence"}
+    return {
+        "status": "informative", "from_class": transition.from_class, "to_class": transition.to_class,
+        "from_confidence": transition.from_confidence, "to_confidence": transition.to_confidence,
+        "transition_confidence": transition.transition_confidence, "support_ratio": transition.support_ratio,
+    }
+
+
+def _evidence_label(role: str) -> str:
+    if role == "raw_full_t1":
+        return "AUTHORITATIVE RAW T1 - earlier full scene"
+    if role == "raw_full_t2":
+        return "AUTHORITATIVE RAW T2 - later full scene"
+    if role == "proposal_overlay":
+        return "AUXILIARY PROPOSAL OVERLAY - attention guidance only; not proof of change"
+    if ":" in role:
+        proposal_id, crop_role = role.split(":", 1)
+        if crop_role == "reference_t1_crop":
+            return f"CANDIDATE {proposal_id} - T1 reference crop - inspect the same location"
+        if crop_role in {"t2_registered_crop", "t2_raw_fallback_crop"}:
+            return f"CANDIDATE {proposal_id} - T2 comparison crop - inspect the same location"
+    return f"AUXILIARY {role} - attention evidence only"
 
 
 def _proposal_manifest_role(

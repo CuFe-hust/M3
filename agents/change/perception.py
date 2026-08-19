@@ -233,12 +233,16 @@ class ChangePerceptionPipeline:
                         min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
                         feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
                     )
-                if feature_result.diagnostics["alignment_status"] != "aligned":
-                    raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
                 feature_diagnostics = dict(feature_result.diagnostics)
                 feature_diagnostics["valid_feature_fraction"] = float(
                     np.mean(np.asarray(feature_result.valid_mask, dtype=bool))
                 )
+                if feature_result.diagnostics.get("alignment_status") != "aligned":
+                    feature_diagnostics["alignment_status"] = "insufficient_pif"
+                    feature_diagnostics["reason_code"] = "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+                    if semantic_settings.failure_policy == "fail":
+                        raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
+                    feature_result = None
             else:
                 # PIFs calibrate feature residuals, but they are not required
                 # for per-frame semantic segmentation.  Keep SegFormer active

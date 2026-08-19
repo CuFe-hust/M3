@@ -217,6 +217,19 @@ class ChangeReviewSettings(BaseModel):
         default=0.01, ge=0.0, le=1.0
     )
     require_temporal_pair_evidence: bool = True
+    adjudication_enabled: bool = True
+
+
+class ChangeEvidenceSettings(BaseModel):
+    """Bounded, role-labelled visual evidence sent to the VLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    initial_max_proposals: int = Field(default=2, ge=0, le=6)
+    adjudication_max_proposals: int = Field(default=3, ge=1, le=6)
+    attach_proposal_overlay: bool = True
+    attach_registered_global: bool = False
+    attach_harmonized_global: bool = False
 
 
 class AgentChangeSettings(BaseModel):
@@ -232,4 +245,5 @@ class AgentChangeSettings(BaseModel):
     learned_change: ChangeLearnedChangeSettings = Field(
         default_factory=ChangeLearnedChangeSettings
     )
+    evidence: ChangeEvidenceSettings = Field(default_factory=ChangeEvidenceSettings)
     review: ChangeReviewSettings = Field(default_factory=ChangeReviewSettings)
