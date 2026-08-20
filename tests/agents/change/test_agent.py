@@ -578,6 +578,51 @@ def test_vlm_payload_and_trace_are_compact_json_safe(tmp_path: Path, monkeypatch
     assert "answers" not in payload
 
 
+def test_vlm_payload_deanchors_landcover_only_transition(tmp_path: Path, monkeypatch) -> None:
+    proposal = _proposal().model_copy(
+        update={
+            "semantic_transition": SemanticTransition(
+                from_class="rangeland",
+                from_confidence=0.9,
+                to_class="tree",
+                to_confidence=0.9,
+                changed_class="tree",
+                support_ratio=0.9,
+                transition_confidence=0.9,
+            ),
+            "semantic_transitions": [
+                {
+                    "expert_role": "persistent_landcover",
+                    "evidence_type": "landcover_candidate",
+                    "from_class": "rangeland",
+                    "to_class": "tree",
+                    "confidence": 0.9,
+                }
+            ],
+            "semantic_consensus": {
+                "structural_support": 0.0,
+                "landcover_support": 0.9,
+                "transient_support": 0.0,
+                "expert_count": 2,
+            },
+        }
+    )
+    preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[proposal])
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: preprocess,
+    )
+    client = _RecordingClient()
+    asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    payload = _last_user_payload(client)
+    support = payload["proposals"][0]["semantic_support"]
+    assert support["status"] == "hypothesis_summary"
+    assert support["landcover_only"] is True
+    assert "from_class" not in support
+    assert "not sufficient" in payload["proposals"][0]["semantic_hypothesis_note"]
+
+
 # ── 复核与失败语义 / review and failure semantics ─────────────────────────
 
 
@@ -619,12 +664,14 @@ def _adjudication_result(
             "verdict": global_verdict, "t1_state": "before", "t2_state": "after",
             "reason": "reviewed raw pair",
             "change_category": "building_structure" if global_verdict == "persistent_change" else None,
+            "persistent_geometry_changed": True if global_verdict == "persistent_change" else None,
         },
         "candidate_reviews": [
             {
                 "proposal_id": f"change_{index:03d}", "verdict": verdict,
                 "t1_state": "before", "t2_state": "after", "reason": "reviewed crop",
                 "change_category": "building_structure" if verdict == "persistent_change" else None,
+                "persistent_geometry_changed": True if verdict == "persistent_change" else None,
             }
             for index, verdict in enumerate(candidate_verdicts)
         ],
@@ -663,6 +710,42 @@ def test_valid_candidate_positive_wins_over_global_negative(tmp_path: Path) -> N
     assert outcome == "positive"
     assert merged.answer == "A building was added."
     assert provenance["final_rule"] == "VALID_PERSISTENT_POSITIVE"
+
+
+def test_persistent_candidate_without_geometry_is_blocked(tmp_path: Path) -> None:
+    result = _adjudication_result("no_persistent_change", ["persistent_change"])
+    candidate = result.candidate_reviews[0].model_copy(
+        update={"persistent_geometry_changed": False}
+    )
+    result = result.model_copy(update={"candidate_reviews": [candidate]})
+    warnings = _agent()._validate_adjudication(result, ["change_000"])
+    assert "ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:change_000" in warnings
+    _, outcome, provenance = _agent()._merge_adjudication(
+        result, "change_caption", warnings
+    )
+    assert outcome == "negative"
+    assert provenance["valid_persistent_candidate_count"] == 0
+
+
+def test_nuisance_reason_blocks_raw_persistent_global_review(tmp_path: Path) -> None:
+    result = _adjudication_result("persistent_change", [])
+    global_review = result.global_review.model_copy(
+        update={
+            "persistent_geometry_changed": True,
+            "reason": "A vehicle shadow is seasonal and not a durable change.",
+        }
+    )
+    result = result.model_copy(update={"global_review": global_review})
+    warnings = _agent()._validate_adjudication(result, [])
+    assert any(
+        warning.startswith("ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON:global")
+        for warning in warnings
+    )
+    _, outcome, provenance = _agent()._merge_adjudication(
+        result, "change_caption", warnings
+    )
+    assert outcome == "unresolved"
+    assert provenance["valid_persistent_candidate_count"] == 0
 
 
 def test_invalid_global_negative_with_insufficient_candidate_remains_partial(tmp_path: Path) -> None:

@@ -14,9 +14,10 @@ from agents.change.perception import (
     ChangePerceptionError,
     ChangePerceptionPipeline,
     SemanticExpertBinding,
+    _transition_evidence_type,
 )
 from agents.change.preprocess import ChangePreparedPair
-from agents.change.schema import HarmonizationDecision, PairValidationReport
+from agents.change.schema import HarmonizationDecision, PairValidationReport, SemanticTransition
 from agents.change.settings import (
     AgentChangeSettings,
     ChangeHarmonizationSettings,
@@ -253,6 +254,71 @@ def test_multiple_semantic_experts_run_independently_and_are_audited() -> None:
         "segmenter-second",
     ]
     assert result.diagnostics["semantic_expert_failures"] == []
+
+
+def test_typed_semantic_transition_classes() -> None:
+    binding = SemanticExpertBinding(
+        expert_id="oem",
+        logical_model_id="oem",
+        priority=1,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset(),
+        structural_labels=frozenset({"building", "road"}),
+        landcover_candidate_labels=frozenset(
+            {"bareland", "rangeland", "developed_space", "tree", "water", "agriculture_land"}
+        ),
+        client=_DenseClient(),
+    )
+
+    def transition(source: str, target: str) -> SemanticTransition:
+        return SemanticTransition(
+            from_class=source,
+            from_confidence=0.9,
+            to_class=target,
+            to_confidence=0.9,
+            support_ratio=1.0,
+            transition_confidence=0.9,
+            changed_class=target,
+        )
+
+    assert _transition_evidence_type(transition("tree", "building"), binding, confidence_floor=0.45) == "structural_candidate"
+    assert _transition_evidence_type(transition("rangeland", "road"), binding, confidence_floor=0.45) == "structural_candidate"
+    assert _transition_evidence_type(transition("rangeland", "tree"), binding, confidence_floor=0.45) == "landcover_candidate"
+    assert _transition_evidence_type(transition("bareland", "rangeland"), binding, confidence_floor=0.45) == "landcover_candidate"
+    assert _transition_evidence_type(transition("water", "rangeland"), binding, confidence_floor=0.45) == "landcover_candidate"
+    assert _transition_evidence_type(transition("water", "water"), binding, confidence_floor=0.45) == "neutral"
+
+
+def test_object_semantic_transient_and_structural_candidates() -> None:
+    binding = SemanticExpertBinding(
+        expert_id="isaid",
+        logical_model_id="isaid",
+        priority=1,
+        role="object_semantic",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset({"Small_Vehicle"}),
+        persistent_labels=frozenset(),
+        structural_labels=frozenset({"Swimming_pool"}),
+        landcover_candidate_labels=frozenset(),
+        client=_DenseClient(),
+    )
+
+    def transition(source: str, target: str) -> SemanticTransition:
+        return SemanticTransition(
+            from_class=source,
+            from_confidence=0.9,
+            to_class=target,
+            to_confidence=0.9,
+            support_ratio=1.0,
+            transition_confidence=0.9,
+            changed_class=target,
+        )
+
+    assert _transition_evidence_type(transition("background", "Small_Vehicle"), binding, confidence_floor=0.45) == "transient"
+    assert _transition_evidence_type(transition("background", "Swimming_pool"), binding, confidence_floor=0.45) == "structural_candidate"
+    assert _transition_evidence_type(transition("background", "background"), binding, confidence_floor=0.45) == "neutral"
 
 
 def test_failed_semantic_expert_does_not_erase_successful_peer() -> None:

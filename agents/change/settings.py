@@ -140,6 +140,12 @@ class ChangeSemanticSettings(BaseModel):
     min_successful_experts: int = Field(default=1, ge=1)
     semantic_consensus_weight: float = Field(default=0.65, ge=0.0, le=1.0)
     semantic_union_weight: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Diagnostic-only by default.  Thresholds are intentionally configurable
+    # and are not activated from the Test100 run alone.
+    temporal_stability_enabled: bool = False
+    temporal_stability_soft_flip_rate: float = Field(default=0.15, ge=0.0, le=1.0)
+    temporal_stability_hard_flip_rate: float = Field(default=0.50, ge=0.0, le=1.0)
+    temporal_stability_floor: float = Field(default=0.25, ge=0.0, le=1.0)
 
     def model_post_init(self, __context: Any) -> None:
         if self.tile_overlap >= self.tile_size:
@@ -185,6 +191,10 @@ class ChangeSemanticSettings(BaseModel):
             raise ValueError("min_successful_experts cannot exceed max_experts")
         if self.semantic_consensus_weight + self.semantic_union_weight <= 0.0:
             raise ValueError("semantic ensemble weights must have a positive sum")
+        if self.temporal_stability_hard_flip_rate < self.temporal_stability_soft_flip_rate:
+            raise ValueError(
+                "temporal stability hard flip rate must not be below the soft rate"
+            )
 
 
 class ChangeReliabilitySettings(BaseModel):

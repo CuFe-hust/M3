@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.change.reviewer import review_result
+from agents.change.reviewer import review_outcome, review_result
 from agents.change.schema import ChangeProposal
 from agents.change.settings import ChangeReviewSettings
 from agents.schema import AgentResult, VisualEvidence
@@ -68,6 +68,54 @@ def test_no_change_with_single_proposal_is_not_conflict() -> None:
         result, [_proposal("p1", score=0.9, area_ratio=0.001)], ChangeReviewSettings()
     )
     assert "CHANGE_RESULT_CONFLICT" in warnings
+
+
+def test_landcover_only_semantic_candidate_is_suppressed_from_adjudication() -> None:
+    proposal = _proposal("landcover", score=0.9).model_copy(
+        update={
+            "component_scores": {"semantic": 0.9},
+            "semantic_consensus": {
+                "structural_support": 0.0,
+                "landcover_support": 0.9,
+                "transient_support": 0.0,
+            },
+            "semantic_transitions": [
+                {"evidence_type": "landcover_candidate"}
+            ],
+        }
+    )
+    outcome = review_outcome(
+        _result(answer="No significant semantic change detected."),
+        [proposal],
+        ChangeReviewSettings(),
+        task="change_caption",
+    )
+    assert outcome.route == "accept"
+    assert "NEGATIVE_LANDCOVER_ONLY_SUPPRESSED" in outcome.route_reasons
+
+
+def test_structural_semantic_candidate_still_routes_to_adjudication() -> None:
+    proposal = _proposal("building", score=0.5).model_copy(
+        update={
+            "component_scores": {"semantic": 0.5},
+            "semantic_consensus": {
+                "structural_support": 0.8,
+                "landcover_support": 0.0,
+                "transient_support": 0.0,
+            },
+            "semantic_transitions": [
+                {"evidence_type": "structural_candidate"}
+            ],
+        }
+    )
+    outcome = review_outcome(
+        _result(answer="No significant semantic change detected."),
+        [proposal],
+        ChangeReviewSettings(),
+        task="change_caption",
+    )
+    assert outcome.route == "adjudicate_negative"
+    assert "NEGATIVE_STRONG_PROPOSAL" in outcome.route_reasons
 
 
 def test_canonical_no_change_phrase_uses_current_proposal_score_scale() -> None:

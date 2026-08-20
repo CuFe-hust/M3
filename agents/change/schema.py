@@ -293,6 +293,46 @@ class ChangeCandidateReview(BaseModel):
     change_category: PersistentChangeCategory | None = None
     persistent_geometry_changed: bool | None = None
     geometry_change_description: str | None = None
+    normalization_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_review_category(cls, value: object) -> object:
+        """Drop irrelevant categories before Literal validation.
+
+        Models sometimes attach a persistent-change category to a clearly
+        non-persistent candidate.  The category is not authoritative in that
+        case and must not turn an otherwise usable adjudication into a schema
+        failure.  An explicit ``persistent_change + transient`` combination is
+        a structured contradiction, so it is deterministically downgraded.
+        """
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        verdict = data.get("verdict")
+        category = data.get("change_category")
+        reasons = list(data.get("normalization_reasons") or [])
+        pseudo_verdicts = {
+            "transient": "transient",
+            "appearance_only": "appearance_only",
+            "registration_artifact": "registration_artifact",
+            "insufficient_visual_evidence": "insufficient_visual_evidence",
+        }
+        if verdict == "persistent_change" and category in pseudo_verdicts:
+            data["verdict"] = pseudo_verdicts[category]
+            data["change_category"] = None
+            data["persistent_geometry_changed"] = False
+            reasons.append(
+                "ADJUDICATION_TRANSIENT_CATEGORY_DOWNGRADED"
+                if category == "transient"
+                else "ADJUDICATION_NONPERSISTENT_CATEGORY_DOWNGRADED"
+            )
+        elif verdict != "persistent_change" and category is not None:
+            data["change_category"] = None
+            reasons.append("ADJUDICATION_NONPERSISTENT_CATEGORY_CLEARED")
+        data["normalization_reasons"] = list(dict.fromkeys(reasons))
+        return data
 
     @model_validator(mode="after")
     def validate_category(self) -> "ChangeCandidateReview":
@@ -310,6 +350,39 @@ class ChangeGlobalReview(BaseModel):
     change_category: PersistentChangeCategory | None = None
     persistent_geometry_changed: bool | None = None
     geometry_change_description: str | None = None
+    normalization_reasons: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_review_category(cls, value: object) -> object:
+        """Normalize contradictory global review fields before literals."""
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        verdict = data.get("verdict")
+        category = data.get("change_category")
+        reasons = list(data.get("normalization_reasons") or [])
+        pseudo_verdicts = {
+            "transient": "no_persistent_change",
+            "appearance_only": "no_persistent_change",
+            "registration_artifact": "no_persistent_change",
+            "insufficient_visual_evidence": "no_persistent_change",
+        }
+        if verdict == "persistent_change" and category in pseudo_verdicts:
+            data["verdict"] = pseudo_verdicts[category]
+            data["change_category"] = None
+            data["persistent_geometry_changed"] = False
+            reasons.append(
+                "ADJUDICATION_TRANSIENT_CATEGORY_DOWNGRADED"
+                if category == "transient"
+                else "ADJUDICATION_NONPERSISTENT_CATEGORY_DOWNGRADED"
+            )
+        elif verdict != "persistent_change" and category is not None:
+            data["change_category"] = None
+            reasons.append("ADJUDICATION_NONPERSISTENT_CATEGORY_CLEARED")
+        data["normalization_reasons"] = list(dict.fromkeys(reasons))
+        return data
 
     @model_validator(mode="after")
     def validate_category(self) -> "ChangeGlobalReview":
@@ -329,3 +402,26 @@ class ChangeAdjudicationResult(BaseModel):
     evidence_items: list[VisualEvidence] = Field(default_factory=list)
     geometry: dict[str, JsonValue] = Field(default_factory=dict)
     status: Literal["completed", "partial"] = "completed"
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_canonical_negative(cls, value: object) -> object:
+        """Keep canonical no-change output free of rejected model evidence."""
+
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        data.pop("$schema", None)
+        if (
+            data.get("agent_name") == "change_agent"
+            and str(data.get("answer", "")).strip() == CANONICAL_NO_CHANGE
+        ):
+            data["boxes"] = []
+            data["evidence"] = []
+            data["evidence_items"] = []
+            geometry = dict(data.get("geometry") or {})
+            normalizations = list(geometry.get("change_input_normalizations") or [])
+            normalizations.append("canonical_no_change_cleared_model_evidence")
+            geometry["change_input_normalizations"] = list(dict.fromkeys(normalizations))
+            data["geometry"] = geometry
+        return data

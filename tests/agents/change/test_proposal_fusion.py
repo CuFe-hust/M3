@@ -10,6 +10,7 @@ import agents.change.proposal_fusion as proposal_fusion_module
 from agents.change.proposal_fusion import (
     PROPOSAL_FUSION_VERSION,
     compute_reliabilities,
+    compute_temporal_semantic_stability,
     fuse_change_proposals,
     fuse_feature_evidence,
     fuse_semantic_evidence,
@@ -317,6 +318,70 @@ def test_low_quality_registration_reduces_registration_reliability() -> None:
 
     assert reliability["registration"] < reliability["semantic"]
     assert diagnostics["raw"]["registration"] < 0.5
+
+
+def _semantic_probabilities(first_label: int, second_label: int, size: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    first = np.zeros((2, size, size), dtype=np.float32)
+    second = np.zeros_like(first)
+    first[first_label] = 1.0
+    second[second_label] = 1.0
+    return first, second
+
+
+def test_temporal_stability_reports_stable_pif_without_penalty() -> None:
+    first, second = _semantic_probabilities(0, 0)
+    diagnostics = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.ones((8, 8), dtype=np.uint8),
+        class_names=("background", "building"),
+        neutral_labels=("background",),
+    )
+    assert diagnostics["temporal_stability_status"] == "available"
+    assert diagnostics["pif_pixel_count"] == 64
+    assert diagnostics["pif_label_flip_rate_all"] == pytest.approx(0.0)
+    assert diagnostics["temporal_stability_multiplier"] == pytest.approx(1.0)
+
+
+def test_temporal_stability_penalty_is_smooth_and_optional() -> None:
+    first, second = _semantic_probabilities(0, 1)
+    enabled = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.ones((8, 8), dtype=np.uint8),
+        class_names=("background", "building"),
+        neutral_labels=("background",),
+        enabled=True,
+        soft_flip_rate=0.10,
+        hard_flip_rate=0.90,
+        floor=0.25,
+    )
+    disabled = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.ones((8, 8), dtype=np.uint8),
+        class_names=("background", "building"),
+        neutral_labels=("background",),
+        enabled=False,
+        soft_flip_rate=0.10,
+        hard_flip_rate=0.90,
+        floor=0.25,
+    )
+    assert enabled["pif_label_flip_rate_non_neutral"] == pytest.approx(1.0)
+    assert enabled["temporal_stability_multiplier"] == pytest.approx(0.25)
+    assert disabled["temporal_stability_multiplier"] == pytest.approx(1.0)
+
+
+def test_temporal_stability_is_neutral_when_pif_is_unavailable() -> None:
+    first, second = _semantic_probabilities(0, 1)
+    diagnostics = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.zeros((8, 8), dtype=np.uint8),
+        enabled=True,
+    )
+    assert diagnostics["temporal_stability_status"] == "unavailable"
+    assert diagnostics["temporal_stability_multiplier"] == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("reason_codes", [["REGISTRATION_NOT_NEEDED", "METADATA_ALIGNMENT_USED"], ["REGISTRATION_NOT_NEEDED", "IDENTICAL_INPUTS"]])

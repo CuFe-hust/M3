@@ -214,6 +214,8 @@
         "role": "object_semantic",
         "neutral_model_labels": ["background"],
         "transient_model_labels": ["Large_Vehicle", "Small_Vehicle", "plane", "ship", "Helicopter"],
+        "structural_model_labels": ["storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"],
+        "landcover_candidate_model_labels": [],
         "persistent_model_labels": ["storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"]
       }
     },
@@ -237,6 +239,8 @@
         "role": "persistent_landcover",
         "neutral_model_labels": ["background"],
         "transient_model_labels": [],
+        "structural_model_labels": ["building", "road"],
+        "landcover_candidate_model_labels": ["bareland", "rangeland", "developed_space", "tree", "water", "agriculture_land"],
         "persistent_model_labels": [
           "bareland",
           "rangeland",

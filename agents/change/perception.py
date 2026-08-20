@@ -22,6 +22,7 @@ from agents.change.proposal_fusion import (
     fuse_feature_evidence,
     fuse_semantic_evidence,
     fuse_change_proposals,
+    compute_temporal_semantic_stability,
 )
 from agents.change.schema import ChangeProposal
 from agents.change.semantic_difference import (
@@ -85,6 +86,8 @@ class SemanticExpertBinding:
     transient_labels: frozenset[str]
     persistent_labels: frozenset[str]
     client: DenseSemanticClient
+    structural_labels: frozenset[str] = frozenset()
+    landcover_candidate_labels: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -287,6 +290,22 @@ class ChangePerceptionPipeline:
                             "branch": "feature",
                         }
                     )
+                stability_diagnostics = compute_temporal_semantic_stability(
+                    run.first_output.probabilities,
+                    run.second_output.probabilities,
+                    pif_mask=prepared.pif_mask,
+                    registration_valid_mask=getattr(
+                        prepared, "registration_valid_mask", None
+                    ),
+                    class_names=run.first_output.class_names,
+                    neutral_labels=run.binding.neutral_labels,
+                    score_map=semantic_result.score_map,
+                    enabled=semantic_settings.temporal_stability_enabled,
+                    soft_flip_rate=semantic_settings.temporal_stability_soft_flip_rate,
+                    hard_flip_rate=semantic_settings.temporal_stability_hard_flip_rate,
+                    floor=semantic_settings.temporal_stability_floor,
+                )
+                semantic_result.diagnostics.update(stability_diagnostics)
                 reliability, reliability_diagnostics = compute_reliabilities(
                     registration_report=getattr(prepared, "registration_report", None),
                     feature_diagnostics=feature_diagnostics,
@@ -1261,31 +1280,55 @@ def _attach_semantic_transitions(
                 "support_level": _support_level(confidence, confidence_floor),
             }
             evidence_items.append(item)
-            if evidence_type in {"persistent", "transient"}:
+            if evidence_type in {
+                "persistent",
+                "structural_candidate",
+                "landcover_candidate",
+                "transient",
+            }:
                 transitions.append(
                     (evidence_type, evidence, transition, evidence_type)
                 )
-        persistent = [item for item in transitions if item[0] == "persistent"]
+        structural = [
+            item
+            for item in transitions
+            if item[0] in {"persistent", "structural_candidate"}
+        ]
+        landcover = [item for item in transitions if item[0] == "landcover_candidate"]
         transient = [item for item in transitions if item[0] == "transient"]
-        persistent_support = max(
-            (float(item[2].transition_confidence) for item in persistent),
+        structural_support = max(
+            (float(item[2].transition_confidence) for item in structural),
+            default=0.0,
+        )
+        landcover_support = max(
+            (float(item[2].transition_confidence) for item in landcover),
             default=0.0,
         )
         transient_support = max(
             (float(item[2].transition_confidence) for item in transient),
             default=0.0,
         )
-        persistent_pairs = {
-            (item[2].from_class, item[2].to_class) for item in persistent
+        structural_pairs = {
+            (item[2].from_class, item[2].to_class) for item in structural
+        }
+        informative = [*structural, *landcover, *transient]
+        informative_expert_ids = {
+            item[1].run.binding.expert_id for item in informative
         }
         consensus = {
-            "persistent_support": persistent_support,
+            "structural_support": structural_support,
+            "landcover_support": landcover_support,
             "transient_support": transient_support,
-            "disagreement": len(persistent_pairs) > 1,
-            "informative_expert_count": len(transitions),
+            # Compatibility boundary: only structural candidates count as
+            # legacy persistent support.  Land-cover-only flips remain
+            # visible but cannot authorize a persistent conclusion.
+            "persistent_support": structural_support,
+            "neutral_expert_count": len(expert_evidence) - len(informative_expert_ids),
+            "informative_expert_count": len(informative_expert_ids),
+            "disagreement": len(structural_pairs) > 1,
             "expert_count": len(expert_evidence),
         }
-        chosen = max(persistent, key=lambda item: _transition_sort_key(item[2])) if persistent else (
+        chosen = max(structural, key=lambda item: _transition_sort_key(item[2])) if structural else (
             max(transient, key=lambda item: _transition_sort_key(item[2])) if transient else None
         )
         updated.append(
@@ -1318,11 +1361,17 @@ def _transition_evidence_type(
         transition.from_class,
         transition.to_class,
     }
-    if labels & binding.persistent_labels or binding.role == "persistent_landcover":
-        return "persistent"
     if labels & binding.transient_labels:
         return "transient"
-    return "transient"
+    if labels & binding.structural_labels:
+        return "structural_candidate"
+    if labels & binding.landcover_candidate_labels:
+        return "landcover_candidate"
+    # Catalogs predating typed evidence can still use the old persistent
+    # label set, but the role itself is never a classification rule.
+    if labels & binding.persistent_labels:
+        return "persistent"
+    return "neutral"
 
 
 def _support_level(confidence: float, confidence_floor: float) -> str:

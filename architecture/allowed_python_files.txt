@@ -223,6 +223,7 @@ tests/agents/change/test_feature_residual.py
 tests/agents/change/test_semantic_difference.py
 tests/agents/change/test_proposal_fusion.py
 tests/agents/change/test_perception.py
+tests/agents/change/test_schema_normalization.py
 tests/agents/counting/test_backend_selector.py
 tests/agents/counting/test_target_parser.py
 tests/agents/counting/test_agent.py

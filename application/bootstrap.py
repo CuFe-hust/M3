@@ -513,6 +513,10 @@ def _build_change_semantic_bindings(
                 transient_labels=frozenset(semantic.transient_model_labels),
                 persistent_labels=frozenset(semantic.persistent_model_labels),
                 client=client,
+                structural_labels=frozenset(semantic.structural_model_labels),
+                landcover_candidate_labels=frozenset(
+                    semantic.landcover_candidate_model_labels
+                ),
             )
         )
     return tuple(bindings)
