@@ -211,7 +211,12 @@ class ChangeAgent:
             evidence_audit = adjudication_audit
             adjudication_global_verdict = adjudication.global_review.verdict
             adjudication_verdicts = {item.proposal_id: item.verdict for item in adjudication.candidate_reviews}
-        if _is_core_canonical_no_change(reviewed, task=sample.task) and rescue_eligible:
+        if (
+            _is_core_canonical_no_change(reviewed, task=sample.task)
+            and rescue_eligible
+            and settings.building_rescue.qwen_review_enabled
+            and not settings.building_rescue.shadow_only
+        ):
             rescue_triggered = True
             try:
                 rescue_content, rescue_hashes, rescue_manifest = (

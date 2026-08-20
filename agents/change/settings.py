@@ -204,6 +204,7 @@ class ChangeBuildingRescueSettings(BaseModel):
 
     enabled: bool = True
     shadow_only: bool = True
+    qwen_review_enabled: bool = False
     building_probability_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     source_absence_probability_max: float = Field(default=0.25, ge=0.0, le=1.0)
     min_component_area_ratio: float = Field(default=0.0003, gt=0.0, le=1.0)

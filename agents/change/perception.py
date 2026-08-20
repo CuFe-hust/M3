@@ -177,6 +177,7 @@ class ChangePerceptionPipeline:
         requested_stages = tuple(self._settings.semantic.feature_stages)
         candidates: list[StructuralRescueCandidate] = []
         failures: list[dict[str, str]] = []
+        expert_diagnostics: list[dict[str, object]] = []
         for binding in rescue_bindings:
             try:
                 run = _infer_semantic_expert_pair(
@@ -187,14 +188,37 @@ class ChangePerceptionPipeline:
                     requested_stages=requested_stages,
                     np=np,
                 )
-                candidates.extend(
-                    _extract_building_rescue_candidates(
-                        run,
-                        prepared,
-                        rescue_settings,
-                        np=np,
-                    )
+                extracted = _extract_building_rescue_candidates(
+                    run,
+                    prepared,
+                    rescue_settings,
+                    np=np,
                 )
+                label_names = [str(name).casefold() for name in run.first_output.class_names]
+                rescue_labels = run.binding.rescue_model_labels or frozenset({"building"})
+                class_index = next(
+                    (
+                        index
+                        for index, name in enumerate(label_names)
+                        if name in {label.casefold() for label in rescue_labels}
+                    ),
+                    None,
+                )
+                expert_diagnostics.append(
+                    {
+                        "expert_id": binding.expert_id,
+                        "expert_model": run.identity.model,
+                        "weights_sha256": run.weights_sha256,
+                        "label": "building",
+                        "class_index": class_index,
+                        "status": "success",
+                        "candidate_count": len(extracted),
+                        "registration_tolerance_px": _rescue_tolerance_px(
+                            prepared, rescue_settings
+                        ),
+                    }
+                )
+                candidates.extend(extracted)
             except Exception as error:
                 failures.append(
                     {"expert_id": binding.expert_id, "error_type": type(error).__name__}
@@ -204,7 +228,9 @@ class ChangePerceptionPipeline:
             "status": "success" if not failures else "partial",
             "shadow_only": rescue_settings.shadow_only,
             "expert_ids": [binding.expert_id for binding in rescue_bindings],
+            "experts": expert_diagnostics,
             "candidate_count": len(candidates),
+            "edge_candidate_count": sum(bool(item.edge_flags) for item in candidates),
             "failures": failures,
         }
 
