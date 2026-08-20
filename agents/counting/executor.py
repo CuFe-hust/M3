@@ -23,6 +23,7 @@ from agents.counting.backends.selector import BackendSelector
 from agents.counting.point_pipeline import fuse_detector_observations
 from agents.counting.schema import (
     CountingBackendAttemptAudit,
+    DisagreementReview,
     IssueRecord,
 )
 from agents.errors import (
@@ -512,14 +513,65 @@ class CountingPlanExecutor:
             )
             first_name, first_outcome = successes[0]
             base = first_outcome.counting
-            status = "completed_with_warnings" if (history or fused.warnings or base.status == "completed_with_warnings") else base.status
+            review_trace: dict[str, object] = {
+                "disagreement_review_triggered": False,
+                "review_backend": None,
+                "requested_conflict_ids": [
+                    str(item.get("conflict_id")) for item in fused.review_candidates
+                ],
+                "reviewed_conflict_ids": [],
+                "truncated_conflict_ids": [],
+                "review_decisions": [],
+            }
+            reviewed_points = fused.points
+            reviewed_unresolved = fused.unresolved_conflicts
+            review_warnings = list(fused.warnings)
+            reviewer = next(
+                (
+                    self._selector.backend_by_name(name)
+                    for name in plan.fallback_backend_names
+                    if callable(getattr(self._selector.backend_by_name(name), "review_disagreements", None))
+                ),
+                None,
+            ) if fused.review_candidates else None
+            if reviewer is not None:
+                try:
+                    review = await reviewer.review_disagreements(
+                        request=request,
+                        conflicts=fused.review_candidates,
+                        context=context,
+                    )
+                    review = DisagreementReview.model_validate(review)
+                    reviewed_points, reviewed_unresolved, review_warnings = _apply_disagreement_review(
+                        fused,
+                        review,
+                    )
+                    review_trace.update(
+                        {
+                            "disagreement_review_triggered": True,
+                            "review_backend": getattr(reviewer, "name", None),
+                            "reviewed_conflict_ids": [item.conflict_id for item in review.decisions],
+                            "review_decisions": [item.model_dump(mode="json") for item in review.decisions],
+                        }
+                    )
+                    reviewer_trace = getattr(reviewer, "last_disagreement_review_trace", None)
+                    if isinstance(reviewer_trace, dict):
+                        review_trace.update(reviewer_trace)
+                except Exception as error:
+                    review_warnings.append(
+                        IssueRecord(
+                            code="DETECTOR_DISAGREEMENT_REVIEW_FAILED",
+                            message=f"Disagreement review failed: {type(error).__name__}.",
+                        )
+                    )
+            status = "completed_with_warnings" if (history or review_warnings or base.status == "completed_with_warnings") else base.status
             counting = base.model_copy(
                 update={
-                    "global_points": fused.points,
+                    "global_points": reviewed_points,
                     "merged_groups": fused.merged_groups,
-                    "unresolved_conflicts": fused.unresolved_conflicts,
-                    "warnings": [*base.warnings, *fused.warnings],
-                    "final_count": sum(point.accepted for point in fused.points),
+                    "unresolved_conflicts": reviewed_unresolved,
+                    "warnings": [*base.warnings, *review_warnings],
+                    "final_count": sum(point.accepted for point in reviewed_points),
                     "status": status,
                 }
             )
@@ -530,8 +582,9 @@ class CountingPlanExecutor:
                 "failed_experts": [entry.to_trace() for entry in history],
                 "fused_instance_count": counting.final_count,
                 "merged_groups": fused.merged_groups,
-                "unresolved_conflicts": fused.unresolved_conflicts,
+                "unresolved_conflicts": reviewed_unresolved,
                 "review_required": bool(fused.unresolved_conflicts),
+                "disagreement_review": review_trace,
             }
             outcome = CountingBackendOutcome(counting=counting, trace=trace)
             return CountingExecutionResult(
@@ -791,3 +844,73 @@ def _with_review_warning(
         agent_result=outcome.agent_result,
         trace=outcome.trace,
     )
+
+
+def _apply_disagreement_review(
+    fused: object,
+    review: DisagreementReview,
+) -> tuple[list, list[str], list[IssueRecord]]:
+    """Apply only validated decisions to unresolved detector candidates."""
+
+    points = list(getattr(fused, "points"))
+    requested = {
+        str(item.get("conflict_id")): item
+        for item in getattr(fused, "review_candidates")
+    }
+    unresolved = set(getattr(fused, "unresolved_conflicts"))
+    warnings = list(getattr(fused, "warnings"))
+    seen: set[str] = set()
+    for decision in review.decisions:
+        conflict = requested.get(decision.conflict_id)
+        if conflict is None:
+            raise ValueError("review returned an unknown conflict")
+        candidate_ids = {str(value) for value in conflict.get("candidate_ids", [])}
+        if not set(decision.accepted_candidate_ids).issubset(candidate_ids):
+            raise ValueError("review returned an unknown candidate")
+        if decision.conflict_id in seen:
+            raise ValueError("review returned a duplicate conflict")
+        seen.add(decision.conflict_id)
+        matches = [
+            index
+            for index, point in enumerate(points)
+            if any(candidate in point.global_id for candidate in candidate_ids)
+        ]
+        if not matches:
+            raise ValueError("review candidate is not present in fused result")
+        if decision.decision == "accept_one":
+            keep = max(matches, key=lambda index: points[index].confidence)
+            for index in matches:
+                if index != keep:
+                    points[index] = points[index].model_copy(
+                        update={
+                            "accepted": False,
+                            "rejection_reason": "DISAGREEMENT_REVIEW_ACCEPT_ONE",
+                        }
+                    )
+        elif decision.decision == "reject_all":
+            for index in matches:
+                points[index] = points[index].model_copy(
+                    update={
+                        "accepted": False,
+                        "rejection_reason": "DISAGREEMENT_REVIEW_REJECTED",
+                    }
+                )
+        elif decision.decision == "uncertain":
+            for index in matches:
+                provenance = points[index].provenance
+                if provenance is None or provenance.review_status != "high_confidence_singleton":
+                    points[index] = points[index].model_copy(
+                        update={
+                            "accepted": False,
+                            "rejection_reason": "DISAGREEMENT_REVIEW_UNCERTAIN",
+                        }
+                    )
+            warnings.append(
+                IssueRecord(
+                    code="DETECTOR_DISAGREEMENT_REVIEW_UNCERTAIN",
+                    message="Detector disagreement remained uncertain; low-confidence candidates were rejected.",
+                    point_ids=sorted(candidate_ids),
+                )
+            )
+        unresolved.difference_update({decision.conflict_id, *candidate_ids})
+    return points, sorted(unresolved), warnings

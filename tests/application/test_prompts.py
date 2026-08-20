@@ -17,7 +17,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 12
+    assert len(catalog.all_keys()) == 13
     for key in (
         "count_tile",
         "change",
@@ -57,7 +57,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 11  # 12 keys, general_vqa_v3 shared by two keys
+    assert len(paths) == 12  # 13 keys, general_vqa_v3 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 
@@ -197,7 +197,8 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
     prompts_root.mkdir()
     for filename in (
         "count_tile_v4.md",
-        "count_localize_v1.md",
+            "count_localize_v1.md",
+            "count_expert_disagreement_v1.md",
         "target_parse_v1.md",
         "missing_point_review_v3.md",
             "change_dual_path_v9.md",

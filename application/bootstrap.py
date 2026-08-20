@@ -357,6 +357,8 @@ def _build_backend_registry(
             empty_review_prompt_version=catalog.version("zero_review"),
             seam_prompt=catalog["seam"],
             seam_prompt_version=catalog.version("seam"),
+            disagreement_prompt=catalog["count_disagreement"],
+            disagreement_prompt_version=catalog.version("count_disagreement"),
             strategy_resolver=strategy_resolver,
         )
     )

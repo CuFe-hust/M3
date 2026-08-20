@@ -310,3 +310,35 @@ class CountingExecutionAudit(BaseModel):
     sample_id: str = Field(min_length=1)
     target: str = Field(min_length=1)
     attempts: list[CountingBackendAttemptAudit] = Field(default_factory=list)
+
+
+class DisagreementDecision(BaseModel):
+    """One bounded VLM decision for a requested detector conflict."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conflict_id: str = Field(min_length=1)
+    decision: Literal["accept_one", "accept_multiple", "reject_all", "uncertain"]
+    accepted_candidate_ids: list[str] = Field(default_factory=list)
+    instance_count: int = Field(ge=0)
+    reason: str = Field(default="", max_length=240)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "DisagreementDecision":
+        if self.decision == "accept_one" and self.instance_count != 1:
+            raise ValueError("accept_one must report one instance")
+        if self.decision == "accept_multiple" and self.instance_count < 2:
+            raise ValueError("accept_multiple must report at least two instances")
+        if self.decision == "reject_all" and self.instance_count != 0:
+            raise ValueError("reject_all must report zero instances")
+        if self.decision == "uncertain" and self.instance_count != 0:
+            raise ValueError("uncertain must report zero committed instances")
+        return self
+
+
+class DisagreementReview(BaseModel):
+    """Strict response for one expert-disagreement review call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[DisagreementDecision] = Field(default_factory=list)

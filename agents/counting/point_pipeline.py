@@ -97,6 +97,7 @@ class DetectorFusionResult:
     unresolved_conflicts: list[str]
     warnings: list[IssueRecord]
     successful_experts: tuple[str, ...]
+    review_candidates: list[dict[str, object]]
 
 
 def fuse_detector_observations(
@@ -183,6 +184,7 @@ def fuse_detector_observations(
     merged_groups: list[list[str]] = []
     unresolved: set[str] = {f"{first}|{second}" for first, second in conflict_pairs}
     warnings: list[IssueRecord] = []
+    review_candidates: list[dict[str, object]] = []
     for group in sorted(clusters.values(), key=lambda values: min(values)):
         group = sorted(group)
         cluster_points = [point_by_id[item] for item in group]
@@ -191,6 +193,13 @@ def fuse_detector_observations(
             if point.confidence < singleton_high_confidence:
                 unresolved.add(point.global_id)
                 review_status = "unresolved_singleton"
+                review_candidates.append(
+                    {
+                        "conflict_id": point.global_id,
+                        "candidate_ids": [point.global_id],
+                        "candidate_points": [point.model_dump(mode="json")],
+                    }
+                )
             else:
                 review_status = "high_confidence_singleton"
             fused_points.append(_annotate_singleton(point, source_by_id[point.global_id], review_status))
@@ -208,6 +217,17 @@ def fuse_detector_observations(
                 point_ids=sorted(unresolved),
             )
         )
+    for first, second in sorted(conflict_pairs):
+        review_candidates.append(
+            {
+                "conflict_id": f"{first}|{second}",
+                "candidate_ids": [first, second],
+                "candidate_points": [
+                    point_by_id[first].model_dump(mode="json"),
+                    point_by_id[second].model_dump(mode="json"),
+                ],
+            }
+        )
     rejected_points = [
         point.model_copy(
             update={"global_id": f"rejected_{index:04d}_{point.global_id}"}
@@ -220,6 +240,7 @@ def fuse_detector_observations(
         unresolved_conflicts=sorted(unresolved),
         warnings=warnings,
         successful_experts=tuple(name for name, _ in observations_by_expert),
+        review_candidates=review_candidates,
     )
 
 

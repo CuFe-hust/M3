@@ -28,7 +28,12 @@ from agents.counting.executor import (
     CountingExecutionResult,
     CountingPlanExecutor,
 )
-from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
+from agents.counting.schema import (
+    CountTargetSpec,
+    CountingResult,
+    DisagreementReview,
+    TileCountResponse,
+)
 from agents.counting.settings import CountingSettings
 from agents.errors import (
     AgentExecutionError,
@@ -129,10 +134,12 @@ class _FakeYoloBackend:
         final_count: int = 1,
         *,
         available: bool = True,
+        point_confidence: float = 0.9,
     ) -> None:
         self._error = error
         self._final_count = final_count
         self._available = available
+        self._point_confidence = point_confidence
 
     def is_enabled(self) -> bool:
         return True
@@ -167,7 +174,7 @@ class _FakeYoloBackend:
                     global_x_norm=500,
                     global_y_norm=500,
                     radius_px=4.0,
-                    confidence=0.9,
+                    confidence=self._point_confidence,
                     ownership_valid=True,
                     near_core_boundary=False,
                     accepted=True,
@@ -191,6 +198,43 @@ class _FakeYoloBackend:
             ),
             trace={"detector_note": "fake"},
         )
+
+
+class _FakeDisagreementReviewer:
+    name = "qwen_point"
+    kind = "qwen_point"
+    priority = 0
+
+    def __init__(self, review: DisagreementReview) -> None:
+        self.review = review
+        self.calls = 0
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True
+
+    def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
+        return True
+
+    async def count(self, request: CountingRequest, context: object) -> CountingBackendOutcome:
+        return CountingBackendOutcome(
+            counting=CountingResult(
+                sample_id=request.sample.sample_id,
+                target=request.target.canonical_label,
+                question=request.sample.question,
+                source_width=request.image.width,
+                source_height=request.image.height,
+                tile_count=1,
+                final_count=0,
+                status="completed",
+            )
+        )
+
+    async def review_disagreements(self, *, request, conflicts, context) -> DisagreementReview:
+        self.calls += 1
+        return self.review
 
 
 class _FakeQuantityProposalBackend:
@@ -462,6 +506,61 @@ def test_detector_ensemble_keeps_successful_peer_when_one_fails(tmp_path: Path) 
     assert result.fallback_triggered is True
     assert result.fallback_reason_code == "DETECTOR_ENSEMBLE_PARTIAL"
     assert result.fallback_history[0].backend == "det-a"
+
+
+def test_detector_ensemble_calls_disagreement_reviewer_once_for_low_singleton(
+    tmp_path: Path,
+) -> None:
+    first = _FakeYoloBackend(final_count=1, point_confidence=0.4)
+    second = _FakeYoloBackend(final_count=0)
+    second.name = "det-b"
+    reviewer = _FakeDisagreementReviewer(
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "s1:det-a:p0",
+                    "decision": "reject_all",
+                    "instance_count": 0,
+                }
+            ]
+        )
+    )
+
+    result = _run(
+        _executor(reviewer, first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert reviewer.calls == 1
+    assert result.outcome.counting.final_count == 0
+    assert result.outcome.trace["ensemble"]["disagreement_review"]["disagreement_review_triggered"] is True
+
+
+def test_detector_ensemble_does_not_review_consensus(tmp_path: Path) -> None:
+    first = _FakeYoloBackend(final_count=1)
+    second = _FakeYoloBackend(final_count=1)
+    second.name = "det-b"
+    reviewer = _FakeDisagreementReviewer(DisagreementReview())
+
+    result = _run(
+        _executor(reviewer, first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert reviewer.calls == 0
+    assert result.outcome.counting.final_count == 1
 
 
 def test_all_detector_experts_fail_then_use_fallback(tmp_path: Path) -> None:

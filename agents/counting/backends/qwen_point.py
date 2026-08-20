@@ -20,6 +20,7 @@ from agents.counting.backends.base import (
 from agents.counting.point_pipeline import PointCountingOrchestrator
 from agents.counting.schema import (
     CountTargetSpec,
+    DisagreementReview,
     GlobalPointObservation,
     PixelRect,
     SeamDecision,
@@ -49,6 +50,8 @@ class QwenPointCountingBackend:
         empty_review_prompt_version: str | None = None,
         seam_prompt: str | None = None,
         seam_prompt_version: str | None = None,
+        disagreement_prompt: str | None = None,
+        disagreement_prompt_version: str | None = None,
         strategy_resolver: Callable[[CountTargetSpec], CountingTargetStrategy]
         | None = None,
     ) -> None:
@@ -62,6 +65,9 @@ class QwenPointCountingBackend:
         )
         self._seam_prompt = seam_prompt
         self._seam_prompt_version = seam_prompt_version
+        self._disagreement_prompt = disagreement_prompt or self._empty_review_prompt
+        self._disagreement_prompt_version = disagreement_prompt_version or self._prompt_version
+        self.last_disagreement_review_trace: dict[str, object] = {}
         self._strategy_resolver = strategy_resolver
 
     def is_enabled(self) -> bool:
@@ -168,6 +174,138 @@ class QwenPointCountingBackend:
                 ),
             },
         )
+
+    async def review_disagreements(
+        self,
+        *,
+        request: CountingRequest,
+        conflicts: list[dict[str, Any]],
+        context: object,
+    ) -> DisagreementReview:
+        """Review a bounded batch of unresolved detector conflicts once."""
+
+        require_model_cache_identity(self._client, component="qwen_disagreement")
+        ordered = sorted(conflicts, key=lambda item: str(item.get("conflict_id", "")))
+        selected = ordered[: self._counting.max_disagreement_regions]
+        truncated = ordered[self._counting.max_disagreement_regions :]
+        content: list[dict[str, Any]] = []
+        image_digests: list[str] = []
+        for conflict in selected:
+            crop, crop_hash = _disagreement_crop(
+                request.image,
+                conflict,
+                padding_ratio=self._counting.disagreement_context_padding_ratio,
+            )
+            image_digests.append(crop_hash)
+            content.append(
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "conflict_id": conflict.get("conflict_id"),
+                            "target": request.target.canonical_label,
+                            "candidate_ids": conflict.get("candidate_ids", []),
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+            with io.BytesIO() as buffer:
+                crop.save(buffer, format="JPEG", quality=95)
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_to_data_url(buffer.getvalue())},
+                    }
+                )
+        messages = [
+            {"role": "system", "content": self._disagreement_prompt},
+            {"role": "user", "content": content},
+        ]
+        digest = hashlib.sha256("|".join(image_digests).encode("utf-8")).hexdigest()
+        request_hash = build_request_hash(
+            model=require_model_cache_identity(self._client, component="qwen_disagreement").model,
+            generation=require_model_cache_identity(self._client, component="qwen_disagreement").generation_payload(),
+            prompt_version=self._disagreement_prompt_version,
+            messages=messages,
+            image_sha256=digest,
+            target_spec=request.target.model_dump(mode="json"),
+            response_schema=DisagreementReview.model_json_schema(),
+            client_version=require_model_cache_identity(self._client, component="qwen_disagreement").client_version,
+        )
+        budget = getattr(context, "call_budget", None)
+        if budget is not None:
+            budget.reserve_qwen()
+        result = await self._client.complete_json(
+            messages=messages,
+            response_model=DisagreementReview,
+            request_meta=RequestMeta(
+                request_id=f"{request.sample.sample_id}:detector-disagreement-review",
+                request_hash=request_hash,
+                prompt_version=self._disagreement_prompt_version,
+                sample_id=request.sample.sample_id,
+                artifact_dir=request.artifact_dir / "disagreement_review",
+            ),
+        )
+        self.last_disagreement_review_trace = {
+            "disagreement_review_triggered": True,
+            "review_backend": self.name,
+            "requested_conflict_ids": [str(item.get("conflict_id")) for item in ordered],
+            "reviewed_conflict_ids": [str(item.get("conflict_id")) for item in selected],
+            "truncated_conflict_ids": [str(item.get("conflict_id")) for item in truncated],
+            "review_request_hash": request_hash,
+        }
+        return DisagreementReview.model_validate(result)
+
+
+def _disagreement_crop(
+    image: Image.Image,
+    conflict: dict[str, Any],
+    *,
+    padding_ratio: float,
+) -> tuple[Image.Image, str]:
+    """Render only one bounded conflict region for the review call."""
+
+    boxes: list[tuple[float, float, float, float]] = []
+    centers: list[tuple[float, float]] = []
+    for point in conflict.get("candidate_points", []):
+        if not isinstance(point, dict):
+            continue
+        centers.append((float(point.get("global_x_px", 0)), float(point.get("global_y_px", 0))))
+        provenance = point.get("provenance")
+        if isinstance(provenance, dict):
+            raw_box = provenance.get("bbox_xyxy_global_px")
+            if isinstance(raw_box, list) and len(raw_box) == 4:
+                boxes.append(tuple(float(value) for value in raw_box))
+    if boxes:
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[2] for box in boxes)
+        bottom = max(box[3] for box in boxes)
+    elif centers:
+        left = min(center[0] for center in centers) - 32
+        top = min(center[1] for center in centers) - 32
+        right = max(center[0] for center in centers) + 32
+        bottom = max(center[1] for center in centers) + 32
+    else:
+        left, top, right, bottom = 0, 0, image.width, image.height
+    width = max(1.0, right - left)
+    height = max(1.0, bottom - top)
+    pad_x = width * padding_ratio
+    pad_y = height * padding_ratio
+    bounds = (
+        max(0, int(left - pad_x)),
+        max(0, int(top - pad_y)),
+        min(image.width, int(right + pad_x + 1)),
+        min(image.height, int(bottom + pad_y + 1)),
+    )
+    if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+        bounds = (0, 0, image.width, image.height)
+    crop = image.crop(bounds)
+    with io.BytesIO() as buffer:
+        crop.save(buffer, format="JPEG", quality=95)
+        digest = hashlib.sha256(buffer.getvalue()).hexdigest()
+    return crop, digest
 
 
 class _PipelineTileCallback:
