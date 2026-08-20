@@ -144,7 +144,15 @@ class ChangeSemanticSpec(_FrozenModel):
             set(self.landcover_candidate_model_labels),
             set(self.persistent_model_labels),
         )
-        if any(groups[index] & groups[other] for index in range(3) for other in range(index)):
+        # The legacy persistent list is a compatibility alias and may overlap
+        # with the new structural/land-cover tiers.  Validate only the
+        # mutually exclusive semantic roles themselves.
+        semantic_groups = groups[:4]
+        if any(
+            semantic_groups[index] & semantic_groups[other]
+            for index in range(len(semantic_groups))
+            for other in range(index)
+        ):
             raise ValueError("Change semantic label roles must not overlap")
         return self
 
