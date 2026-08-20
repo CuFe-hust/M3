@@ -19,6 +19,7 @@ from agents.base import AgentContext, AgentExecution
 from agents.change.perception import (
     ChangePerceptionError,
     ChangePerceptionPipeline,
+    SemanticExpertBinding,
 )
 from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.registration import RegistrationError
@@ -71,12 +72,14 @@ class ChangeAgent:
         client: VisionLanguageClient,
         *,
         semantic_client: DenseSemanticClient | None = None,
+        semantic_experts: tuple[SemanticExpertBinding, ...] = (),
         learned_change_client: LearnedChangeClient | None = None,
         prompt: PromptBinding | None = None,
         settings: AgentChangeSettings | None = None,
     ) -> None:
         self._client = client
         self._semantic_client = semantic_client
+        self._semantic_experts = tuple(semantic_experts)
         self._learned_change_client = learned_change_client
         if prompt is None:
             raise ValueError("ChangeAgent requires an injected PromptBinding")
@@ -489,6 +492,7 @@ class ChangeAgent:
                 self._semantic_client,
                 settings,
                 learned_change_client=self._learned_change_client,
+                semantic_experts=self._semantic_experts,
             ).run(prepared)
         except ChangePerceptionError as error:
             raise AgentExecutionError(

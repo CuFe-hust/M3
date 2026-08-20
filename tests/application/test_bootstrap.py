@@ -22,6 +22,7 @@ import application.bootstrap as bootstrap_module
 from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
+    _build_change_semantic_bindings,
     _build_segformer_clients,
     _catalog_validated_yolo_detector,
     _enabled_counting_catalog_leaves,
@@ -58,6 +59,24 @@ def test_bootstrap_does_not_access_catalog_private_storage() -> None:
 
     assert "catalog._experts" not in source
     assert "getattr(catalog" not in source
+
+
+def test_change_bindings_are_catalog_driven_and_deterministic() -> None:
+    settings = AppSettings()
+    catalog = ExpertCatalog.load(CATALOG_PATH)
+    client = object()
+
+    bindings = _build_change_semantic_bindings(
+        settings,
+        catalog,
+        {"SegFormer-MiT-B2:iSAID:local": client},
+    )
+
+    assert [binding.expert_id for binding in bindings] == ["segmenter_mitb2_001"]
+    assert bindings[0].client is client
+    assert bindings[0].persistent_labels == frozenset(
+        {"storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"}
+    )
 
 
 def _settings(tmp_path: Path) -> AppSettings:

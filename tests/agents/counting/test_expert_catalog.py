@@ -61,6 +61,31 @@ def test_valid_catalog_loads_and_exposes_capability_specs() -> None:
     assert expert.supports["small-vehicle"].counting_mode == "connected_components"
 
 
+def test_change_semantic_roles_are_explicit_and_verified() -> None:
+    catalog = ExpertCatalog.load(CATALOG_PATH)
+
+    expert = catalog.expert("segmenter_mitb2_001")
+
+    assert expert.change_semantics is not None
+    assert expert.change_semantics.enabled is True
+    assert expert.change_semantics.role == "object_semantic"
+    assert "background" in expert.change_semantics.neutral_model_labels
+    assert "plane" in expert.change_semantics.transient_model_labels
+    assert "storage_tank" in expert.change_semantics.persistent_model_labels
+
+
+def test_change_semantic_label_absent_from_verified_class_map_fails_closed(
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    _expert_payload(payload, "segmenter_mitb2_001")["change_semantics"][
+        "persistent_model_labels"
+    ] = ["not_a_verified_label"]
+
+    with pytest.raises(ExpertCatalogError, match="validation failed"):
+        _load_payload(tmp_path, payload)
+
+
 def test_expert_supports_are_physical_canonical_leaves_only() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
     for expert in catalog.experts(enabled_only=False):

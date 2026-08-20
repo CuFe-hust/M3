@@ -13,6 +13,7 @@ from agents.change.perception import (
     PERCEPTION_VERSION,
     ChangePerceptionError,
     ChangePerceptionPipeline,
+    SemanticExpertBinding,
 )
 from agents.change.preprocess import ChangePreparedPair
 from agents.change.schema import HarmonizationDecision, PairValidationReport
@@ -208,6 +209,79 @@ def test_enabled_pipeline_calls_two_frames_and_returns_v2_proposals() -> None:
     assert all(call["tile_size"] == 768 for call in client.calls)
     assert result.proposals
     assert all(proposal.source == "fused_change_v2" for proposal in result.proposals)
+
+
+def test_multiple_semantic_experts_run_independently_and_are_audited() -> None:
+    first_client = _DenseClient()
+    second_client = _DenseClient()
+    bindings = (
+        SemanticExpertBinding(
+            expert_id="segmenter-first",
+            logical_model_id="segformer-first",
+            priority=200,
+            role="object_semantic",
+            neutral_labels=frozenset({"background"}),
+            transient_labels=frozenset({"plane"}),
+            persistent_labels=frozenset({"storage_tank"}),
+            client=first_client,
+        ),
+        SemanticExpertBinding(
+            expert_id="segmenter-second",
+            logical_model_id="segformer-second",
+            priority=100,
+            role="generic",
+            neutral_labels=frozenset(),
+            transient_labels=frozenset(),
+            persistent_labels=frozenset(),
+            client=second_client,
+        ),
+    )
+    settings = _settings()
+    settings.semantic.multi_expert_enabled = True
+    settings.semantic.max_experts = 2
+
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=bindings,
+    ).run(_prepared())
+
+    assert len(first_client.calls) == 2
+    assert len(second_client.calls) == 2
+    assert [item["expert_id"] for item in result.diagnostics["semantic_experts"]] == [
+        "segmenter-first",
+        "segmenter-second",
+    ]
+    assert result.diagnostics["semantic_expert_failures"] == []
+
+
+def test_failed_semantic_expert_does_not_erase_successful_peer() -> None:
+    failed = _RaisingDenseClient(RuntimeError("peer unavailable"))
+    healthy = _DenseClient()
+    binding = lambda expert_id, client, priority: SemanticExpertBinding(
+        expert_id=expert_id,
+        logical_model_id=expert_id,
+        priority=priority,
+        role="generic",
+        neutral_labels=frozenset(),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset(),
+        client=client,
+    )
+    settings = _settings()
+    settings.semantic.max_experts = 2
+
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(binding("failed", failed, 200), binding("healthy", healthy, 100)),
+    ).run(_prepared())
+
+    assert len(healthy.calls) == 2
+    assert result.diagnostics["semantic_experts"][0]["expert_id"] == "healthy"
+    assert result.diagnostics["semantic_expert_failures"] == [
+        {"expert_id": "failed", "error_type": "RuntimeError"}
+    ]
     assert result.diagnostics["semantic_status"] == "success"
     assert result.diagnostics["segformer_model"] == "segformer-logical-test"
     assert result.diagnostics["perception_version"] == PERCEPTION_VERSION

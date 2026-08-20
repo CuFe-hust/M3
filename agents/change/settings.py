@@ -135,6 +135,9 @@ class ChangeSemanticSettings(BaseModel):
     semantic_confidence_floor: float = Field(default=0.45, ge=0.0, le=1.0)
     js_epsilon: float = Field(default=1e-6, gt=0.0)
     failure_policy: Literal["fallback_legacy", "fail"] = "fallback_legacy"
+    multi_expert_enabled: bool = True
+    max_experts: int = Field(default=4, ge=1, le=5)
+    min_successful_experts: int = Field(default=1, ge=1)
 
     def model_post_init(self, __context: Any) -> None:
         if self.tile_overlap >= self.tile_size:
@@ -176,6 +179,8 @@ class ChangeSemanticSettings(BaseModel):
             "feature_stage_weights",
             {stage: value / total for stage, value in selected_weights.items()},
         )
+        if self.min_successful_experts > self.max_experts:
+            raise ValueError("min_successful_experts cannot exceed max_experts")
 
 
 class ChangeReliabilitySettings(BaseModel):

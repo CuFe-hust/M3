@@ -106,6 +106,41 @@ class ClassMapVerificationSpec(_FrozenModel):
     class_map: Literal["verified", "unverified"]
 
 
+class ChangeSemanticSpec(_FrozenModel):
+    """Verified, model-neutral semantic roles for Change evidence."""
+
+    enabled: bool = False
+    role: Literal["generic", "persistent_landcover", "object_semantic"] = "generic"
+    neutral_model_labels: tuple[str, ...] = ()
+    transient_model_labels: tuple[str, ...] = ()
+    persistent_model_labels: tuple[str, ...] = ()
+
+    @field_validator(
+        "neutral_model_labels",
+        "transient_model_labels",
+        "persistent_model_labels",
+    )
+    @classmethod
+    def labels_are_explicit(cls, values: tuple[str, ...]) -> tuple[str, ...]:
+        cleaned = tuple(value.strip() for value in values)
+        if any(not value or _PLACEHOLDER_LABEL.fullmatch(value) for value in cleaned):
+            raise ValueError("Change semantic labels must be verified explicit names")
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("Change semantic labels must be unique")
+        return cleaned
+
+    @model_validator(mode="after")
+    def roles_do_not_overlap(self) -> "ChangeSemanticSpec":
+        groups = (
+            set(self.neutral_model_labels),
+            set(self.transient_model_labels),
+            set(self.persistent_model_labels),
+        )
+        if any(groups[index] & groups[other] for index in range(3) for other in range(index)):
+            raise ValueError("Change semantic label roles must not overlap")
+        return self
+
+
 class MorphologyPolicySpec(_FrozenModel):
     """Explicit morphology only; zero disables the operation.
     仅允许显式形态学配置；零表示关闭对应操作。"""
@@ -163,6 +198,7 @@ class ExpertSpec(_FrozenModel):
     asset: ExpertAssetSpec
     verification: ClassMapVerificationSpec
     supports: dict[str, ExpertTargetSupportSpec] = Field(default_factory=dict)
+    change_semantics: ChangeSemanticSpec | None = None
 
     @field_validator("backend_name", "logical_model_id")
     @classmethod
@@ -179,6 +215,11 @@ class ExpertSpec(_FrozenModel):
         if self.kind == "semantic_segmentation" and self.enabled:
             if self.verification.class_map != "verified" or self.asset.class_map is None:
                 raise ValueError("enabled semantic experts require a verified class map")
+        if self.change_semantics is not None and self.change_semantics.enabled:
+            if self.kind != "semantic_segmentation" or not self.enabled:
+                raise ValueError("Change semantic experts must be enabled semantic experts")
+            if self.verification.class_map != "verified":
+                raise ValueError("Change semantic experts require a verified class map")
 
         allowed_modes: dict[str, frozenset[str]] = {
             "yolo_obb": frozenset({"native_detection", "unsupported"}),
@@ -427,12 +468,22 @@ def _validate_verified_semantic_labels(
         }
         if not declared.issubset(labels):
             raise ValueError("semantic capability label is not verified")
+        change_semantics = expert.change_semantics
+        if change_semantics is not None and change_semantics.enabled:
+            change_labels = {
+                *change_semantics.neutral_model_labels,
+                *change_semantics.transient_model_labels,
+                *change_semantics.persistent_model_labels,
+            }
+            if not change_labels.issubset(labels):
+                raise ValueError("Change semantic label is not verified")
 
 
 __all__ = [
     "CatalogTargetSpec",
     "CountingMode",
     "CountingPolicySpec",
+    "ChangeSemanticSpec",
     "ExpertAssetSpec",
     "ExpertCatalog",
     "ExpertCatalogError",

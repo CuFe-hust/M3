@@ -71,6 +71,29 @@ class ChangePerceptionResult:
     component_masks: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class SemanticExpertBinding:
+    """Runtime-only verified semantic expert binding."""
+
+    expert_id: str
+    logical_model_id: str
+    priority: int
+    role: str
+    neutral_labels: frozenset[str]
+    transient_labels: frozenset[str]
+    persistent_labels: frozenset[str]
+    client: DenseSemanticClient
+
+
+@dataclass(frozen=True)
+class SemanticExpertRun:
+    binding: SemanticExpertBinding
+    identity: ModelCacheIdentity
+    first_output: DenseSemanticOutput | DenseSemanticPyramidOutput
+    second_output: DenseSemanticOutput | DenseSemanticPyramidOutput
+    weights_sha256: str | None
+
+
 class ChangePerceptionPipeline:
     """Orchestrate Change V1 or V2 through an abstract dense client."""
 
@@ -79,8 +102,31 @@ class ChangePerceptionPipeline:
         semantic_client: DenseSemanticClient | None,
         settings: AgentChangeSettings,
         learned_change_client: LearnedChangeClient | None = None,
+        semantic_experts: tuple[SemanticExpertBinding, ...] = (),
     ) -> None:
         self._semantic_client = semantic_client
+        compatibility = (
+            SemanticExpertBinding(
+                expert_id="injected_semantic",
+                logical_model_id="injected_semantic",
+                priority=0,
+                role="generic",
+                neutral_labels=frozenset(),
+                transient_labels=frozenset(),
+                persistent_labels=frozenset(),
+                client=semantic_client,
+            )
+            if semantic_client is not None
+            else None
+        )
+        self._semantic_experts = (
+            tuple(semantic_experts)
+            if semantic_experts
+            else tuple(
+                item
+                for item in ((compatibility,) if compatibility is not None else ())
+            )
+        )
         self._learned_change_client = learned_change_client
         self._settings = settings
 
@@ -136,7 +182,7 @@ class ChangePerceptionPipeline:
         ):
             raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
 
-        if self._semantic_client is None:
+        if not self._semantic_experts:
             return self._handle_failure(
                 ChangePerceptionError("SEGFORMER_CLIENT_MISSING"),
                 low_level_map=low_level_map,
@@ -147,67 +193,38 @@ class ChangePerceptionPipeline:
 
         identity: ModelCacheIdentity | None = None
         try:
-            identity = require_model_cache_identity(
-                self._semantic_client,
-                component="change semantic client",
-            )
             semantic_settings = self._settings.semantic
             requested_stages = tuple(semantic_settings.feature_stages)
-            if len(requested_stages) > 1:
-                infer_pyramid = getattr(self._semantic_client, "infer_pyramid", None)
-                if not callable(infer_pyramid):
-                    raise ChangePerceptionError("SEGFORMER_PYRAMID_UNSUPPORTED")
-                first_output = infer_pyramid(
-                    Image.fromarray(prepared.comparison_t1),
-                    tile_size=semantic_settings.tile_size,
-                    tile_overlap=semantic_settings.tile_overlap,
-                    feature_stages=requested_stages,
-                )
-                second_output = infer_pyramid(
-                    Image.fromarray(prepared.comparison_t2),
-                    tile_size=semantic_settings.tile_size,
-                    tile_overlap=semantic_settings.tile_overlap,
-                    feature_stages=requested_stages,
-                )
-            else:
-                stage = requested_stages[0]
-                first_output = self._semantic_client.infer(
-                    Image.fromarray(prepared.comparison_t1),
-                    tile_size=semantic_settings.tile_size,
-                    tile_overlap=semantic_settings.tile_overlap,
-                    feature_stage=stage,
-                )
-                second_output = self._semantic_client.infer(
-                    Image.fromarray(prepared.comparison_t2),
-                    tile_size=semantic_settings.tile_size,
-                    tile_overlap=semantic_settings.tile_overlap,
-                    feature_stage=stage,
-                )
-            if require_model_cache_identity(
-                self._semantic_client,
-                component="change semantic client",
-            ) != identity:
-                raise ChangePerceptionError("SEGFORMER_MODEL_IDENTITY_MISMATCH")
             expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
-            if len(requested_stages) > 1:
-                _validate_pyramid_pair_grids(
-                    first_output,
-                    second_output,
-                    expected_size=expected_size,
-                    expected_stages=requested_stages,
-                    np=np,
-                )
-            else:
-                _validate_pair_grids(
-                    first_output,
-                    second_output,
-                    expected_size=expected_size,
-                    np=np,
-                )
-            weights_sha256 = _validate_pair_weight_identity(
-                first_output,
-                second_output,
-            )
+            semantic_runs: list[SemanticExpertRun] = []
+            expert_failures: list[dict[str, str]] = []
+            expert_errors: list[BaseException] = []
+            for binding in self._semantic_experts[: semantic_settings.max_experts if semantic_settings.multi_expert_enabled else 1]:
+                try:
+                    semantic_runs.append(
+                        _infer_semantic_expert_pair(
+                            binding,
+                            prepared,
+                            semantic_settings,
+                            expected_size=expected_size,
+                            requested_stages=requested_stages,
+                            np=np,
+                        )
+                    )
+                except Exception as error:
+                    expert_errors.append(error)
+                    expert_failures.append(
+                        {"expert_id": binding.expert_id, "error_type": type(error).__name__}
+                    )
+            if len(semantic_runs) < semantic_settings.min_successful_experts:
+                if len(self._semantic_experts) == 1 and expert_errors:
+                    raise expert_errors[0]
+                raise ChangePerceptionError("SEGFORMER_ALL_EXPERTS_FAILED")
+            selected_run = semantic_runs[0]
+            identity = selected_run.identity
+            first_output = selected_run.first_output
+            second_output = selected_run.second_output
+            weights_sha256 = selected_run.weights_sha256
             feature_result = None
             if prepared.pif_valid:
                 if len(requested_stages) > 1:
@@ -348,6 +365,17 @@ class ChangePerceptionPipeline:
                 "semantic_transition_note": (
                     "auxiliary model evidence; not ground truth; raw evidence must be reviewed"
                 ),
+                "semantic_experts": [
+                    {
+                        "expert_id": run.binding.expert_id,
+                        "logical_model_id": run.identity.model,
+                        "priority": run.binding.priority,
+                        "role": run.binding.role,
+                        "status": "success",
+                    }
+                    for run in semantic_runs
+                ],
+                "semantic_expert_failures": expert_failures,
                 "fusion": fusion_result.diagnostics,
                 "score_maps": {
                     "low_level": _score_statistics(low_level_map, np=np),
@@ -603,6 +631,87 @@ class ChangePerceptionPipeline:
                 "fusion_weight": self._settings.learned_change.fusion_weight,
             },
         }
+
+
+def _infer_semantic_expert_pair(
+    binding: SemanticExpertBinding,
+    prepared: ChangePreparedPair,
+    settings: Any,
+    *,
+    expected_size: tuple[int, int],
+    requested_stages: tuple[int, ...],
+    np: Any,
+) -> SemanticExpertRun:
+    """Run and validate one semantic expert independently for both frames."""
+
+    identity = require_model_cache_identity(
+        binding.client,
+        component=f"change semantic expert {binding.expert_id}",
+    )
+    infer_pyramid = getattr(binding.client, "infer_pyramid", None)
+    if len(requested_stages) > 1:
+        if not callable(infer_pyramid):
+            raise ChangePerceptionError("SEGFORMER_PYRAMID_UNSUPPORTED")
+        first_output = infer_pyramid(
+            Image.fromarray(prepared.comparison_t1),
+            tile_size=settings.tile_size,
+            tile_overlap=settings.tile_overlap,
+            feature_stages=requested_stages,
+        )
+        second_output = infer_pyramid(
+            Image.fromarray(prepared.comparison_t2),
+            tile_size=settings.tile_size,
+            tile_overlap=settings.tile_overlap,
+            feature_stages=requested_stages,
+        )
+        if not isinstance(first_output, DenseSemanticPyramidOutput) or not isinstance(
+            second_output, DenseSemanticPyramidOutput
+        ):
+            raise ChangePerceptionError("SEGFORMER_PYRAMID_GRID_MISMATCH")
+        _validate_pyramid_pair_grids(
+            first_output,
+            second_output,
+            expected_size=expected_size,
+            expected_stages=requested_stages,
+            np=np,
+        )
+    else:
+        stage = requested_stages[0]
+        first_output = binding.client.infer(
+            Image.fromarray(prepared.comparison_t1),
+            tile_size=settings.tile_size,
+            tile_overlap=settings.tile_overlap,
+            feature_stage=stage,
+        )
+        second_output = binding.client.infer(
+            Image.fromarray(prepared.comparison_t2),
+            tile_size=settings.tile_size,
+            tile_overlap=settings.tile_overlap,
+            feature_stage=stage,
+        )
+        if not isinstance(first_output, DenseSemanticOutput) or not isinstance(
+            second_output, DenseSemanticOutput
+        ):
+            raise ChangePerceptionError("SEGFORMER_PAIR_GRID_MISMATCH")
+        _validate_pair_grids(
+            first_output,
+            second_output,
+            expected_size=expected_size,
+            np=np,
+        )
+    if require_model_cache_identity(
+        binding.client,
+        component=f"change semantic expert {binding.expert_id}",
+    ) != identity:
+        raise ChangePerceptionError("SEGFORMER_MODEL_IDENTITY_MISMATCH")
+    weights_sha256 = _validate_pair_weight_identity(first_output, second_output)
+    return SemanticExpertRun(
+        binding=binding,
+        identity=identity,
+        first_output=first_output,
+        second_output=second_output,
+        weights_sha256=weights_sha256,
+    )
 
 
 def _require_numpy():

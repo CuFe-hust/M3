@@ -19,6 +19,7 @@ from agents.base import CallBudget as _CallBudgetProtocol
 from agents.base import VisualPlanBindings
 from agents.caption import CaptionAgent
 from agents.change.agent import ChangeAgent
+from agents.change.perception import SemanticExpertBinding
 from agents.counting import (
     AgentCountingSettings,
     CountingAgent,
@@ -163,15 +164,15 @@ def assemble_runtime(
         expert_catalog=expert_catalog,
         project_root=asset_root,
     )
+    change_semantic_experts = _build_change_semantic_bindings(
+        settings,
+        expert_catalog,
+        segformer_clients,
+    )
     if settings.agents.change.semantic.enabled and semantic_client is None:
-        semantic_client = segformer_clients.get(
-            settings.models.segformer_isaid.logical_model_id
+        semantic_client = (
+            change_semantic_experts[0].client if change_semantic_experts else None
         )
-        if semantic_client is None:
-            semantic_client = create_model(
-                "segformer_transformers",
-                settings=settings.models.segformer_isaid,
-            )
     if not settings.agents.change.semantic.enabled:
         semantic_client = None
     agent_registry = _build_agent_registry(
@@ -184,6 +185,7 @@ def assemble_runtime(
         segformer_clients=segformer_clients,
         project_root=asset_root,
         model_store=model_store,
+        semantic_experts=change_semantic_experts,
     )
     router = TaskRouter()
     judge_client = _build_judge_client(settings, catalog, api_key)
@@ -269,6 +271,7 @@ def _build_agent_registry(
     segformer_clients: dict[str, Any] | None = None,
     project_root: Path | None = None,
     model_store: YoloModelStore | None = None,
+    semantic_experts: tuple[SemanticExpertBinding, ...] = (),
 ) -> AgentRegistry:
     """Register every business agent in stable order; all routable tasks must
     be covered. 按稳定顺序注册全部业务 Agent；所有可路由任务必须有覆盖。"""
@@ -309,6 +312,7 @@ def _build_agent_registry(
         qwen_client,
         semantic_client=semantic_client,
         learned_change_client=learned_change_client,
+        semantic_experts=semantic_experts,
         prompt=PromptBinding(
             text=catalog["change"], version=catalog.version("change")
         ),
@@ -463,6 +467,54 @@ def _enabled_semantic_specs(catalog: ExpertCatalog) -> tuple[ExpertSpec, ...]:
         kinds=frozenset({"semantic_segmentation"}),
         enabled_only=True,
     )
+
+
+def _build_change_semantic_bindings(
+    settings: AppSettings,
+    catalog: ExpertCatalog,
+    clients: dict[str, Any],
+) -> tuple[SemanticExpertBinding, ...]:
+    """Bind only catalog-verified semantic experts into Change runtime."""
+
+    semantic_settings = settings.agents.change.semantic
+    if not semantic_settings.enabled:
+        return ()
+    candidates = sorted(
+        (
+            expert
+            for expert in _enabled_semantic_specs(catalog)
+            if expert.change_semantics is not None
+            and expert.change_semantics.enabled
+        ),
+        key=lambda expert: (-expert.priority, expert.backend_name),
+    )
+    if not semantic_settings.multi_expert_enabled:
+        candidates = candidates[:1]
+    else:
+        candidates = candidates[: semantic_settings.max_experts]
+    bindings: list[SemanticExpertBinding] = []
+    for expert in candidates:
+        semantic = expert.change_semantics
+        assert semantic is not None
+        try:
+            client = clients[expert.logical_model_id]
+        except KeyError:
+            raise RuntimeCompositionError(
+                "Change semantic expert client is unavailable"
+            ) from None
+        bindings.append(
+            SemanticExpertBinding(
+                expert_id=expert.backend_name,
+                logical_model_id=expert.logical_model_id,
+                priority=expert.priority,
+                role=semantic.role,
+                neutral_labels=frozenset(semantic.neutral_model_labels),
+                transient_labels=frozenset(semantic.transient_model_labels),
+                persistent_labels=frozenset(semantic.persistent_model_labels),
+                client=client,
+            )
+        )
+    return tuple(bindings)
 
 
 def _expert_asset_root(project_root: Path) -> Path:
