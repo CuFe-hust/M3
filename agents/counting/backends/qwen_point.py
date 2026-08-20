@@ -8,7 +8,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from agents.base import CallBudget
 from agents.counting.backends.base import (
@@ -191,7 +191,7 @@ class QwenPointCountingBackend:
         content: list[dict[str, Any]] = []
         image_digests: list[str] = []
         for conflict in selected:
-            crop, crop_hash = _disagreement_crop(
+            crop, crop_hash, annotations = _disagreement_crop(
                 request.image,
                 conflict,
                 padding_ratio=self._counting.disagreement_context_padding_ratio,
@@ -205,6 +205,7 @@ class QwenPointCountingBackend:
                             "conflict_id": conflict.get("conflict_id"),
                             "target": request.target.canonical_label,
                             "candidate_ids": conflict.get("candidate_ids", []),
+                            "candidate_annotations": annotations,
                         },
                         ensure_ascii=False,
                     ),
@@ -263,8 +264,8 @@ def _disagreement_crop(
     conflict: dict[str, Any],
     *,
     padding_ratio: float,
-) -> tuple[Image.Image, str]:
-    """Render only one bounded conflict region for the review call."""
+) -> tuple[Image.Image, str, list[dict[str, object]]]:
+    """Render one bounded conflict region with crop-local candidate markers."""
 
     boxes: list[tuple[float, float, float, float]] = []
     centers: list[tuple[float, float]] = []
@@ -302,10 +303,68 @@ def _disagreement_crop(
     if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
         bounds = (0, 0, image.width, image.height)
     crop = image.crop(bounds)
+    draw = ImageDraw.Draw(crop)
+    point_by_id = {
+        str(point.get("global_id")): point
+        for point in conflict.get("candidate_points", [])
+        if isinstance(point, dict) and point.get("global_id")
+    }
+    annotations: list[dict[str, object]] = []
+    colors = ((255, 64, 64), (64, 224, 96), (64, 144, 255), (255, 192, 64))
+    for index, candidate_id in enumerate(conflict.get("candidate_ids", [])):
+        candidate_id = str(candidate_id)
+        point = point_by_id.get(candidate_id, {})
+        marker = chr(65 + index) if index < 26 else f"A{index - 25}"
+        provenance = point.get("provenance") if isinstance(point, dict) else None
+        geometry: dict[str, object] = {}
+        if isinstance(provenance, dict):
+            polygon = provenance.get("obb_polygon_global_px")
+            if isinstance(polygon, list) and len(polygon) >= 3:
+                local_polygon = [
+                    [float(vertex[0]) - bounds[0], float(vertex[1]) - bounds[1]]
+                    for vertex in polygon
+                    if isinstance(vertex, list) and len(vertex) >= 2
+                ]
+                if len(local_polygon) >= 3:
+                    geometry = {"type": "obb_polygon", "points": local_polygon}
+                    draw.line([tuple(vertex) for vertex in local_polygon + [local_polygon[0]]], fill=colors[index % len(colors)], width=3)
+            if not geometry:
+                bbox = provenance.get("bbox_xyxy_global_px")
+                if isinstance(bbox, list) and len(bbox) == 4:
+                    local_bbox = [
+                        float(bbox[0]) - bounds[0],
+                        float(bbox[1]) - bounds[1],
+                        float(bbox[2]) - bounds[0],
+                        float(bbox[3]) - bounds[1],
+                    ]
+                    geometry = {"type": "bbox", "xyxy": local_bbox}
+                    draw.rectangle(local_bbox, outline=colors[index % len(colors)], width=3)
+        center = (
+            float(point.get("global_x_px", (bounds[0] + bounds[2]) / 2)) - bounds[0],
+            float(point.get("global_y_px", (bounds[1] + bounds[3]) / 2)) - bounds[1],
+        )
+        if not geometry:
+            radius = max(4.0, float(point.get("radius_px", 4.0)))
+            geometry = {"type": "point", "xy": [center[0], center[1]], "radius": radius}
+            draw.ellipse(
+                (center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius),
+                outline=colors[index % len(colors)],
+                width=3,
+            )
+        label_box = (center[0] + 4, center[1] + 4, center[0] + 20, center[1] + 20)
+        draw.rectangle(label_box, fill=colors[index % len(colors)])
+        draw.text((center[0] + 7, center[1] + 5), marker, fill=(0, 0, 0))
+        annotations.append(
+            {
+                "marker": marker,
+                "candidate_id": candidate_id,
+                "geometry": geometry,
+            }
+        )
     with io.BytesIO() as buffer:
         crop.save(buffer, format="JPEG", quality=95)
         digest = hashlib.sha256(buffer.getvalue()).hexdigest()
-    return crop, digest
+    return crop, digest, annotations
 
 
 class _PipelineTileCallback:
