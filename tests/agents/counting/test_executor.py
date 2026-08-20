@@ -29,6 +29,7 @@ from agents.counting.executor import (
     CountingExecutionResult,
     CountingPlanExecutor,
     _apply_disagreement_review,
+    resolve_unresolved_observations,
 )
 from agents.counting.schema import (
     CountTargetSpec,
@@ -693,6 +694,28 @@ def test_disagreement_uncertain_defers_to_unresolved_policy() -> None:
     assert all(point.accepted for point in points)
     assert unresolved == ["candidate-a|candidate-b"]
     assert warnings[-1].code == "DETECTOR_DISAGREEMENT_REVIEW_UNCERTAIN"
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_accepted"),
+    [
+        ("retain_high_confidence", {"candidate-a", "fused-consensus"}),
+        ("reject_unresolved", {"fused-consensus"}),
+    ],
+)
+def test_unresolved_ensemble_policy_is_central_and_deterministic(
+    policy: str, expected_accepted: set[str]
+) -> None:
+    points, unresolved, warnings = resolve_unresolved_observations(
+        _review_fixture().points,
+        policy,  # type: ignore[arg-type]
+        0.65,
+        unresolved_conflict_ids=["candidate-a|candidate-b"],
+    )
+
+    assert {point.global_id for point in points if point.accepted} == expected_accepted
+    assert unresolved == []
+    assert warnings[-1].code == "DETECTOR_ENSEMBLE_UNRESOLVED_POLICY_APPLIED"
 
 
 def test_detector_ensemble_does_not_review_consensus(tmp_path: Path) -> None:

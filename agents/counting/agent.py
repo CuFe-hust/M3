@@ -73,6 +73,7 @@ class CountingAgent:
         ensemble_iou_threshold: float = 0.45,
         ensemble_center_distance_ratio: float = 0.60,
         ensemble_singleton_high_confidence: float = 0.65,
+        unresolved_ensemble_policy: str = "retain_high_confidence",
         expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
@@ -96,6 +97,7 @@ class CountingAgent:
                 ensemble_iou_threshold=ensemble_iou_threshold,
                 ensemble_center_distance_ratio=ensemble_center_distance_ratio,
                 ensemble_singleton_high_confidence=ensemble_singleton_high_confidence,
+                unresolved_ensemble_policy=unresolved_ensemble_policy,
             ),
         )
 
@@ -261,9 +263,33 @@ class CountingAgent:
                 "disagreement_review_triggered": ensemble_trace.get(
                     "disagreement_review", {}
                 ).get("disagreement_review_triggered", False),
+                "review_backend": ensemble_trace.get("disagreement_review", {}).get(
+                    "review_backend"
+                ),
+                "review_request_hash": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("review_request_hash"),
+                "requested_conflict_ids": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("requested_conflict_ids", []),
                 "reviewed_conflicts": ensemble_trace.get(
                     "disagreement_review", {}
                 ).get("reviewed_conflict_ids", []),
+                "truncated_conflict_ids": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("truncated_conflict_ids", []),
+                "review_decisions": ensemble_trace.get("disagreement_review", {}).get(
+                    "review_decisions", []
+                ),
+                "review_failure": ensemble_trace.get("disagreement_review", {}).get(
+                    "review_failure"
+                ),
+                "unresolved_ensemble_policy": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("unresolved_ensemble_policy"),
+                "unresolved_policy_applied": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("unresolved_policy_applied", False),
                 "final_count": state.outcome.counting.final_count,
             }
         else:

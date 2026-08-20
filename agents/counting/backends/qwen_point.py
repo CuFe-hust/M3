@@ -237,17 +237,6 @@ class QwenPointCountingBackend:
         budget = getattr(context, "call_budget", None)
         if budget is not None:
             budget.reserve_qwen()
-        result = await self._client.complete_json(
-            messages=messages,
-            response_model=DisagreementReview,
-            request_meta=RequestMeta(
-                request_id=f"{request.sample.sample_id}:detector-disagreement-review",
-                request_hash=request_hash,
-                prompt_version=self._disagreement_prompt_version,
-                sample_id=request.sample.sample_id,
-                artifact_dir=request.artifact_dir / "disagreement_review",
-            ),
-        )
         self.last_disagreement_review_trace = {
             "disagreement_review_triggered": True,
             "review_backend": self.name,
@@ -255,7 +244,23 @@ class QwenPointCountingBackend:
             "reviewed_conflict_ids": [str(item.get("conflict_id")) for item in selected],
             "truncated_conflict_ids": [str(item.get("conflict_id")) for item in truncated],
             "review_request_hash": request_hash,
+            "review_failure": None,
         }
+        try:
+            result = await self._client.complete_json(
+                messages=messages,
+                response_model=DisagreementReview,
+                request_meta=RequestMeta(
+                    request_id=f"{request.sample.sample_id}:detector-disagreement-review",
+                    request_hash=request_hash,
+                    prompt_version=self._disagreement_prompt_version,
+                    sample_id=request.sample.sample_id,
+                    artifact_dir=request.artifact_dir / "disagreement_review",
+                ),
+            )
+        except Exception as error:
+            self.last_disagreement_review_trace["review_failure"] = type(error).__name__
+            raise
         return DisagreementReview.model_validate(result)
 
 

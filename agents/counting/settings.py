@@ -57,7 +57,9 @@ class CountingSettings(BaseModel):
     ensemble_singleton_high_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
     max_disagreement_regions: int = Field(default=12, ge=1, le=12)
     disagreement_context_padding_ratio: float = Field(default=0.35, ge=0.0, le=2.0)
-    unresolved_ensemble_policy: Literal["retain_high_confidence"] = "retain_high_confidence"
+    unresolved_ensemble_policy: Literal[
+        "retain_high_confidence", "reject_unresolved"
+    ] = "retain_high_confidence"
 
     @model_validator(mode="before")
     @classmethod

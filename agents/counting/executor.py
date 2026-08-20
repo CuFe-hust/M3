@@ -9,7 +9,7 @@ contracts are terminal. Zero is always valid and only enters explicit review.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Literal, Sequence
 
 from agents.base import AgentContext
 from agents.counting.backends.base import (
@@ -60,6 +60,9 @@ class CountingExecutionPolicy:
     ensemble_iou_threshold: float = 0.45
     ensemble_center_distance_ratio: float = 0.60
     ensemble_singleton_high_confidence: float = 0.65
+    unresolved_ensemble_policy: Literal[
+        "retain_high_confidence", "reject_unresolved"
+    ] = "retain_high_confidence"
 
 
 @dataclass(frozen=True)
@@ -516,12 +519,16 @@ class CountingPlanExecutor:
             review_trace: dict[str, object] = {
                 "disagreement_review_triggered": False,
                 "review_backend": None,
+                "review_request_hash": None,
                 "requested_conflict_ids": [
                     str(item.get("conflict_id")) for item in fused.review_candidates
                 ],
                 "reviewed_conflict_ids": [],
                 "truncated_conflict_ids": [],
                 "review_decisions": [],
+                "review_failure": None,
+                "unresolved_ensemble_policy": self._policy.unresolved_ensemble_policy,
+                "unresolved_policy_applied": False,
             }
             reviewed_points = fused.points
             reviewed_unresolved = fused.unresolved_conflicts
@@ -535,6 +542,7 @@ class CountingPlanExecutor:
                 None,
             ) if fused.review_candidates else None
             if reviewer is not None:
+                review_trace["review_backend"] = getattr(reviewer, "name", None)
                 try:
                     review = await reviewer.review_disagreements(
                         request=request,
@@ -558,12 +566,28 @@ class CountingPlanExecutor:
                     if isinstance(reviewer_trace, dict):
                         review_trace.update(reviewer_trace)
                 except Exception as error:
+                    review_trace["review_failure"] = type(error).__name__
                     review_warnings.append(
                         IssueRecord(
                             code="DETECTOR_DISAGREEMENT_REVIEW_FAILED",
                             message=f"Disagreement review failed: {type(error).__name__}.",
                         )
                     )
+            if reviewed_unresolved:
+                unresolved_before_policy = list(reviewed_unresolved)
+                reviewed_points, reviewed_unresolved, policy_warnings = resolve_unresolved_observations(
+                    reviewed_points,
+                    self._policy.unresolved_ensemble_policy,
+                    self._policy.ensemble_singleton_high_confidence,
+                    unresolved_conflict_ids=reviewed_unresolved,
+                )
+                review_warnings.extend(policy_warnings)
+                review_trace["unresolved_policy_applied"] = {
+                    "policy": self._policy.unresolved_ensemble_policy,
+                    "singleton_min_confidence": self._policy.ensemble_singleton_high_confidence,
+                    "conflict_ids": unresolved_before_policy,
+                    "remaining_conflict_ids": reviewed_unresolved,
+                }
             status = "completed_with_warnings" if (history or review_warnings or base.status == "completed_with_warnings") else base.status
             counting = base.model_copy(
                 update={
@@ -595,8 +619,12 @@ class CountingPlanExecutor:
                 final_kind=primary_kind or "yolo_obb",
                 candidate_backends=candidates,
                 attempted_backends=tuple(attempted),
-                review_backend=None,
-                review_error_type=None,
+                review_backend=(getattr(reviewer, "name", None) if reviewer is not None else None),
+                review_error_type=(
+                    str(review_trace["review_failure"])
+                    if review_trace["review_failure"] is not None
+                    else None
+                ),
                 fallback_history=tuple(history),
                 fallback_triggered=bool(history),
                 fallback_kind="ensemble_degraded" if history else None,
@@ -844,6 +872,89 @@ def _with_review_warning(
         agent_result=outcome.agent_result,
         trace=outcome.trace,
     )
+
+
+def resolve_unresolved_observations(
+    observations: Sequence,
+    policy: Literal["retain_high_confidence", "reject_unresolved"],
+    singleton_min_confidence: float,
+    *,
+    unresolved_conflict_ids: Sequence[str] = (),
+) -> tuple[list, list[str], list[IssueRecord]]:
+    """Apply the deterministic policy to every unresolved detector candidate."""
+
+    if policy not in {"retain_high_confidence", "reject_unresolved"}:
+        raise ValueError("unknown unresolved ensemble policy")
+    if not 0.0 <= singleton_min_confidence <= 1.0:
+        raise ValueError("invalid singleton confidence threshold")
+    points = list(observations)
+    point_ids = {point.global_id for point in points}
+    unresolved_points: set[str] = set()
+    matched_conflicts: set[str] = set()
+    remaining: list[str] = []
+    for conflict_id in unresolved_conflict_ids:
+        conflict_id = str(conflict_id)
+        candidate_ids = (
+            {conflict_id}
+            if conflict_id in point_ids
+            else set(conflict_id.split("|"))
+        )
+        present = candidate_ids & point_ids
+        if not present:
+            remaining.append(conflict_id)
+            continue
+        matched_conflicts.add(conflict_id)
+        unresolved_points.update(present)
+
+    retained: list[str] = []
+    rejected: list[str] = []
+    for index, point in enumerate(points):
+        if point.global_id not in unresolved_points:
+            continue
+        keep = (
+            policy == "retain_high_confidence"
+            and point.confidence >= singleton_min_confidence
+        )
+        if keep:
+            retained.append(point.global_id)
+            provenance = point.provenance
+            if provenance is not None:
+                points[index] = point.model_copy(
+                    update={
+                        "provenance": provenance.model_copy(
+                            update={"review_status": "retained_high_confidence_unresolved"}
+                        )
+                    }
+                )
+        else:
+            rejected.append(point.global_id)
+            points[index] = point.model_copy(
+                update={
+                    "accepted": False,
+                    "rejection_reason": (
+                        "DETECTOR_DISAGREEMENT_REJECT_UNRESOLVED"
+                        if policy == "reject_unresolved"
+                        else "DETECTOR_DISAGREEMENT_BELOW_SINGLETON_THRESHOLD"
+                    ),
+                }
+            )
+    if matched_conflicts:
+        message = (
+            "Unresolved detector candidates were retained only when they met the "
+            "configured singleton confidence threshold."
+            if policy == "retain_high_confidence"
+            else "Unresolved detector candidates were rejected by policy."
+        )
+        warnings = [
+            IssueRecord(
+                code="DETECTOR_ENSEMBLE_UNRESOLVED_POLICY_APPLIED",
+                message=message,
+                point_ids=sorted({*retained, *rejected}),
+            )
+        ]
+    else:
+        warnings = []
+    return points, sorted(remaining), warnings
 
 
 def _apply_disagreement_review(

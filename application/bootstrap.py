@@ -306,6 +306,7 @@ def _build_agent_registry(
         ensemble_iou_threshold=settings.counting.ensemble_iou_threshold,
         ensemble_center_distance_ratio=settings.counting.ensemble_center_distance_ratio,
         ensemble_singleton_high_confidence=settings.counting.ensemble_singleton_high_confidence,
+        unresolved_ensemble_policy=settings.counting.unresolved_ensemble_policy,
         expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(
