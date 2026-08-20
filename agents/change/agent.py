@@ -854,6 +854,7 @@ class ChangeAgent:
             rescue_candidates, rescue_diagnostics = pipeline.run_rescue_candidates(
                 prepared
             )
+            rescue_diagnostics["sample_id"] = sample.sample_id
         except ChangePerceptionError as error:
             raise AgentExecutionError(
                 self.name,

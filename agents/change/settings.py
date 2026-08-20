@@ -206,6 +206,8 @@ class ChangeBuildingRescueSettings(BaseModel):
     enabled: bool = True
     shadow_only: bool = True
     qwen_review_enabled: bool = False
+    allowed_directions: tuple[Literal["added", "removed"], ...] = ("added",)
+    edge_only: bool = False
     building_probability_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     source_absence_probability_max: float = Field(default=0.25, ge=0.0, le=1.0)
     min_component_area_ratio: float = Field(default=0.0003, gt=0.0, le=1.0)
@@ -221,6 +223,10 @@ class ChangeBuildingRescueSettings(BaseModel):
     min_review_pixel_size: int = Field(default=256, ge=32, le=2048)
 
     def model_post_init(self, __context: Any) -> None:
+        if not self.allowed_directions:
+            raise ValueError("building rescue must allow at least one direction")
+        if len(set(self.allowed_directions)) != len(self.allowed_directions):
+            raise ValueError("building rescue directions must be unique")
         if self.min_component_area_ratio_edge > self.min_component_area_ratio:
             raise ValueError("edge rescue area threshold cannot exceed interior threshold")
         if self.registration_tolerance_min_px > self.registration_tolerance_max_px:

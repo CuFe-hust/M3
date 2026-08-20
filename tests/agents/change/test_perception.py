@@ -376,6 +376,75 @@ def test_building_rescue_extracts_added_footprint_without_core_proposals() -> No
     assert candidates[0].direction == "added"
     assert candidates[0].label == "building"
     assert candidates[0].box == (18, 18, 30, 30)
+    component = diagnostics["component_diagnostics"][0]
+    assert component["candidate_direction"] == "added"
+    assert component["accepted"] is True
+    assert component["rejection_reason"] is None
+    assert component["target_p50_building_probability"] >= 0.85
+    assert "source_p90_building_probability" in component
+    assert "source_p95_building_probability" in component
+
+
+def test_building_rescue_disables_removed_direction_with_auditable_reason() -> None:
+    client = _DenseClient(
+        _building_outputs(
+            first_box=(slice(4, 8), slice(4, 8)),
+            second_box=(slice(4, 8), slice(5, 9)),
+        )
+    )
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+
+    settings = _settings()
+    settings.building_rescue.allowed_directions = ("removed",)
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+    added = [
+        row
+        for row in diagnostics["component_diagnostics"]
+        if row["candidate_direction"] == "added"
+    ]
+    assert added and added[0]["rejection_reason"] == "DIRECTION_DISABLED"
+
+
+def test_edge_only_rescue_rejects_interior_component_with_reason() -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(4, 8), slice(4, 8))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="edge_corner_building",
+    )
+    settings = _settings()
+    settings.building_rescue.edge_only = True
+
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+    assert diagnostics["component_diagnostics"][0]["rejection_reason"] == "EDGE_ONLY_DISABLED"
 
 
 def test_building_rescue_tolerance_suppresses_small_registration_shift() -> None:

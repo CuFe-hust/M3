@@ -178,6 +178,7 @@ class ChangePerceptionPipeline:
         candidates: list[StructuralRescueCandidate] = []
         failures: list[dict[str, str]] = []
         expert_diagnostics: list[dict[str, object]] = []
+        component_diagnostics: list[dict[str, object]] = []
         for binding in rescue_bindings:
             try:
                 run = _infer_semantic_expert_pair(
@@ -193,6 +194,7 @@ class ChangePerceptionPipeline:
                     prepared,
                     rescue_settings,
                     np=np,
+                    component_diagnostics=component_diagnostics,
                 )
                 label_names = [str(name).casefold() for name in run.first_output.class_names]
                 rescue_labels = run.binding.rescue_model_labels or frozenset({"building"})
@@ -229,6 +231,7 @@ class ChangePerceptionPipeline:
             "shadow_only": rescue_settings.shadow_only,
             "expert_ids": [binding.expert_id for binding in rescue_bindings],
             "experts": expert_diagnostics,
+            "component_diagnostics": component_diagnostics,
             "candidate_count": len(candidates),
             "edge_candidate_count": sum(bool(item.edge_flags) for item in candidates),
             "failures": failures,
@@ -1079,6 +1082,7 @@ def _extract_building_rescue_candidates(
     settings: Any,
     *,
     np: Any,
+    component_diagnostics: list[dict[str, object]] | None = None,
 ) -> list[StructuralRescueCandidate]:
     """Extract conservative added/removed building footprint candidates."""
 
@@ -1118,13 +1122,12 @@ def _extract_building_rescue_candidates(
             return []
 
     output: list[StructuralRescueCandidate] = []
+    diagnostics = component_diagnostics if component_diagnostics is not None else []
     for direction, component_mask, target, source in (
         ("added", second_mask & ~first_tolerant, second_probability, first_probability),
         ("removed", first_mask & ~second_tolerant, first_probability, second_probability),
     ):
         for component_index, component in enumerate(_binary_components(component_mask, np=np)):
-            if valid_mask is not None and not np.any(component & valid_mask):
-                continue
             ys, xs = np.where(component)
             if not len(xs):
                 continue
@@ -1144,14 +1147,57 @@ def _extract_building_rescue_candidates(
                 continue
             target_values = target[component]
             source_values = source[component]
+            target_p10 = float(np.percentile(target_values, 10))
+            target_p50 = float(np.percentile(target_values, 50))
+            source_mean = float(np.mean(source_values))
+            source_p90 = float(np.percentile(source_values, 90))
+            source_p95 = float(np.percentile(source_values, 95))
             source_max = float(np.max(source_values))
             target_mean = float(np.mean(target_values))
-            if (
-                target_mean < settings.building_probability_threshold
-                or float(np.percentile(target_values, 10))
-                < settings.building_probability_threshold * 0.75
-                or source_max > settings.source_absence_probability_max
-            ):
+            registration_valid_ratio = (
+                float(np.mean(component & valid_mask)) if valid_mask is not None else 1.0
+            )
+            rejection_reason: str | None = None
+            if direction not in settings.allowed_directions:
+                rejection_reason = "DIRECTION_DISABLED"
+            elif settings.edge_only and not edge_flags:
+                rejection_reason = "EDGE_ONLY_DISABLED"
+            elif registration_valid_ratio <= 0.0:
+                rejection_reason = "REGISTRATION_INVALID"
+            elif area_ratio < min_area:
+                rejection_reason = "AREA_TOO_SMALL"
+            elif area_ratio > settings.max_component_area_ratio:
+                rejection_reason = "AREA_TOO_LARGE"
+            elif target_mean < settings.building_probability_threshold:
+                rejection_reason = "TARGET_MEAN_TOO_LOW"
+            elif target_p10 < settings.building_probability_threshold * 0.75:
+                rejection_reason = "TARGET_P10_TOO_LOW"
+            elif source_max > settings.source_absence_probability_max:
+                rejection_reason = "SOURCE_ABSENCE_FAILED"
+            record = {
+                "candidate_direction": direction,
+                "component_id": f"{run.binding.expert_id}:{direction}:{component_index}",
+                "area_px": area,
+                "area_ratio": area_ratio,
+                "target_mean_building_probability": target_mean,
+                "target_p10_building_probability": target_p10,
+                "target_p50_building_probability": target_p50,
+                "source_mean_building_probability": source_mean,
+                "source_p90_building_probability": source_p90,
+                "source_p95_building_probability": source_p95,
+                "source_max_building_probability": source_max,
+                "registration_tolerance_px": tolerance,
+                "touches_top": "top" in edge_flags,
+                "touches_bottom": "bottom" in edge_flags,
+                "touches_left": "left" in edge_flags,
+                "touches_right": "right" in edge_flags,
+                "touches_corner": "corner" in edge_flags,
+                "registration_valid_ratio": registration_valid_ratio,
+                "accepted": rejection_reason is None,
+                "rejection_reason": rejection_reason,
+            }
+            diagnostics.append(record)
+            if rejection_reason is not None:
                 continue
             score = float(
                 np.clip(
@@ -1179,8 +1225,11 @@ def _extract_building_rescue_candidates(
                     ),
                     score=score,
                     target_mean_probability=target_mean,
-                    target_p10_probability=float(np.percentile(target_values, 10)),
-                    source_mean_probability=float(np.mean(source_values)),
+                    target_p10_probability=target_p10,
+                    target_p50_probability=target_p50,
+                    source_mean_probability=source_mean,
+                    source_p90_probability=source_p90,
+                    source_p95_probability=source_p95,
                     source_max_probability=source_max,
                     area_px=area,
                     area_ratio=area_ratio,
