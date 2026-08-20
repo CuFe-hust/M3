@@ -850,7 +850,11 @@ def _apply_disagreement_review(
     fused: object,
     review: DisagreementReview,
 ) -> tuple[list, list[str], list[IssueRecord]]:
-    """Apply only validated decisions to unresolved detector candidates."""
+    """Apply only exact, reviewer-supplied candidate decisions.
+
+    Consensus points are intentionally addressed by exact ``global_id`` only;
+    a reviewer cannot replace, delete, or re-select a fused consensus point.
+    """
 
     points = list(getattr(fused, "points"))
     requested = {
@@ -864,31 +868,55 @@ def _apply_disagreement_review(
         conflict = requested.get(decision.conflict_id)
         if conflict is None:
             raise ValueError("review returned an unknown conflict")
-        candidate_ids = {str(value) for value in conflict.get("candidate_ids", [])}
-        if not set(decision.accepted_candidate_ids).issubset(candidate_ids):
+        candidate_id_list = [str(value) for value in conflict.get("candidate_ids", [])]
+        candidate_ids = set(candidate_id_list)
+        if len(candidate_id_list) != len(candidate_ids):
+            raise ValueError("review request contains duplicate candidates")
+        accepted_ids = [str(value) for value in decision.accepted_candidate_ids]
+        if len(accepted_ids) != len(set(accepted_ids)):
+            raise ValueError("review returned duplicate candidate ids")
+        if not set(accepted_ids).issubset(candidate_ids):
             raise ValueError("review returned an unknown candidate")
         if decision.conflict_id in seen:
             raise ValueError("review returned a duplicate conflict")
         seen.add(decision.conflict_id)
-        matches = [
-            index
-            for index, point in enumerate(points)
-            if any(candidate in point.global_id for candidate in candidate_ids)
-        ]
-        if not matches:
+        point_index_by_id = {point.global_id: index for index, point in enumerate(points)}
+        candidate_indexes = {
+            candidate_id: point_index_by_id[candidate_id]
+            for candidate_id in candidate_ids
+            if candidate_id in point_index_by_id
+        }
+        if set(candidate_indexes) != candidate_ids:
             raise ValueError("review candidate is not present in fused result")
         if decision.decision == "accept_one":
-            keep = max(matches, key=lambda index: points[index].confidence)
-            for index in matches:
-                if index != keep:
+            if len(accepted_ids) != 1:
+                raise ValueError("accept_one must select exactly one requested candidate")
+            keep_id = accepted_ids[0]
+            for candidate_id, index in candidate_indexes.items():
+                if candidate_id != keep_id:
                     points[index] = points[index].model_copy(
                         update={
                             "accepted": False,
                             "rejection_reason": "DISAGREEMENT_REVIEW_ACCEPT_ONE",
                         }
                     )
+        elif decision.decision == "accept_multiple":
+            if len(accepted_ids) != decision.instance_count or len(accepted_ids) < 2:
+                raise ValueError(
+                    "accept_multiple instance_count must equal exact selected candidates"
+                )
+            for candidate_id, index in candidate_indexes.items():
+                if candidate_id not in accepted_ids:
+                    points[index] = points[index].model_copy(
+                        update={
+                            "accepted": False,
+                            "rejection_reason": "DISAGREEMENT_REVIEW_ACCEPT_MULTIPLE",
+                        }
+                    )
         elif decision.decision == "reject_all":
-            for index in matches:
+            if accepted_ids:
+                raise ValueError("reject_all cannot accept candidates")
+            for index in candidate_indexes.values():
                 points[index] = points[index].model_copy(
                     update={
                         "accepted": False,
@@ -896,21 +924,15 @@ def _apply_disagreement_review(
                     }
                 )
         elif decision.decision == "uncertain":
-            for index in matches:
-                provenance = points[index].provenance
-                if provenance is None or provenance.review_status != "high_confidence_singleton":
-                    points[index] = points[index].model_copy(
-                        update={
-                            "accepted": False,
-                            "rejection_reason": "DISAGREEMENT_REVIEW_UNCERTAIN",
-                        }
-                    )
+            if accepted_ids:
+                raise ValueError("uncertain cannot accept candidates")
             warnings.append(
                 IssueRecord(
                     code="DETECTOR_DISAGREEMENT_REVIEW_UNCERTAIN",
-                    message="Detector disagreement remained uncertain; low-confidence candidates were rejected.",
+                    message="Detector disagreement remained uncertain; unresolved policy will decide.",
                     point_ids=sorted(candidate_ids),
                 )
             )
-        unresolved.difference_update({decision.conflict_id, *candidate_ids})
+        if decision.decision != "uncertain":
+            unresolved.discard(decision.conflict_id)
     return points, sorted(unresolved), warnings

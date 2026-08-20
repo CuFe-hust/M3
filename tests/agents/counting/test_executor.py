@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,11 +28,14 @@ from agents.counting.executor import (
     CountingExecutionPolicy,
     CountingExecutionResult,
     CountingPlanExecutor,
+    _apply_disagreement_review,
 )
 from agents.counting.schema import (
     CountTargetSpec,
     CountingResult,
     DisagreementReview,
+    GlobalPointObservation,
+    PointProvenance,
     TileCountResponse,
 )
 from agents.counting.settings import CountingSettings
@@ -60,6 +64,48 @@ _SENSITIVE_ERROR_TEXT = (
     "Bearer abcdef "
     "data:image/png;base64,AAAA"
 )
+
+
+def _review_point(global_id: str, confidence: float) -> GlobalPointObservation:
+    return GlobalPointObservation(
+        global_id=global_id,
+        target="car",
+        source_tile_id="r000_c000",
+        local_id=global_id,
+        local_x_norm=500,
+        local_y_norm=500,
+        local_radius_norm=0,
+        global_x_px=32,
+        global_y_px=32,
+        global_x_norm=500,
+        global_y_norm=500,
+        radius_px=4.0,
+        confidence=confidence,
+        ownership_valid=True,
+        near_core_boundary=False,
+        accepted=True,
+        short_evidence="e",
+        provenance=PointProvenance(source="yolo_obb_center", source_class="car"),
+    )
+
+
+def _review_fixture() -> SimpleNamespace:
+    return SimpleNamespace(
+        points=[
+            _review_point("candidate-a", 0.99),
+            _review_point("candidate-b", 0.20),
+            _review_point("fused-consensus", 0.95),
+        ],
+        review_candidates=[
+            {
+                "conflict_id": "candidate-a|candidate-b",
+                "candidate_ids": ["candidate-a", "candidate-b"],
+                "candidate_points": [],
+            }
+        ],
+        unresolved_conflicts=["candidate-a|candidate-b"],
+        warnings=[],
+    )
 
 
 class _FakeBudget:
@@ -540,6 +586,113 @@ def test_detector_ensemble_calls_disagreement_reviewer_once_for_low_singleton(
     assert reviewer.calls == 1
     assert result.outcome.counting.final_count == 0
     assert result.outcome.trace["ensemble"]["disagreement_review"]["disagreement_review_triggered"] is True
+
+
+def test_disagreement_accept_one_uses_exact_requested_candidate() -> None:
+    fused = _review_fixture()
+
+    points, unresolved, _warnings = _apply_disagreement_review(
+        fused,
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "candidate-a|candidate-b",
+                    "decision": "accept_one",
+                    "accepted_candidate_ids": ["candidate-b"],
+                    "instance_count": 1,
+                }
+            ]
+        ),
+    )
+
+    by_id = {point.global_id: point for point in points}
+    assert by_id["candidate-b"].accepted is True
+    assert by_id["candidate-a"].accepted is False
+    assert by_id["fused-consensus"].accepted is True
+    assert unresolved == []
+
+
+def test_disagreement_accept_multiple_preserves_exact_candidate_set() -> None:
+    fused = _review_fixture()
+    fused.review_candidates[0]["candidate_ids"] = [
+        "candidate-a",
+        "candidate-b",
+        "candidate-c",
+    ]
+    fused.points.append(_review_point("candidate-c", 0.10))
+
+    points, unresolved, _warnings = _apply_disagreement_review(
+        fused,
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "candidate-a|candidate-b",
+                    "decision": "accept_multiple",
+                    "accepted_candidate_ids": ["candidate-a", "candidate-c"],
+                    "instance_count": 2,
+                }
+            ]
+        ),
+    )
+
+    by_id = {point.global_id: point for point in points}
+    assert by_id["candidate-a"].accepted is True
+    assert by_id["candidate-b"].accepted is False
+    assert by_id["candidate-c"].accepted is True
+    assert by_id["fused-consensus"].accepted is True
+    assert unresolved == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "accepted_candidate_ids", "instance_count"),
+    [
+        ("accept_one", ["candidate-a", "candidate-b"], 1),
+        ("accept_multiple", ["candidate-a"], 2),
+        ("accept_multiple", ["candidate-a", "candidate-a"], 2),
+        ("accept_one", ["unknown"], 1),
+        ("reject_all", ["candidate-a"], 0),
+    ],
+)
+def test_disagreement_invalid_decision_is_rejected(
+    decision: str,
+    accepted_candidate_ids: list[str],
+    instance_count: int,
+) -> None:
+    with pytest.raises(ValueError):
+        _apply_disagreement_review(
+            _review_fixture(),
+            DisagreementReview(
+                decisions=[
+                    {
+                        "conflict_id": "candidate-a|candidate-b",
+                        "decision": decision,
+                        "accepted_candidate_ids": accepted_candidate_ids,
+                        "instance_count": instance_count,
+                    }
+                ]
+            ),
+        )
+
+
+def test_disagreement_uncertain_defers_to_unresolved_policy() -> None:
+    fused = _review_fixture()
+
+    points, unresolved, warnings = _apply_disagreement_review(
+        fused,
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "candidate-a|candidate-b",
+                    "decision": "uncertain",
+                    "instance_count": 0,
+                }
+            ]
+        ),
+    )
+
+    assert all(point.accepted for point in points)
+    assert unresolved == ["candidate-a|candidate-b"]
+    assert warnings[-1].code == "DETECTOR_DISAGREEMENT_REVIEW_UNCERTAIN"
 
 
 def test_detector_ensemble_does_not_review_consensus(tmp_path: Path) -> None:
