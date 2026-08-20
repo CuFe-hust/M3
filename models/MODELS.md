@@ -8,16 +8,17 @@ checkpoint paths are supplied by application configuration.
 | Model | Logical ID | Task | Dataset | Local asset | Runtime | SHA256 | Source |
 |---|---|---|---|---|---|---|---|
 | SegFormer MiT-B2 iSAID | `SegFormer-MiT-B2:iSAID:local` | semantic segmentation | iSAID | `models/segformer_mitb2_isaid/model.safetensors` | Transformers | `f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a` | `try_yolo` Git LFS; Spark hash verified |
-| SegFormer MiT-B2 OEM | `SegFormer-MiT-B2:OpenEarthMap:local` | semantic segmentation | OpenEarthMap | `models/segformer_mitb2_oem/model.safetensors` | Transformers | `d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab` | checkpoint-specific class map unverified; runtime blocked |
+| SegFormer MiT-B2 OEM | `SegFormer-MiT-B2:OpenEarthMap:local` | semantic segmentation | OpenEarthMap | `models/segformer_mitb2_oem/model.safetensors` | Transformers | `d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab` | user-confirmed class map; verified 2026-08-20; active |
 | YOLOv5m OBB CSL | `YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m` | OBB detection/counting | DOTA v2.0 | `models/yolo_obb/yolov5m_obb_csl_dotav20.onnx` | ONNX Runtime | `c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a` | `try_yolo` Git LFS; Spark hash verified |
 | YOLO11s iSAID tiled | `YOLO11s:iSAID:tiles1024-o20:epoch111` | axis-aligned detection/counting | iSAID | `models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt` | Ultralytics | `f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266` | Git LFS; 1024 px tiles with 20% overlap; best epoch 111 |
 | Qwen3-VL 4B | `Qwen/Qwen3-VL-4B-Instruct` | main-flow VLM | — | configurable external checkpoint | Transformers | revision-based | Spark checkpoint verified |
 | Qwen3.5 9B | `Qwen/Qwen3.5-9B` | main-flow VLM | — | configurable external checkpoint | Transformers | revision-based | Spark checkpoint and invocation verified |
 
-The iSAID `classes.json` mapping is authoritative. The OEM checkpoint exposes
-nine output channels, but its checkpoint-specific channel order has not been
-verified; its `LABEL_*` placeholders are not semantic metadata and the runtime
-remains blocked until a verified map is supplied.
+The iSAID and OEM `classes.json` mappings are authoritative for their respective
+checkpoints. The OEM nine-channel order was confirmed by the user for this local
+checkpoint and recorded with its SHA256 and verification date in the class map.
+OEM labels are `background`, `bareland`, `rangeland`, `developed_space`, `road`,
+`tree`, `water`, `agriculture_land`, and `building` in ID order 0 through 8.
 
 Both SegFormer directories include the canonical NVIDIA MiT-B2
 `preprocessor_config.json` pinned from upstream revision
@@ -62,7 +63,8 @@ sent to the bounded Qwen review hook.
 
 Change may run multiple verified SegFormer experts. Their taxonomies remain
 independent: semantic and feature evidence is fused only after each expert has
-produced its own score maps and transitions. iSAID currently supplies verified
-object/facility semantics; the OEM checkpoint remains blocked until its class
-map is verified, after which its land-cover metadata can enter automatically.
-Raw T1/T2 imagery remains authoritative for every semantic decision.
+produced its own score maps and transitions. iSAID supplies object/facility
+semantics and OEM supplies `persistent_landcover` semantics with neutral
+`background` and persistent land-cover labels. Generic bootstrap discovers both
+verified experts automatically. Raw T1/T2 imagery remains authoritative for
+every semantic decision.

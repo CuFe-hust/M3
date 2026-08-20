@@ -164,10 +164,9 @@ class ModelSettings(BaseModel):
             weights_sha256=(
                 "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
             ),
-            # The checkpoint-specific channel map is not verified.  Keep the
-            # profile unable to construct a semantic runtime until evidence is
-            # recorded and injected explicitly.
-            classes_filename=None,
+            # User-confirmed checkpoint-specific channel map is recorded in
+            # models/segformer_mitb2_oem/classes.json.
+            classes_filename="classes.json",
         )
     )
     # Additional runtime-only profiles are keyed by the stable catalog

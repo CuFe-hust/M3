@@ -69,13 +69,24 @@ def test_change_bindings_are_catalog_driven_and_deterministic() -> None:
     bindings = _build_change_semantic_bindings(
         settings,
         catalog,
-        {"SegFormer-MiT-B2:iSAID:local": client},
+        {
+            "SegFormer-MiT-B2:iSAID:local": client,
+            "SegFormer-MiT-B2:OpenEarthMap:local": client,
+        },
     )
 
-    assert [binding.expert_id for binding in bindings] == ["segmenter_mitb2_001"]
+    assert [binding.expert_id for binding in bindings] == [
+        "segmenter_mitb2_001",
+        "segmenter_oem_001",
+    ]
     assert bindings[0].client is client
     assert bindings[0].persistent_labels == frozenset(
         {"storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"}
+    )
+    assert bindings[1].role == "persistent_landcover"
+    assert bindings[1].neutral_labels == frozenset({"background"})
+    assert bindings[1].persistent_labels == frozenset(
+        {"bareland", "rangeland", "developed_space", "road", "tree", "water", "agriculture_land", "building"}
     )
 
 
@@ -174,7 +185,7 @@ def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:
     assert registry.get("quantity_proposal").kind == "quantity_proposal"
 
 
-def test_enabled_segformer_is_registered_lazily_and_oem_is_not(tmp_path: Path) -> None:
+def test_enabled_segformer_experts_are_registered_lazily(tmp_path: Path) -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
     registry = _build_backend_registry(
         _settings(tmp_path),
@@ -188,11 +199,14 @@ def test_enabled_segformer_is_registered_lazily_and_oem_is_not(tmp_path: Path) -
         "qwen_point",
         "quantity_proposal",
         "segmenter_mitb2_001",
+        "segmenter_oem_001",
     ]
     backend = registry.get("segmenter_mitb2_001")
     assert backend.kind == "semantic_segmentation"
     assert getattr(backend, "_client").loaded is False
-    assert "segmenter_oem_001" not in registry.all_names()
+    oem_backend = registry.get("segmenter_oem_001")
+    assert oem_backend.kind == "semantic_segmentation"
+    assert getattr(oem_backend, "_client").loaded is False
 
 
 def test_segformer_assembly_uses_verified_map_and_never_predicts(
@@ -213,8 +227,14 @@ def test_segformer_assembly_uses_verified_map_and_never_predicts(
         project_root=REPO_ROOT,
     )
 
-    assert clients == {"SegFormer-MiT-B2:iSAID:local": client}
-    assert [name for name, _ in calls] == ["segformer_transformers"]
+    assert clients == {
+        "SegFormer-MiT-B2:iSAID:local": client,
+        "SegFormer-MiT-B2:OpenEarthMap:local": client,
+    }
+    assert [name for name, _ in calls] == [
+        "segformer_transformers",
+        "segformer_transformers",
+    ]
     runtime = calls[0][1]["settings"]
     assert runtime.allow_download is False
     assert runtime.model_path == REPO_ROOT / "models" / "segformer_mitb2_isaid"
@@ -314,11 +334,12 @@ def test_multiple_segformer_backends_register_stably_and_reuse_client(
         project_root=REPO_ROOT,
     )
 
-    assert registry.all_names()[-2:] == [
+    assert registry.all_names()[-3:] == [
         "segmenter_mitb2_001",
         "segmenter_mitb2_002",
+        "segmenter_oem_001",
     ]
-    assert clients_created == ["segformer_transformers"]
+    assert clients_created == ["segformer_transformers", "segformer_transformers"]
     assert getattr(registry.get("segmenter_mitb2_001"), "_client") is getattr(
         registry.get("segmenter_mitb2_002"), "_client"
     )
@@ -708,12 +729,18 @@ def test_qwen_created_exactly_once(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr("application.bootstrap.create_model", fake_create_model)
     components = _assemble(tmp_path)
-    assert calls == ["qwen_transformers", "segformer_transformers"]
+    assert calls == [
+        "qwen_transformers",
+        "segformer_transformers",
+        "segformer_transformers",
+    ]
     assert components.qwen_client is not None
     # Injecting a client must never trigger creation. / 注入客户端绝不触发创建。
     _assemble(tmp_path, qwen_client=_FakeQwenClient())
     assert calls == [
         "qwen_transformers",
+        "segformer_transformers",
+        "segformer_transformers",
         "segformer_transformers",
         "segformer_transformers",
     ]
@@ -756,6 +783,7 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
 
     assert [name for name, _ in calls] == [
         "qwen_transformers",
+        "segformer_transformers",
         "segformer_transformers",
     ]
     assert calls[1][1].logical_model_id == settings.models.segformer_isaid.logical_model_id

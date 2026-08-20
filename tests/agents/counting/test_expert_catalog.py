@@ -238,17 +238,29 @@ def test_enabled_semantic_expert_requires_verified_class_map(tmp_path: Path) -> 
         _load_payload(tmp_path, payload)
 
 
-def test_unverified_oem_expert_is_blocked_until_a_channel_map_is_verified() -> None:
+def test_verified_oem_expert_is_active_with_landcover_semantics() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     oem = catalog.expert("segmenter_oem_001")
 
-    assert oem.enabled is False
-    assert oem.status == "blocked_unverified_class_map"
-    assert oem.verification.class_map == "unverified"
-    assert oem.asset.class_map is None
+    assert oem.enabled is True
+    assert oem.status == "active"
+    assert oem.verification.class_map == "verified"
+    assert oem.asset.class_map == "models/segformer_mitb2_oem/classes.json"
     assert oem.supports == {}
-    assert oem not in catalog.candidates(_target("small vehicle"), enabled_only=False)
+    assert oem.change_semantics is not None
+    assert oem.change_semantics.role == "persistent_landcover"
+    assert oem.change_semantics.neutral_model_labels == ("background",)
+    assert oem.change_semantics.persistent_model_labels == (
+        "bareland",
+        "rangeland",
+        "developed_space",
+        "road",
+        "tree",
+        "water",
+        "agriculture_land",
+        "building",
+    )
 
 
 def test_separator_and_case_normalization_maps_isaid_label() -> None:
@@ -358,9 +370,11 @@ def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
         "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
+        "segmenter_oem_001",
     )
     assert tuple(expert.backend_name for expert in semantic) == (
         "segmenter_mitb2_001",
+        "segmenter_oem_001",
     )
     assert tuple(expert.backend_name for expert in all_semantic) == (
         "segmenter_mitb2_001",
