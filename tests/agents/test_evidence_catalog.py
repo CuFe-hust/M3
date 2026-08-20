@@ -225,14 +225,18 @@ def test_production_raw_labels_are_backed_by_current_model_maps() -> None:
     evidence = EvidenceCatalog.from_file(_PRODUCTION_CATALOG)
     experts = ExpertCatalog.load(_COUNTING_CATALOG, asset_root=REPO_ROOT)
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
-    (yolo,) = settings.backend.yolo.detectors
+    yolo_labels = {
+        label
+        for detector in settings.backend.yolo.detectors
+        for label in detector.classes
+    }
     semantic = experts.expert("segmenter_mitb2_001")
     semantic_labels = {
         label for support in semantic.supports.values() for label in support.model_labels
     }
     for leaf in evidence.leaf_categories:
         if evidence.capability_enabled(leaf, "yolo"):
-            assert set(evidence.leaf_yolo_labels(leaf)) <= set(yolo.classes)
+            assert set(evidence.leaf_yolo_labels(leaf)) <= yolo_labels
         if evidence.capability_enabled(leaf, "segformer"):
             assert set(evidence.leaf_segformer_labels(leaf) or ()) <= semantic_labels
 
