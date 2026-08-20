@@ -806,6 +806,7 @@ def _perception_audit(
         "reliability_raw": reliability_data.get("raw", {}),
         "registration_confidence": fusion_data.get("registration_confidence"),
         "semantic_transition_note": diagnostics.get("semantic_transition_note"),
+        "semantic_ensemble": diagnostics.get("semantic_ensemble", {}),
         "threshold_mode": fusion_data.get("threshold_mode"),
         "threshold_value": fusion_data.get("threshold"),
         "threshold_floor": diagnostics.get(

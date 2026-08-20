@@ -427,6 +427,20 @@ class ChangePerceptionPipeline:
                     for item in expert_evidence
                 ],
                 "semantic_expert_failures": expert_failures,
+                "semantic_ensemble": {
+                    "selected_experts": [
+                        item.binding.expert_id for item in semantic_runs[: semantic_settings.max_experts]
+                    ],
+                    "successful_experts": [
+                        item.run.binding.expert_id for item in expert_evidence
+                    ],
+                    "failed_experts": list(expert_failures),
+                    "per_expert": [
+                        item.run.binding.expert_id for item in expert_evidence
+                    ],
+                    "semantic_merge": dict(semantic_fusion_diagnostics),
+                    "feature_merge": dict(feature_fusion_diagnostics),
+                },
                 "semantic_fusion": semantic_fusion_diagnostics,
                 "feature_fusion": feature_fusion_diagnostics,
                 "fusion": fusion_result.diagnostics,

@@ -10,7 +10,22 @@ agents:
     semantic:
       enabled: true
       feature_stages: [1, 2, 3]
+      multi_expert_enabled: true
+      max_experts: 4
+      min_successful_experts: 1
+      semantic_consensus_weight: 0.65
+      semantic_union_weight: 0.35
     learned_change:
       enabled: false
       fusion_weight: 0.0
       failure_policy: fallback_rule
+counting:
+  multi_detector_enabled: true
+  max_selected_detector_experts: 5
+  min_successful_detector_experts: 1
+  ensemble_iou_threshold: 0.45
+  ensemble_center_distance_ratio: 0.60
+  ensemble_singleton_high_confidence: 0.55
+  max_disagreement_regions: 12
+  disagreement_context_padding_ratio: 0.35
+  unresolved_ensemble_policy: retain_high_confidence

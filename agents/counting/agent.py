@@ -244,6 +244,36 @@ class CountingAgent:
         # overwrite agent-level fields. 后端 trace 位于独立命名空间，插件无法
         # 覆盖 Agent 级字段。
         trace["backend_trace"] = dict(state.outcome.trace or {})
+        ensemble_trace = trace["backend_trace"].get("ensemble")
+        if isinstance(ensemble_trace, dict):
+            trace["counting_ensemble"] = {
+                "enabled": True,
+                "selected_experts": list(ensemble_trace.get("selected_experts", [])),
+                "executed_experts": list(state.attempted_backends),
+                "successful_experts": list(ensemble_trace.get("successful_experts", [])),
+                "failed_experts": list(ensemble_trace.get("failed_experts", [])),
+                "clusters": {
+                    "consensus": ensemble_trace.get("merged_groups", 0),
+                    "singletons": None,
+                    "conflicts": len(ensemble_trace.get("unresolved_conflicts", [])),
+                },
+                "fused_count_before_review": ensemble_trace.get("fused_instance_count"),
+                "disagreement_review_triggered": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("disagreement_review_triggered", False),
+                "reviewed_conflicts": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("reviewed_conflict_ids", []),
+                "final_count": state.outcome.counting.final_count,
+            }
+        else:
+            trace["counting_ensemble"] = {
+                "enabled": False,
+                "selected_experts": list(plan.selected_detector_expert_names),
+                "executed_experts": list(state.attempted_backends),
+                "successful_experts": [],
+                "failed_experts": [],
+            }
         if state.yolo_trace is not None:
             yolo_trace = dict(state.yolo_trace)
             yolo_trace.update(

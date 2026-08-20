@@ -52,3 +52,17 @@ runtime must not fabricate a feature grid or silently claim multi-scale success.
 No SegFormer weights listed here have been trained or fine-tuned for this project's
 Change task. The current ChangeHead interface is disabled by default and no
 post-training implementation is included.
+
+## Expert orchestration
+
+Counting selects enabled experts by declared target-label support, executes at
+most five detector experts, and fuses instances with provenance so overlapping
+detections are not double-counted. Only unresolved detector disagreements are
+sent to the bounded Qwen review hook.
+
+Change may run multiple verified SegFormer experts. Their taxonomies remain
+independent: semantic and feature evidence is fused only after each expert has
+produced its own score maps and transitions. iSAID currently supplies verified
+object/facility semantics; the OEM checkpoint remains blocked until its class
+map is verified, after which its land-cover metadata can enter automatically.
+Raw T1/T2 imagery remains authoritative for every semantic decision.
