@@ -315,18 +315,42 @@ class ChangeAgent:
         return payload
 
     def _proposal_payload(self, item: Any) -> dict[str, object]:
-        return {
+        semantic_evidence = list(item.semantic_transitions or [])
+        typed_support = _typed_semantic_support_payload(item)
+        payload = {
             "proposal_id": item.proposal_id, "box": item.box, "score": round(item.score, 6),
             "source": item.source,
             "component_scores": {name: round(score, 6) for name, score in item.component_scores.items()},
-            "semantic_support": _semantic_support_payload(
-                item.semantic_transition, confidence_floor=self._settings.semantic.semantic_confidence_floor
+            "semantic_support": (
+                typed_support
+                if semantic_evidence
+                else _semantic_support_payload(
+                    item.semantic_transition,
+                    confidence_floor=self._settings.semantic.semantic_confidence_floor,
+                )
             ),
-            "semantic_expert_evidence": item.semantic_transitions,
+            "semantic_expert_evidence": semantic_evidence,
             "semantic_consensus": item.semantic_consensus,
             "effective_weights": item.effective_weights, "reliability": item.reliability,
             "registration_confidence": item.registration_confidence,
         }
+        if typed_support.get("landcover_only"):
+            payload["semantic_hypothesis_note"] = (
+                "Land-cover segmentation hypothesis only; it is not sufficient "
+                "by itself for persistent change. Confirm durable extent/use "
+                "change from raw T1/T2."
+            )
+        elif typed_support.get("transient_only"):
+            payload["semantic_hypothesis_note"] = (
+                "Transient object evidence alone does not establish persistent "
+                "structural or land-use change."
+            )
+        else:
+            payload["semantic_hypothesis_note"] = (
+                "Semantic expert labels are auxiliary hypotheses; confirm the "
+                "same-location change from raw T1/T2."
+            )
+        return payload
 
     def _validate_adjudication(
         self, result: ChangeAdjudicationResult, selected_ids: list[str]
@@ -348,16 +372,84 @@ class ChangeAgent:
             warnings.append("ADJUDICATION_POSITIVE_WITH_CANONICAL_NEGATIVE_ANSWER")
         nuisance = ("seasonal", "greener", "brown", "water-filled", "vehicle", "truck", "car", "brightness", "shadow")
         for item in [result.global_review, *result.candidate_reviews]:
+            identifier = getattr(item, "proposal_id", "global")
             if item.verdict == "persistent_change" and any(token in item.reason.casefold() for token in nuisance):
-                warnings.append("ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON")
+                warnings.append(
+                    f"ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON:{identifier}"
+                )
             if (
                 item.verdict == "persistent_change"
                 and item.change_category == "water_geometry"
                 and not _has_valid_water_geometry(item)
             ):
-                identifier = getattr(item, "proposal_id", "global")
                 warnings.append(f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{identifier}")
+            if (
+                item.verdict == "persistent_change"
+                and item.change_category
+                in {
+                    "building_structure",
+                    "road_network",
+                    "other_persistent_infrastructure",
+                }
+                and item.persistent_geometry_changed is not True
+            ):
+                warnings.append(f"ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:{identifier}")
         return list(dict.fromkeys(warnings))
+
+    @staticmethod
+    def _effective_persistent_review(
+        review: Any,
+        consistency_warnings: list[str],
+        *,
+        identifier: str,
+        global_review: bool = False,
+    ) -> bool:
+        """Apply deterministic geometry and nuisance blockers to positives."""
+
+        if review.verdict != "persistent_change":
+            return False
+        prefix = "global" if global_review else identifier
+        if (
+            f"ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON:{prefix}"
+            in consistency_warnings
+        ):
+            return False
+        if any(
+            warning == f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{prefix}"
+            for warning in consistency_warnings
+        ):
+            return False
+        if any(
+            warning == f"ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:{prefix}"
+            for warning in consistency_warnings
+        ):
+            return False
+        category = review.change_category
+        if category in {
+            "building_structure",
+            "road_network",
+            "water_geometry",
+            "other_persistent_infrastructure",
+        }:
+            return review.persistent_geometry_changed is True
+        if category in {"vegetation_extent", "land_use_conversion"}:
+            if review.persistent_geometry_changed is True:
+                return True
+            description = " ".join(
+                [str(review.reason), str(review.geometry_change_description or "")]
+            ).casefold()
+            return any(
+                token in description
+                for token in (
+                    "durable extent",
+                    "persistent extent",
+                    "land-use conversion",
+                    "land use conversion",
+                    "cleared",
+                    "replaced",
+                )
+            ) if global_review else False
+        return review.persistent_geometry_changed is True
 
     def _merge_adjudication(
         self, result: ChangeAdjudicationResult, task: str, consistency_warnings: list[str]
@@ -379,13 +471,22 @@ class ChangeAgent:
                 "ADJUDICATION_MISSING_PROPOSAL_ID",
             )
         )
-        valid_global_positive = global_valid and result.global_review.verdict == "persistent_change"
+        valid_global_positive = global_valid and self._effective_persistent_review(
+            result.global_review,
+            consistency_warnings,
+            identifier="global",
+            global_review=True,
+        )
         valid_global_negative = global_valid and result.global_review.verdict == "no_persistent_change"
         valid_candidate_positives = [
             item for item in result.candidate_reviews
             if (
                 candidate_ids_valid
-                and item.verdict == "persistent_change"
+                and self._effective_persistent_review(
+                    item,
+                    consistency_warnings,
+                    identifier=item.proposal_id,
+                )
                 and f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{item.proposal_id}" not in consistency_warnings
             )
         ]
@@ -961,6 +1062,25 @@ def _semantic_support_payload(
         "status": "informative", "from_class": transition.from_class, "to_class": transition.to_class,
         "from_confidence": transition.from_confidence, "to_confidence": transition.to_confidence,
         "transition_confidence": transition.transition_confidence, "support_ratio": transition.support_ratio,
+    }
+
+
+def _typed_semantic_support_payload(proposal: Any) -> dict[str, object]:
+    """Summarize typed evidence without promoting one transition to truth."""
+
+    consensus = dict(proposal.semantic_consensus or {})
+    structural = float(consensus.get("structural_support", 0.0) or 0.0)
+    landcover = float(consensus.get("landcover_support", 0.0) or 0.0)
+    transient = float(consensus.get("transient_support", 0.0) or 0.0)
+    return {
+        "status": "hypothesis_summary",
+        "structural_support": structural,
+        "landcover_support": landcover,
+        "transient_support": transient,
+        "disagreement": bool(consensus.get("disagreement", False)),
+        "expert_count": int(consensus.get("expert_count", len(proposal.semantic_transitions))),
+        "landcover_only": landcover > 0.0 and structural <= 0.0 and transient <= 0.0,
+        "transient_only": transient > 0.0 and structural <= 0.0 and landcover <= 0.0,
     }
 
 
