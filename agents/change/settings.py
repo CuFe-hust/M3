@@ -138,6 +138,8 @@ class ChangeSemanticSettings(BaseModel):
     multi_expert_enabled: bool = True
     max_experts: int = Field(default=4, ge=1, le=5)
     min_successful_experts: int = Field(default=1, ge=1)
+    semantic_consensus_weight: float = Field(default=0.65, ge=0.0, le=1.0)
+    semantic_union_weight: float = Field(default=0.35, ge=0.0, le=1.0)
 
     def model_post_init(self, __context: Any) -> None:
         if self.tile_overlap >= self.tile_size:
@@ -181,6 +183,8 @@ class ChangeSemanticSettings(BaseModel):
         )
         if self.min_successful_experts > self.max_experts:
             raise ValueError("min_successful_experts cannot exceed max_experts")
+        if self.semantic_consensus_weight + self.semantic_union_weight <= 0.0:
+            raise ValueError("semantic ensemble weights must have a positive sum")
 
 
 class ChangeReliabilitySettings(BaseModel):

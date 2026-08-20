@@ -322,6 +322,8 @@ class ChangeAgent:
             "semantic_support": _semantic_support_payload(
                 item.semantic_transition, confidence_floor=self._settings.semantic.semantic_confidence_floor
             ),
+            "semantic_expert_evidence": item.semantic_transitions,
+            "semantic_consensus": item.semantic_consensus,
             "effective_weights": item.effective_weights, "reliability": item.reliability,
             "registration_confidence": item.registration_confidence,
         }
@@ -843,6 +845,8 @@ def _perception_audit(
                     if proposal.semantic_transition is not None
                     else None
                 ),
+                "semantic_expert_evidence": proposal.semantic_transitions,
+                "semantic_consensus": proposal.semantic_consensus,
                 "effective_weights": proposal.effective_weights,
                 "reliability": proposal.reliability,
             }

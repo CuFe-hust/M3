@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from collections.abc import Mapping
+from collections.abc import Sequence
 from typing import Any
 
 from agents.change.schema import ChangeProposal, HarmonizationDecision, RegistrationReport
@@ -192,6 +193,103 @@ class ProposalFusionResult:
     proposals: list[ChangeProposal]
     diagnostics: dict[str, object]
     component_masks: dict[str, Any]
+
+
+def fuse_semantic_evidence(
+    score_maps: Sequence[Any],
+    reliabilities: Sequence[float] | None = None,
+    *,
+    consensus_weight: float = 0.65,
+    union_weight: float = 0.35,
+) -> tuple[Any, dict[str, object]]:
+    """Fuse already taxonomy-independent semantic change maps.
+
+    This function intentionally accepts score maps only; it never receives or
+    averages expert class probabilities.
+    """
+
+    return _fuse_expert_maps(
+        score_maps,
+        reliabilities,
+        mode="semantic",
+        consensus_weight=consensus_weight,
+        union_weight=union_weight,
+    )
+
+
+def fuse_feature_evidence(
+    score_maps: Sequence[Any],
+    reliabilities: Sequence[float] | None = None,
+) -> tuple[Any | None, dict[str, object]]:
+    """Reliability-weight feature residual maps without requiring all experts."""
+
+    if not score_maps:
+        return None, {"method": "none", "expert_count": 0}
+    fused, diagnostics = _fuse_expert_maps(
+        score_maps,
+        reliabilities,
+        mode="feature",
+        consensus_weight=1.0,
+        union_weight=0.0,
+    )
+    diagnostics["method"] = "reliability_weighted_mean"
+    return fused, diagnostics
+
+
+def _fuse_expert_maps(
+    score_maps: Sequence[Any],
+    reliabilities: Sequence[float] | None,
+    *,
+    mode: str,
+    consensus_weight: float,
+    union_weight: float,
+) -> tuple[Any, dict[str, object]]:
+    np = _require_numpy()
+    cv2 = _require_cv2()
+    if not score_maps:
+        raise ValueError("CHANGE_EXPERT_MAPS_EMPTY")
+    if consensus_weight < 0.0 or union_weight < 0.0 or consensus_weight + union_weight <= 0.0:
+        raise ValueError("CHANGE_EXPERT_FUSION_WEIGHTS_INVALID")
+    weights = [1.0] * len(score_maps) if reliabilities is None else [
+        _clamp(value) for value in reliabilities
+    ]
+    if len(weights) != len(score_maps) or not any(value > 0.0 for value in weights):
+        raise ValueError("CHANGE_EXPERT_RELIABILITIES_INVALID")
+    first = np.asarray(score_maps[0], dtype=np.float32)
+    if first.ndim != 2 or not bool(np.isfinite(first).all()):
+        raise ValueError("CHANGE_EXPERT_MAP_INVALID")
+    height, width = first.shape
+    maps = []
+    for value in score_maps:
+        current = np.asarray(value, dtype=np.float32)
+        if current.ndim != 2 or not bool(np.isfinite(current).all()):
+            raise ValueError("CHANGE_EXPERT_MAP_INVALID")
+        if current.shape != (height, width):
+            current = cv2.resize(current, (width, height), interpolation=cv2.INTER_LINEAR)
+        maps.append(np.clip(current, 0.0, 1.0))
+    normalized = np.asarray(weights, dtype=np.float64)
+    normalized /= normalized.sum()
+    stack = np.stack(maps, axis=0)
+    weighted_mean = np.sum(stack * normalized[:, None, None], axis=0)
+    weighted_max = np.max(
+        stack * np.asarray(weights, dtype=np.float32)[:, None, None],
+        axis=0,
+    )
+    total = consensus_weight + union_weight
+    merged = (
+        consensus_weight * weighted_mean + union_weight * weighted_max
+    ) / total
+    return np.clip(merged, 0.0, 1.0).astype(np.float32, copy=False), {
+        "method": (
+            "semantic_consensus_union"
+            if mode == "semantic"
+            else "reliability_weighted_mean"
+        ),
+        "expert_count": len(maps),
+        "weights": [float(value) for value in normalized],
+        "consensus_weight": float(consensus_weight / total),
+        "union_weight": float(union_weight / total),
+    }
 
 
 def fuse_change_proposals(

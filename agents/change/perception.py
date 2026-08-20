@@ -19,6 +19,8 @@ from agents.change.preprocess import ChangePreparedPair
 from agents.change.proposal_fusion import (
     PROPOSAL_FUSION_VERSION,
     compute_reliabilities,
+    fuse_feature_evidence,
+    fuse_semantic_evidence,
     fuse_change_proposals,
 )
 from agents.change.schema import ChangeProposal
@@ -92,6 +94,18 @@ class SemanticExpertRun:
     first_output: DenseSemanticOutput | DenseSemanticPyramidOutput
     second_output: DenseSemanticOutput | DenseSemanticPyramidOutput
     weights_sha256: str | None
+
+
+@dataclass(frozen=True)
+class SemanticExpertEvidence:
+    """Taxonomy-local evidence produced by one successful expert."""
+
+    run: SemanticExpertRun
+    semantic_result: Any
+    feature_result: Any | None
+    feature_diagnostics: dict[str, object]
+    reliability: dict[str, float]
+    reliability_diagnostics: dict[str, object]
 
 
 class ChangePerceptionPipeline:
@@ -220,72 +234,107 @@ class ChangePerceptionPipeline:
                 if len(self._semantic_experts) == 1 and expert_errors:
                     raise expert_errors[0]
                 raise ChangePerceptionError("SEGFORMER_ALL_EXPERTS_FAILED")
-            selected_run = semantic_runs[0]
+            expert_evidence: list[SemanticExpertEvidence] = []
+            for run in semantic_runs:
+                try:
+                    semantic_result = compute_semantic_difference(
+                        run.first_output.probabilities,
+                        run.second_output.probabilities,
+                        confidence_floor=semantic_settings.semantic_confidence_floor,
+                        epsilon=semantic_settings.js_epsilon,
+                        valid_mask=getattr(prepared, "registration_valid_mask", None),
+                    )
+                except Exception as error:
+                    if len(self._semantic_experts) == 1:
+                        raise
+                    expert_failures.append(
+                        {"expert_id": run.binding.expert_id, "error_type": type(error).__name__}
+                    )
+                    continue
+                try:
+                    feature_result, feature_diagnostics = _compute_feature_evidence(
+                        run.first_output,
+                        run.second_output,
+                        prepared,
+                        semantic_settings,
+                        requested_stages=requested_stages,
+                        expected_size=expected_size,
+                        np=np,
+                    )
+                    if (
+                        feature_result is None
+                        and prepared.pif_valid
+                        and semantic_settings.failure_policy == "fail"
+                        and len(self._semantic_experts) == 1
+                    ):
+                        raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
+                except Exception as error:
+                    if len(self._semantic_experts) == 1:
+                        raise
+                    feature_result = None
+                    feature_diagnostics = {
+                        "alignment_status": "failed",
+                        "reason_code": _fallback_reason_code(error)
+                        or "FEATURE_RESIDUAL_INFERENCE_FAILED",
+                        "valid_feature_fraction": 0.0,
+                        "effective_stages": [],
+                        "missing_stages": list(requested_stages),
+                    }
+                    expert_failures.append(
+                        {
+                            "expert_id": run.binding.expert_id,
+                            "error_type": type(error).__name__,
+                            "branch": "feature",
+                        }
+                    )
+                reliability, reliability_diagnostics = compute_reliabilities(
+                    registration_report=getattr(prepared, "registration_report", None),
+                    feature_diagnostics=feature_diagnostics,
+                    semantic_diagnostics=semantic_result.diagnostics,
+                    harmonization_decision=prepared.decision,
+                    settings=self._settings.reliability,
+                )
+                expert_evidence.append(
+                    SemanticExpertEvidence(
+                        run=run,
+                        semantic_result=semantic_result,
+                        feature_result=feature_result,
+                        feature_diagnostics=feature_diagnostics,
+                        reliability=reliability,
+                        reliability_diagnostics=reliability_diagnostics,
+                    )
+                )
+            if len(expert_evidence) < semantic_settings.min_successful_experts:
+                raise ChangePerceptionError("SEGFORMER_ALL_EXPERTS_FAILED")
+            selected_evidence = expert_evidence[0]
+            selected_run = selected_evidence.run
             identity = selected_run.identity
             first_output = selected_run.first_output
             second_output = selected_run.second_output
             weights_sha256 = selected_run.weights_sha256
-            feature_result = None
-            if prepared.pif_valid:
-                if len(requested_stages) > 1:
-                    feature_result = compute_multiscale_feature_residual(
-                        first_output.features_by_stage,
-                        second_output.features_by_stage,
-                        prepared.pif_mask,
-                        feature_stages=requested_stages,
-                        feature_stage_weights=semantic_settings.feature_stage_weights,
-                        feature_strides_by_stage=first_output.feature_strides_by_stage,
-                        image_size=expected_size,
-                        valid_mask=getattr(prepared, "registration_valid_mask", None),
-                        local_match_radius=semantic_settings.local_match_radius,
-                        min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
-                        feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
-                    )
-                else:
-                    feature_result = compute_feature_residual(
-                        first_output.features,
-                        second_output.features,
-                        prepared.pif_mask,
-                        local_match_radius=semantic_settings.local_match_radius,
-                        min_pif_feature_cells=semantic_settings.min_pif_feature_cells,
-                        feature_scale_epsilon=semantic_settings.feature_scale_epsilon,
-                    )
-                feature_diagnostics = dict(feature_result.diagnostics)
-                feature_diagnostics["valid_feature_fraction"] = float(
-                    np.mean(np.asarray(feature_result.valid_mask, dtype=bool))
-                )
-                if feature_result.diagnostics.get("alignment_status") != "aligned":
-                    feature_diagnostics["alignment_status"] = "insufficient_pif"
-                    feature_diagnostics["reason_code"] = "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
-                    if semantic_settings.failure_policy == "fail":
-                        raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
-                    feature_result = None
-            else:
-                # PIFs calibrate feature residuals, but they are not required
-                # for per-frame semantic segmentation.  Keep SegFormer active
-                # and fuse the semantic and low-level maps instead of dropping
-                # the entire dense branch on large, genuine scene changes.
-                feature_diagnostics = {
-                    "alignment_status": "insufficient_pif",
-                    "reason_code": "FEATURE_RESIDUAL_INSUFFICIENT_PIF",
-                    "pif_feature_cells": 0,
-                    "valid_feature_fraction": 0.0,
-                    "effective_stages": [],
-                    "missing_stages": list(requested_stages),
-                }
-            semantic_result = compute_semantic_difference(
-                first_output.probabilities,
-                second_output.probabilities,
-                confidence_floor=semantic_settings.semantic_confidence_floor,
-                epsilon=semantic_settings.js_epsilon,
-                valid_mask=getattr(prepared, "registration_valid_mask", None),
+            semantic_map, semantic_fusion_diagnostics = fuse_semantic_evidence(
+                [item.semantic_result.score_map for item in expert_evidence],
+                [item.reliability["semantic"] for item in expert_evidence],
+                consensus_weight=semantic_settings.semantic_consensus_weight,
+                union_weight=semantic_settings.semantic_union_weight,
             )
-            reliability, reliability_diagnostics = compute_reliabilities(
-                registration_report=getattr(prepared, "registration_report", None),
-                feature_diagnostics=feature_diagnostics,
-                semantic_diagnostics=semantic_result.diagnostics,
-                harmonization_decision=prepared.decision,
-                settings=self._settings.reliability,
+            feature_results = [
+                item for item in expert_evidence if item.feature_result is not None
+            ]
+            feature_map, feature_fusion_diagnostics = fuse_feature_evidence(
+                [item.feature_result.score_map for item in feature_results],
+                [item.reliability["feature"] for item in feature_results],
+            )
+            feature_diagnostics = _aggregate_branch_diagnostics(
+                [item.feature_diagnostics for item in expert_evidence],
+                branch="feature",
+            )
+            semantic_diagnostics = _aggregate_branch_diagnostics(
+                [item.semantic_result.diagnostics for item in expert_evidence],
+                branch="semantic",
+            )
+            reliability, reliability_diagnostics = _aggregate_reliability(
+                expert_evidence
             )
             learned_map, learned_diagnostics = self._run_learned_change_hook(
                 first_output=first_output,
@@ -297,14 +346,14 @@ class ChangePerceptionPipeline:
             )
             fusion_result = fuse_change_proposals(
                 low_level_map,
-                feature_result.score_map if feature_result is not None else None,
-                semantic_result.score_map,
+                feature_map,
+                semantic_map,
                 prepared.pif_mask,
                 self._settings.proposals,
                 min_pif_pixels=self._settings.harmonization.min_pif_pixels,
                 fallback_reason=(
                     "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
-                    if feature_result is None
+                    if feature_map is None
                     else None
                 ),
                 reliability=reliability,
@@ -338,11 +387,9 @@ class ChangePerceptionPipeline:
         proposals = _attach_semantic_transitions(
             fusion_result.proposals,
             component_masks=fusion_result.component_masks,
-            probabilities_t1=first_output.probabilities,
-            probabilities_t2=second_output.probabilities,
-            class_names=first_output.class_names,
             valid_mask=getattr(prepared, "registration_valid_mask", None),
             confidence_floor=self._settings.semantic.semantic_confidence_floor,
+            expert_evidence=expert_evidence,
         )
         diagnostics = self._base_diagnostics(
             semantic_status="success",
@@ -351,7 +398,7 @@ class ChangePerceptionPipeline:
             identity=identity,
             weights_sha256=weights_sha256,
             pif_valid=prepared.pif_valid,
-            pif_used_for_feature_alignment=feature_result is not None,
+            pif_used_for_feature_alignment=feature_map is not None,
             pif_used_for_threshold=(
                 fusion_result.diagnostics.get("threshold_mode") == "pif_robust"
             ),
@@ -359,7 +406,7 @@ class ChangePerceptionPipeline:
         diagnostics.update(
             {
                 "feature_residual": feature_diagnostics,
-                "semantic_difference": semantic_result.diagnostics,
+                "semantic_difference": semantic_diagnostics,
                 "reliability": reliability_diagnostics,
                 "learned_change": learned_diagnostics,
                 "semantic_transition_note": (
@@ -367,28 +414,34 @@ class ChangePerceptionPipeline:
                 ),
                 "semantic_experts": [
                     {
-                        "expert_id": run.binding.expert_id,
-                        "logical_model_id": run.identity.model,
-                        "priority": run.binding.priority,
-                        "role": run.binding.role,
+                        "expert_id": item.run.binding.expert_id,
+                        "logical_model_id": item.run.identity.model,
+                        "priority": item.run.binding.priority,
+                        "role": item.run.binding.role,
                         "status": "success",
+                        "weights_sha256": item.run.weights_sha256,
+                        "semantic": dict(item.semantic_result.diagnostics),
+                        "feature": dict(item.feature_diagnostics),
+                        "reliability": dict(item.reliability),
                     }
-                    for run in semantic_runs
+                    for item in expert_evidence
                 ],
                 "semantic_expert_failures": expert_failures,
+                "semantic_fusion": semantic_fusion_diagnostics,
+                "feature_fusion": feature_fusion_diagnostics,
                 "fusion": fusion_result.diagnostics,
                 "score_maps": {
                     "low_level": _score_statistics(low_level_map, np=np),
                     **(
                         {
                             "feature": _score_statistics(
-                                feature_result.score_map, np=np
+                                feature_map, np=np
                             )
                         }
-                        if feature_result is not None
+                        if feature_map is not None
                         else {}
                     ),
-                    "semantic": _score_statistics(semantic_result.score_map, np=np),
+                    "semantic": _score_statistics(semantic_map, np=np),
                     "fused": _score_statistics(fusion_result.fused_score_map, np=np),
                     **(
                         {"learned": _score_statistics(learned_map, np=np)}
@@ -405,11 +458,11 @@ class ChangePerceptionPipeline:
             component_maps={
                 "low_level_difference_map": low_level_map,
                 **(
-                    {"feature_residual_map": feature_result.score_map}
-                    if feature_result is not None
+                    {"feature_residual_map": feature_map}
+                    if feature_map is not None
                     else {}
                 ),
-                "semantic_difference_map": semantic_result.score_map,
+                "semantic_difference_map": semantic_map,
                 "binary_change_mask": fusion_result.binary_change_mask,
                 **(
                     {"learned_change_map": learned_map}
@@ -631,6 +684,127 @@ class ChangePerceptionPipeline:
                 "fusion_weight": self._settings.learned_change.fusion_weight,
             },
         }
+
+
+def _compute_feature_evidence(
+    first_output: DenseSemanticOutput | DenseSemanticPyramidOutput,
+    second_output: DenseSemanticOutput | DenseSemanticPyramidOutput,
+    prepared: ChangePreparedPair,
+    settings: Any,
+    *,
+    requested_stages: tuple[int, ...],
+    expected_size: tuple[int, int],
+    np: Any,
+) -> tuple[Any | None, dict[str, object]]:
+    if not prepared.pif_valid:
+        return None, {
+            "alignment_status": "insufficient_pif",
+            "reason_code": "FEATURE_RESIDUAL_INSUFFICIENT_PIF",
+            "pif_feature_cells": 0,
+            "valid_feature_fraction": 0.0,
+            "effective_stages": [],
+            "missing_stages": list(requested_stages),
+        }
+    if len(requested_stages) > 1:
+        if not isinstance(first_output, DenseSemanticPyramidOutput) or not isinstance(
+            second_output, DenseSemanticPyramidOutput
+        ):
+            raise ChangePerceptionError("SEGFORMER_PYRAMID_GRID_MISMATCH")
+        result = compute_multiscale_feature_residual(
+            first_output.features_by_stage,
+            second_output.features_by_stage,
+            prepared.pif_mask,
+            feature_stages=requested_stages,
+            feature_stage_weights=settings.feature_stage_weights,
+            feature_strides_by_stage=first_output.feature_strides_by_stage,
+            image_size=expected_size,
+            valid_mask=getattr(prepared, "registration_valid_mask", None),
+            local_match_radius=settings.local_match_radius,
+            min_pif_feature_cells=settings.min_pif_feature_cells,
+            feature_scale_epsilon=settings.feature_scale_epsilon,
+        )
+    else:
+        if not isinstance(first_output, DenseSemanticOutput) or not isinstance(
+            second_output, DenseSemanticOutput
+        ):
+            raise ChangePerceptionError("SEGFORMER_PAIR_GRID_MISMATCH")
+        result = compute_feature_residual(
+            first_output.features,
+            second_output.features,
+            prepared.pif_mask,
+            local_match_radius=settings.local_match_radius,
+            min_pif_feature_cells=settings.min_pif_feature_cells,
+            feature_scale_epsilon=settings.feature_scale_epsilon,
+        )
+    diagnostics = dict(result.diagnostics)
+    diagnostics["valid_feature_fraction"] = float(
+        np.mean(np.asarray(result.valid_mask, dtype=bool))
+    )
+    if result.diagnostics.get("alignment_status") != "aligned":
+        diagnostics["alignment_status"] = "insufficient_pif"
+        diagnostics["reason_code"] = "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+        result = None
+    return result, diagnostics
+
+
+def _aggregate_branch_diagnostics(
+    diagnostics: list[dict[str, object]],
+    *,
+    branch: str,
+) -> dict[str, object]:
+    if not diagnostics:
+        return {"expert_count": 0}
+    if len(diagnostics) == 1:
+        result = dict(diagnostics[0])
+        result["expert_count"] = 1
+        return result
+    result: dict[str, object] = {"expert_count": len(diagnostics)}
+    numeric_keys = {
+        key
+        for item in diagnostics
+        for key, value in item.items()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    }
+    for key in sorted(numeric_keys):
+        values = [
+            float(item[key])
+            for item in diagnostics
+            if isinstance(item.get(key), (int, float))
+            and not isinstance(item.get(key), bool)
+        ]
+        if values:
+            result[key] = sum(values) / len(values)
+    for key in ("version", "effective_stages", "missing_stages"):
+        if key in diagnostics[0]:
+            result[key] = diagnostics[0][key]
+    statuses = [str(item.get("alignment_status", "")) for item in diagnostics]
+    if branch == "feature":
+        result["alignment_status"] = (
+            "aligned" if all(value == "aligned" for value in statuses) else "partial"
+        )
+    return result
+
+
+def _aggregate_reliability(
+    evidence: list[SemanticExpertEvidence],
+) -> tuple[dict[str, float], dict[str, object]]:
+    names = ("low_level", "feature", "semantic", "registration")
+    reliability = {
+        name: sum(item.reliability[name] for item in evidence) / len(evidence)
+        for name in names
+    }
+    return reliability, {
+        "enabled": True,
+        "reliability": reliability,
+        "expert_count": len(evidence),
+        "per_expert": [
+            {
+                "expert_id": item.run.binding.expert_id,
+                "reliability": dict(item.reliability),
+            }
+            for item in evidence
+        ],
+    }
 
 
 def _infer_semantic_expert_pair(
@@ -1005,27 +1179,25 @@ def _attach_semantic_transitions(
     proposals: list[ChangeProposal],
     *,
     component_masks: dict[str, Any],
-    probabilities_t1: Any,
-    probabilities_t2: Any,
-    class_names: tuple[str, ...],
     valid_mask: Any | None,
     confidence_floor: float,
+    expert_evidence: list[SemanticExpertEvidence],
 ) -> list[ChangeProposal]:
-    """Attach proposal-level semantic candidates while preserving raw authority."""
+    """Attach concise, taxonomy-aware evidence while preserving raw authority."""
 
     np = _require_numpy()
     if not proposals:
         return []
     image_shape = np.asarray(valid_mask).shape if valid_mask is not None else None
     if image_shape is None or len(image_shape) != 2:
-        # Dense probabilities are still a valid reference frame when callers
-        # use the V2 stub path without registration metadata.
         image_shape = (
             max((int(item.pixel_box[3]) for item in proposals), default=0),
             max((int(item.pixel_box[2]) for item in proposals), default=0),
         )
         if image_shape == (0, 0):
-            image_shape = tuple(np.asarray(probabilities_t1).shape[1:])
+            image_shape = tuple(
+                np.asarray(expert_evidence[0].run.first_output.probabilities).shape[1:]
+            )
     updated: list[ChangeProposal] = []
     for proposal in proposals:
         crop = component_masks.get(proposal.mask_filename or "")
@@ -1045,18 +1217,115 @@ def _attach_semantic_transitions(
             updated.append(proposal)
             continue
         full_mask[y1:y2, x1:x2] = crop_array
-        transition = infer_semantic_transition(
-            probabilities_t1,
-            probabilities_t2,
-            full_mask,
-            class_names,
-            confidence_floor=confidence_floor,
-            valid_mask=valid_mask,
+        evidence_items: list[dict[str, object]] = []
+        transitions: list[tuple[str, SemanticExpertEvidence, Any, str]] = []
+        for evidence in expert_evidence:
+            transition = infer_semantic_transition(
+                evidence.run.first_output.probabilities,
+                evidence.run.second_output.probabilities,
+                full_mask,
+                evidence.run.first_output.class_names,
+                confidence_floor=confidence_floor,
+                valid_mask=valid_mask,
+            )
+            evidence_type = _transition_evidence_type(
+                transition,
+                evidence.run.binding,
+                confidence_floor=confidence_floor,
+            )
+            confidence = float(transition.transition_confidence)
+            item = {
+                "expert_id": evidence.run.binding.expert_id,
+                "expert_role": evidence.run.binding.role,
+                "from_class": transition.from_class,
+                "to_class": transition.to_class,
+                "evidence_type": evidence_type,
+                "confidence": confidence,
+                "from_confidence": float(transition.from_confidence),
+                "to_confidence": float(transition.to_confidence),
+                "support_ratio": float(transition.support_ratio),
+                "support_level": _support_level(confidence, confidence_floor),
+            }
+            evidence_items.append(item)
+            if evidence_type in {"persistent", "transient"}:
+                transitions.append(
+                    (evidence_type, evidence, transition, evidence_type)
+                )
+        persistent = [item for item in transitions if item[0] == "persistent"]
+        transient = [item for item in transitions if item[0] == "transient"]
+        persistent_support = max(
+            (float(item[2].transition_confidence) for item in persistent),
+            default=0.0,
+        )
+        transient_support = max(
+            (float(item[2].transition_confidence) for item in transient),
+            default=0.0,
+        )
+        persistent_pairs = {
+            (item[2].from_class, item[2].to_class) for item in persistent
+        }
+        consensus = {
+            "persistent_support": persistent_support,
+            "transient_support": transient_support,
+            "disagreement": len(persistent_pairs) > 1,
+            "informative_expert_count": len(transitions),
+            "expert_count": len(expert_evidence),
+        }
+        chosen = max(persistent, key=lambda item: _transition_sort_key(item[2])) if persistent else (
+            max(transient, key=lambda item: _transition_sort_key(item[2])) if transient else None
         )
         updated.append(
-            proposal.model_copy(update={"semantic_transition": transition})
+            proposal.model_copy(
+                update={
+                    "semantic_transition": chosen[2] if chosen is not None else None,
+                    "semantic_transitions": evidence_items,
+                    "semantic_consensus": consensus,
+                }
+            )
         )
     return updated
+
+
+def _transition_evidence_type(
+    transition: Any,
+    binding: SemanticExpertBinding,
+    *,
+    confidence_floor: float,
+) -> str:
+    if (
+        transition.from_class.casefold() == "unknown"
+        or transition.to_class.casefold() == "unknown"
+        or transition.from_class.casefold() == transition.to_class.casefold()
+        or transition.from_confidence < confidence_floor
+        or transition.to_confidence < confidence_floor
+    ):
+        return "neutral"
+    labels = {
+        transition.from_class,
+        transition.to_class,
+    }
+    if labels & binding.persistent_labels or binding.role == "persistent_landcover":
+        return "persistent"
+    if labels & binding.transient_labels:
+        return "transient"
+    return "transient"
+
+
+def _support_level(confidence: float, confidence_floor: float) -> str:
+    if confidence >= max(0.75, confidence_floor):
+        return "strong"
+    if confidence >= confidence_floor:
+        return "moderate"
+    return "weak"
+
+
+def _transition_sort_key(transition: Any) -> tuple[float, float, str, str]:
+    return (
+        float(transition.transition_confidence),
+        float(transition.support_ratio),
+        str(transition.from_class),
+        str(transition.to_class),
+    )
 
 
 def _score_statistics(value: Any, *, np: Any) -> dict[str, float]:
@@ -1078,4 +1347,7 @@ __all__ = [
     "ChangePerceptionError",
     "ChangePerceptionPipeline",
     "ChangePerceptionResult",
+    "SemanticExpertBinding",
+    "SemanticExpertEvidence",
+    "SemanticExpertRun",
 ]

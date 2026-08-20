@@ -247,6 +247,8 @@ class ChangeProposal(BaseModel):
     component_scores: dict[str, float] = Field(default_factory=dict)
     mask_filename: str | None = None
     semantic_transition: SemanticTransition | None = None
+    semantic_transitions: list[dict[str, JsonValue]] = Field(default_factory=list)
+    semantic_consensus: dict[str, JsonValue] = Field(default_factory=dict)
     effective_weights: dict[str, float] = Field(default_factory=dict)
     reliability: dict[str, float] = Field(default_factory=dict)
     registration_confidence: float | None = Field(default=None, ge=0.0, le=1.0)

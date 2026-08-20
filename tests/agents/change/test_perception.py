@@ -282,6 +282,119 @@ def test_failed_semantic_expert_does_not_erase_successful_peer() -> None:
     assert result.diagnostics["semantic_expert_failures"] == [
         {"expert_id": "failed", "error_type": "RuntimeError"}
     ]
+
+
+def test_experts_with_different_class_counts_fuse_score_maps_only() -> None:
+    first, second = _outputs()
+    rng = np.random.default_rng(99)
+    three_first = replace(
+        first,
+        probabilities=np.stack(
+            [
+                np.full((16, 16), 0.90, dtype=np.float32),
+                np.full((16, 16), 0.05, dtype=np.float32),
+                np.full((16, 16), 0.05, dtype=np.float32),
+            ]
+        ),
+        class_names=("tree", "building", "road"),
+        features=rng.normal(size=(8, 16, 16)).astype(np.float32),
+    )
+    three_second = replace(
+        second,
+        probabilities=np.stack(
+            [
+                np.full((16, 16), 0.05, dtype=np.float32),
+                np.full((16, 16), 0.90, dtype=np.float32),
+                np.full((16, 16), 0.05, dtype=np.float32),
+            ]
+        ),
+        class_names=("tree", "building", "road"),
+        features=rng.normal(size=(8, 16, 16)).astype(np.float32),
+    )
+    first_client = _DenseClient((first, second))
+    second_client = _DenseClient((three_first, three_second))
+    make_binding = lambda name, client, role, persistent: SemanticExpertBinding(
+        expert_id=name,
+        logical_model_id=name,
+        priority=100,
+        role=role,
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset({"changed"}),
+        persistent_labels=frozenset(persistent),
+        client=client,
+    )
+    settings = _settings()
+    settings.semantic.max_experts = 2
+
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(
+            make_binding("isaid", first_client, "object_semantic", ()),
+            make_binding("oem", second_client, "persistent_landcover", ("building",)),
+        ),
+    ).run(_prepared())
+
+    assert result.diagnostics["semantic_fusion"]["expert_count"] == 2
+    assert result.diagnostics["semantic_status"] == "success"
+    assert any(proposal.semantic_transitions for proposal in result.proposals)
+    evidence = [
+        item
+        for proposal in result.proposals
+        for item in proposal.semantic_transitions
+    ]
+    assert any(item["evidence_type"] == "persistent" for item in evidence)
+    assert any(
+        proposal.semantic_transition is not None
+        and proposal.semantic_transition.to_class == "building"
+        for proposal in result.proposals
+    )
+
+
+def test_feature_failure_is_local_to_one_expert(monkeypatch) -> None:
+    calls = 0
+    original = perception_module.compute_feature_residual
+
+    def fail_first(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("FEATURE_RESIDUAL_FIRST_EXPERT_FAILED")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(perception_module, "compute_feature_residual", fail_first)
+    settings = _settings()
+    settings.semantic.max_experts = 2
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(
+            SemanticExpertBinding(
+                expert_id="first",
+                logical_model_id="first",
+                priority=200,
+                role="generic",
+                neutral_labels=frozenset(),
+                transient_labels=frozenset(),
+                persistent_labels=frozenset(),
+                client=_DenseClient(),
+            ),
+            SemanticExpertBinding(
+                expert_id="second",
+                logical_model_id="second",
+                priority=100,
+                role="generic",
+                neutral_labels=frozenset(),
+                transient_labels=frozenset(),
+                persistent_labels=frozenset(),
+                client=_DenseClient(),
+            ),
+        ),
+    ).run(_prepared())
+
+    assert result.diagnostics["semantic_status"] == "success"
+    assert result.diagnostics["semantic_expert_failures"][0]["branch"] == "feature"
+    assert "semantic_difference_map" in result.component_maps
     assert result.diagnostics["semantic_status"] == "success"
     assert result.diagnostics["segformer_model"] == "segformer-logical-test"
     assert result.diagnostics["perception_version"] == PERCEPTION_VERSION

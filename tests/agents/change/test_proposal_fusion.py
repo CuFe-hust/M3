@@ -11,6 +11,8 @@ from agents.change.proposal_fusion import (
     PROPOSAL_FUSION_VERSION,
     compute_reliabilities,
     fuse_change_proposals,
+    fuse_feature_evidence,
+    fuse_semantic_evidence,
 )
 from agents.change.schema import (
     HarmonizationDecision,
@@ -35,6 +37,33 @@ def _settings(**overrides: object) -> ChangeProposalSettings:
 
 def _maps(size: int = 64) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return tuple(np.zeros((size, size), dtype=np.float32) for _ in range(3))
+
+
+def test_semantic_evidence_fuses_maps_without_cross_taxonomy_shapes() -> None:
+    isaid = np.zeros((16, 16), dtype=np.float32)
+    oem = np.zeros((8, 8), dtype=np.float32)
+    isaid[4:8, 4:8] = 0.8
+    oem[2:4, 2:4] = 0.9
+
+    fused, diagnostics = fuse_semantic_evidence(
+        [isaid, oem], [0.8, 0.9]
+    )
+
+    assert fused.shape == (16, 16)
+    assert diagnostics["method"] == "semantic_consensus_union"
+    assert diagnostics["expert_count"] == 2
+    assert float(fused[6, 6]) > 0.0
+
+
+def test_feature_evidence_allows_partial_success() -> None:
+    first = np.full((8, 8), 0.2, dtype=np.float32)
+    second = np.full((4, 4), 0.8, dtype=np.float32)
+
+    fused, diagnostics = fuse_feature_evidence([first, second], [0.7, 0.3])
+
+    assert fused is not None
+    assert fused.shape == first.shape
+    assert diagnostics["method"] == "reliability_weighted_mean"
 
 
 def _pif_without_patch(
