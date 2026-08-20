@@ -305,8 +305,8 @@ def test_run_raw_only_uses_real_preprocess(tmp_path: Path) -> None:
     assert execution.agent_name == "change_agent"
     assert execution.result_filename == "agent_result.json"
     assert _manifest_roles(client) == ["raw_full_t1", "raw_full_t2"]
-    assert budget.qwen_calls == 1
-    assert len(client.calls) == 1
+    assert budget.qwen_calls == 2
+    assert len(client.calls) == 2
 
 
 def test_run_dual_path_with_identical_images(tmp_path: Path) -> None:
@@ -447,8 +447,8 @@ def test_rejected_transform_keeps_raw_and_attaches_proposal_evidence(
         "change_000:reference_t1_crop",
         "change_000:t2_raw_fallback_crop",
     ]
-    assert len(client.calls) == 1
-    assert budget.qwen_calls == 1
+    assert len(client.calls) == 2
+    assert budget.qwen_calls == 2
     assert execution.trace["harmonized_evidence_available"] is False
     assert execution.trace["proposal_evidence_attached"] is True
     assert execution.trace["image_manifest_roles"] == _manifest_roles(client)
@@ -672,6 +672,43 @@ def test_invalid_global_negative_with_insufficient_candidate_remains_partial(tmp
     )
     assert outcome == "unresolved"
     assert merged.status == "partial"
+
+
+def test_local_water_positive_without_paired_evidence_routes_to_adjudication(tmp_path: Path, monkeypatch) -> None:
+    preprocess = _stub_preprocess(tmp_path / "artifacts")
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", lambda self, sample, context: preprocess)
+    client = _RecordingClient("A new water reservoir appeared.")
+    execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    assert len(client.calls) == 2
+    assert execution.trace["adjudication_trigger"] == "positive_conflict"
+    assert "POSITIVE_LOCAL_CLAIM_WITHOUT_PAIRED_EVIDENCE" in execution.trace["review_route_reasons"]
+
+
+def test_water_geometry_without_persistent_boundary_support_is_invalid(tmp_path: Path) -> None:
+    result = _adjudication_result("no_persistent_change", ["persistent_change"])
+    candidate = result.candidate_reviews[0].model_copy(update={
+        "change_category": "water_geometry", "persistent_geometry_changed": False,
+        "geometry_change_description": "became filled with water",
+    })
+    result = result.model_copy(update={"candidate_reviews": [candidate]})
+    warnings = _agent()._validate_adjudication(result, ["change_000"])
+    assert "ADJUDICATION_WATER_STATE_NOT_GEOMETRY:change_000" in warnings
+    merged, outcome, _ = _agent()._merge_adjudication(result, "change_caption", warnings)
+    assert outcome == "negative"
+    assert merged.answer == "No significant semantic change detected."
+
+
+def test_water_geometry_with_shoreline_footprint_support_remains_positive(tmp_path: Path) -> None:
+    result = _adjudication_result("no_persistent_change", ["persistent_change"])
+    candidate = result.candidate_reviews[0].model_copy(update={
+        "change_category": "water_geometry", "persistent_geometry_changed": True,
+        "geometry_change_description": "shoreline boundary expands into previous land footprint",
+    })
+    result = result.model_copy(update={"candidate_reviews": [candidate]})
+    warnings = _agent()._validate_adjudication(result, ["change_000"])
+    assert not any("WATER_STATE_NOT_GEOMETRY" in warning for warning in warnings)
+    _, outcome, _ = _agent()._merge_adjudication(result, "change_caption", warnings)
+    assert outcome == "positive"
 
 
 def test_wrong_agent_name_fails_not_masked(tmp_path: Path, monkeypatch) -> None:

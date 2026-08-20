@@ -289,6 +289,8 @@ class ChangeCandidateReview(BaseModel):
     t2_state: str
     reason: str
     change_category: PersistentChangeCategory | None = None
+    persistent_geometry_changed: bool | None = None
+    geometry_change_description: str | None = None
 
     @model_validator(mode="after")
     def validate_category(self) -> "ChangeCandidateReview":
@@ -304,6 +306,8 @@ class ChangeGlobalReview(BaseModel):
     t2_state: str
     reason: str
     change_category: PersistentChangeCategory | None = None
+    persistent_geometry_changed: bool | None = None
+    geometry_change_description: str | None = None
 
     @model_validator(mode="after")
     def validate_category(self) -> "ChangeGlobalReview":

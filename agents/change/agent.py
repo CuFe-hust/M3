@@ -333,6 +333,13 @@ class ChangeAgent:
         for item in [result.global_review, *result.candidate_reviews]:
             if item.verdict == "persistent_change" and any(token in item.reason.casefold() for token in nuisance):
                 warnings.append("ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON")
+            if (
+                item.verdict == "persistent_change"
+                and item.change_category == "water_geometry"
+                and not _has_valid_water_geometry(item)
+            ):
+                identifier = getattr(item, "proposal_id", "global")
+                warnings.append(f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{identifier}")
         return list(dict.fromkeys(warnings))
 
     def _merge_adjudication(
@@ -343,7 +350,10 @@ class ChangeAgent:
         The global raw-pair negative resolves the scene even when an individual
         crop is insufficient. 全局原始图对的负结论可在局部裁剪证据不足时仍解析整景。
         """
-        global_valid = "ADJUDICATION_INVALID_AGENT" not in consistency_warnings
+        global_valid = (
+            "ADJUDICATION_INVALID_AGENT" not in consistency_warnings
+            and "ADJUDICATION_WATER_STATE_NOT_GEOMETRY:global" not in consistency_warnings
+        )
         candidate_ids_valid = not any(
             warning in consistency_warnings
             for warning in (
@@ -356,7 +366,11 @@ class ChangeAgent:
         valid_global_negative = global_valid and result.global_review.verdict == "no_persistent_change"
         valid_candidate_positives = [
             item for item in result.candidate_reviews
-            if candidate_ids_valid and item.verdict == "persistent_change"
+            if (
+                candidate_ids_valid
+                and item.verdict == "persistent_change"
+                and f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{item.proposal_id}" not in consistency_warnings
+            )
         ]
         local_insufficient_count = sum(
             item.verdict == "insufficient_visual_evidence"
@@ -824,6 +838,21 @@ def _box_iou(first: list[int], second: list[int]) -> float:
     intersection = max(0, x2 - x1) * max(0, y2 - y1)
     union = (first[2] - first[0]) * (first[3] - first[1]) + (second[2] - second[0]) * (second[3] - second[1]) - intersection
     return intersection / union if union else 0.0
+
+
+def _has_valid_water_geometry(review: Any) -> bool:
+    """Require concrete shoreline/basin geometry, not water-state wording.
+
+    This is a deterministic validation gate rather than a lexical negative:
+    the model may still establish a real water footprint change with paired
+    evidence.  这是确定性验证门，不是词法负规则；有配对证据的真实水体边界
+    变化仍可成立。
+    """
+    description = (review.geometry_change_description or "").casefold().strip()
+    if review.persistent_geometry_changed is not True or not description:
+        return False
+    geometry_terms = ("shoreline", "boundary", "footprint", "basin", "canal", "outward", "expand", "contract")
+    return any(term in description for term in geometry_terms)
 
 
 def _normalize_positive_caption(result: AgentResult) -> AgentResult:

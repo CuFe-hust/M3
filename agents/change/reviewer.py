@@ -103,8 +103,10 @@ def _positive_conflict_reasons(result: AgentResult, proposals: list[ChangePropos
         reasons.append("POSITIVE_WATER_STATE_ONLY")
     if any(token in answer for token in appearance) and not any(token in answer for token in ("cleared", "removed", "replaced", "extent")):
         reasons.append("POSITIVE_APPEARANCE_ONLY")
-    local = any(token in answer for token in ("building", "structure", "road"))
+    local = any(token in answer for token in ("building", "structure", "road", "water", "reservoir", "pool", "canal"))
     temporal = {_temporal_side(item.image_id) for item in result.evidence_items if item.image_id}
+    if local and not result.boxes and not result.evidence_items:
+        reasons.append("POSITIVE_LOCAL_CLAIM_WITHOUT_PAIRED_EVIDENCE")
     if local and result.evidence_items and temporal != {"t1", "t2"}:
         reasons.append("POSITIVE_MISSING_TEMPORAL_PAIR")
     if local and proposals and result.evidence_items and all(
