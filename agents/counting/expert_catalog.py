@@ -113,11 +113,17 @@ class ChangeSemanticSpec(_FrozenModel):
     role: Literal["generic", "persistent_landcover", "object_semantic"] = "generic"
     neutral_model_labels: tuple[str, ...] = ()
     transient_model_labels: tuple[str, ...] = ()
+    structural_model_labels: tuple[str, ...] = ()
+    landcover_candidate_model_labels: tuple[str, ...] = ()
+    # Backward-compatible alias for older catalogs.  New code must not treat
+    # this field as proof that every class flip is persistent.
     persistent_model_labels: tuple[str, ...] = ()
 
     @field_validator(
         "neutral_model_labels",
         "transient_model_labels",
+        "structural_model_labels",
+        "landcover_candidate_model_labels",
         "persistent_model_labels",
     )
     @classmethod
@@ -134,6 +140,8 @@ class ChangeSemanticSpec(_FrozenModel):
         groups = (
             set(self.neutral_model_labels),
             set(self.transient_model_labels),
+            set(self.structural_model_labels),
+            set(self.landcover_candidate_model_labels),
             set(self.persistent_model_labels),
         )
         if any(groups[index] & groups[other] for index in range(3) for other in range(index)):
@@ -473,6 +481,8 @@ def _validate_verified_semantic_labels(
             change_labels = {
                 *change_semantics.neutral_model_labels,
                 *change_semantics.transient_model_labels,
+                *change_semantics.structural_model_labels,
+                *change_semantics.landcover_candidate_model_labels,
                 *change_semantics.persistent_model_labels,
             }
             if not change_labels.issubset(labels):
