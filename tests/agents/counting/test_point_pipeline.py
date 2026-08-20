@@ -20,6 +20,7 @@ from agents.counting.point_pipeline import (
     TileCountCallback,
     apply_acceptance_policy,
     decide_seam_pairs,
+    fuse_detector_observations,
     finalize_representatives,
     find_boundary_conflicts,
 )
@@ -27,6 +28,7 @@ from agents.counting.schema import (
     CountTargetSpec,
     GlobalPointObservation,
     LocalPointObservation,
+    PointProvenance,
     SeamDecision,
     TileCountResponse,
     TileSpec,
@@ -46,6 +48,40 @@ _TARGET = CountTargetSpec(
 def _point(local_id: str, x: int, y: int, confidence: float = 0.9) -> LocalPointObservation:
     return LocalPointObservation(
         local_id=local_id, x=x, y=y, confidence=confidence, short_evidence="e"
+    )
+
+
+def _detector_point(
+    point_id: str,
+    x: int,
+    y: int,
+    box: tuple[float, float, float, float],
+    *,
+    confidence: float = 0.9,
+) -> GlobalPointObservation:
+    return GlobalPointObservation(
+        global_id=point_id,
+        target="car",
+        source_tile_id="whole",
+        local_id=point_id,
+        local_x_norm=500,
+        local_y_norm=500,
+        local_radius_norm=10,
+        global_x_px=x,
+        global_y_px=y,
+        global_x_norm=500,
+        global_y_norm=500,
+        radius_px=10,
+        confidence=confidence,
+        ownership_valid=True,
+        near_core_boundary=False,
+        accepted=True,
+        short_evidence="detector",
+        provenance=PointProvenance(
+            source="yolo_box_center",
+            source_class="car",
+            bbox_xyxy_global_px=list(box),
+        ),
     )
 
 
@@ -140,6 +176,39 @@ async def _count(
 
 def test_callback_protocol_is_async() -> None:
     assert inspect.iscoroutinefunction(_RecordingCallback().count_tile)
+
+
+def test_cross_expert_duplicate_fuses_to_one_instance() -> None:
+    result = fuse_detector_observations(
+        [
+            ("det-a", [_detector_point("a1", 100, 100, (90, 90, 110, 110))]),
+            ("det-b", [_detector_point("b1", 101, 100, (91, 90, 111, 110))]),
+        ]
+    )
+
+    assert sum(point.accepted for point in result.points) == 1
+    assert result.merged_groups == [["a1", "b1"]]
+    assert result.points[0].provenance is not None
+    assert result.points[0].provenance.source == "fused"
+    assert result.points[0].provenance.source_backend_names == ["det-a", "det-b"]
+
+
+def test_same_backend_neighbors_are_not_collapsed_by_cross_expert_bridge() -> None:
+    result = fuse_detector_observations(
+        [
+            (
+                "det-a",
+                [
+                    _detector_point("a1", 100, 100, (90, 90, 110, 110)),
+                    _detector_point("a2", 115, 100, (105, 90, 125, 110)),
+                ],
+            ),
+            ("det-b", [_detector_point("b1", 108, 100, (90, 90, 125, 110))]),
+        ]
+    )
+
+    assert sum(point.accepted for point in result.points) == 2
+    assert any("a2" in conflict for conflict in result.unresolved_conflicts)
 
 
 def test_no_tiling_path_uses_single_whole_tile() -> None:

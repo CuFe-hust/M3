@@ -299,6 +299,10 @@ def _build_agent_registry(
         trust_empty_detection=settings.counting.trust_empty_detection,
         multi_detector_enabled=settings.counting.multi_detector_enabled,
         max_selected_detector_experts=settings.counting.max_selected_detector_experts,
+        min_successful_detector_experts=settings.counting.min_successful_detector_experts,
+        ensemble_iou_threshold=settings.counting.ensemble_iou_threshold,
+        ensemble_center_distance_ratio=settings.counting.ensemble_center_distance_ratio,
+        ensemble_singleton_high_confidence=settings.counting.ensemble_singleton_high_confidence,
         expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(

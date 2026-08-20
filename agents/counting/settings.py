@@ -52,6 +52,9 @@ class CountingSettings(BaseModel):
     multi_detector_enabled: bool = True
     max_selected_detector_experts: int = Field(default=5, ge=1, le=5)
     min_successful_detector_experts: int = Field(default=1, ge=1)
+    ensemble_iou_threshold: float = Field(default=0.45, gt=0.0, le=1.0)
+    ensemble_center_distance_ratio: float = Field(default=0.60, gt=0.0, le=2.0)
+    ensemble_singleton_high_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
 
     @model_validator(mode="before")
     @classmethod

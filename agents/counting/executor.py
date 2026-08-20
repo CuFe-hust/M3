@@ -8,7 +8,7 @@ contracts are terminal. Zero is always valid and only enters explicit review.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal
 
 from agents.base import AgentContext
@@ -20,6 +20,7 @@ from agents.counting.backends.base import (
     CountingRequest,
 )
 from agents.counting.backends.selector import BackendSelector
+from agents.counting.point_pipeline import fuse_detector_observations
 from agents.counting.schema import (
     CountingBackendAttemptAudit,
     IssueRecord,
@@ -54,6 +55,10 @@ class CountingExecutionPolicy:
     verify_empty_detection: bool
     trust_empty_detection: bool
     verify_empty_semantic: bool = False
+    min_successful_detector_experts: int = 1
+    ensemble_iou_threshold: float = 0.45
+    ensemble_center_distance_ratio: float = 0.60
+    ensemble_singleton_high_confidence: float = 0.65
 
 
 @dataclass(frozen=True)
@@ -119,6 +124,13 @@ class CountingPlanExecutor:
         context: AgentContext,
         agent_name: AgentName,
     ) -> CountingExecutionResult:
+        if len(plan.selected_backend_names) > 1:
+            return await self._execute_detector_ensemble(
+                plan=plan,
+                request=request,
+                context=context,
+                agent_name=agent_name,
+            )
         candidates = (plan.primary_backend_name, *plan.fallback_backend_names)
         if len(candidates) != len(set(candidates)):
             raise AgentExecutionError(
@@ -398,6 +410,180 @@ class CountingPlanExecutor:
             attempt_audits=tuple(attempt_audits),
         )
 
+    async def _execute_detector_ensemble(
+        self,
+        *,
+        plan: BackendPlan,
+        request: CountingRequest,
+        context: AgentContext,
+        agent_name: AgentName,
+    ) -> CountingExecutionResult:
+        """Run every co-primary detector, then fall back as one group."""
+
+        selected = plan.selected_backend_names
+        candidates = (*selected, *plan.fallback_backend_names)
+        if len(candidates) != len(set(candidates)):
+            raise AgentExecutionError(
+                agent_name, request.sample.sample_id, cause="INVALID_BACKEND_PLAN"
+            )
+        attempted: list[str] = []
+        history: list[BackendFailureRecord] = []
+        audits: list[CountingBackendAttemptAudit] = []
+        successes: list[tuple[str, CountingBackendOutcome]] = []
+        primary_kind: BackendKind | None = None
+        yolo_trace: dict[str, object] | None = None
+        for index, name in enumerate(selected):
+            backend = self._resolve_backend(
+                name,
+                request=request,
+                agent_name=agent_name,
+                primary=index == 0,
+            )
+            kind = _backend_kind(
+                backend, agent_name=agent_name, sample_id=request.sample.sample_id
+            )
+            if kind not in {"yolo_obb", "yolo_detect"}:
+                raise AgentExecutionError(
+                    agent_name, request.sample.sample_id, cause="INVALID_BACKEND_PLAN"
+                )
+            if primary_kind is None:
+                primary_kind = kind
+                yolo_trace = _yolo_profile(backend, kind)
+            _validate_backend_contract(
+                backend,
+                agent_name=agent_name,
+                sample_id=request.sample.sample_id,
+            )
+            attempted.append(name)
+            try:
+                available = backend.is_available()
+                if not isinstance(available, bool):
+                    raise InvalidBackendContract()
+                if not available:
+                    raise BackendUnavailable()
+                outcome = await backend.count(request, context)
+                if not isinstance(outcome, CountingBackendOutcome):
+                    raise InvalidBackendContract()
+                successes.append((name, outcome))
+                audits.append(
+                    _success_attempt_audit(
+                        backend=name,
+                        kind=kind,
+                        phase="primary" if index == 0 else "ensemble",
+                        outcome=outcome,
+                    )
+                )
+                if yolo_trace is not None:
+                    yolo_trace.update(dict(outcome.trace or {}))
+            except InvalidBackendContract as error:
+                raise AgentExecutionError(
+                    agent_name, request.sample.sample_id, cause="INVALID_BACKEND_CONTRACT"
+                ) from error
+            except Exception as error:
+                reason = "BACKEND_UNAVAILABLE" if isinstance(error, (BackendUnavailable, *_UNAVAILABLE_ERRORS)) else "BACKEND_RUNTIME_ERROR"
+                history.append(
+                    BackendFailureRecord(
+                        backend=name,
+                        kind=kind,
+                        reason_code=reason,
+                        error_type=type(error).__name__,
+                    )
+                )
+                audits.append(
+                    CountingBackendAttemptAudit(
+                        backend_name=name,
+                        backend_kind=kind,
+                        phase="primary" if index == 0 else "ensemble",
+                        status="unavailable" if reason == "BACKEND_UNAVAILABLE" else "failed",
+                        reason_code=reason,
+                        error_type=type(error).__name__,
+                    )
+                )
+
+        if len(successes) >= self._policy.min_successful_detector_experts:
+            fused = fuse_detector_observations(
+                [
+                    (name, outcome.counting.global_points)
+                    for name, outcome in successes
+                ],
+                iou_threshold=self._policy.ensemble_iou_threshold,
+                center_distance_ratio=self._policy.ensemble_center_distance_ratio,
+                singleton_high_confidence=self._policy.ensemble_singleton_high_confidence,
+            )
+            first_name, first_outcome = successes[0]
+            base = first_outcome.counting
+            status = "completed_with_warnings" if (history or fused.warnings or base.status == "completed_with_warnings") else base.status
+            counting = base.model_copy(
+                update={
+                    "global_points": fused.points,
+                    "merged_groups": fused.merged_groups,
+                    "unresolved_conflicts": fused.unresolved_conflicts,
+                    "warnings": [*base.warnings, *fused.warnings],
+                    "final_count": sum(point.accepted for point in fused.points),
+                    "status": status,
+                }
+            )
+            trace = dict(first_outcome.trace or {})
+            trace["ensemble"] = {
+                "selected_experts": list(selected),
+                "successful_experts": [name for name, _ in successes],
+                "failed_experts": [entry.to_trace() for entry in history],
+                "fused_instance_count": counting.final_count,
+                "merged_groups": fused.merged_groups,
+                "unresolved_conflicts": fused.unresolved_conflicts,
+                "review_required": bool(fused.unresolved_conflicts),
+            }
+            outcome = CountingBackendOutcome(counting=counting, trace=trace)
+            return CountingExecutionResult(
+                outcome=outcome,
+                primary_backend=plan.primary_backend_name,
+                primary_kind=primary_kind or "yolo_obb",
+                final_backend=first_name,
+                final_kind=primary_kind or "yolo_obb",
+                candidate_backends=candidates,
+                attempted_backends=tuple(attempted),
+                review_backend=None,
+                review_error_type=None,
+                fallback_history=tuple(history),
+                fallback_triggered=bool(history),
+                fallback_kind="ensemble_degraded" if history else None,
+                fallback_reason_code="DETECTOR_ENSEMBLE_PARTIAL" if history else None,
+                fallback_error_type=history[0].error_type if history else None,
+                yolo_trace=yolo_trace,
+                attempt_audits=tuple(audits),
+            )
+
+        if not plan.fallback_backend_names:
+            raise CountingBackendUnavailableError(
+                request.target.canonical_label,
+                primary_backend=plan.primary_backend_name,
+                reason_code="DETECTOR_ENSEMBLE_EXHAUSTED",
+            )
+        fallback_plan = BackendPlan(
+            primary_backend_name=plan.fallback_backend_names[0],
+            fallback_backend_names=plan.fallback_backend_names[1:],
+        )
+        fallback_result = await self.execute(
+            plan=fallback_plan,
+            request=request,
+            context=context,
+            agent_name=agent_name,
+        )
+        return replace(
+            fallback_result,
+            primary_backend=plan.primary_backend_name,
+            primary_kind=primary_kind or fallback_result.primary_kind,
+            candidate_backends=candidates,
+            attempted_backends=tuple(attempted) + fallback_result.attempted_backends,
+            fallback_history=tuple(history) + fallback_result.fallback_history,
+            fallback_triggered=True,
+            fallback_kind=fallback_result.fallback_kind or "ensemble_exhausted",
+            fallback_reason_code=fallback_result.fallback_reason_code or "DETECTOR_ENSEMBLE_EXHAUSTED",
+            fallback_error_type=fallback_result.fallback_error_type or (history[0].error_type if history else None),
+            yolo_trace=yolo_trace or fallback_result.yolo_trace,
+            attempt_audits=tuple(audits) + fallback_result.attempt_audits,
+        )
+
     def _record_or_raise(
         self,
         history: list[BackendFailureRecord],
@@ -525,7 +711,7 @@ def _success_attempt_audit(
     *,
     backend: str,
     kind: BackendKind,
-    phase: Literal["primary", "fallback", "zero_review"],
+    phase: Literal["primary", "ensemble", "fallback", "zero_review"],
     outcome: CountingBackendOutcome,
 ) -> CountingBackendAttemptAudit:
     counting_status = outcome.counting.status

@@ -69,6 +69,10 @@ class CountingAgent:
         verify_empty_semantic: bool = False,
         multi_detector_enabled: bool = True,
         max_selected_detector_experts: int = 5,
+        min_successful_detector_experts: int = 1,
+        ensemble_iou_threshold: float = 0.45,
+        ensemble_center_distance_ratio: float = 0.60,
+        ensemble_singleton_high_confidence: float = 0.65,
         expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
@@ -88,6 +92,10 @@ class CountingAgent:
                 verify_empty_detection=verify_empty_detection,
                 trust_empty_detection=trust_empty_detection,
                 verify_empty_semantic=verify_empty_semantic,
+                min_successful_detector_experts=min_successful_detector_experts,
+                ensemble_iou_threshold=ensemble_iou_threshold,
+                ensemble_center_distance_ratio=ensemble_center_distance_ratio,
+                ensemble_singleton_high_confidence=ensemble_singleton_high_confidence,
             ),
         )
 

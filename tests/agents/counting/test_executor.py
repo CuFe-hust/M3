@@ -155,7 +155,7 @@ class _FakeYoloBackend:
         if self._final_count > 0:
             points = [
                 GlobalPointObservation(
-                    global_id=f"{request.sample.sample_id}:det:p{i}",
+                    global_id=f"{request.sample.sample_id}:{self.name}:p{i}",
                     target=request.target.canonical_label,
                     source_tile_id="r000_c000",
                     local_id=f"p{i}",
@@ -417,6 +417,71 @@ def test_yolo_primary_executes_normally(tmp_path: Path) -> None:
     assert result.outcome.counting.final_count == 1
     assert [item.backend_name for item in result.attempt_audits] == ["det-a"]
     assert result.attempt_audits[0].status == "succeeded"
+
+
+def test_detector_ensemble_fuses_same_instance_once(tmp_path: Path) -> None:
+    first = _FakeYoloBackend(final_count=1)
+    second = _FakeYoloBackend(final_count=1)
+    second.name = "det-b"
+
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert result.outcome.counting.final_count == 1
+    assert result.outcome.counting.global_points[0].provenance is not None
+    assert result.outcome.counting.global_points[0].provenance.source == "fused"
+    assert result.outcome.counting.global_points[0].provenance.consensus_size == 2
+    assert result.attempted_backends == ("det-a", "det-b")
+
+
+def test_detector_ensemble_keeps_successful_peer_when_one_fails(tmp_path: Path) -> None:
+    failed = _FakeYoloBackend(error=RuntimeError("first failed"))
+    successful = _FakeYoloBackend(final_count=1)
+    successful.name = "det-b"
+
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), failed, successful),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert result.outcome.counting.final_count == 1
+    assert result.fallback_triggered is True
+    assert result.fallback_reason_code == "DETECTOR_ENSEMBLE_PARTIAL"
+    assert result.fallback_history[0].backend == "det-a"
+
+
+def test_all_detector_experts_fail_then_use_fallback(tmp_path: Path) -> None:
+    first = _FakeYoloBackend(error=RuntimeError("first failed"))
+    second = _FakeYoloBackend(error=RuntimeError("second failed"))
+    second.name = "det-b"
+
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert result.final_backend == "qwen_point"
+    assert result.attempted_backends == ("det-a", "det-b", "qwen_point")
 
 
 # ── 回退 / fallback ────────────────────────────────────────────────────────

@@ -168,6 +168,14 @@ class PointProvenance(BaseModel):
     detector_task: Literal["obb", "detect"] | None = None
     detector_source_dataset: str | None = None
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_backend_names: list[str] = Field(default_factory=list)
+    source_model_ids: list[str] = Field(default_factory=list)
+    source_confidences: list[float] = Field(default_factory=list)
+    source_classes: list[str] = Field(default_factory=list)
+    source_weights_sha256: list[str] = Field(default_factory=list)
+    consensus_size: int = Field(default=1, ge=1)
+    fusion_method: str | None = None
+    review_status: str | None = None
 
 
 class GlobalPointObservation(BaseModel):
@@ -285,7 +293,7 @@ class CountingBackendAttemptAudit(BaseModel):
 
     backend_name: str = Field(min_length=1)
     backend_kind: str = Field(min_length=1)
-    phase: Literal["primary", "fallback", "zero_review"]
+    phase: Literal["primary", "ensemble", "fallback", "zero_review"]
     status: Literal["succeeded", "partial", "failed", "unavailable"]
     reason_code: str | None = None
     error_type: str | None = None
