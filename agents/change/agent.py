@@ -21,7 +21,7 @@ from agents.change.perception import (
 from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.registration import RegistrationError
 from agents.change.reviewer import meaningful_proposals, review_outcome, review_result
-from agents.change.schema import ChangeAdjudicationResult, ChangeInitialResult, ChangePreprocessResult, SemanticTransition
+from agents.change.schema import CANONICAL_NO_CHANGE, ChangeAdjudicationResult, ChangeInitialResult, ChangePreprocessResult, SemanticTransition
 from agents.change.settings import AgentChangeSettings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.schema import AgentName, AgentResult
@@ -144,6 +144,7 @@ class ChangeAgent:
         adjudication_global_verdict: str | None = None
         adjudication_verdicts: dict[str, str] = {}
         adjudication_outcome: str | None = None
+        adjudication_merge: dict[str, object] | None = None
         consistency_warnings: list[str] = []
         final_warnings = initial_warnings
         if settings.review.adjudication_enabled and review.route != "accept":
@@ -167,7 +168,9 @@ class ChangeAgent:
                 response_model=ChangeAdjudicationResult, decision_stage="adjudication",
             )
             consistency_warnings = self._validate_adjudication(adjudication, adjudication_candidate_ids)
-            reviewed, adjudication_outcome = self._merge_adjudication(adjudication, sample.task, consistency_warnings)
+            reviewed, adjudication_outcome, adjudication_merge = self._merge_adjudication(
+                adjudication, sample.task, consistency_warnings
+            )
             reviewed, final_warnings = review_result(reviewed, preprocess.proposals, settings.review)
             if adjudication_outcome == "negative":
                 final_warnings = [warning for warning in final_warnings if warning != "CHANGE_RESULT_CONFLICT"]
@@ -217,6 +220,7 @@ class ChangeAgent:
             "adjudication_global_verdict": adjudication_global_verdict,
             "adjudication_verdicts": adjudication_verdicts,
             "adjudication_outcome": adjudication_outcome,
+            "adjudication_merge": adjudication_merge,
             "initial_review_warnings": initial_warnings,
             "final_review_warnings": final_warnings,
             "review_route": review.route,
@@ -333,25 +337,79 @@ class ChangeAgent:
 
     def _merge_adjudication(
         self, result: ChangeAdjudicationResult, task: str, consistency_warnings: list[str]
-    ) -> tuple[AgentResult, Literal["positive", "negative", "unresolved"]]:
-        positive = not consistency_warnings and (result.global_review.verdict == "persistent_change" or any(
-            item.verdict == "persistent_change" for item in result.candidate_reviews
-        ))
-        unresolved = result.global_review.verdict == "insufficient_visual_evidence" or any(
-            item.verdict == "insufficient_visual_evidence" for item in result.candidate_reviews
+    ) -> tuple[AgentResult, Literal["positive", "negative", "unresolved"], dict[str, object]]:
+        """Merge validated review state; raw adjudication prose is not authority.
+
+        The global raw-pair negative resolves the scene even when an individual
+        crop is insufficient. 全局原始图对的负结论可在局部裁剪证据不足时仍解析整景。
+        """
+        global_valid = "ADJUDICATION_INVALID_AGENT" not in consistency_warnings
+        candidate_ids_valid = not any(
+            warning in consistency_warnings
+            for warning in (
+                "ADJUDICATION_DUPLICATE_PROPOSAL_ID",
+                "ADJUDICATION_UNKNOWN_PROPOSAL_ID",
+                "ADJUDICATION_MISSING_PROPOSAL_ID",
+            )
         )
-        if positive:
+        valid_global_positive = global_valid and result.global_review.verdict == "persistent_change"
+        valid_global_negative = global_valid and result.global_review.verdict == "no_persistent_change"
+        valid_candidate_positives = [
+            item for item in result.candidate_reviews
+            if candidate_ids_valid and item.verdict == "persistent_change"
+        ]
+        local_insufficient_count = sum(
+            item.verdict == "insufficient_visual_evidence"
+            for item in result.candidate_reviews
+        )
+        all_resolved_nonpersistent = bool(result.candidate_reviews) and all(
+            item.verdict in {"appearance_only", "registration_artifact", "transient"}
+            for item in result.candidate_reviews
+        )
+        merge: dict[str, object] = {
+            "global_verdict": result.global_review.verdict,
+            "valid_persistent_candidate_count": len(valid_candidate_positives),
+            "local_insufficient_count": local_insufficient_count,
+            "final_rule": None,
+            "final_semantic_decision": None,
+            "canonical_negative_applied": False,
+        }
+        if valid_global_positive or valid_candidate_positives:
             outcome: Literal["positive", "negative", "unresolved"] = "positive"
             status = "completed"
             answer = result.answer
-        elif unresolved:
-            outcome = "unresolved"; status = "partial"
-            answer = "Unable to confirm a persistent semantic change from the available evidence." if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = result.boxes, result.evidence, result.evidence_items
+            merge.update(final_rule="VALID_PERSISTENT_POSITIVE", final_semantic_decision="persistent_change")
+        elif valid_global_negative:
+            outcome = "negative"
+            status = "completed"
+            answer = CANONICAL_NO_CHANGE if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = [], [], []
+            merge.update(
+                final_rule="GLOBAL_NEGATIVE_OVERRIDES_LOCAL_INSUFFICIENT",
+                final_semantic_decision="no_change",
+                canonical_negative_applied=task == "change_caption",
+            )
+        elif all_resolved_nonpersistent:
+            outcome = "negative"
+            status = "completed"
+            answer = CANONICAL_NO_CHANGE if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = [], [], []
+            merge.update(
+                final_rule="ALL_LOCAL_REVIEWS_RESOLVED_NONPERSISTENT",
+                final_semantic_decision="no_change",
+                canonical_negative_applied=task == "change_caption",
+            )
         else:
-            outcome = "negative"; status = "completed"
-            answer = "No significant semantic change detected." if task == "change_caption" else result.answer
-        return AgentResult(agent_name=self.name, answer=answer, boxes=result.boxes, evidence=result.evidence,
-                           evidence_items=result.evidence_items, geometry=dict(result.geometry), status=status), outcome
+            outcome = "unresolved"
+            status = "partial"
+            answer = "Unable to confirm a persistent semantic change from the available evidence." if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = result.boxes, result.evidence, result.evidence_items
+            merge.update(final_rule="UNRESOLVED_VALIDATED_REVIEW_STATE", final_semantic_decision="unresolved")
+        return AgentResult(
+            agent_name=self.name, answer=answer, boxes=boxes, evidence=evidence,
+            evidence_items=evidence_items, geometry=dict(result.geometry), status=status,
+        ), outcome, merge
 
     def _select_proposals(self, proposals: list[Any], *, limit: int) -> list[Any]:
         ranked = sorted(proposals, key=_proposal_priority)

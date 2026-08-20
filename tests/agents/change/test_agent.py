@@ -19,6 +19,7 @@ from PIL import Image
 from agents.base import AgentContext, AgentExecution
 from agents.change.agent import ChangeAgent, resolve_input_mode
 from agents.change.schema import (
+    ChangeAdjudicationResult,
     ChangePreprocessResult,
     ChangeProposal,
     HarmonizationDecision,
@@ -607,6 +608,70 @@ def test_clean_semantic_answer_stays_completed(tmp_path: Path, monkeypatch) -> N
     execution = asyncio.run(_agent(_RecordingClient()).run(_sample(tmp_path), _context(tmp_path)))
     assert execution.payload.status == "completed"
     assert execution.trace["review_warnings"] == []
+
+
+def _adjudication_result(
+    global_verdict: str, candidate_verdicts: list[str], *, answer: str = "A building was added."
+) -> ChangeAdjudicationResult:
+    return ChangeAdjudicationResult.model_validate({
+        "agent_name": "change_agent",
+        "global_review": {
+            "verdict": global_verdict, "t1_state": "before", "t2_state": "after",
+            "reason": "reviewed raw pair",
+            "change_category": "building_structure" if global_verdict == "persistent_change" else None,
+        },
+        "candidate_reviews": [
+            {
+                "proposal_id": f"change_{index:03d}", "verdict": verdict,
+                "t1_state": "before", "t2_state": "after", "reason": "reviewed crop",
+                "change_category": "building_structure" if verdict == "persistent_change" else None,
+            }
+            for index, verdict in enumerate(candidate_verdicts)
+        ],
+        "answer": answer,
+        "boxes": [[1, 2, 3, 4]], "evidence": ["raw_full_t1"],
+        "status": "completed",
+    })
+
+
+def test_global_negative_overrides_local_insufficient_merge(tmp_path: Path) -> None:
+    merged, outcome, provenance = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["insufficient_visual_evidence"]),
+        "change_caption", [],
+    )
+    assert outcome == "negative"
+    assert merged.answer == "No significant semantic change detected."
+    assert merged.status == "completed"
+    assert merged.boxes == merged.evidence == merged.evidence_items == []
+    assert provenance["final_rule"] == "GLOBAL_NEGATIVE_OVERRIDES_LOCAL_INSUFFICIENT"
+
+
+def test_global_negative_with_mixed_nonpersistent_reviews_is_canonical(tmp_path: Path) -> None:
+    merged, outcome, _ = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["appearance_only", "transient", "registration_artifact", "insufficient_visual_evidence"]),
+        "change_caption", [],
+    )
+    assert outcome == "negative"
+    assert merged.answer == "No significant semantic change detected."
+    assert merged.status == "completed"
+
+
+def test_valid_candidate_positive_wins_over_global_negative(tmp_path: Path) -> None:
+    merged, outcome, provenance = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["persistent_change"]), "change_caption", []
+    )
+    assert outcome == "positive"
+    assert merged.answer == "A building was added."
+    assert provenance["final_rule"] == "VALID_PERSISTENT_POSITIVE"
+
+
+def test_invalid_global_negative_with_insufficient_candidate_remains_partial(tmp_path: Path) -> None:
+    merged, outcome, _ = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["insufficient_visual_evidence"]),
+        "change_caption", ["ADJUDICATION_INVALID_AGENT"],
+    )
+    assert outcome == "unresolved"
+    assert merged.status == "partial"
 
 
 def test_wrong_agent_name_fails_not_masked(tmp_path: Path, monkeypatch) -> None:
