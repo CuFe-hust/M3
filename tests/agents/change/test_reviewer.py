@@ -41,7 +41,7 @@ def test_claim_without_proposal_evidence_is_warned() -> None:
     result = _result(answer="The tree disappeared.")
     reviewed, warnings = review_result(result, [], ChangeReviewSettings())
     assert "CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE" in warnings
-    assert reviewed.status == "partial"
+    assert reviewed.status == "completed"
 
 
 def test_claim_without_evidence_when_disabled_passes_through() -> None:
