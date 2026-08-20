@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from collections.abc import Mapping
 from collections.abc import Sequence
+from collections import Counter
 from typing import Any
 
 from agents.change.schema import ChangeProposal, HarmonizationDecision, RegistrationReport
@@ -34,6 +35,19 @@ def compute_reliabilities(
         }
         return reliability, {"enabled": False, "raw": reliability.copy()}
 
+    semantic_raw = _semantic_reliability(
+        semantic_diagnostics,
+        confidence_floor=settings.semantic_confidence_floor,
+    )
+    stability_multiplier = (
+        semantic_diagnostics.get("temporal_stability_multiplier", 1.0)
+        if semantic_diagnostics
+        else 1.0
+    )
+    if not isinstance(stability_multiplier, (int, float)) or not math.isfinite(
+        float(stability_multiplier)
+    ):
+        stability_multiplier = 1.0
     raw = {
         "registration": _registration_reliability(
             registration_report, settings=settings
@@ -42,10 +56,7 @@ def compute_reliabilities(
             feature_diagnostics,
             residual_scale=settings.feature_residual_scale,
         ),
-        "semantic": _semantic_reliability(
-            semantic_diagnostics,
-            confidence_floor=settings.semantic_confidence_floor,
-        ),
+        "semantic": _clamp(semantic_raw * float(stability_multiplier)),
         "low_level": _harmonization_reliability(harmonization_decision),
     }
     reliability = {
@@ -61,8 +72,125 @@ def compute_reliabilities(
             "min_branch_reliability": settings.min_branch_reliability,
             "semantic_confidence_floor": settings.semantic_confidence_floor,
             "feature_residual_scale": settings.feature_residual_scale,
+            "temporal_stability_multiplier": float(stability_multiplier),
+            "semantic_reliability_before_temporal_stability": semantic_raw,
         },
     }
+
+
+def compute_temporal_semantic_stability(
+    probabilities_t1: Any,
+    probabilities_t2: Any,
+    *,
+    pif_mask: Any | None,
+    registration_valid_mask: Any | None = None,
+    class_names: Sequence[str] | None = None,
+    neutral_labels: Sequence[str] = (),
+    score_map: Any | None = None,
+    enabled: bool = False,
+    soft_flip_rate: float = 0.15,
+    hard_flip_rate: float = 0.50,
+    floor: float = 0.25,
+) -> dict[str, object]:
+    """Measure per-expert label stability inside unchanged PIF pixels.
+
+    The metric is always reported when a usable mask exists.  The multiplier
+    remains one unless explicitly enabled by settings, so diagnostics cannot
+    silently retune a production run.
+    """
+
+    np = _require_numpy()
+    first = np.asarray(probabilities_t1)
+    second = np.asarray(probabilities_t2)
+    if first.ndim != 3 or second.shape != first.shape:
+        raise ValueError("SEMANTIC_TEMPORAL_STABILITY_SHAPE_INVALID")
+    valid = _resize_bool_mask(pif_mask, first.shape[1:], np=np)
+    if registration_valid_mask is not None:
+        valid &= _resize_bool_mask(registration_valid_mask, first.shape[1:], np=np)
+    pixel_count = int(np.count_nonzero(valid))
+    base: dict[str, object] = {
+        "temporal_stability_status": "available" if pixel_count else "unavailable",
+        "temporal_stability_enabled": bool(enabled),
+        "temporal_stability_multiplier": 1.0,
+        "pif_pixel_count": pixel_count,
+        "pif_label_flip_rate_all": None,
+        "pif_label_flip_rate_non_neutral": None,
+        "pif_mean_semantic_score": None,
+        "pif_p95_semantic_score": None,
+        "top_pif_flip_pairs": [],
+    }
+    if pixel_count == 0:
+        return base
+
+    labels_t1 = np.argmax(first, axis=0)
+    labels_t2 = np.argmax(second, axis=0)
+    flips = labels_t1 != labels_t2
+    flip_values = flips[valid]
+    flip_rate = float(np.mean(flip_values))
+    names = tuple(str(item) for item in (class_names or ()))
+    neutral_ids = {index for index, name in enumerate(names) if name in set(neutral_labels)}
+    non_neutral = valid & (
+        ~np.isin(labels_t1, tuple(neutral_ids)) | ~np.isin(labels_t2, tuple(neutral_ids))
+    ) if neutral_ids else valid.copy()
+    non_neutral_count = int(np.count_nonzero(non_neutral))
+    non_neutral_rate = (
+        float(np.count_nonzero(flips & non_neutral) / non_neutral_count)
+        if non_neutral_count else 0.0
+    )
+    pair_counter: Counter[tuple[str, str]] = Counter()
+    for source, target in zip(labels_t1[valid].tolist(), labels_t2[valid].tolist()):
+        if source != target:
+            pair_counter[(names[source] if source < len(names) else str(source), names[target] if target < len(names) else str(target))] += 1
+    base.update(
+        {
+            "pif_label_flip_rate_all": flip_rate,
+            "pif_label_flip_rate_non_neutral": non_neutral_rate,
+            "top_pif_flip_pairs": [
+                {"from_class": pair[0], "to_class": pair[1], "count": count}
+                for pair, count in pair_counter.most_common(10)
+            ],
+        }
+    )
+    if score_map is not None:
+        scores = np.asarray(score_map)
+        if scores.shape != first.shape[1:]:
+            scores = _resize_numeric_map(scores, first.shape[1:], np=np)
+        pif_scores = scores[valid]
+        base["pif_mean_semantic_score"] = float(np.mean(pif_scores))
+        base["pif_p95_semantic_score"] = float(np.percentile(pif_scores, 95))
+    if enabled:
+        if hard_flip_rate <= soft_flip_rate:
+            raise ValueError("SEMANTIC_TEMPORAL_STABILITY_THRESHOLDS_INVALID")
+        if flip_rate <= soft_flip_rate:
+            multiplier = 1.0
+        elif flip_rate >= hard_flip_rate:
+            multiplier = floor
+        else:
+            ratio = (flip_rate - soft_flip_rate) / (hard_flip_rate - soft_flip_rate)
+            multiplier = 1.0 + ratio * (floor - 1.0)
+        base["temporal_stability_multiplier"] = float(
+            max(floor, min(1.0, multiplier))
+        )
+    return base
+
+
+def _resize_bool_mask(value: Any, shape: tuple[int, int], *, np: Any) -> Any:
+    if value is None:
+        return np.ones(shape, dtype=bool)
+    mask = np.asarray(value)
+    if mask.ndim != 2:
+        raise ValueError("SEMANTIC_TEMPORAL_STABILITY_MASK_INVALID")
+    if mask.shape == shape:
+        return mask.astype(bool, copy=False)
+    rows = np.minimum(np.arange(shape[0]) * mask.shape[0] // shape[0], mask.shape[0] - 1)
+    cols = np.minimum(np.arange(shape[1]) * mask.shape[1] // shape[1], mask.shape[1] - 1)
+    return mask.astype(bool, copy=False)[rows[:, None], cols[None, :]]
+
+
+def _resize_numeric_map(value: Any, shape: tuple[int, int], *, np: Any) -> Any:
+    rows = np.minimum(np.arange(shape[0]) * value.shape[0] // shape[0], value.shape[0] - 1)
+    cols = np.minimum(np.arange(shape[1]) * value.shape[1] // shape[1], value.shape[1] - 1)
+    return value[rows[:, None], cols[None, :]]
 
 
 def _registration_reliability(
