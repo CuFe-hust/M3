@@ -197,6 +197,7 @@ class ChangeSemanticSettings(BaseModel):
             )
 
 
+
 class ChangeBuildingRescueSettings(BaseModel):
     """Conservative OEM building-footprint rescue candidate settings."""
 
@@ -224,6 +225,7 @@ class ChangeBuildingRescueSettings(BaseModel):
             raise ValueError("edge rescue area threshold cannot exceed interior threshold")
         if self.registration_tolerance_min_px > self.registration_tolerance_max_px:
             raise ValueError("registration tolerance minimum cannot exceed maximum")
+
 
 
 class ChangeReliabilitySettings(BaseModel):

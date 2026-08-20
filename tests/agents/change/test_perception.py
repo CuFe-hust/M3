@@ -295,6 +295,7 @@ def test_multiple_semantic_experts_run_independently_and_are_audited() -> None:
     assert result.diagnostics["semantic_expert_failures"] == []
 
 
+
 def test_rescue_expert_is_excluded_from_core_fusion(monkeypatch) -> None:
     monkeypatch.setattr(
         perception_module,
@@ -433,6 +434,7 @@ def test_edge_rescue_keeps_partial_top_edge_component() -> None:
 
     assert len(candidates) == 1
     assert "top" in candidates[0].edge_flags
+
 
 
 def test_typed_semantic_transition_classes() -> None:

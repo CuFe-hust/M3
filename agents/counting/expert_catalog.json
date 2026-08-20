@@ -241,11 +241,13 @@
         "role": "persistent_landcover",
         "neutral_model_labels": ["background"],
         "transient_model_labels": [],
+
         "structural_model_labels": ["building"],
         "landcover_candidate_model_labels": [],
         "persistent_model_labels": ["building"],
         "rescue_model_labels": ["building"],
         "rescue_strategy": "building_footprint_delta"
+
       }
     }
   ]

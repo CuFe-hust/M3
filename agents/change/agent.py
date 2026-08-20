@@ -589,6 +589,7 @@ class ChangeAgent:
         return list(dict.fromkeys(warnings))
 
     @staticmethod
+
     def _validate_building_rescue_review(
         result: BuildingRescueReview, candidates: list[Any]
     ) -> list[str]:
@@ -661,6 +662,7 @@ class ChangeAgent:
         )
 
     @staticmethod
+
     def _effective_persistent_review(
         review: Any,
         consistency_warnings: list[str],

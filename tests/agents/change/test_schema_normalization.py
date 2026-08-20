@@ -121,6 +121,7 @@ def test_unknown_persistent_category_is_not_silently_invented() -> None:
         ChangeCandidateReview.model_validate(
             _candidate(verdict="persistent_change", change_category="not_a_real_category")
         )
+
 from agents.change.schema import (
     BuildingRescueCandidateReview,
     BuildingRescueReview,
@@ -154,3 +155,4 @@ def test_building_rescue_review_requires_final_answer_only_for_confirmations() -
         final_answer=None,
     )
     assert valid.reviews[0].verdict == "confirmed_added_building"
+

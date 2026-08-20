@@ -116,8 +116,10 @@ class ChangeSemanticSpec(_FrozenModel):
     transient_model_labels: tuple[str, ...] = ()
     structural_model_labels: tuple[str, ...] = ()
     landcover_candidate_model_labels: tuple[str, ...] = ()
+
     rescue_model_labels: tuple[str, ...] = ()
     rescue_strategy: Literal["none", "building_footprint_delta", "edge_corner_building"] = "none"
+
     # Backward-compatible alias for older catalogs.  New code must not treat
     # this field as proof that every class flip is persistent.
     persistent_model_labels: tuple[str, ...] = ()

@@ -522,8 +522,10 @@ def _build_change_semantic_bindings(
                 landcover_candidate_labels=frozenset(
                     semantic.landcover_candidate_model_labels
                 ),
+
                 rescue_model_labels=frozenset(semantic.rescue_model_labels),
                 rescue_strategy=semantic.rescue_strategy,
+
             )
         )
     return tuple(bindings)
