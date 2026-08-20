@@ -112,6 +112,49 @@ class ExecutionStepView(_ViewModel):
     summary_fields: dict[str, JsonScalar | list[JsonScalar]] = Field(default_factory=dict)
 
 
+class WorkflowStepView(_ViewModel):
+    """One normalized step in an observed run-level execution sequence."""
+
+    order: int = Field(ge=1)
+    phase: str
+    component: str
+    operation: str | None = None
+    backend_name: str | None = None
+    repeat_count: int = Field(default=1, ge=1)
+
+
+class WorkflowSequenceView(_ViewModel):
+    """A concrete execution sequence shared by one or more samples."""
+
+    task: str
+    sample_count: int = Field(ge=1)
+    steps: list[WorkflowStepView] = Field(default_factory=list)
+
+
+class ModelWeightView(_ViewModel):
+    """Path-free identity of one YOLO or segmentation weight actually used."""
+
+    family: Literal["yolo", "segmentation"]
+    backend_name: str
+    backend_kind: str
+    logical_model_id: str | None = None
+    weights_file: str | None = Field(default=None, pattern=r"^[^/\\]+$")
+    weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_dataset: str | None = None
+    model_revision: str | None = None
+    use_count: int = Field(ge=1)
+    phases: list[str] = Field(default_factory=list)
+    statuses: list[str] = Field(default_factory=list)
+
+
+class ProcessReport(_ViewModel):
+    """Observed workflow order and local visual-expert weight identities."""
+
+    sample_process_count: int = Field(default=0, ge=0)
+    workflow_sequences: list[WorkflowSequenceView] = Field(default_factory=list)
+    model_weights: list[ModelWeightView] = Field(default_factory=list)
+
+
 _UNSAFE_SUMMARY_RE = re.compile(
     r"(?i)(?:data:image/[^;]+;base64,|https?://|(?:^|[^a-z0-9])(?:[a-z]:[\\/]|/(?:home|tmp|users|private|var)/))"
 )
@@ -408,5 +451,6 @@ class Report(_ViewModel):
     routing_summary: RoutingSummary = Field(default_factory=RoutingSummary)
     failure_summary: FailureSummary = Field(default_factory=FailureSummary)
     counting_target_summary: list[CountingTargetSummary] = Field(default_factory=list)
+    process_report: ProcessReport = Field(default_factory=ProcessReport)
     visual_materialized_count: int = 0
     visual_total: int = 0

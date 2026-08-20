@@ -67,6 +67,14 @@ class BackendPlan:
     fallback_backend_names: tuple[str, ...] = ()
     reason_codes: tuple[str, ...] = ()
     target_classes: tuple[str, ...] = ()
+    ensemble_backend_names: tuple[str, ...] = ()
+    selected_detector_expert_names: tuple[str, ...] = ()
+
+    @property
+    def selected_backend_names(self) -> tuple[str, ...]:
+        """Return co-primary experts in deterministic execution order."""
+
+        return (self.primary_backend_name, *self.ensemble_backend_names)
 
 
 @dataclass(frozen=True)

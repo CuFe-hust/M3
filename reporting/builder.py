@@ -55,7 +55,9 @@ from reporting.schema import (
     GroundTruthView,
     GroundingReportDetail,
     LatencySummary,
+    ModelWeightView,
     PointPreview,
+    ProcessReport,
     Report,
     ReportSample,
     RoutingAttemptView,
@@ -67,6 +69,8 @@ from reporting.schema import (
     TaskRoutingView,
     TaskSummary,
     VisualAssetView,
+    WorkflowSequenceView,
+    WorkflowStepView,
 )
 
 _AGGREGATORS = {
@@ -110,6 +114,7 @@ def build_report(run_dir: Path) -> Report:
         routing_summary=_routing_summary(samples),
         failure_summary=_failure_summary(samples),
         counting_target_summary=_counting_targets(samples),
+        process_report=_process_report(samples),
         visual_total=sum(len(sample.visuals) for sample in samples),
         visual_materialized_count=sum(
             visual.status == "available" for sample in samples for visual in sample.visuals
@@ -363,12 +368,53 @@ def _execution_steps(
             task=task_routing.executed_task,
             artifact_names=[filename],
         )
+        for audit in _artifact_call_audits(artifact):
+            layer = _value_str(audit.get("layer"))
+            if layer is None:
+                continue
+            backend_kind = {
+                "yolo": "yolo",
+                "segformer": "segformer",
+                "final_qwen": "qwen",
+            }.get(layer, layer)
+            summary = {
+                "backend_kind": backend_kind,
+                "logical_model_id": _value_str(audit.get("logical_model_id")),
+                "weights_sha256": _summary_digest(audit, "weights_sha256"),
+            }
+            input_size = audit.get("input_size")
+            if isinstance(input_size, list) and all(
+                isinstance(value, int) and not isinstance(value, bool) for value in input_size
+            ):
+                summary["input_size"] = input_size
+            add(
+                "evidence_model",
+                {
+                    "yolo": "models.base.ObjectDetectionClient",
+                    "segformer": "models.base.SemanticSegmentationClient",
+                    "final_qwen": "models.base.StructuredModelClient",
+                }.get(layer, "models.base.ModelClient"),
+                "infer",
+                status=_value_str(audit.get("status")) or "recorded",
+                task=task_routing.executed_task,
+                agent_name=task_routing.executed_agent,
+                backend_name=layer,
+                reason_code=_value_str(audit.get("error_code")),
+                summary_fields={key: value for key, value in summary.items() if value is not None},
+                artifact_names=[filename],
+            )
 
     for stage in backend_stages:
         summary: dict[str, Any] = {
             "phase": stage.phase,
             "backend_kind": stage.backend_kind,
         }
+        for key in (
+            "model_id", "logical_model_id", "weights_file", "weights_sha256",
+            "source_dataset", "model_revision", "runtime",
+        ):
+            if key in stage.summary_fields:
+                summary[key] = stage.summary_fields[key]
         if stage.predicted_count is not None:
             summary["predicted_count"] = stage.predicted_count
         if stage.accepted_count is not None:
@@ -986,6 +1032,141 @@ def _counting_targets(samples: list[ReportSample]) -> list[CountingTargetSummary
             fallback_rate=fallback_count / len(details) if details else 0.0,
         ))
     return rows
+
+
+def _process_report(samples: list[ReportSample]) -> ProcessReport:
+    """Aggregate concrete, persisted execution order and weight identities.
+
+    Only observed backend attempts are included. Physical checkpoint paths are
+    never consulted; identities come from the backend's sanitized audit trace.
+    """
+
+    sequence_counts: Counter[tuple[str, tuple[tuple[str, str, str, str, int], ...]]] = Counter()
+    for sample in samples:
+        compressed: list[tuple[str, str, str, str, int]] = []
+        for step in sample.execution_steps:
+            item = (
+                step.phase,
+                step.component,
+                step.operation or "",
+                step.backend_name or "",
+            )
+            if compressed and compressed[-1][:4] == item:
+                previous = compressed[-1]
+                compressed[-1] = (*previous[:4], previous[4] + 1)
+            else:
+                compressed.append((*item, 1))
+        if compressed:
+            sequence_counts[(sample.task, tuple(compressed))] += 1
+
+    workflow_sequences: list[WorkflowSequenceView] = []
+    for (task, steps), count in sorted(
+        sequence_counts.items(),
+        key=lambda item: (-item[1], item[0][0], item[0][1]),
+    ):
+        workflow_sequences.append(WorkflowSequenceView(
+            task=task,
+            sample_count=count,
+            steps=[
+                WorkflowStepView(
+                    order=order,
+                    phase=phase,
+                    component=component,
+                    operation=operation or None,
+                    backend_name=backend_name or None,
+                    repeat_count=repeat_count,
+                )
+                for order, (phase, component, operation, backend_name, repeat_count)
+                in enumerate(steps, start=1)
+            ],
+        ))
+
+    weight_rows: dict[tuple[str, ...], dict[str, Any]] = {}
+    for sample in samples:
+        for step in sample.execution_steps:
+            backend_kind = _summary_str(step.summary_fields, "backend_kind")
+            family = _model_weight_family(backend_kind or step.backend_name or "")
+            if family is None:
+                continue
+            logical_model_id = (
+                _summary_str(step.summary_fields, "logical_model_id")
+                or _summary_str(step.summary_fields, "model_id")
+            )
+            weights_file = _summary_basename(step.summary_fields, "weights_file")
+            weights_sha256 = _summary_digest(step.summary_fields, "weights_sha256")
+            source_dataset = _summary_str(step.summary_fields, "source_dataset")
+            model_revision = _summary_str(step.summary_fields, "model_revision")
+            backend_name = step.backend_name or backend_kind or family
+            resolved_kind = backend_kind or family
+            key = (
+                family, backend_name, resolved_kind,
+                logical_model_id or "", weights_file or "", weights_sha256 or "",
+                source_dataset or "", model_revision or "",
+            )
+            row = weight_rows.setdefault(key, {
+                "family": family,
+                "backend_name": backend_name,
+                "backend_kind": resolved_kind,
+                "logical_model_id": logical_model_id,
+                "weights_file": weights_file,
+                "weights_sha256": weights_sha256,
+                "source_dataset": source_dataset,
+                "model_revision": model_revision,
+                "use_count": 0,
+                "phases": set(),
+                "statuses": set(),
+            })
+            row["use_count"] += 1
+            row["phases"].add(step.phase)
+            row["statuses"].add(step.status)
+
+    model_weights = [
+        ModelWeightView(
+            **{key: value for key, value in row.items() if key not in {"phases", "statuses"}},
+            phases=sorted(row["phases"]),
+            statuses=sorted(row["statuses"]),
+        )
+        for _, row in sorted(weight_rows.items())
+    ]
+    return ProcessReport(
+        sample_process_count=sum(bool(sample.execution_steps) for sample in samples),
+        workflow_sequences=workflow_sequences,
+        model_weights=model_weights,
+    )
+
+
+def _model_weight_family(backend_kind: str) -> str | None:
+    normalized = backend_kind.casefold()
+    if normalized.startswith("yolo"):
+        return "yolo"
+    if normalized in {"semantic_segmentation", "segmentation", "segformer"}:
+        return "segmentation"
+    return None
+
+
+def _summary_str(summary: dict[str, Any], key: str) -> str | None:
+    return _value_str(summary.get(key))
+
+
+def _summary_basename(summary: dict[str, Any], key: str) -> str | None:
+    value = _summary_str(summary, key)
+    if value is None or "/" in value or "\\" in value:
+        return None
+    return value
+
+
+def _summary_digest(summary: dict[str, Any], key: str) -> str | None:
+    value = _summary_str(summary, key)
+    if value is None:
+        return None
+    normalized = value.casefold()
+    return normalized if re.fullmatch(r"[0-9a-f]{64}", normalized) else None
+
+
+def _artifact_call_audits(artifact: Any) -> list[dict[str, Any]]:
+    payload = getattr(artifact, "payload", None)
+    audits = payload.get("call_audit") if isinstance(payload, dict) else None
+    return [item for item in audits if isinstance(item, dict)] if isinstance(audits, list) else []
 
 
 def _run_metadata(run_dir: Path) -> RunMetadata | None:

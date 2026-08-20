@@ -49,6 +49,9 @@ class CountingSettings(BaseModel):
     verify_empty_detection: bool = True
     verify_empty_semantic: bool = False
     trust_empty_detection: bool = False
+    multi_detector_enabled: bool = True
+    max_selected_detector_experts: int = Field(default=5, ge=1, le=5)
+    min_successful_detector_experts: int = Field(default=1, ge=1)
 
     @model_validator(mode="before")
     @classmethod
@@ -96,6 +99,11 @@ class CountingSettings(BaseModel):
             raise ValueError(
                 "seam_conflict_min_distance_px cannot exceed "
                 "seam_conflict_max_distance_px"
+            )
+        if self.min_successful_detector_experts > self.max_selected_detector_experts:
+            raise ValueError(
+                "min_successful_detector_experts cannot exceed "
+                "max_selected_detector_experts"
             )
 
 

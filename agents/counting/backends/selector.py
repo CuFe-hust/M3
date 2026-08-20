@@ -39,13 +39,28 @@ class BackendSelector:
     """Build a stable ordered backend plan from explicit capabilities.
     根据显式能力建立稳定的有序 backend plan。"""
 
-    def __init__(self, registry: BackendRegistry, *, default_backend: str = "auto") -> None:
+    def __init__(
+        self,
+        registry: BackendRegistry,
+        *,
+        default_backend: str = "auto",
+        multi_detector_enabled: bool = True,
+        max_selected_detector_experts: int = 5,
+    ) -> None:
         self._registry = registry
         self._default_backend = default_backend
+        if not 1 <= max_selected_detector_experts <= 5:
+            raise ValueError("max_selected_detector_experts must be between 1 and 5")
+        self._multi_detector_enabled = multi_detector_enabled
+        self._max_selected_detector_experts = max_selected_detector_experts
 
     @property
     def default_backend(self) -> str:
         return self._default_backend
+
+    @property
+    def max_selected_detector_experts(self) -> int:
+        return self._max_selected_detector_experts
 
     def plan(
         self,
@@ -69,7 +84,10 @@ class BackendSelector:
             ordered = [item for item in ordered if _validate_kind(item) == "qwen_point"]
             reason = "explicit_qwen_point"
         elif self._default_backend in {"yolo_obb", "yolo_detect"}:
-            yolo = [item for item in ordered if _validate_kind(item) in {"yolo_obb", "yolo_detect"}]
+            yolo = [
+                item for item in ordered
+                if _validate_kind(item) in {"yolo_obb", "yolo_detect"}
+            ]
             qwen = [item for item in ordered if _validate_kind(item) == "qwen_point"]
             ordered = [*yolo, *qwen]
             reason = "explicit_yolo" if yolo else "explicit_yolo_unsupported_target_qwen"
@@ -78,16 +96,36 @@ class BackendSelector:
 
         if not ordered:
             return None
-        primary = ordered[0]
+        detectors = [
+            item for item in ordered
+            if _validate_kind(item) in {"yolo_obb", "yolo_detect"}
+        ]
+        selected_detectors = (
+            detectors[: self._max_selected_detector_experts]
+            if self._multi_detector_enabled
+            else detectors[:1]
+        )
+        selected_names = {item.name for item in selected_detectors}
+        if selected_detectors:
+            primary = selected_detectors[0]
+            ensemble = selected_detectors[1:]
+            fallback = [item for item in ordered if item.name not in selected_names]
+        else:
+            primary = ordered[0]
+            ensemble = []
+            fallback = ordered[1:]
         return BackendPlan(
             primary_backend_name=primary.name,
-            fallback_backend_names=tuple(item.name for item in ordered[1:]),
+            fallback_backend_names=tuple(item.name for item in fallback),
             reason_codes=(
                 f"task_{task}",
                 reason,
                 "fixed_kind_rank_then_priority_then_name",
+                "multi_detector_enabled" if self._multi_detector_enabled else "multi_detector_disabled",
             ),
             target_classes=executable_leaf_categories,
+            ensemble_backend_names=tuple(item.name for item in ensemble),
+            selected_detector_expert_names=tuple(item.name for item in selected_detectors),
         )
 
     def select(

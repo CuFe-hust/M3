@@ -31,11 +31,12 @@ def build_html(report: Report) -> str:
         f"<title>M3 Sample Audit Report · {_esc(report.run_id)}</title>",
         f"<style>{_CSS}</style></head><body><main>",
         _header(report),
-        '<nav><a href="#samples">样本审计</a><a href="#overview">总体统计</a>'
+        '<nav><a href="#process">具体流程</a><a href="#samples">样本审计</a><a href="#overview">总体统计</a>'
         '<a href="#routing">Expert Routing</a><a href="#failures">Failures</a>'
         '<a href="#runtime">Runtime</a></nav>',
         _samples_section(report),
         _overview(report),
+        _process_report(report),
         '<details class="aggregate-panel"><summary>总体 Task / Target 统计</summary>'
         + _counting_target_table(report)
         + '<section id="tasks"><h2>Tasks</h2>' + _task_overview_table(report.tasks)
@@ -85,6 +86,60 @@ def _overview(report: Report) -> str:
         f'<article class="card"><span>{_esc(label)}</span><strong>{_esc(value)}</strong></article>'
         for label, value in cards
     ) + "</div></section>"
+
+
+def _process_report(report: Report) -> str:
+    process = report.process_report
+    model_ids = report.metadata.model_ids if report.metadata is not None else {}
+    main_models = "".join(
+        f"<tr>{_cells(name, model_id)}</tr>" for name, model_id in sorted(model_ids.items())
+    ) or '<tr><td colspan="2">not recorded</td></tr>'
+    weights = "".join(
+        "<tr>" + _cells(
+            item.family,
+            item.backend_name,
+            item.backend_kind,
+            item.logical_model_id or "not recorded",
+            item.weights_file or "not recorded",
+            item.weights_sha256 or "not recorded",
+            item.source_dataset or "not recorded",
+            item.model_revision or "not recorded",
+            item.use_count,
+            ", ".join(item.phases) or "—",
+            ", ".join(item.statuses) or "—",
+        ) + "</tr>"
+        for item in process.model_weights
+    ) or '<tr><td colspan="11">No YOLO/segmentation backend execution was recorded.</td></tr>'
+    sequences = []
+    for index, sequence in enumerate(process.workflow_sequences, start=1):
+        steps = "".join(
+            '<li><span class="flow-order">' + _esc(step.order) + '</span><div><strong>'
+            + _esc(step.phase) + " · " + _esc(step.component) + '</strong><p>'
+            + _esc(step.operation or "operation not recorded")
+            + ((" · backend=" + _esc(step.backend_name)) if step.backend_name else "")
+            + ((f" · repeated ×{step.repeat_count}") if step.repeat_count > 1 else "")
+            + '</p></div></li>'
+            for step in sequence.steps
+        )
+        sequences.append(
+            f'<article class="workflow-sequence"><h4>Sequence {index} · task={_esc(sequence.task)}'
+            f' · samples={sequence.sample_count}</h4><ol>{steps}</ol></article>'
+        )
+    sequence_html = "".join(sequences) or "<p>No persisted execution sequence was available.</p>"
+    return (
+        '<section id="process"><h2>具体流程 / Concrete execution workflow</h2>'
+        '<p class="process-note">以下内容由本次运行已持久化的路由、backend attempt、模型调用与评测产物生成；'
+        '只报告实际观察到的流程和权重身份，不展示隐藏思维链，也不暴露本机 checkpoint 绝对路径。</p>'
+        f'<p>具有流程记录的样本：{process.sample_process_count}/{report.total}</p>'
+        '<h3>主模型身份 / Main model identities</h3><div class="table-scroll"><table><thead>'
+        '<tr><th>Role</th><th>Logical model ID</th></tr></thead><tbody>' + main_models
+        + '</tbody></table></div><h3>实际使用的 YOLO / Seg 权重</h3><div class="table-scroll">'
+        '<table class="weight-table"><thead><tr><th>Family</th><th>Backend</th><th>Kind</th>'
+        '<th>Logical model ID</th><th>Weights file</th><th>SHA-256</th><th>Source dataset</th>'
+        '<th>Revision</th><th>Uses</th><th>Phases</th><th>Statuses</th></tr></thead><tbody>'
+        + weights + '</tbody></table></div><h3>观测到的执行顺序 / Observed execution order</h3>'
+        + sequence_html + '</section>'
+    )
 
 
 def _task_overview_table(tasks: list[TaskSummary]) -> str:
@@ -767,6 +822,7 @@ table{width:100%;border-collapse:collapse;margin:.5rem 0 1rem}th,td{border-botto
 .bar-row{display:grid;grid-template-columns:minmax(140px,1fr) 3fr 45px;gap:8px;align-items:center;margin:7px 0}.bar-row i{display:block;height:8px;background:#e2e8f0;border-radius:99px;overflow:hidden}.bar-row b{display:block;height:100%;background:#2563eb}
 .code-buttons{display:flex;flex-wrap:wrap;gap:6px}.code-buttons button{border:1px solid var(--line);background:#fff;border-radius:6px;padding:6px 9px;cursor:pointer}
 .run-meta{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:14px;max-width:720px}.run-meta-item{min-width:0}.run-meta-item span{display:block;color:#cbd5e1;font-size:.72rem}.run-meta-value{display:block;overflow-wrap:anywhere;word-break:break-word}.mono{font-family:ui-monospace,monospace;overflow-wrap:anywhere}.aggregate-panel{background:transparent;border:0;margin:14px 0;padding:0}.aggregate-panel>summary{cursor:pointer;font-weight:700;padding:12px;background:#fff;border:1px solid var(--line);border-radius:8px}.sample-preview{display:grid;grid-template-columns:112px minmax(0,1fr);gap:14px;align-items:start;min-width:0;cursor:pointer;padding:12px}.sample-thumb{width:112px;height:112px;object-fit:cover;background:#e2e8f0;border-radius:4px}.sample-thumb-empty{display:grid;place-items:center;color:var(--muted);font-size:.75rem;text-align:center}.sample-summary-main{display:grid;gap:8px;min-width:0}.sample-summary-top{display:flex;gap:8px;align-items:center;flex-wrap:wrap;min-width:0}.sample-question{font-size:.95rem;overflow-wrap:anywhere}.answer-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;min-width:0}.answer-cell{display:grid;gap:3px;min-width:0;padding:8px;background:#fff;border:1px solid var(--line);border-radius:4px}.answer-cell small{color:var(--muted)}.answer-cell strong{overflow-wrap:anywhere;word-break:break-word}.sample-result-row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;color:var(--muted);overflow-wrap:anywhere}.sample-result-row strong{color:var(--ink)}.sample-body{display:block;border-top:1px solid var(--line);padding:12px}.sample-hero{display:grid;grid-template-columns:minmax(360px,.95fr) minmax(0,1.05fr);gap:12px;min-width:0}.sample-hero>*{min-width:0}.hero-visual,.hero-answer{min-width:0}.routing-flow,.execution-process,.model-calls{margin-top:12px}.route-chain{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:.5rem 0 1rem}.route-chain span{padding:6px 9px;border:1px solid var(--line);border-radius:4px;background:#fff;font-family:ui-monospace,monospace;overflow-wrap:anywhere}.route-chain b{color:var(--muted)}.route-candidate{margin:.25rem 0;overflow-wrap:anywhere}.stage,.model-call{border-top:1px solid var(--line);padding:10px 0;min-width:0}.timeline-step{border-left:3px solid #94a3b8;padding-left:12px}.timeline-step h4{font-size:.92rem}.stage h4,.model-call h4{margin:.1rem 0 .5rem;overflow-wrap:anywhere}.technical-details{margin-top:12px}.technical-details>summary{cursor:pointer;font-weight:650}.table-scroll{width:100%;overflow-x:auto}.table-scroll table{min-width:640px}
+.process-note{padding:10px 12px;border-left:3px solid var(--blue);background:#eff6ff;color:#334155}.weight-table{min-width:1500px!important}.weight-table td:nth-child(4),.weight-table td:nth-child(5),.weight-table td:nth-child(6){font-family:ui-monospace,monospace;overflow-wrap:anywhere}.workflow-sequence{margin:10px 0;padding:14px;border:1px solid var(--line);border-radius:7px;background:#f8fafc}.workflow-sequence h4{margin-top:0}.workflow-sequence ol{list-style:none;margin:0;padding:0}.workflow-sequence li{display:grid;grid-template-columns:30px minmax(0,1fr);gap:10px;position:relative;padding:8px 0}.workflow-sequence li:not(:last-child):before{content:"";position:absolute;left:14px;top:34px;bottom:-8px;border-left:2px solid #cbd5e1}.flow-order{display:grid;place-items:center;width:28px;height:28px;border-radius:50%;background:#2563eb;color:#fff;font-weight:700;z-index:1}.workflow-sequence p{margin:3px 0 0;color:var(--muted);overflow-wrap:anywhere}
 @media(max-width:900px){main{padding:10px}.filters{grid-template-columns:1fr 1fr}.sample summary.sample-preview{grid-template-columns:160px minmax(0,1fr)}.sample-thumb{width:76px;height:76px}.answer-grid{grid-template-columns:1fr}.sample-hero{grid-template-columns:1fr}.sample-body{grid-template-columns:1fr}.visuals{grid-column:auto}}
 @media(max-width:560px){header{display:block}.schema{display:inline-block;margin-top:12px}.filters{grid-template-columns:1fr}.sample summary.sample-preview{grid-template-columns:1fr}.sample-thumbnails{width:100%}.summary-visual{width:calc(50% - 3px)}.summary-visual .sample-thumb{width:100%;height:auto;aspect-ratio:1}.sample-result-row{gap:8px}}
 .execution-path{margin-top:12px}.execution-path ol{margin:.5rem 0 0;padding-left:1.5rem}.execution-path code{font-size:.85rem;overflow-wrap:anywhere;word-break:break-word}.image-modal{position:fixed;inset:0;z-index:20;display:grid;place-items:center;padding:5vh 5vw;background:rgba(15,23,42,.86)}.image-modal[hidden]{display:none}.image-modal img{max-width:94vw;max-height:88vh;width:auto;height:auto;object-fit:contain;background:#fff;box-shadow:0 12px 50px rgba(0,0,0,.45)}.image-modal-close{position:fixed;top:18px;right:24px;width:40px;height:40px;border:0;border-radius:999px;background:#fff;color:#0f172a;font-size:28px;line-height:1;cursor:pointer}.modal-open{overflow:hidden}

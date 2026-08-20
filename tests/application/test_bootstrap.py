@@ -56,7 +56,7 @@ CATALOG_PATH = REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
 def test_bootstrap_does_not_access_catalog_private_storage() -> None:
     source = (REPO_ROOT / "application" / "bootstrap.py").read_text(encoding="utf-8")
 
-    assert "_experts" not in source
+    assert "catalog._experts" not in source
     assert "getattr(catalog" not in source
 
 
@@ -557,6 +557,7 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
         executable_leaf_categories=("small-vehicle", "large-vehicle"),
         hints=vehicle_hints,
     )
+    assert plan.ensemble_backend_names == ()
     assert vehicle_plan is not None
     assert vehicle_plan.primary_backend_name == "detector_obb_csl_001"
     assert vehicle_plan.fallback_backend_names == (
@@ -577,6 +578,53 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     assert aircraft_plan.fallback_backend_names == (
         "segmenter_mitb2_001", "qwen_point",
     )
+
+
+def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class(
+    tmp_path: Path,
+) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    settings = settings.model_copy(
+        update={"runs": settings.runs.model_copy(update={"root": tmp_path / "runs"})}
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=REPO_ROOT,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    agent = components.agent_registry.get("counting_agent")
+    selector = getattr(agent, "_selector")
+    catalog = getattr(agent, "_expert_catalog")
+
+    def plan_for(label: str, leaves: tuple[str, ...]):
+        target = CountTargetSpec(
+            canonical_label=label,
+            inclusion_rule="include the declared target",
+            exclusion_rule="exclude every other object",
+        )
+        return selector.plan(
+            target,
+            task="counting",
+            executable_leaf_categories=leaves,
+            hints={"quantity_estimation": True, **catalog.target_hints(target)},
+        )
+
+    shared = plan_for("plane", ("plane",))
+    assert shared is not None
+    assert shared.selected_detector_expert_names == (
+        "detector_yolo_detect_001",
+        "detector_obb_csl_001",
+    )
+    assert shared.fallback_backend_names == (
+        "segmenter_mitb2_001",
+        "qwen_point",
+    )
+
+    dota_only = plan_for("airport", ("airport",))
+    assert dota_only is not None
+    assert dota_only.selected_detector_expert_names == ("detector_obb_csl_001",)
+    assert dota_only.ensemble_backend_names == ()
 
 
 def test_composed_schema_default_plan_uses_segformer_or_qwen_only(

@@ -1276,14 +1276,27 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
             CountingBackendAttemptAudit(
                 backend_name="detector", backend_kind="yolo_obb", phase="primary",
                 status="succeeded", counting=zero,
-                backend_trace={"raw_detections": 0, "classes": ["vehicle"]},
+                backend_trace={
+                    "raw_detections": 0,
+                    "classes": ["vehicle"],
+                    "model_id": "YOLO11s:iSAID:epoch111",
+                    "weights_file": "isaid-yolo11s-best.pt",
+                    "weights_sha256": "a" * 64,
+                    "source_dataset": "iSAID",
+                },
             ),
             CountingBackendAttemptAudit(
                 backend_name="segmenter", backend_kind="semantic_segmentation",
                 phase="zero_review", status="succeeded", counting=positive,
                 error_type="ZeroReviewRecovery",
-                backend_trace={"raw_components": 2, "nested_not_public": {"mask": [1, 2, 3]},
-                               "checkpoint": "C:/private/model.bin"},
+                backend_trace={
+                    "raw_components": 2,
+                    "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
+                    "weights_sha256": "b" * 64,
+                    "model_revision": "rev-2",
+                    "nested_not_public": {"mask": [1, 2, 3]},
+                    "checkpoint": "C:/private/model.bin",
+                },
             ),
         ],
     )
@@ -1301,8 +1314,21 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
     assert [(step.backend_name, step.operation) for step in backend_steps] == [
         ("detector", "primary"), ("segmenter", "zero_review")]
     assert backend_steps[1].reason_code == "ZeroReviewRecovery"
+    assert backend_steps[0].summary_fields["weights_file"] == "isaid-yolo11s-best.pt"
+    assert backend_steps[1].summary_fields["logical_model_id"] == "SegFormer-MiT-B2:iSAID:local"
     assert row.task_routing.resolved_task == "counting"
     assert row.task_routing.executed_agent == "counting_agent"
+    process = build_report(run_dir).process_report
+    assert process.sample_process_count == 1
+    assert len(process.workflow_sequences) == 1
+    assert [item.family for item in process.model_weights] == ["segmentation", "yolo"]
+    yolo = next(item for item in process.model_weights if item.family == "yolo")
+    assert yolo.logical_model_id == "YOLO11s:iSAID:epoch111"
+    assert yolo.weights_file == "isaid-yolo11s-best.pt"
+    assert yolo.weights_sha256 == "a" * 64
+    segmenter = next(item for item in process.model_weights if item.family == "segmentation")
+    assert segmenter.logical_model_id == "SegFormer-MiT-B2:iSAID:local"
+    assert segmenter.weights_sha256 == "b" * 64
     serialized = json.dumps(row.model_dump(mode="json"))
     assert "nested_not_public" not in serialized and "C:/private" not in serialized
 

@@ -297,6 +297,8 @@ def _build_agent_registry(
         verify_empty_detection=settings.counting.verify_empty_detection,
         verify_empty_semantic=settings.counting.verify_empty_semantic,
         trust_empty_detection=settings.counting.trust_empty_detection,
+        multi_detector_enabled=settings.counting.multi_detector_enabled,
+        max_selected_detector_experts=settings.counting.max_selected_detector_experts,
         expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(

@@ -67,13 +67,18 @@ class CountingAgent:
         verify_empty_detection: bool = True,
         trust_empty_detection: bool = False,
         verify_empty_semantic: bool = False,
+        multi_detector_enabled: bool = True,
+        max_selected_detector_experts: int = 5,
         expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
         self._target_resolver = target_resolver
         self._expert_catalog = expert_catalog
         self._selector = BackendSelector(
-            backend_registry, default_backend=default_backend
+            backend_registry,
+            default_backend=default_backend,
+            multi_detector_enabled=multi_detector_enabled,
+            max_selected_detector_experts=max_selected_detector_experts,
         )
         self._executor = CountingPlanExecutor(
             self._selector,
@@ -201,6 +206,16 @@ class CountingAgent:
                 entry.to_trace() for entry in state.fallback_history
             ],
             "selection_reason": list(plan.reason_codes),
+            "selected_detector_experts": [
+                {
+                    "backend_name": name,
+                    "kind": self._selector.backend_by_name(name).kind,
+                    "priority": self._selector.backend_by_name(name).priority,
+                }
+                for name in plan.selected_detector_expert_names
+            ],
+            "max_selected_detector_experts": self._selector.max_selected_detector_experts,
+            "fallback_backends": list(plan.fallback_backend_names),
             "target": resolution.target.canonical_label,
             "target_source": resolution.target_source,
             "planner_target": resolution.planner_target,
