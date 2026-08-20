@@ -232,13 +232,20 @@ class VisualTaskPlanner:
         *,
         data_root: Path,
         artifact_dir: Path,
-    ) -> tuple[VisualTaskPlan, list[MaterializedVisualView]]:
-        """Materialize an explicitly assigned task without reclassification."""
-        if view.task in COUNTING_TASKS:
+    ) -> tuple[VisualTaskPlan, tuple[MaterializedVisualView, ...]]:
+        """Create a task-locked plan without reclassifying an explicit sample.
+
+        Dataset adapters have already supplied the authoritative task for a
+        ``UnifiedSample``. Change tasks therefore need deterministic view
+        materialization and must not spend a planner call that can fail or
+        turn ``change_caption`` into an unrelated task.
+        """
+        task = view.task
+        if task in COUNTING_TASKS:
             raise VisualTaskPlanError("EXPLICIT_COUNTING_TASK_REQUIRES_TARGET")
         plan = VisualTaskPlan(
             version="visual-task-plan-v4",
-            task=view.task,
+            task=task,
             needs_visual_assistance=False,
             object_categories=[],
             count_target=None,
