@@ -214,6 +214,10 @@ class ChangeAgent:
                 preprocess.transform_summary.get("sharpness_adjustment_used", False)
             ),
             "proposal_count": len(preprocess.proposals),
+            "building_rescue_shadow": preprocess.diagnostics.get(
+                "building_rescue_shadow", {}
+            ),
+            "building_rescue_candidate_count": len(preprocess.rescue_candidates),
             **perception_audit,
             # Compatibility aliases retained for readers of the Task 08 trace.
             "semantic_reason_code": preprocess.diagnostics.get(
@@ -591,12 +595,16 @@ class ChangeAgent:
                 cause="INVALID_CHANGE_PAIR",
             )
         try:
-            perception = ChangePerceptionPipeline(
+            pipeline = ChangePerceptionPipeline(
                 self._semantic_client,
                 settings,
                 learned_change_client=self._learned_change_client,
                 semantic_experts=self._semantic_experts,
-            ).run(prepared)
+            )
+            perception = pipeline.run(prepared)
+            rescue_candidates, rescue_diagnostics = pipeline.run_rescue_candidates(
+                prepared
+            )
         except ChangePerceptionError as error:
             raise AgentExecutionError(
                 self.name,
@@ -609,6 +617,8 @@ class ChangeAgent:
                 sample.sample_id,
                 cause=error.reason_code,
             ) from error
+        diagnostics = dict(perception.diagnostics)
+        diagnostics["building_rescue_shadow"] = rescue_diagnostics
         return publish_change_proposals(
             prepared,
             score_map=perception.score_map,
@@ -617,7 +627,8 @@ class ChangeAgent:
             settings=settings,
             component_maps=perception.component_maps,
             component_masks=perception.component_masks,
-            diagnostics=perception.diagnostics,
+            diagnostics=diagnostics,
+            rescue_candidates=rescue_candidates,
         )
 
     def _build_evidence(

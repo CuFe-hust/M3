@@ -25,6 +25,7 @@ from agents.change.schema import (
     HarmonizationDecision,
     PairValidationReport,
     RegistrationReport,
+    StructuralRescueCandidate,
 )
 from agents.change.settings import AgentChangeSettings
 from agents.errors import OptionalDependencyMissingError
@@ -348,6 +349,7 @@ def publish_change_proposals(
     component_maps: dict[str, Any] | None = None,
     component_masks: dict[str, Any] | None = None,
     diagnostics: dict[str, object] | None = None,
+    rescue_candidates: list[StructuralRescueCandidate] | None = None,
 ) -> ChangePreprocessResult:
     """Publish legacy or V2 maps, overlays, crops, and serializable reports."""
 
@@ -474,6 +476,15 @@ def publish_change_proposals(
         [item.model_dump(mode="json") for item in updated],
     )
     files["proposals"] = "change_preprocess/proposals.json"
+    candidate_payload = None if rescue_candidates is None else list(rescue_candidates)
+    if candidate_payload is not None:
+        _write_json(
+            output / "building_rescue_candidates.json",
+            [item.model_dump(mode="json") for item in candidate_payload],
+        )
+        files["building_rescue_candidates"] = (
+            "change_preprocess/building_rescue_candidates.json"
+        )
     files["harmonization_report"] = "change_preprocess/harmonization_report.json"
     result = ChangePreprocessResult(
         validation=prepared.validation,
@@ -483,6 +494,7 @@ def publish_change_proposals(
         transform_summary=prepared.transform_summary,
         diagnostics=diagnostics,
         registration=prepared.registration_report,
+        rescue_candidates=candidate_payload or [],
     )
     _write_json(output / "harmonization_report.json", result.model_dump(mode="json"))
     return result

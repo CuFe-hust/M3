@@ -291,6 +291,7 @@ class ChangePreprocessResult(BaseModel):
     transform_summary: dict[str, object] = Field(default_factory=dict)
     diagnostics: dict[str, JsonValue] = Field(default_factory=dict)
     registration: RegistrationReport | None = None
+    rescue_candidates: list[StructuralRescueCandidate] = Field(default_factory=list)
 
 
 CandidateVerdict = Literal[
