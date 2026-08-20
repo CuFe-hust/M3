@@ -617,16 +617,17 @@ def test_vlm_payload_deanchors_landcover_only_transition(tmp_path: Path, monkeyp
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
     support = payload["proposals"][0]["semantic_support"]
-    assert support["status"] == "hypothesis_summary"
-    assert support["landcover_only"] is True
-    assert "from_class" not in support
-    assert "not sufficient" in payload["proposals"][0]["semantic_hypothesis_note"]
+    assert support["status"] == "informative"
+    assert support["from_class"] == "rangeland"
+    assert support["to_class"] == "tree"
+    assert "semantic_expert_evidence" not in payload["proposals"][0]
+    assert "semantic_consensus" not in payload["proposals"][0]
 
 
 # ── 复核与失败语义 / review and failure semantics ─────────────────────────
 
 
-def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch) -> None:
+def test_canonical_no_change_warning_does_not_leak_partial_status(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(
         tmp_path / "artifacts", proposals=[_proposal("change_000", 0.8), _proposal("change_001", 0.7)]
     )
@@ -637,8 +638,9 @@ def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient(answer="No visible change.")
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
-    assert execution.payload.status == "partial"
+    assert execution.payload.status == "completed"
     assert "CHANGE_RESULT_CONFLICT" in execution.trace["review_warnings"]
+    assert execution.trace["core_conflict_detected"] is True
     assert execution.trace["adjudication_used"] is False
     assert execution.trace["review_used"] is True
 

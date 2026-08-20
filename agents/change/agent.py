@@ -137,8 +137,13 @@ class ChangeAgent:
             preprocess,
             settings=settings,
         )
+        perception_payload = json.loads(json.dumps(perception_audit))
+        perception_payload.pop("semantic_ensemble", None)
+        for metadata in perception_payload.get("proposal_metadata", []):
+            metadata.pop("semantic_expert_evidence", None)
+            metadata.pop("semantic_consensus", None)
         payload = self._request_payload(
-            sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_audit,
+            sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_payload,
             image_manifest=image_manifest, evidence_audit=evidence_audit, stage="initial",
         )
         content.append({"type": "text", "text": json.dumps(payload, ensure_ascii=False)})
@@ -166,6 +171,12 @@ class ChangeAgent:
         rescue_request_hash: str | None = None
         rescue_decision: str | None = None
         rescue_failure: str | None = None
+        core_conflict_reasons = [
+            warning
+            for warning in initial_warnings
+            if warning == "CHANGE_RESULT_CONFLICT"
+            or warning.startswith("NEGATIVE_")
+        ]
         if (
             not _is_core_canonical_no_change(reviewed, task=sample.task)
             and settings.review.adjudication_enabled
@@ -184,7 +195,7 @@ class ChangeAgent:
                 ),
             )
             adjudication_payload = self._request_payload(
-                sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_audit,
+                sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_payload,
                 image_manifest=image_manifest, evidence_audit=adjudication_audit, stage="adjudication",
                 first_pass={"answer": result.answer, "review_warnings": initial_warnings, "review_route_reasons": list(review.route_reasons)},
                 selected_proposals=selected,
@@ -333,6 +344,8 @@ class ChangeAgent:
             "segformer_model": preprocess.diagnostics.get("semantic_model"),
             "review_used": settings.review.enabled,
             "review_warnings": final_warnings,
+            "core_conflict_detected": bool(core_conflict_reasons),
+            "core_conflict_reasons": core_conflict_reasons,
             "adjudication_enabled": settings.review.adjudication_enabled,
             "adjudication_used": adjudication_used,
             "adjudication_trigger": ("negative_conflict" if review.route == "adjudicate_negative" else "positive_conflict") if adjudication_used else None,
@@ -507,42 +520,16 @@ class ChangeAgent:
         return payload
 
     def _proposal_payload(self, item: Any) -> dict[str, object]:
-        semantic_evidence = list(item.semantic_transitions or [])
-        typed_support = _typed_semantic_support_payload(item)
-        payload = {
+        return {
             "proposal_id": item.proposal_id, "box": item.box, "score": round(item.score, 6),
             "source": item.source,
             "component_scores": {name: round(score, 6) for name, score in item.component_scores.items()},
-            "semantic_support": (
-                typed_support
-                if semantic_evidence
-                else _semantic_support_payload(
-                    item.semantic_transition,
-                    confidence_floor=self._settings.semantic.semantic_confidence_floor,
-                )
+            "semantic_support": _semantic_support_payload(
+                item.semantic_transition, confidence_floor=self._settings.semantic.semantic_confidence_floor
             ),
-            "semantic_expert_evidence": semantic_evidence,
-            "semantic_consensus": item.semantic_consensus,
             "effective_weights": item.effective_weights, "reliability": item.reliability,
             "registration_confidence": item.registration_confidence,
         }
-        if typed_support.get("landcover_only"):
-            payload["semantic_hypothesis_note"] = (
-                "Land-cover segmentation hypothesis only; it is not sufficient "
-                "by itself for persistent change. Confirm durable extent/use "
-                "change from raw T1/T2."
-            )
-        elif typed_support.get("transient_only"):
-            payload["semantic_hypothesis_note"] = (
-                "Transient object evidence alone does not establish persistent "
-                "structural or land-use change."
-            )
-        else:
-            payload["semantic_hypothesis_note"] = (
-                "Semantic expert labels are auxiliary hypotheses; confirm the "
-                "same-location change from raw T1/T2."
-            )
-        return payload
 
     def _validate_adjudication(
         self, result: ChangeAdjudicationResult, selected_ids: list[str]

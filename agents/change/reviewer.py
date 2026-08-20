@@ -281,10 +281,18 @@ def review_result(
             ),
         }
     )
+    review_status = result.status
+    if warnings:
+        # A completed canonical NO_CHANGE with a proposal conflict is a
+        # diagnostic condition, not an incomplete execution. Preserve partial
+        # when the result was already degraded before reviewer warnings.
+        review_status = (
+            "completed"
+            if no_change and result.status == "completed"
+            else "partial"
+        )
     return (
-        result.model_copy(
-            update={"geometry": geometry, "status": "partial" if warnings else result.status}
-        ),
+        result.model_copy(update={"geometry": geometry, "status": review_status}),
         warnings,
     )
 

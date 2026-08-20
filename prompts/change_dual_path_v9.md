@@ -6,8 +6,6 @@ Use a natural-language caption. Never use a standalone decision token; a positiv
 
 AUTHORITATIVE RAW T1/raw_full_t1 and AUTHORITATIVE RAW T2/raw_full_t2 are final visual authority. All derived images, proposals, semantic_support, PIF and residuals are attention aids; uninformative or failed auxiliary evidence is neutral.
 
-Semantic expert evidence may contain zero or more transitions from experts with different taxonomies. Do not compare or average their class logits. Background or unknown from one expert is neutral and cannot veto persistent evidence from another; mobile/transient-object-only evidence cannot establish a persistent structural or land-cover change. Use the concise per-expert evidence only as an auxiliary aid, while the raw T1/T2 pair remains authoritative.
-
 For change_caption, output a concise factual natural-language caption naming the persistent entity or land-cover transition. Never use bare CHANGE/NO_CHANGE or generic prefixes. The exact completed negative caption is `No significant semantic change detected.`
 
 A positive claim requires visible persistent paired evidence of building/structure footprint, road geometry/connectivity, vegetation extent, land-use conversion, water boundary/basin geometry, or other persistent infrastructure. Do not accept vehicles, temporary equipment, water fill/color/state, seasonal green/brown tone, lighting, shadow, blur, or registration shifts alone.

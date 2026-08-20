@@ -59,7 +59,7 @@ def test_no_change_with_high_score_proposals_is_conflict() -> None:
         result, [_proposal("p1"), _proposal("p2", score=0.8)], ChangeReviewSettings()
     )
     assert "CHANGE_RESULT_CONFLICT" in warnings
-    assert reviewed.status == "partial"
+    assert reviewed.status == "completed"
 
 
 def test_no_change_with_single_proposal_is_not_conflict() -> None:
