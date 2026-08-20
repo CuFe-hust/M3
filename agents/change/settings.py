@@ -197,6 +197,34 @@ class ChangeSemanticSettings(BaseModel):
             )
 
 
+class ChangeBuildingRescueSettings(BaseModel):
+    """Conservative OEM building-footprint rescue candidate settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    shadow_only: bool = True
+    building_probability_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    source_absence_probability_max: float = Field(default=0.25, ge=0.0, le=1.0)
+    min_component_area_ratio: float = Field(default=0.0003, gt=0.0, le=1.0)
+    min_component_area_ratio_edge: float = Field(default=0.0001, gt=0.0, le=1.0)
+    max_component_area_ratio: float = Field(default=0.25, gt=0.0, le=1.0)
+    registration_tolerance_min_px: int = Field(default=1, ge=0, le=32)
+    registration_tolerance_max_px: int = Field(default=4, ge=0, le=64)
+    registration_tolerance_error_scale: float = Field(default=1.5, gt=0.0)
+    edge_margin_ratio: float = Field(default=0.06, ge=0.0, le=0.5)
+    interior_context_padding_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
+    edge_context_padding_ratio: float = Field(default=0.16, ge=0.0, le=1.0)
+    max_candidates: int = Field(default=6, ge=1, le=24)
+    min_review_pixel_size: int = Field(default=256, ge=32, le=2048)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.min_component_area_ratio_edge > self.min_component_area_ratio:
+            raise ValueError("edge rescue area threshold cannot exceed interior threshold")
+        if self.registration_tolerance_min_px > self.registration_tolerance_max_px:
+            raise ValueError("registration tolerance minimum cannot exceed maximum")
+
+
 class ChangeReliabilitySettings(BaseModel):
     """Deterministic reliability clamps used to modulate proposal branches."""
 
@@ -267,6 +295,9 @@ class AgentChangeSettings(BaseModel):
     registration: ChangeRegistrationSettings = Field(default_factory=ChangeRegistrationSettings)
     proposals: ChangeProposalSettings = Field(default_factory=ChangeProposalSettings)
     semantic: ChangeSemanticSettings = Field(default_factory=ChangeSemanticSettings)
+    building_rescue: ChangeBuildingRescueSettings = Field(
+        default_factory=ChangeBuildingRescueSettings
+    )
     reliability: ChangeReliabilitySettings = Field(default_factory=ChangeReliabilitySettings)
     learned_change: ChangeLearnedChangeSettings = Field(
         default_factory=ChangeLearnedChangeSettings

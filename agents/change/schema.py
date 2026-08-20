@@ -254,6 +254,30 @@ class ChangeProposal(BaseModel):
     registration_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
+class StructuralRescueCandidate(BaseModel):
+    """Building-only rescue evidence kept separate from core proposals."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    expert_id: str
+    label: Literal["building"] = "building"
+    direction: Literal["added", "removed"]
+    box: tuple[int, int, int, int]
+    normalized_box: tuple[int, int, int, int]
+    score: float = Field(ge=0.0, le=1.0)
+    target_mean_probability: float = Field(ge=0.0, le=1.0)
+    target_p10_probability: float = Field(ge=0.0, le=1.0)
+    source_mean_probability: float = Field(ge=0.0, le=1.0)
+    source_max_probability: float = Field(ge=0.0, le=1.0)
+    area_px: int = Field(ge=1)
+    area_ratio: float = Field(gt=0.0, le=1.0)
+    edge_flags: tuple[str, ...] = ()
+    registration_tolerance_px: int = Field(ge=0)
+    supporting_core_signals: dict[str, float] = Field(default_factory=dict)
+    artifact_files: tuple[str, ...] = ()
+
+
 class ChangePreprocessResult(BaseModel):
     """Serializable preprocessing result referenced by trace and artifacts.
     由 trace 与产物引用的可序列化预处理结果。"""

@@ -24,7 +24,7 @@ from agents.change.proposal_fusion import (
     fuse_change_proposals,
     compute_temporal_semantic_stability,
 )
-from agents.change.schema import ChangeProposal
+from agents.change.schema import ChangeProposal, StructuralRescueCandidate
 from agents.change.semantic_difference import (
     SEMANTIC_DIFFERENCE_VERSION,
     compute_semantic_difference,
@@ -149,6 +149,64 @@ class ChangePerceptionPipeline:
         )
         self._learned_change_client = learned_change_client
         self._settings = settings
+
+    def run_rescue_candidates(
+        self, prepared: ChangePreparedPair
+    ) -> tuple[list[StructuralRescueCandidate], dict[str, object]]:
+        """Run building-only rescue inference outside the core fusion path."""
+
+        np = _require_numpy()
+        rescue_settings = self._settings.building_rescue
+        if not rescue_settings.enabled:
+            return [], {"status": "disabled", "shadow_only": rescue_settings.shadow_only}
+        if (
+            prepared.comparison_t1 is None
+            or prepared.comparison_t2 is None
+            or not prepared.validation.valid
+        ):
+            return [], {"status": "unavailable", "reason_code": "INVALID_CHANGE_PAIR"}
+        rescue_bindings = tuple(
+            binding
+            for binding in self._semantic_experts
+            if binding.participation == "rescue"
+        )
+        if not rescue_bindings:
+            return [], {"status": "unavailable", "reason_code": "RESCUE_EXPERT_MISSING"}
+
+        expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
+        requested_stages = tuple(self._settings.semantic.feature_stages)
+        candidates: list[StructuralRescueCandidate] = []
+        failures: list[dict[str, str]] = []
+        for binding in rescue_bindings:
+            try:
+                run = _infer_semantic_expert_pair(
+                    binding,
+                    prepared,
+                    self._settings.semantic,
+                    expected_size=expected_size,
+                    requested_stages=requested_stages,
+                    np=np,
+                )
+                candidates.extend(
+                    _extract_building_rescue_candidates(
+                        run,
+                        prepared,
+                        rescue_settings,
+                        np=np,
+                    )
+                )
+            except Exception as error:
+                failures.append(
+                    {"expert_id": binding.expert_id, "error_type": type(error).__name__}
+                )
+        candidates = _rank_rescue_candidates(candidates, rescue_settings.max_candidates)
+        return candidates, {
+            "status": "success" if not failures else "partial",
+            "shadow_only": rescue_settings.shadow_only,
+            "expert_ids": [binding.expert_id for binding in rescue_bindings],
+            "candidate_count": len(candidates),
+            "failures": failures,
+        }
 
     def run(self, prepared: ChangePreparedPair) -> ChangePerceptionResult:
         """Run deterministic proposal perception without publishing artifacts."""
@@ -992,6 +1050,234 @@ def _json_safe_diagnostics(value: Mapping[str, Any]) -> dict[str, object]:
 
     compacted = compact(value)
     return compacted if isinstance(compacted, dict) else {}
+
+
+def _extract_building_rescue_candidates(
+    run: SemanticExpertRun,
+    prepared: ChangePreparedPair,
+    settings: Any,
+    *,
+    np: Any,
+) -> list[StructuralRescueCandidate]:
+    """Extract conservative added/removed building footprint candidates."""
+
+    label_names = {str(name).casefold(): str(name) for name in run.first_output.class_names}
+    requested_labels = run.binding.rescue_model_labels or frozenset({"building"})
+    label = next(
+        (label for label in requested_labels if label.casefold() in label_names),
+        None,
+    )
+    if label is None:
+        return []
+    index = next(
+        index
+        for index, name in enumerate(run.first_output.class_names)
+        if str(name).casefold() == label.casefold()
+    )
+    first_probability = _resize_probability_map(
+        np.asarray(run.first_output.probabilities)[index],
+        tuple(run.first_output.original_size),
+        np=np,
+    )
+    second_probability = _resize_probability_map(
+        np.asarray(run.second_output.probabilities)[index],
+        tuple(run.second_output.original_size),
+        np=np,
+    )
+    height, width = first_probability.shape
+    tolerance = _rescue_tolerance_px(prepared, settings)
+    first_mask = first_probability >= settings.building_probability_threshold
+    second_mask = second_probability >= settings.building_probability_threshold
+    first_tolerant = _binary_dilate(first_mask, tolerance, np=np)
+    second_tolerant = _binary_dilate(second_mask, tolerance, np=np)
+    valid_mask = getattr(prepared, "registration_valid_mask", None)
+    if valid_mask is not None:
+        valid_mask = np.asarray(valid_mask, dtype=bool)
+        if valid_mask.shape != first_mask.shape or not np.any(valid_mask):
+            return []
+
+    output: list[StructuralRescueCandidate] = []
+    for direction, component_mask, target, source in (
+        ("added", second_mask & ~first_tolerant, second_probability, first_probability),
+        ("removed", first_mask & ~second_tolerant, first_probability, second_probability),
+    ):
+        for component_index, component in enumerate(_binary_components(component_mask, np=np)):
+            if valid_mask is not None and not np.any(component & valid_mask):
+                continue
+            ys, xs = np.where(component)
+            if not len(xs):
+                continue
+            x0, x1 = int(xs.min()), int(xs.max()) + 1
+            y0, y1 = int(ys.min()), int(ys.max()) + 1
+            area = int(component.sum())
+            area_ratio = area / float(height * width)
+            edge_flags = _rescue_edge_flags(
+                x0, y0, x1, y1, width=width, height=height, margin=settings.edge_margin_ratio
+            )
+            min_area = (
+                settings.min_component_area_ratio_edge
+                if edge_flags
+                else settings.min_component_area_ratio
+            )
+            if area_ratio < min_area or area_ratio > settings.max_component_area_ratio:
+                continue
+            target_values = target[component]
+            source_values = source[component]
+            source_max = float(np.max(source_values))
+            target_mean = float(np.mean(target_values))
+            if (
+                target_mean < settings.building_probability_threshold
+                or float(np.percentile(target_values, 10))
+                < settings.building_probability_threshold * 0.75
+                or source_max > settings.source_absence_probability_max
+            ):
+                continue
+            score = float(
+                np.clip(
+                    0.60 * target_mean
+                    + 0.30 * (1.0 - float(np.mean(source_values)))
+                    + 0.10 * min(1.0, area_ratio / max(min_area, 1e-9)),
+                    0.0,
+                    1.0,
+                )
+            )
+            output.append(
+                StructuralRescueCandidate(
+                    candidate_id=(
+                        f"{run.binding.expert_id}:{direction}:{component_index}:"
+                        f"{x0}-{y0}-{x1}-{y1}"
+                    ),
+                    expert_id=run.binding.expert_id,
+                    direction=direction,
+                    box=(x0, y0, x1, y1),
+                    normalized_box=(
+                        round(999 * x0 / width),
+                        round(999 * y0 / height),
+                        round(999 * x1 / width),
+                        round(999 * y1 / height),
+                    ),
+                    score=score,
+                    target_mean_probability=target_mean,
+                    target_p10_probability=float(np.percentile(target_values, 10)),
+                    source_mean_probability=float(np.mean(source_values)),
+                    source_max_probability=source_max,
+                    area_px=area,
+                    area_ratio=area_ratio,
+                    edge_flags=tuple(edge_flags),
+                    registration_tolerance_px=tolerance,
+                )
+            )
+    return output
+
+
+def _resize_probability_map(probability: Any, original_size: tuple[int, int], *, np: Any) -> Any:
+    width, height = (int(original_size[0]), int(original_size[1]))
+    array = np.asarray(probability, dtype=np.float32)
+    if array.shape == (height, width):
+        return array
+    image = Image.fromarray(array, mode="F")
+    return np.asarray(
+        image.resize((width, height), resample=Image.Resampling.BILINEAR),
+        dtype=np.float32,
+    )
+
+
+def _binary_dilate(mask: Any, radius: int, *, np: Any) -> Any:
+    if radius <= 0:
+        return np.asarray(mask, dtype=bool)
+    source = np.asarray(mask, dtype=bool)
+    padded = np.pad(source, radius, mode="constant", constant_values=False)
+    result = np.zeros_like(source, dtype=bool)
+    for dy in range(2 * radius + 1):
+        for dx in range(2 * radius + 1):
+            result |= padded[dy : dy + source.shape[0], dx : dx + source.shape[1]]
+    return result
+
+
+def _binary_components(mask: Any, *, np: Any) -> list[Any]:
+    source = np.asarray(mask, dtype=bool)
+    visited = np.zeros_like(source, dtype=bool)
+    height, width = source.shape
+    components: list[Any] = []
+    for y, x in np.argwhere(source):
+        y, x = int(y), int(x)
+        if visited[y, x]:
+            continue
+        stack = [(y, x)]
+        visited[y, x] = True
+        pixels: list[tuple[int, int]] = []
+        while stack:
+            cy, cx = stack.pop()
+            pixels.append((cy, cx))
+            for dy in (-1, 0, 1):
+                for dx in (-1, 0, 1):
+                    if dy == 0 and dx == 0:
+                        continue
+                    ny, nx = cy + dy, cx + dx
+                    if (
+                        0 <= ny < height
+                        and 0 <= nx < width
+                        and source[ny, nx]
+                        and not visited[ny, nx]
+                    ):
+                        visited[ny, nx] = True
+                        stack.append((ny, nx))
+        component = np.zeros_like(source, dtype=bool)
+        ys, xs = zip(*pixels)
+        component[list(ys), list(xs)] = True
+        components.append(component)
+    return components
+
+
+def _rescue_edge_flags(
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    *,
+    width: int,
+    height: int,
+    margin: float,
+) -> tuple[str, ...]:
+    x_margin = width * margin
+    y_margin = height * margin
+    flags = []
+    if x0 <= x_margin:
+        flags.append("left")
+    if x1 >= width - x_margin:
+        flags.append("right")
+    if y0 <= y_margin:
+        flags.append("top")
+    if y1 >= height - y_margin:
+        flags.append("bottom")
+    if len(flags) >= 2:
+        flags.append("corner")
+    return tuple(flags)
+
+
+def _rescue_tolerance_px(prepared: ChangePreparedPair, settings: Any) -> int:
+    reprojection_error = 0.0
+    report = getattr(prepared, "registration_report", None)
+    if report is not None and report.metrics is not None:
+        reprojection_error = float(report.metrics.median_reprojection_error)
+    return max(
+        settings.registration_tolerance_min_px,
+        min(
+            settings.registration_tolerance_max_px,
+            int(math.ceil(reprojection_error * settings.registration_tolerance_error_scale)),
+        ),
+    )
+
+
+def _rank_rescue_candidates(
+    candidates: list[StructuralRescueCandidate], max_candidates: int
+) -> list[StructuralRescueCandidate]:
+    ranked = sorted(candidates, key=lambda item: (-item.score, item.candidate_id))
+    edge = next((item for item in ranked if item.edge_flags), None)
+    selected = ranked[:max_candidates]
+    if edge is not None and edge not in selected:
+        selected = [*selected[:-1], edge] if selected else [edge]
+    return sorted(selected, key=lambda item: (-item.score, item.candidate_id))
 
 
 def _validate_pair_grids(

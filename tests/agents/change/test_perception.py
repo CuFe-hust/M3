@@ -22,6 +22,7 @@ from agents.change.settings import (
     AgentChangeSettings,
     ChangeHarmonizationSettings,
     ChangeProposalSettings,
+    ChangeBuildingRescueSettings,
     ChangeLearnedChangeSettings,
     ChangeSemanticSettings,
 )
@@ -111,6 +112,44 @@ def _outputs() -> tuple[DenseSemanticOutput, DenseSemanticOutput]:
         DenseSemanticOutput(
             probabilities=second_probabilities,
             features=second_features,
+            **common,
+        ),
+    )
+
+
+def _building_outputs(
+    *,
+    first_box: tuple[slice, slice] | None = None,
+    second_box: tuple[slice, slice] | None = None,
+) -> tuple[DenseSemanticOutput, DenseSemanticOutput]:
+    rng = np.random.default_rng(91)
+    first_probabilities = np.zeros((2, 16, 16), dtype=np.float32)
+    second_probabilities = np.zeros((2, 16, 16), dtype=np.float32)
+    first_probabilities[0] = 0.95
+    second_probabilities[0] = 0.95
+    if first_box is not None:
+        first_probabilities[0][first_box] = 0.05
+        first_probabilities[1][first_box] = 0.95
+    if second_box is not None:
+        second_probabilities[0][second_box] = 0.05
+        second_probabilities[1][second_box] = 0.95
+    common = {
+        "semantic_stride": (4.0, 4.0),
+        "feature_stride": (4.0, 4.0),
+        "original_size": (64, 64),
+        "class_names": ("background", "building"),
+        "diagnostics": {},
+        "weights_sha256": "b" * 64,
+    }
+    return (
+        DenseSemanticOutput(
+            probabilities=first_probabilities,
+            features=rng.normal(size=(8, 16, 16)).astype(np.float32),
+            **common,
+        ),
+        DenseSemanticOutput(
+            probabilities=second_probabilities,
+            features=rng.normal(size=(8, 16, 16)).astype(np.float32),
             **common,
         ),
     )
@@ -300,6 +339,100 @@ def test_rescue_expert_is_excluded_from_core_fusion(monkeypatch) -> None:
     assert len(core_client.calls) == 2
     assert rescue_client.calls == []
     assert result.diagnostics["semantic_status"] in {"success", "fallback", "fallback_legacy"}
+
+
+def test_building_rescue_extracts_added_footprint_without_core_proposals() -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(4, 8), slice(4, 8))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+    settings = _settings()
+    settings.building_rescue = ChangeBuildingRescueSettings(
+        building_probability_threshold=0.85,
+        source_absence_probability_max=0.25,
+        min_component_area_ratio=0.001,
+        min_component_area_ratio_edge=0.0005,
+        registration_tolerance_min_px=0,
+        registration_tolerance_max_px=2,
+    )
+
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert diagnostics["candidate_count"] == 1
+    assert len(candidates) == 1
+    assert candidates[0].direction == "added"
+    assert candidates[0].label == "building"
+    assert candidates[0].box == (18, 18, 30, 30)
+
+
+def test_building_rescue_tolerance_suppresses_small_registration_shift() -> None:
+    client = _DenseClient(
+        _building_outputs(
+            first_box=(slice(4, 8), slice(4, 8)),
+            second_box=(slice(4, 8), slice(5, 9)),
+        )
+    )
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+    settings = _settings()
+    settings.building_rescue.registration_tolerance_min_px = 4
+    settings.building_rescue.registration_tolerance_max_px = 4
+
+    candidates, _ = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+
+
+def test_edge_rescue_keeps_partial_top_edge_component() -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(0, 2), slice(5, 9))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="edge_corner_building",
+    )
+    settings = _settings()
+    settings.building_rescue.min_component_area_ratio = 0.01
+    settings.building_rescue.min_component_area_ratio_edge = 0.001
+
+    candidates, _ = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert len(candidates) == 1
+    assert "top" in candidates[0].edge_flags
 
 
 def test_typed_semantic_transition_classes() -> None:
