@@ -278,6 +278,44 @@ class StructuralRescueCandidate(BaseModel):
     artifact_files: tuple[str, ...] = ()
 
 
+RescueVerdict = Literal[
+    "confirmed_added_building",
+    "confirmed_removed_building",
+    "reject",
+    "insufficient",
+]
+
+
+class BuildingRescueCandidateReview(BaseModel):
+    """One narrow review for one building-only rescue candidate."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    candidate_id: str
+    verdict: RescueVerdict
+    visible_building_count: int | None = Field(default=None, ge=0)
+    reason: str = Field(min_length=1)
+
+
+class BuildingRescueReview(BaseModel):
+    """Bounded second-pass review; direction checks use supplied candidates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reviews: tuple[BuildingRescueCandidateReview, ...]
+    final_answer: str | None = None
+
+    @model_validator(mode="after")
+    def validate_review_answer(self) -> "BuildingRescueReview":
+        candidate_ids = [item.candidate_id for item in self.reviews]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("building rescue review contains duplicate candidate IDs")
+        confirmed = any(item.verdict.startswith("confirmed_") for item in self.reviews)
+        if not confirmed and self.final_answer is not None:
+            raise ValueError("building rescue final_answer requires a confirmation")
+        return self
+
+
 class ChangePreprocessResult(BaseModel):
     """Serializable preprocessing result referenced by trace and artifacts.
     由 trace 与产物引用的可序列化预处理结果。"""
