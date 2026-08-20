@@ -17,7 +17,7 @@ import pytest
 from PIL import Image
 
 from agents.base import AgentContext, AgentExecution
-from agents.change.agent import ChangeAgent, resolve_input_mode
+from agents.change.agent import ChangeAgent, _expanded_union_pixel_box, resolve_input_mode
 from agents.change.schema import (
     ChangeAdjudicationResult,
     ChangePreprocessResult,
@@ -709,6 +709,31 @@ def test_water_geometry_with_shoreline_footprint_support_remains_positive(tmp_pa
     assert not any("WATER_STATE_NOT_GEOMETRY" in warning for warning in warnings)
     _, outcome, _ = _agent()._merge_adjudication(result, "change_caption", warnings)
     assert outcome == "positive"
+
+
+def test_transient_adjudication_attaches_one_expanded_context_pair(tmp_path: Path, monkeypatch) -> None:
+    proposals = [_proposal("change_000", 0.9), _proposal("change_001", 0.8)]
+    preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=proposals)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", lambda self, sample, context: preprocess)
+    client = _RecordingClient("A vehicle appeared.")
+    execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    roles = _manifest_roles(client)
+    assert roles.count("transient_context_t1") == 1
+    assert roles.count("transient_context_t2") == 1
+    assert execution.trace["transient_context_attached"] is True
+    assert len(client.calls) == 2
+
+
+def test_expanded_context_box_clamps_to_image_boundaries() -> None:
+    proposal = _proposal().model_copy(update={"pixel_box": [0, 0, 10, 10]})
+    assert _expanded_union_pixel_box([proposal], width=32, height=32, scale=1.8) == [0, 0, 14, 14]
+
+
+def test_edge_candidate_is_reserved_ahead_of_central_candidate(tmp_path: Path) -> None:
+    central = _proposal("central", 0.99).model_copy(update={"box": [400, 400, 600, 600]})
+    edge = _proposal("edge", 0.50).model_copy(update={"box": [900, 900, 999, 999]})
+    selected = _agent()._select_proposals([central, edge], limit=1)
+    assert [item.proposal_id for item in selected] == ["edge"]
 
 
 def test_wrong_agent_name_fails_not_masked(tmp_path: Path, monkeypatch) -> None:

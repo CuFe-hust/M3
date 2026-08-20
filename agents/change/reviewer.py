@@ -226,7 +226,7 @@ def _iou(first: list[int] | list[float], second: list[int] | list[float]) -> flo
 
 def _temporal_side(image_id: str) -> str | None:
     normalized = image_id.casefold()
-    t1_tokens = ("raw_full_t1", "reference_t1", "harmonized_t1", "_t1_crop")
+    t1_tokens = ("raw_full_t1", "reference_t1", "harmonized_t1", "_t1_crop", "transient_context_t1")
     t2_tokens = (
         "raw_full_t2",
         "registered_t2",
@@ -234,6 +234,7 @@ def _temporal_side(image_id: str) -> str | None:
         "t2_registered",
         "t2_raw_fallback",
         "_t2_crop",
+        "transient_context_t2",
     )
     if any(token in normalized for token in t1_tokens):
         return "t1"

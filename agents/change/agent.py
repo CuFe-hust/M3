@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any, Literal
 
+from PIL import Image
+
 from agents.base import AgentContext, AgentExecution
 from agents.change.perception import (
     ChangePerceptionError,
@@ -154,13 +156,18 @@ class ChangeAgent:
             )
             adjudication_candidate_ids = [item.proposal_id for item in selected]
             content, image_hashes, image_manifest, adjudication_audit = self._build_evidence(
-                sample, context, preprocess, mode, stage="adjudication", selected_proposals=selected
+                sample, context, preprocess, mode, stage="adjudication", selected_proposals=selected,
+                attach_transient_context=any(
+                    reason == "POSITIVE_TRANSIENT_ONLY"
+                    for reason in review.route_reasons
+                ),
             )
             adjudication_payload = self._request_payload(
                 sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_audit,
                 image_manifest=image_manifest, evidence_audit=adjudication_audit, stage="adjudication",
                 first_pass={"answer": result.answer, "review_warnings": initial_warnings, "review_route_reasons": list(review.route_reasons)},
                 selected_proposals=selected,
+                transient_context_attached=bool(adjudication_audit.get("transient_context_attached")),
             )
             content.append({"type": "text", "text": json.dumps(adjudication_payload, ensure_ascii=False)})
             adjudication, adjudication_request_hash = await self._call_vlm_json(
@@ -277,6 +284,7 @@ class ChangeAgent:
         evidence_audit: dict[str, object], stage: EvidenceStage,
         first_pass: dict[str, object] | None = None,
         selected_proposals: list[Any] | None = None,
+        transient_context_attached: bool = False,
     ) -> dict[str, Any]:
         proposals = selected_proposals if stage == "adjudication" and selected_proposals is not None else preprocess.proposals
         payload: dict[str, Any] = {
@@ -297,6 +305,10 @@ class ChangeAgent:
                 str(item).startswith("POSITIVE_") for item in (first_pass or {}).get("review_route_reasons", [])
             ) else "negative_conflict"
             payload["adjudication_candidates"] = [self._proposal_payload(item) for item in proposals]
+            if transient_context_attached:
+                payload["mandatory_context_checks"] = [
+                    "If a candidate is transient, inspect its same-location context for a persistent building, road, or land-cover change before concluding no persistent change."
+                ]
         return payload
 
     def _proposal_payload(self, item: Any) -> dict[str, object]:
@@ -428,11 +440,14 @@ class ChangeAgent:
     def _select_proposals(self, proposals: list[Any], *, limit: int) -> list[Any]:
         ranked = sorted(proposals, key=_proposal_priority)
         selected: list[Any] = []
-        if ranked:
-            selected.append(ranked[0])
-        edge = next((item for item in ranked if item not in selected and _is_edge_proposal(item, self._settings.evidence.edge_margin_ratio)), None)
+        # Reserve the strongest edge/corner proposal before central seasonal
+        # regions consume the bounded evidence set. 在中心季节性区域占满有限
+        # 证据槽位前，优先保留最可靠的边缘/角落候选。
+        edge = next((item for item in ranked if _is_edge_proposal(item, self._settings.evidence.edge_margin_ratio)), None)
         if edge is not None and len(selected) < limit:
             selected.append(edge)
+        if ranked and ranked[0] not in selected and len(selected) < limit:
+            selected.append(ranked[0])
         diverse = next((item for item in ranked if item not in selected and all(_box_iou(item.box, other.box) < 0.5 for other in selected)), None)
         if diverse is not None and len(selected) < limit:
             selected.append(diverse)
@@ -507,6 +522,7 @@ class ChangeAgent:
         *,
         stage: EvidenceStage,
         selected_proposals: list[Any] | None = None,
+        attach_transient_context: bool = False,
     ) -> tuple[
         list[dict[str, Any]],
         list[str],
@@ -583,6 +599,11 @@ class ChangeAgent:
             paths.extend([choices["t1"], choices["t2"]])
             attached_ids.append(proposal.proposal_id)
             proposal_evidence_count += 2
+        transient_context_attached = False
+        if stage == "adjudication" and attach_transient_context and selected:
+            context_paths = self._write_transient_context_pair(sample, context, selected)
+            paths.extend(context_paths)
+            transient_context_attached = True
         content: list[dict[str, Any]] = []
         hashes: list[str] = []
         manifest: list[dict[str, str]] = []
@@ -621,12 +642,42 @@ class ChangeAgent:
             "initial_max_proposals": self._settings.evidence.initial_max_proposals,
             "adjudication_max_proposals": self._settings.evidence.adjudication_max_proposals,
             "selected_proposal_ids": attached_ids,
+            "edge_rescue_candidate_ids": [
+                item.proposal_id for item in selected
+                if _is_edge_proposal(item, self._settings.evidence.edge_margin_ratio)
+            ],
             "skipped_incomplete_proposal_ids": skipped_incomplete,
             "registered_global_attached": self._settings.evidence.attach_registered_global and bool(registered),
             "harmonized_global_attached": self._settings.evidence.attach_harmonized_global and bool(harmonized),
             "proposal_overlay_attached": bool(self._settings.evidence.attach_proposal_overlay and overlay and preprocess.proposals),
+            "transient_context_attached": transient_context_attached,
         }
         return content, hashes, manifest, evidence_audit
+
+    def _write_transient_context_pair(
+        self, sample: UnifiedSample, context: AgentContext, proposals: list[Any]
+    ) -> list[tuple[str, Path, str]]:
+        """Create one clamped 1.8x same-location context pair for adjudication.
+
+        A single union prevents nearby transient candidates from consuming the
+        image budget. 将邻近瞬态候选合并为一个区域，避免消耗多个图像预算槽位。
+        """
+        t1_path = self._resolve_raw(sample.images[0].path, context, sample.sample_id)
+        t2_path = self._resolve_raw(sample.images[1].path, context, sample.sample_id)
+        with Image.open(t1_path) as t1_source, Image.open(t2_path) as t2_source:
+            width, height = t1_source.size
+            box = _expanded_union_pixel_box(proposals, width=width, height=height, scale=1.8)
+            output = context.artifact_dir / "change_preprocess" / "crops"
+            output.mkdir(parents=True, exist_ok=True)
+            paths: list[tuple[str, Path, str]] = []
+            for role, source, filename in (
+                ("transient_context_t1", t1_source, "adjudication_transient_context_t1.png"),
+                ("transient_context_t2", t2_source, "adjudication_transient_context_t2.png"),
+            ):
+                target = output / filename
+                source.crop(tuple(box)).save(target)
+                paths.append((role, target, "artifact"))
+        return paths
 
     def _resolve_raw(
         self,
@@ -840,6 +891,23 @@ def _box_iou(first: list[int], second: list[int]) -> float:
     return intersection / union if union else 0.0
 
 
+def _expanded_union_pixel_box(proposals: list[Any], *, width: int, height: int, scale: float) -> list[int]:
+    """Expand the selected proposal union and clamp it to image boundaries.
+
+    以选定候选的并集扩展，并裁剪到图像边界内。
+    """
+    x1 = min(int(item.pixel_box[0]) for item in proposals)
+    y1 = min(int(item.pixel_box[1]) for item in proposals)
+    x2 = max(int(item.pixel_box[2]) for item in proposals)
+    y2 = max(int(item.pixel_box[3]) for item in proposals)
+    center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+    half_width, half_height = max(1, (x2 - x1) * scale / 2), max(1, (y2 - y1) * scale / 2)
+    return [
+        max(0, int(center_x - half_width)), max(0, int(center_y - half_height)),
+        min(width, max(1, int(center_x + half_width))), min(height, max(1, int(center_y + half_height))),
+    ]
+
+
 def _has_valid_water_geometry(review: Any) -> bool:
     """Require concrete shoreline/basin geometry, not water-state wording.
 
@@ -894,6 +962,10 @@ def _evidence_label(role: str) -> str:
         return "AUTHORITATIVE RAW T2 - later full scene"
     if role == "proposal_overlay":
         return "AUXILIARY PROPOSAL OVERLAY - attention guidance only; not proof of change"
+    if role == "transient_context_t1":
+        return "TRANSIENT CONTEXT T1 - expanded same-location context"
+    if role == "transient_context_t2":
+        return "TRANSIENT CONTEXT T2 - expanded same-location context"
     if ":" in role:
         proposal_id, crop_role = role.split(":", 1)
         if crop_role == "reference_t1_crop":
