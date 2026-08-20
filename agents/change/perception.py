@@ -523,11 +523,6 @@ class ChangePerceptionPipeline:
                     "selected_experts": [
                         item.binding.expert_id for item in semantic_runs[: semantic_settings.max_experts]
                     ],
-                    "excluded_rescue_experts": [
-                        item.expert_id
-                        for item in self._semantic_experts
-                        if item.participation == "rescue"
-                    ],
                     "successful_experts": [
                         item.run.binding.expert_id for item in expert_evidence
                     ],

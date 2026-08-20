@@ -317,6 +317,10 @@ def _build_agent_registry(
         prompt=PromptBinding(
             text=catalog["change"], version=catalog.version("change")
         ),
+        building_rescue_prompt=PromptBinding(
+            text=catalog["change_building_rescue"],
+            version=catalog.version("change_building_rescue"),
+        ),
         settings=settings.agents.change,
     )
     grounding_agent = GroundingAgent(qwen_client)

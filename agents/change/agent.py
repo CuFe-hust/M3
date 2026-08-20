@@ -24,10 +24,17 @@ from agents.change.perception import (
 from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.registration import RegistrationError
 from agents.change.reviewer import meaningful_proposals, review_outcome, review_result
-from agents.change.schema import CANONICAL_NO_CHANGE, ChangeAdjudicationResult, ChangeInitialResult, ChangePreprocessResult, SemanticTransition
+from agents.change.schema import (
+    CANONICAL_NO_CHANGE,
+    BuildingRescueReview,
+    ChangeAdjudicationResult,
+    ChangeInitialResult,
+    ChangePreprocessResult,
+    SemanticTransition,
+)
 from agents.change.settings import AgentChangeSettings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
-from agents.schema import AgentName, AgentResult
+from agents.schema import AgentName, AgentResult, VisualEvidence
 from agents.visual_base import PromptBinding
 from data.schema import UnifiedSample
 from models.base import (
@@ -75,6 +82,7 @@ class ChangeAgent:
         semantic_experts: tuple[SemanticExpertBinding, ...] = (),
         learned_change_client: LearnedChangeClient | None = None,
         prompt: PromptBinding | None = None,
+        building_rescue_prompt: PromptBinding | None = None,
         settings: AgentChangeSettings | None = None,
     ) -> None:
         self._client = client
@@ -84,6 +92,7 @@ class ChangeAgent:
         if prompt is None:
             raise ValueError("ChangeAgent requires an injected PromptBinding")
         self._prompt = prompt
+        self._building_rescue_prompt = building_rescue_prompt or prompt
         self._settings = settings or AgentChangeSettings()
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
@@ -152,7 +161,16 @@ class ChangeAgent:
         adjudication_merge: dict[str, object] | None = None
         consistency_warnings: list[str] = []
         final_warnings = initial_warnings
-        if settings.review.adjudication_enabled and review.route != "accept":
+        rescue_eligible = bool(preprocess.rescue_candidates)
+        rescue_triggered = False
+        rescue_request_hash: str | None = None
+        rescue_decision: str | None = None
+        rescue_failure: str | None = None
+        if (
+            not _is_core_canonical_no_change(reviewed, task=sample.task)
+            and settings.review.adjudication_enabled
+            and review.route != "accept"
+        ):
             selected = self._select_proposals(
                 meaningful_proposals(preprocess.proposals, settings.review) or preprocess.proposals,
                 limit=settings.evidence.adjudication_max_proposals,
@@ -193,6 +211,78 @@ class ChangeAgent:
             evidence_audit = adjudication_audit
             adjudication_global_verdict = adjudication.global_review.verdict
             adjudication_verdicts = {item.proposal_id: item.verdict for item in adjudication.candidate_reviews}
+        if _is_core_canonical_no_change(reviewed, task=sample.task) and rescue_eligible:
+            rescue_triggered = True
+            try:
+                rescue_content, rescue_hashes, rescue_manifest = (
+                    self._build_building_rescue_evidence(
+                        sample, context, preprocess.rescue_candidates
+                    )
+                )
+                rescue_payload = {
+                    "decision_stage": "building_rescue",
+                    "task": sample.task,
+                    "candidate_count": len(preprocess.rescue_candidates),
+                    "candidates": [
+                        {
+                            "candidate_id": item.candidate_id,
+                            "direction": item.direction,
+                            "label": "possible building footprint",
+                            "normalized_box": list(item.normalized_box),
+                            "edge_flags": list(item.edge_flags),
+                        }
+                        for item in preprocess.rescue_candidates
+                    ],
+                    "image_manifest": rescue_manifest,
+                }
+                rescue_content.append(
+                    {"type": "text", "text": json.dumps(rescue_payload, ensure_ascii=False)}
+                )
+                rescue_review, rescue_request_hash = await self._call_building_rescue_json(
+                    sample=sample,
+                    context=context,
+                    identity=identity,
+                    content=rescue_content,
+                    image_hashes=rescue_hashes,
+                )
+                rescue_warnings = self._validate_building_rescue_review(
+                    rescue_review, preprocess.rescue_candidates
+                )
+                if rescue_warnings:
+                    rescue_failure = ";".join(rescue_warnings)
+                    final_warnings = list(dict.fromkeys([*final_warnings, "BUILDING_RESCUE_FAILED"]))
+                else:
+                    confirmed = [
+                        item
+                        for item in rescue_review.reviews
+                        if item.verdict.startswith("confirmed_")
+                    ]
+                    rescue_decision = confirmed[0].verdict if confirmed else (
+                        "reject"
+                        if all(item.verdict == "reject" for item in rescue_review.reviews)
+                        else "insufficient"
+                    )
+                    if confirmed:
+                        reviewed = self._merge_building_rescue(
+                            reviewed,
+                            rescue_review,
+                            preprocess.rescue_candidates,
+                        )
+            except Exception as error:
+                rescue_failure = type(error).__name__
+                final_warnings = list(dict.fromkeys([*final_warnings, "BUILDING_RESCUE_FAILED"]))
+            if (
+                rescue_decision in {None, "reject", "insufficient"}
+                and sample.task == "change_caption"
+            ):
+                reviewed = reviewed.model_copy(
+                    update={
+                        "answer": CANONICAL_NO_CHANGE,
+                        "boxes": [],
+                        "evidence": [],
+                        "evidence_items": [],
+                    }
+                )
         metrics = preprocess.decision.metrics
         trace = {
             "prompt_version": self._prompt.version,
@@ -218,6 +308,18 @@ class ChangeAgent:
                 "building_rescue_shadow", {}
             ),
             "building_rescue_candidate_count": len(preprocess.rescue_candidates),
+            "core_request_hash": request_hash,
+            "core_answer": result.answer,
+            "rescue_eligible": rescue_eligible,
+            "rescue_triggered": rescue_triggered,
+            "rescue_request_hash": rescue_request_hash,
+            "rescue_decision": rescue_decision,
+            "rescue_failure": rescue_failure,
+            "final_source": (
+                "building_rescue"
+                if reviewed.geometry.get("final_source") == "building_rescue"
+                else "core"
+            ),
             **perception_audit,
             # Compatibility aliases retained for readers of the Task 08 trace.
             "semantic_reason_code": preprocess.diagnostics.get(
@@ -284,6 +386,87 @@ class ChangeAgent:
             ),
         )
         return result, request_hash
+
+    async def _call_building_rescue_json(
+        self,
+        *,
+        sample: UnifiedSample,
+        context: AgentContext,
+        identity: ModelCacheIdentity,
+        content: list[dict[str, Any]],
+        image_hashes: list[str],
+    ) -> tuple[BuildingRescueReview, str]:
+        prompt = self._building_rescue_prompt
+        assert prompt is not None
+        messages = [
+            {
+                "role": "system",
+                "content": prompt.text
+                + "\n\nReturn valid JSON matching BuildingRescueReview only.",
+            },
+            {"role": "user", "content": content},
+        ]
+        request_hash = build_request_hash(
+            model=identity.model,
+            generation=identity.generation_payload(),
+            prompt_version=prompt.version,
+            messages=messages,
+            image_sha256="|".join(image_hashes),
+            response_schema=BuildingRescueReview.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
+        )
+        context.call_budget.reserve_qwen()
+        result = await self._client.complete_json(
+            messages=messages,
+            response_model=BuildingRescueReview,
+            request_meta=RequestMeta(
+                request_id=f"{sample.sample_id}:{self.name}:building_rescue",
+                request_hash=request_hash,
+                prompt_version=prompt.version,
+                sample_id=sample.sample_id,
+                artifact_dir=context.artifact_dir / self.name,
+            ),
+        )
+        return result, request_hash
+
+    def _build_building_rescue_evidence(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+        candidates: list[Any],
+    ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, str]]]:
+        content: list[dict[str, Any]] = []
+        hashes: list[str] = []
+        manifest: list[dict[str, str]] = []
+        for candidate in candidates:
+            direction = "added" if candidate.direction == "added" else "removed"
+            edge = ", ".join(candidate.edge_flags) if candidate.edge_flags else "interior"
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Candidate {candidate.candidate_id}: possible {direction} "
+                        f"building footprint, {edge}. Review this candidate only."
+                    ),
+                }
+            )
+            if len(candidate.artifact_files) != 2:
+                raise AgentExecutionError(
+                    self.name, sample.sample_id, cause="BUILDING_RESCUE_ARTIFACT_MISSING"
+                )
+            for temporal, relative in zip(("t1", "t2"), candidate.artifact_files):
+                path = context.artifact_dir / relative
+                data = self._read_artifact(path, sample.sample_id, kind="artifact")
+                mime = detect_image_mime(path)
+                role = f"building_rescue:{candidate.candidate_id}:{temporal}"
+                content.append({"type": "text", "text": _evidence_label(role)})
+                content.append(
+                    {"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}}
+                )
+                hashes.append(hashlib.sha256(data).hexdigest())
+                manifest.append({"index": str(len(manifest)), "role": role})
+        return content, hashes, manifest
 
     def _request_payload(
         self, *, sample: UnifiedSample, preprocess: ChangePreprocessResult, mode: InputMode,
@@ -399,6 +582,78 @@ class ChangeAgent:
             ):
                 warnings.append(f"ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:{identifier}")
         return list(dict.fromkeys(warnings))
+
+    @staticmethod
+    def _validate_building_rescue_review(
+        result: BuildingRescueReview, candidates: list[Any]
+    ) -> list[str]:
+        expected = {item.candidate_id: item.direction for item in candidates}
+        actual = [item.candidate_id for item in result.reviews]
+        warnings: list[str] = []
+        if len(actual) != len(expected):
+            warnings.append("BUILDING_RESCUE_REVIEW_COUNT_MISMATCH")
+        if set(actual) - set(expected):
+            warnings.append("BUILDING_RESCUE_UNKNOWN_CANDIDATE")
+        if set(expected) - set(actual):
+            warnings.append("BUILDING_RESCUE_MISSING_CANDIDATE")
+        for item in result.reviews:
+            direction = expected.get(item.candidate_id)
+            if direction == "added" and item.verdict == "confirmed_removed_building":
+                warnings.append(f"BUILDING_RESCUE_WRONG_DIRECTION:{item.candidate_id}")
+            if direction == "removed" and item.verdict == "confirmed_added_building":
+                warnings.append(f"BUILDING_RESCUE_WRONG_DIRECTION:{item.candidate_id}")
+            if item.verdict.startswith("confirmed_") and item.visible_building_count == 0:
+                warnings.append(f"BUILDING_RESCUE_ZERO_VISIBLE_BUILDINGS:{item.candidate_id}")
+        return list(dict.fromkeys(warnings))
+
+    @staticmethod
+    def _merge_building_rescue(
+        core: AgentResult,
+        review: BuildingRescueReview,
+        candidates: list[Any],
+    ) -> AgentResult:
+        confirmed = {
+            item.candidate_id: item
+            for item in review.reviews
+            if item.verdict.startswith("confirmed_")
+        }
+        candidate_map = {item.candidate_id: item for item in candidates}
+        selected = [candidate_map[item_id] for item_id in confirmed if item_id in candidate_map]
+        answer = review.final_answer.strip() if review.final_answer else ""
+        if not answer:
+            answer = _building_rescue_fallback_caption(selected, confirmed)
+        evidence: list[str] = []
+        evidence_items: list[VisualEvidence] = []
+        boxes: list[list[int]] = []
+        for candidate in selected:
+            boxes.append(list(candidate.normalized_box))
+            evidence.extend(candidate.artifact_files)
+            for temporal, relative in zip(("t1", "t2"), candidate.artifact_files):
+                evidence_items.append(
+                    VisualEvidence(
+                        label=f"confirmed {candidate.direction} building context {temporal}",
+                        box=list(candidate.normalized_box),
+                        confidence=candidate.score,
+                        image_id=relative,
+                    )
+                )
+        geometry = dict(core.geometry)
+        geometry.update(
+            {
+                "final_source": "building_rescue",
+                "building_rescue_candidate_ids": [item.candidate_id for item in selected],
+            }
+        )
+        return core.model_copy(
+            update={
+                "answer": answer,
+                "boxes": boxes,
+                "evidence": evidence[:12],
+                "evidence_items": evidence_items,
+                "geometry": geometry,
+                "status": "completed",
+            }
+        )
 
     @staticmethod
     def _effective_persistent_review(
@@ -984,6 +1239,37 @@ def _perception_audit(
         },
         "score_maps": diagnostics.get("score_maps", {}),
     }
+
+
+def _is_core_canonical_no_change(result: AgentResult, *, task: str) -> bool:
+    return task == "change_caption" and result.answer.strip() == CANONICAL_NO_CHANGE
+
+
+def _building_rescue_fallback_caption(
+    candidates: list[Any], reviews: dict[str, Any]
+) -> str:
+    counts: dict[tuple[str, str], int] = {}
+    for candidate in candidates:
+        verdict = reviews[candidate.candidate_id].verdict
+        direction = "constructed" if verdict == "confirmed_added_building" else "removed"
+        location = _building_rescue_location(candidate)
+        counts[(direction, location)] = counts.get((direction, location), 0) + 1
+    fragments: list[str] = []
+    for (direction, location), count in sorted(counts.items()):
+        noun = "One building" if count == 1 else f"{count} buildings"
+        verb = "was" if count == 1 else "were"
+        fragments.append(f"{noun} {verb} {direction} near the {location}")
+    return ". ".join(fragments).capitalize() + "." if fragments else CANONICAL_NO_CHANGE
+
+
+def _building_rescue_location(candidate: Any) -> str:
+    flags = set(candidate.edge_flags)
+    if "corner" in flags:
+        for pair, name in (({"top", "left"}, "upper-left corner"), ({"top", "right"}, "upper-right corner"), ({"bottom", "left"}, "lower-left corner"), ({"bottom", "right"}, "lower-right corner")):
+            if pair.issubset(flags):
+                return name
+    names = {"top": "upper edge", "bottom": "lower edge", "left": "left edge", "right": "right edge"}
+    return names.get(next(iter(flags), ""), "image center")
 
 
 def _proposal_priority(proposal: Any) -> tuple[float, str]:

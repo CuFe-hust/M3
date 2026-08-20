@@ -478,6 +478,36 @@ def publish_change_proposals(
     files["proposals"] = "change_preprocess/proposals.json"
     candidate_payload = None if rescue_candidates is None else list(rescue_candidates)
     if candidate_payload is not None:
+        rescue_output = output / "building_rescue"
+        updated_rescue: list[StructuralRescueCandidate] = []
+        for candidate in candidate_payload:
+            x0, y0, x1, y1 = candidate.box
+            crop_box = _building_rescue_context_box(
+                candidate,
+                width=prepared.raw_t1.shape[1],
+                height=prepared.raw_t1.shape[0],
+                settings=settings,
+            )
+            cx0, cy0, cx1, cy1 = crop_box
+            safe_id = "".join(
+                character if character.isalnum() or character in "-_" else "_"
+                for character in candidate.candidate_id
+            )
+            t1_name = f"{safe_id}_t1.png"
+            t2_name = f"{safe_id}_t2.png"
+            _write_image(rescue_output / t1_name, prepared.raw_t1[cy0:cy1, cx0:cx1])
+            _write_image(rescue_output / t2_name, prepared.raw_t2[cy0:cy1, cx0:cx1])
+            updated_rescue.append(
+                candidate.model_copy(
+                    update={
+                        "artifact_files": (
+                            f"change_preprocess/building_rescue/{t1_name}",
+                            f"change_preprocess/building_rescue/{t2_name}",
+                        )
+                    }
+                )
+            )
+        candidate_payload = updated_rescue
         _write_json(
             output / "building_rescue_candidates.json",
             [item.model_dump(mode="json") for item in candidate_payload],
@@ -498,6 +528,33 @@ def publish_change_proposals(
     )
     _write_json(output / "harmonization_report.json", result.model_dump(mode="json"))
     return result
+
+
+def _building_rescue_context_box(
+    candidate: StructuralRescueCandidate,
+    *,
+    width: int,
+    height: int,
+    settings: AgentChangeSettings,
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = candidate.box
+    padding_ratio = (
+        settings.building_rescue.edge_context_padding_ratio
+        if candidate.edge_flags
+        else settings.building_rescue.interior_context_padding_ratio
+    )
+    pad_x = max(1, int(width * padding_ratio))
+    pad_y = max(1, int(height * padding_ratio))
+    left_pad = 0 if "left" in candidate.edge_flags else pad_x
+    right_pad = 0 if "right" in candidate.edge_flags else pad_x
+    top_pad = 0 if "top" in candidate.edge_flags else pad_y
+    bottom_pad = 0 if "bottom" in candidate.edge_flags else pad_y
+    return (
+        max(0, x0 - left_pad),
+        max(0, y0 - top_pad),
+        min(width, x1 + right_pad),
+        min(height, y1 + bottom_pad),
+    )
 
 
 def _audit_files(prepared: ChangePreparedPair | None = None) -> dict[str, str]:
