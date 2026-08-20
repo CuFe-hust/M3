@@ -441,6 +441,61 @@ def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> N
     assert validated.name == "detector_obb_csl_001"
 
 
+@pytest.mark.parametrize(
+    ("detector_index", "task", "expected_message"),
+    [
+        (0, "detect", "catalog declaration is not enabled"),
+        (1, "obb", "catalog declaration is not enabled"),
+    ],
+)
+def test_yolo_catalog_kind_matches_detector_task(
+    detector_index: int,
+    task: str,
+    expected_message: str,
+) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    detector = settings.backend.yolo.detectors[detector_index].model_copy(
+        update={"task": task}
+    )
+
+    with pytest.raises(RuntimeCompositionError, match=expected_message):
+        _catalog_validated_yolo_detector(
+            detector,
+            ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT),
+        )
+
+
+def test_yolo_catalog_rejects_unknown_detector_task() -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    detector = settings.backend.yolo.detectors[0].model_copy(
+        update={"task": "segment"}
+    )
+
+    with pytest.raises(RuntimeCompositionError, match="unsupported YOLO detector task"):
+        _catalog_validated_yolo_detector(
+            detector,
+            ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT),
+        )
+
+
+def test_both_configured_yolo_detectors_register_with_matching_catalog() -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    registry = _build_backend_registry(
+        settings,
+        PromptCatalog(REPO_ROOT / "prompts"),
+        _FakeQwenClient(),
+        expert_catalog=ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT),
+        project_root=REPO_ROOT,
+    )
+
+    assert registry.all_names()[:4] == [
+        "qwen_point",
+        "quantity_proposal",
+        "detector_obb_csl_001",
+        "detector_yolo_detect_001",
+    ]
+
+
 def test_route_coverage_after_assembly(tmp_path: Path) -> None:
     """Every routable task must resolve to a registered agent after assembly.
     组装后每个可路由任务都必须解析到已注册 Agent。"""

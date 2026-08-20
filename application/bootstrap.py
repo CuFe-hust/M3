@@ -586,13 +586,20 @@ def _verified_class_map(expert: ExpertSpec, project_root: Path) -> dict[int, str
 
 
 def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> Any:
+    expected_kinds = {
+        "obb": "yolo_obb",
+        "detect": "yolo_detect",
+    }
+    try:
+        expected_kind = expected_kinds[detector.task]
+    except (AttributeError, KeyError):
+        raise RuntimeCompositionError("unsupported YOLO detector task") from None
     try:
         expert = catalog.expert(detector.name)
     except KeyError:
         raise RuntimeCompositionError(
             "enabled YOLO detector is absent from expert catalog"
         ) from None
-    expected_kind = "yolo_obb" if detector.task == "obb" else "yolo_detect"
     if expert.kind != expected_kind or not expert.enabled:
         raise RuntimeCompositionError("YOLO detector catalog declaration is not enabled")
     if expert.logical_model_id != detector.model_id:

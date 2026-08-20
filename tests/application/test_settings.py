@@ -40,7 +40,7 @@ def test_default_settings() -> None:
         "SegFormer-MiT-B2:iSAID:local"
     )
     assert settings.models.segformer_isaid.classes_filename == "classes.json"
-    assert settings.models.segformer_oem.classes_filename == "classes.json"
+    assert settings.models.segformer_oem.classes_filename is None
     assert settings.models.segformer_experts == {}
     assert settings.backend.yolo.enabled is False
     assert settings.backend.yolo.detectors == []
@@ -55,7 +55,7 @@ def test_local_config_declares_detector_inventory() -> None:
 
     assert settings.backend.yolo.enabled is True
     assert [item.name for item in settings.backend.yolo.detectors] == [
-        "detector_obb_csl_001", "detector_isaid_yolo11s_001"
+        "detector_obb_csl_001", "detector_yolo_detect_001"
     ]
     assert settings.backend.yolo.detectors[0].enabled is True
 

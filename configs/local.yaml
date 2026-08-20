@@ -31,7 +31,7 @@ backend:
         allow_cpu_fallback: false
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
-      - name: detector_isaid_yolo11s_001
+      - name: detector_yolo_detect_001
         enabled: true
         weights: models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
         runtime: ultralytics

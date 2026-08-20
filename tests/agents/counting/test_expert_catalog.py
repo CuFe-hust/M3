@@ -173,7 +173,7 @@ def test_explicit_alias_resolves_to_canonical_target() -> None:
     hints = catalog.target_hints(_target("car"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "detector_isaid_yolo11s_001",
+        "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -213,13 +213,15 @@ def test_enabled_semantic_expert_requires_verified_class_map(tmp_path: Path) -> 
         _load_payload(tmp_path, payload)
 
 
-def test_verified_oem_expert_is_disabled_until_a_counting_capability_is_declared() -> None:
+def test_unverified_oem_expert_is_blocked_until_a_channel_map_is_verified() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     oem = catalog.expert("segmenter_oem_001")
 
     assert oem.enabled is False
-    assert oem.status == "active"
+    assert oem.status == "blocked_unverified_class_map"
+    assert oem.verification.class_map == "unverified"
+    assert oem.asset.class_map is None
     assert oem.supports == {}
     assert oem not in catalog.candidates(_target("small vehicle"), enabled_only=False)
 
@@ -230,7 +232,7 @@ def test_separator_and_case_normalization_maps_isaid_label() -> None:
     candidates = catalog.candidates(_target("Small_Vehicle"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "detector_isaid_yolo11s_001",
+        "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -244,7 +246,7 @@ def test_unsupported_target_has_no_candidates_or_hints() -> None:
     assert catalog.target_hints(_target("water")) == {}
     assert tuple(
         expert.backend_name for expert in catalog.candidates(_target("bridge"))
-    ) == ("detector_isaid_yolo11s_001", "detector_obb_csl_001")
+    ) == ("detector_yolo_detect_001", "detector_obb_csl_001")
     assert "background" not in isaid.supports
     assert isaid.supports["bridge"].counting_mode == "unsupported"
     assert isaid.supports["harbor"].counting_mode == "unsupported"
@@ -328,7 +330,7 @@ def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
 
     assert isinstance(enabled, tuple)
     assert tuple(expert.backend_name for expert in enabled) == (
-        "detector_isaid_yolo11s_001",
+        "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )

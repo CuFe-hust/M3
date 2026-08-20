@@ -147,7 +147,7 @@
       }
     },
     {
-      "backend_name": "detector_isaid_yolo11s_001",
+      "backend_name": "detector_yolo_detect_001",
       "kind": "yolo_detect",
       "logical_model_id": "YOLO11s:iSAID:tiles1024-o20:epoch111",
       "enabled": true,
@@ -215,15 +215,15 @@
       "kind": "semantic_segmentation",
       "logical_model_id": "SegFormer-MiT-B2:OpenEarthMap:local",
       "enabled": false,
-      "status": "active",
+      "status": "blocked_unverified_class_map",
       "priority": 100,
       "asset": {
         "model_dir": "models/segformer_mitb2_oem",
-        "class_map": "models/segformer_mitb2_oem/classes.json",
+        "class_map": null,
         "weights": "models/segformer_mitb2_oem/model.safetensors",
         "sha256": "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
       },
-      "verification": {"class_map": "verified"},
+      "verification": {"class_map": "unverified"},
       "supports": {}
     }
   ]
