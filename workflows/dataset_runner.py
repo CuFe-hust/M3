@@ -429,12 +429,20 @@ class DatasetRunner:
             )
         budget = self.call_budget_factory.create_for_sample("sample")
         try:
-            plan, views = await self.visual_task_planner.plan_with_views(
-                sample,
-                data_root=self.data_root,
-                artifact_dir=sample_dir,
-                budget=budget,
+            locked_planner = getattr(
+                self.visual_task_planner, "plan_explicit_with_views", None
             )
+            if sample.task in {"change_caption", "change_qa"} and callable(locked_planner):
+                plan, views = await locked_planner(
+                    sample, data_root=self.data_root, artifact_dir=sample_dir
+                )
+            else:
+                plan, views = await self.visual_task_planner.plan_with_views(
+                    sample,
+                    data_root=self.data_root,
+                    artifact_dir=sample_dir,
+                    budget=budget,
+                )
             rebuilt = (
                 sample
                 if plan.task == sample.task

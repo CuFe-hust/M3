@@ -205,6 +205,22 @@ class _FakeVisualPlanner:
         )
 
 
+class _TaskLockedVisualPlanner:
+    async def plan_with_views(self, *args, **kwargs):
+        raise AssertionError("explicit change tasks must bypass reclassification")
+
+    async def plan_explicit_with_views(self, view, *, data_root, artifact_dir):
+        plan = VisualTaskPlan(
+            version="visual-task-plan-v4",
+            task=view.task,
+            needs_visual_assistance=False,
+            object_categories=[],
+            count_target=None,
+            reason_codes=["explicit_task_locked"],
+        )
+        return plan, []
+
+
 _DEFAULT_VISUAL_PLANNER = object()
 
 
@@ -831,6 +847,39 @@ def test_visual_plan_incompatible_rebuild_fails_closed(tmp_path: Path) -> None:
     assert status["error_code"] == "INCOMPATIBLE_VISUAL_TASK"
     assert status["task"] == "change_caption"
     assert summary.failed == 1
+
+
+@pytest.mark.parametrize("task", ["change_caption", "change_qa"])
+def test_explicit_change_task_bypasses_reclassification_planner(tmp_path: Path, task: str) -> None:
+    run_dir, _ = _create_run(tmp_path, run_id=f"locked-{task}")
+    runner = _runner(
+        _FakeAdapter([]),
+        _StubSampleRunner(),
+        run_dir,
+        visual_task_planner=_TaskLockedVisualPlanner(),
+        data_root=tmp_path,
+    )
+    change_sample = UnifiedSample(
+        sample_id="s0",
+        dataset="fake",
+        split="test",
+        task=task,  # type: ignore[arg-type]
+        images=[
+            ImageRef(image_id="i0", path="t1.png", role="t1"),
+            ImageRef(image_id="i1", path="t2.png", role="t2"),
+        ],
+        question="what changed?",
+        ground_truth=GroundTruth(answers=["yes"]),
+    )
+
+    status = asyncio.run(
+        runner._run_sample_visual(
+            change_sample,
+            run_dir / "tasks" / task / "samples" / storage_key("s0"),
+        )
+    )
+
+    assert status.state == "succeeded"
 
 
 def test_visual_planner_error_is_stable_failure(tmp_path: Path) -> None:

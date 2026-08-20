@@ -226,6 +226,26 @@ class VisualTaskPlanner:
         )
         return plan, self.materialize_views(plan, view, data_root=data_root)
 
+    async def plan_explicit_with_views(
+        self,
+        view: UnifiedSample,
+        *,
+        data_root: Path,
+        artifact_dir: Path,
+    ) -> tuple[VisualTaskPlan, list[MaterializedVisualView]]:
+        """Materialize an explicitly assigned task without reclassification."""
+        if view.task in COUNTING_TASKS:
+            raise VisualTaskPlanError("EXPLICIT_COUNTING_TASK_REQUIRES_TARGET")
+        plan = VisualTaskPlan(
+            version="visual-task-plan-v4",
+            task=view.task,
+            needs_visual_assistance=False,
+            object_categories=[],
+            count_target=None,
+            reason_codes=["explicit_task_locked"],
+        )
+        return plan, self.materialize_views(plan, view, data_root=data_root)
+
     def materialize_views(
         self,
         plan: VisualTaskPlan,
