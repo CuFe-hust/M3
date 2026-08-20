@@ -34,11 +34,15 @@ def _load_payload(tmp_path: Path, payload: dict[str, object]) -> ExpertCatalog:
     return ExpertCatalog.load(path, asset_root=REPO_ROOT)
 
 
+def _expert_payload(payload: dict[str, object], name: str) -> dict[str, object]:
+    return next(item for item in payload["experts"] if item["backend_name"] == name)
+
+
 def test_semantic_label_absent_from_verified_class_map_fails_closed(
     tmp_path: Path,
 ) -> None:
     payload = _payload()
-    payload["experts"][1]["supports"]["small-vehicle"]["model_labels"] = [
+    _expert_payload(payload, "segmenter_mitb2_001")["supports"]["small-vehicle"]["model_labels"] = [
         "not_a_verified_label"
     ]
 
@@ -75,7 +79,7 @@ def test_duplicate_or_placeholder_leaf_model_labels_fail_closed(
         ["Small_Vehicle", "LABEL_7"],
     ):
         payload = _payload()
-        payload["experts"][1]["supports"]["small-vehicle"]["model_labels"] = labels
+        _expert_payload(payload, "segmenter_mitb2_001")["supports"]["small-vehicle"]["model_labels"] = labels
         with pytest.raises(ExpertCatalogError, match="validation failed"):
             _load_payload(tmp_path, payload)
 
@@ -169,6 +173,7 @@ def test_explicit_alias_resolves_to_canonical_target() -> None:
     hints = catalog.target_hints(_target("car"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
+        "detector_isaid_yolo11s_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -186,7 +191,10 @@ def test_candidates_have_deterministic_kind_priority_name_order(tmp_path: Path) 
     high_b = copy.deepcopy(payload["experts"][0])
     high_b["backend_name"] = "detector_b"
     high_b["priority"] = 200
-    payload["experts"] = [payload["experts"][1], low, high_b, payload["experts"][2], high_a]
+    payload["experts"] = [
+        _expert_payload(payload, "segmenter_mitb2_001"), low, high_b,
+        _expert_payload(payload, "segmenter_oem_001"), high_a,
+    ]
     catalog = _load_payload(tmp_path, payload)
 
     assert tuple(expert.backend_name for expert in catalog.candidates(_target("plane"))) == (
@@ -199,19 +207,19 @@ def test_candidates_have_deterministic_kind_priority_name_order(tmp_path: Path) 
 
 def test_enabled_semantic_expert_requires_verified_class_map(tmp_path: Path) -> None:
     payload = _payload()
-    payload["experts"][1]["verification"]["class_map"] = "unverified"
+    _expert_payload(payload, "segmenter_mitb2_001")["verification"]["class_map"] = "unverified"
 
     with pytest.raises(ExpertCatalogError, match="validation failed"):
         _load_payload(tmp_path, payload)
 
 
-def test_blocked_oem_expert_loads_but_is_not_a_candidate() -> None:
+def test_verified_oem_expert_is_disabled_until_a_counting_capability_is_declared() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     oem = catalog.expert("segmenter_oem_001")
 
     assert oem.enabled is False
-    assert oem.status == "blocked_unverified_class_map"
+    assert oem.status == "active"
     assert oem.supports == {}
     assert oem not in catalog.candidates(_target("small vehicle"), enabled_only=False)
 
@@ -222,6 +230,7 @@ def test_separator_and_case_normalization_maps_isaid_label() -> None:
     candidates = catalog.candidates(_target("Small_Vehicle"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
+        "detector_isaid_yolo11s_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -235,7 +244,7 @@ def test_unsupported_target_has_no_candidates_or_hints() -> None:
     assert catalog.target_hints(_target("water")) == {}
     assert tuple(
         expert.backend_name for expert in catalog.candidates(_target("bridge"))
-    ) == ("detector_obb_csl_001",)
+    ) == ("detector_isaid_yolo11s_001", "detector_obb_csl_001")
     assert "background" not in isaid.supports
     assert isaid.supports["bridge"].counting_mode == "unsupported"
     assert isaid.supports["harbor"].counting_mode == "unsupported"
@@ -319,6 +328,7 @@ def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
 
     assert isinstance(enabled, tuple)
     assert tuple(expert.backend_name for expert in enabled) == (
+        "detector_isaid_yolo11s_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )

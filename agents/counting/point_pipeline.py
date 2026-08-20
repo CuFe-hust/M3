@@ -706,7 +706,7 @@ def find_boundary_conflicts(
             second_tile = tile_by_id.get(second.source_tile_id)
             if second_tile is None or first.target.casefold() != second.target.casefold():
                 continue
-            if _is_yolo_obb_pair(first, second):
+            if _is_yolo_detection_pair(first, second):
                 continue
             if not _cores_are_neighbours(first_tile, second_tile):
                 continue
@@ -798,15 +798,15 @@ def _seam_pair(conflict: Any) -> tuple[str, str]:
     )
 
 
-def _is_yolo_obb_pair(
+def _is_yolo_detection_pair(
     first: GlobalPointObservation,
     second: GlobalPointObservation,
 ) -> bool:
     return (
         first.provenance is not None
         and second.provenance is not None
-        and first.provenance.source == "yolo_obb_center"
-        and second.provenance.source == "yolo_obb_center"
+        and first.provenance.source in {"yolo_obb_center", "yolo_box_center"}
+        and second.provenance.source in {"yolo_obb_center", "yolo_box_center"}
     )
 
 

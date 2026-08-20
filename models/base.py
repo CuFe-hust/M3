@@ -670,30 +670,45 @@ class RuntimeObjectDetectionClient:
             max_det=max_detections,
             verbose=False,
         )
-        if not results or getattr(results[0], "obb", None) is None:
+        if not results:
             return []
-        obb = results[0].obb
-        polygons, classes, confidences = obb.xyxyxyxy, obb.cls, obb.conf
+        result = results[0]
         names = _model_class_names(getattr(self._model, "names", {}))
         actual_size = getattr(self._model, "model_input_size", None)
         input_width, input_height = actual_size or (int(image_size), int(image_size))
         audit = self.provider_audit
         outputs: list[ObjectDetectionOutput] = []
-        for index in range(len(polygons)):
-            class_id = int(_as_float(classes[index]))
+        if getattr(result, "obb", None) is not None:
+            obb = result.obb
+            records = [
+                (int(_as_float(obb.cls[index])), float(_as_float(obb.conf[index])),
+                 tuple((float(_as_float(corner[0])), float(_as_float(corner[1]))) for corner in obb.xyxyxyxy[index]), None)
+                for index in range(len(obb.xyxyxyxy))
+            ]
+        elif getattr(result, "boxes", None) is not None:
+            boxes = result.boxes
+            records = [
+                (int(_as_float(boxes.cls[index])), float(_as_float(boxes.conf[index])), None,
+                 tuple(float(_as_float(value)) for value in boxes.xyxy[index]))
+                for index in range(len(boxes.xyxy))
+            ]
+        else:
+            return []
+        for class_id, confidence_value, polygon, xyxy in records:
             if class_id not in names:
                 raise ValueError(f"YOLO_CLASS_ID_UNKNOWN:{class_id}")
-            polygon = tuple(
-                (float(_as_float(corner[0])), float(_as_float(corner[1])))
-                for corner in polygons[index]
-            )
-            xs = [point[0] for point in polygon]
-            ys = [point[1] for point in polygon]
+            if polygon is not None:
+                xs = [point[0] for point in polygon]
+                ys = [point[1] for point in polygon]
+                envelope = (min(xs), min(ys), max(xs), max(ys))
+            else:
+                assert xyxy is not None
+                envelope = xyxy
             outputs.append(
                 ObjectDetectionOutput(
                     label=names[class_id],
-                    confidence=float(_as_float(confidences[index])),
-                    xyxy=(min(xs), min(ys), max(xs), max(ys)),
+                    confidence=confidence_value,
+                    xyxy=envelope,
                     polygon=polygon,
                     input_width=input_width,
                     input_height=input_height,

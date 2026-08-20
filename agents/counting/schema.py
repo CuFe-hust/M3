@@ -153,6 +153,7 @@ class PointProvenance(BaseModel):
     source: Literal[
         "qwen_point",
         "semantic_component_centroid",
+        "yolo_box_center",
         "yolo_obb_center",
         "fused",
     ] = "qwen_point"
@@ -162,7 +163,9 @@ class PointProvenance(BaseModel):
     detector_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     obb_polygon_local_px: list[list[float]] | None = None
     obb_polygon_global_px: list[list[float]] | None = None
-    detector_task: Literal["obb"] | None = None
+    bbox_xyxy_local_px: list[float] | None = None
+    bbox_xyxy_global_px: list[float] | None = None
+    detector_task: Literal["obb", "detect"] | None = None
     detector_source_dataset: str | None = None
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
 

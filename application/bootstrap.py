@@ -592,7 +592,8 @@ def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> A
         raise RuntimeCompositionError(
             "enabled YOLO detector is absent from expert catalog"
         ) from None
-    if expert.kind != "yolo_obb" or not expert.enabled:
+    expected_kind = "yolo_obb" if detector.task == "obb" else "yolo_detect"
+    if expert.kind != expected_kind or not expert.enabled:
         raise RuntimeCompositionError("YOLO detector catalog declaration is not enabled")
     if expert.logical_model_id != detector.model_id:
         raise RuntimeCompositionError("YOLO logical model id differs from expert catalog")
@@ -735,7 +736,7 @@ def _enabled_counting_catalog_leaves(
         if settings.backend.yolo.enabled and detector.enabled
     )
     yolo_specs = expert_catalog.experts(
-        kinds=frozenset({"yolo_obb"}), enabled_only=True
+        kinds=frozenset({"yolo_obb", "yolo_detect"}), enabled_only=True
     )
     semantic_specs = expert_catalog.experts(
         kinds=frozenset({"semantic_segmentation"}), enabled_only=True

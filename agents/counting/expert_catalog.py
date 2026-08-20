@@ -24,6 +24,7 @@ from pydantic import (
 from agents.counting.schema import CountTargetSpec
 
 ExpertKind = Literal[
+    "yolo_detect",
     "yolo_obb",
     "semantic_segmentation",
     "quantity_proposal",
@@ -39,6 +40,7 @@ CountingMode = Literal[
 ExpertStatus = Literal["active", "blocked_unverified_class_map"]
 
 _EXPERT_KIND_ORDER: dict[str, int] = {
+    "yolo_detect": 0,
     "yolo_obb": 0,
     "semantic_segmentation": 1,
     "quantity_proposal": 2,
@@ -180,6 +182,7 @@ class ExpertSpec(_FrozenModel):
 
         allowed_modes: dict[str, frozenset[str]] = {
             "yolo_obb": frozenset({"native_detection", "unsupported"}),
+            "yolo_detect": frozenset({"native_detection", "unsupported"}),
             "semantic_segmentation": frozenset({"connected_components", "unsupported"}),
             "quantity_proposal": frozenset({"grounded_localization", "unsupported"}),
             "qwen_point": frozenset({"point_counting", "unsupported"}),

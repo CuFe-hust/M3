@@ -25,6 +25,7 @@ COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 # Kind rank is absolute; backend priority only orders experts of the same kind.
 # kind rank 是绝对顺序；backend priority 只在同 kind 专家之间生效。
 KIND_RANK: dict[BackendKind, int] = {
+    "yolo_detect": 400,
     "yolo_obb": 400,
     "semantic_segmentation": 300,
     "quantity_proposal": 200,
@@ -67,8 +68,8 @@ class BackendSelector:
         if self._default_backend == "qwen_point":
             ordered = [item for item in ordered if _validate_kind(item) == "qwen_point"]
             reason = "explicit_qwen_point"
-        elif self._default_backend == "yolo_obb":
-            yolo = [item for item in ordered if _validate_kind(item) == "yolo_obb"]
+        elif self._default_backend in {"yolo_obb", "yolo_detect"}:
+            yolo = [item for item in ordered if _validate_kind(item) in {"yolo_obb", "yolo_detect"}]
             qwen = [item for item in ordered if _validate_kind(item) == "qwen_point"]
             ordered = [*yolo, *qwen]
             reason = "explicit_yolo" if yolo else "explicit_yolo_unsupported_target_qwen"
@@ -133,7 +134,7 @@ class BackendSelector:
             try:
                 enabled = backend.is_enabled()
                 kind = _validate_kind(backend)
-                if kind in {"yolo_obb", "semantic_segmentation"}:
+                if kind in {"yolo_obb", "yolo_detect", "semantic_segmentation"}:
                     supported = bool(executable_leaf_categories) and all(
                         backend.supports(_leaf_target(leaf), hints=hints)
                         for leaf in executable_leaf_categories
@@ -190,6 +191,7 @@ class BackendSelector:
             return "no_supported_backend"
         return {
             "yolo_obb": "target_supported_by_yolo",
+            "yolo_detect": "target_supported_by_yolo",
             "semantic_segmentation": "target_supported_by_semantic_segmentation",
             "quantity_proposal": "target_supported_by_quantity_proposal",
             "qwen_point": "no_supported_specialist_qwen",

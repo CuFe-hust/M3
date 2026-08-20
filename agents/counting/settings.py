@@ -129,7 +129,7 @@ class AgentCountingSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_backend: Literal["auto", "qwen_point", "yolo_obb"] = "auto"
+    default_backend: Literal["auto", "qwen_point", "yolo_obb", "yolo_detect"] = "auto"
 
 
 class YoloDetectorSettings(BaseModel):
@@ -144,7 +144,7 @@ class YoloDetectorSettings(BaseModel):
     enabled: bool = False
     weights: Path
     runtime: Literal["ultralytics", "onnx_yolov5_obb"] = "ultralytics"
-    task: Literal["obb"] = "obb"
+    task: Literal["obb", "detect"] = "obb"
     model_id: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_dataset: str = Field(default="DOTAv1", min_length=1)

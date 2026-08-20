@@ -246,7 +246,7 @@ class CountingPlanExecutor:
                     outcome=outcome,
                 )
             )
-            if kind == "yolo_obb":
+            if kind in {"yolo_obb", "yolo_detect"}:
                 yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
             break
 
@@ -285,7 +285,7 @@ class CountingPlanExecutor:
                 agent_name=agent_name,
                 sample_id=request.sample.sample_id,
             )
-            if yolo_trace is not None and final_kind == "yolo_obb":
+            if yolo_trace is not None and final_kind in {"yolo_obb", "yolo_detect"}:
                 yolo_trace.update(
                     {
                         "zero_review_triggered": True,
@@ -301,7 +301,7 @@ class CountingPlanExecutor:
                 review = await review_obj.count(request, context)
                 if not isinstance(review, CountingBackendOutcome):
                     raise InvalidBackendContract()
-                if yolo_trace is not None and final_kind == "yolo_obb":
+                if yolo_trace is not None and final_kind in {"yolo_obb", "yolo_detect"}:
                     yolo_trace.update(
                         {
                             "zero_review_status": review.counting.status,
@@ -345,14 +345,14 @@ class CountingPlanExecutor:
                     )
                 )
                 outcome = _with_review_warning(original_outcome, source_kind=final_kind)
-                if yolo_trace is not None and final_kind == "yolo_obb":
+                if yolo_trace is not None and final_kind in {"yolo_obb", "yolo_detect"}:
                     yolo_trace.update(
                         {
                             "zero_review_status": "failed",
                             "zero_review_result_count": None,
                         }
                     )
-            if yolo_trace is not None and primary_kind == "yolo_obb":
+            if yolo_trace is not None and primary_kind in {"yolo_obb", "yolo_detect"}:
                 yolo_trace["zero_overridden"] = zero_overridden
 
         first_failure = history[0] if history else None
@@ -375,7 +375,7 @@ class CountingPlanExecutor:
             fallback_kind = "zero_review"
             fallback_reason_code = (
                 "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
-                if primary_kind == "yolo_obb"
+                if primary_kind in {"yolo_obb", "yolo_detect"}
                 else "SEMANTIC_ZERO_OVERRIDDEN_BY_REVIEW"
             )
 
@@ -494,7 +494,7 @@ class CountingPlanExecutor:
         final_kind: BackendKind,
     ) -> int | None:
         if (
-            final_kind == "yolo_obb"
+            final_kind in {"yolo_obb", "yolo_detect"}
             and not self._policy.trust_empty_detection
             and self._policy.verify_empty_detection
         ):
@@ -573,7 +573,7 @@ def _validate_backend_contract(
 
 def _yolo_profile(backend: object, kind: BackendKind) -> dict[str, object] | None:
     profile = getattr(backend, "trace_profile", None)
-    return dict(profile()) if kind == "yolo_obb" and callable(profile) else None
+    return dict(profile()) if kind in {"yolo_obb", "yolo_detect"} and callable(profile) else None
 
 
 def _with_review_warning(
@@ -583,7 +583,7 @@ def _with_review_warning(
 ) -> CountingBackendOutcome:
     code = (
         "DETECTOR_ZERO_REVIEW_FAILED"
-        if source_kind == "yolo_obb"
+        if source_kind in {"yolo_obb", "yolo_detect"}
         else "SEMANTIC_ZERO_REVIEW_FAILED"
     )
     warning = IssueRecord(

@@ -1,4 +1,4 @@
-"""Local YOLO OBB counting backend with point-derived final counts.
+"""Local YOLO detection counting backend with point-derived final counts.
 
 使用点导出最终计数的本地 YOLO OBB 计数后端。保留多 detector、hash 校验、
 类别映射（canonical leaf 到 raw label）与边界去重；不写入任何模型回退逻辑。
@@ -40,8 +40,8 @@ from models.base import ObjectDetectionClient, RuntimeObjectDetectionClient
 
 
 class YoloOBBCountingBackend:
-    """Count configured local classes through verified OBB inference.
-    通过经验证的 OBB 推理统计已配置的本地类别。"""
+    """Count configured local classes through verified YOLO inference.
+    通过经验证的 YOLO 推理统计已配置的本地类别。"""
 
     def __init__(
         self,
@@ -58,8 +58,8 @@ class YoloOBBCountingBackend:
             name.casefold(): target.casefold()
             for name, target in detector.aliases.items()
         }
+        self.kind: BackendKind = "yolo_obb" if detector.task == "obb" else "yolo_detect"
 
-    kind: BackendKind = "yolo_obb"
 
     @property
     def name(self) -> str:
@@ -140,8 +140,7 @@ class YoloOBBCountingBackend:
         request: CountingRequest,
         context: object,
     ) -> CountingBackendOutcome:
-        """Run sequential OBB tiles and preserve all visible failure evidence.
-        顺序运行 OBB 切片并保留全部可见失败证据。"""
+        """Run sequential detection tiles and preserve all visible failure evidence."""
         allowed = self.resolve_leaf_classes(request.executable_leaf_categories)
         if not allowed:
             raise ValueError("YOLO backend selected for an unsupported target")
@@ -298,7 +297,7 @@ class YoloOBBCountingBackend:
         return CountingBackendOutcome(
             counting=counting,
             trace={
-                "backend_kind": "yolo_obb",
+                "backend_kind": self.kind,
                 **self.trace_profile(),
                 **provider_trace,
                 "resolved_target_classes": sorted(allowed),
@@ -341,15 +340,13 @@ class YoloOBBCountingBackend:
             if class_name not in allowed:
                 unrelated += 1
                 continue
-            if output.polygon is None:
-                raise ValueError("YOLO_OBB_POLYGON_MISSING")
-            polygon = [[x, y] for x, y in output.polygon]
-            center_x = sum(point[0] for point in polygon) / len(polygon)
-            center_y = sum(point[1] for point in polygon) / len(polygon)
+            polygon = [[x, y] for x, y in output.polygon] if output.polygon else None
+            x1, y1, x2, y2 = output.xyxy
+            center_x = (x1 + x2) / 2
+            center_y = (y1 + y2) / 2
             local_x = max(0, min(999, round(center_x / max(1, crop_w - 1) * 999)))
             local_y = max(0, min(999, round(center_y / max(1, crop_h - 1) * 999)))
-            width = max(point[0] for point in polygon) - min(point[0] for point in polygon)
-            height = max(point[1] for point in polygon) - min(point[1] for point in polygon)
+            width, height = x2 - x1, y2 - y1
             radius_px = max(1.0, min(width, height) / 2.0)
             local_radius = max(
                 0,
@@ -362,7 +359,7 @@ class YoloOBBCountingBackend:
                 y=local_y,
                 confidence=confidence,
                 radius=local_radius,
-                short_evidence=f"YOLO OBB {output.label} in {tile.tile_id}",
+                short_evidence=f"YOLO {output.label} in {tile.tile_id}",
             )
             point = convert_local_point_to_global(
                 local,
@@ -374,17 +371,22 @@ class YoloOBBCountingBackend:
             point = point.model_copy(
                 update={
                     "provenance": PointProvenance(
-                        source="yolo_obb_center",
+                        source=("yolo_obb_center" if polygon else "yolo_box_center"),
                         backend_name=self.name,
                         model_id=self._detector.model_id,
                         source_class=output.label,
                         detector_confidence=confidence,
                         obb_polygon_local_px=polygon,
-                        obb_polygon_global_px=[
+                        obb_polygon_global_px=([
                             [x + tile.crop_global.left, y + tile.crop_global.top]
                             for x, y in polygon
+                        ] if polygon else None),
+                        bbox_xyxy_local_px=[x1, y1, x2, y2],
+                        bbox_xyxy_global_px=[
+                            x1 + tile.crop_global.left, y1 + tile.crop_global.top,
+                            x2 + tile.crop_global.left, y2 + tile.crop_global.top,
                         ],
-                        detector_task="obb",
+                        detector_task=self._detector.task,
                         detector_source_dataset=self._detector.source_dataset,
                         weights_sha256=self._detector.sha256,
                     )
@@ -433,7 +435,7 @@ def _detector_duplicate_pairs(
                 (first.global_x_px - second.global_x_px) ** 2
                 + (first.global_y_px - second.global_y_px) ** 2
             ) ** 0.5
-            iou = _polygon_envelope_iou(first, second)
+            iou = _detection_envelope_iou(first, second)
             if iou >= detector.boundary_duplicate_iou or (
                 neighbouring_boundary
                 and distance <= detector.boundary_duplicate_center_px
@@ -454,11 +456,18 @@ def _is_clipped_border_fragment(
 ) -> bool:
     """Reject detections whose centre and polygon are both clipped at an image
     edge. 拒绝中心与多边形同时贴近图像边缘的截断检测。"""
-    polygon = point.provenance.obb_polygon_global_px if point.provenance else None
-    if not polygon:
+    provenance = point.provenance
+    if provenance is None:
         return False
-    xs = [item[0] for item in polygon]
-    ys = [item[1] for item in polygon]
+    polygon = provenance.obb_polygon_global_px
+    if polygon:
+        xs = [item[0] for item in polygon]
+        ys = [item[1] for item in polygon]
+    elif provenance.bbox_xyxy_global_px:
+        x1, y1, x2, y2 = provenance.bbox_xyxy_global_px
+        xs, ys = [x1, x2], [y1, y2]
+    else:
+        return False
     return (
         (min(xs) <= 0 and point.global_x_norm < 25)
         or (min(ys) <= 0 and point.global_y_norm < 25)
@@ -471,20 +480,23 @@ def _source_class(point: GlobalPointObservation) -> str | None:
     return point.provenance.source_class if point.provenance is not None else None
 
 
-def _polygon_envelope_iou(
+def _detection_envelope_iou(
     first: GlobalPointObservation,
     second: GlobalPointObservation,
 ) -> float:
-    polygons = [
-        point.provenance.obb_polygon_global_px if point.provenance else None
-        for point in (first, second)
-    ]
-    if not all(polygons):
-        return 0.0
     boxes = []
-    for polygon in polygons:
-        xs, ys = [item[0] for item in polygon], [item[1] for item in polygon]
-        boxes.append((min(xs), min(ys), max(xs), max(ys)))
+    for point in (first, second):
+        provenance = point.provenance
+        if provenance is None:
+            return 0.0
+        if provenance.bbox_xyxy_global_px:
+            boxes.append(tuple(provenance.bbox_xyxy_global_px))
+        elif provenance.obb_polygon_global_px:
+            xs = [item[0] for item in provenance.obb_polygon_global_px]
+            ys = [item[1] for item in provenance.obb_polygon_global_px]
+            boxes.append((min(xs), min(ys), max(xs), max(ys)))
+        else:
+            return 0.0
     ax1, ay1, ax2, ay2 = boxes[0]
     bx1, by1, bx2, by2 = boxes[1]
     overlap = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(

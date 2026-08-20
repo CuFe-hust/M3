@@ -164,7 +164,7 @@ class ModelSettings(BaseModel):
             weights_sha256=(
                 "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
             ),
-            classes_filename=None,
+            classes_filename="classes.json",
         )
     )
     # Additional runtime-only profiles are keyed by the stable catalog

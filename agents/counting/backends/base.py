@@ -29,6 +29,7 @@ BackendKind = Literal[
     "qwen_point",
     "quantity_proposal",
     "semantic_segmentation",
+    "yolo_detect",
     "yolo_obb",
 ]
 

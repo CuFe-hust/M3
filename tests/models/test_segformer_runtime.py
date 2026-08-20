@@ -155,7 +155,7 @@ def test_model_settings_declare_authoritative_classes_without_filesystem_access(
 ) -> None:
     settings = ModelSettings()
     assert settings.segformer_isaid.classes_filename == "classes.json"
-    assert settings.segformer_oem.classes_filename is None
+    assert settings.segformer_oem.classes_filename == "classes.json"
     assert settings.segformer_isaid.allow_download is False
     assert settings.segformer_oem.allow_download is False
     assert str(settings.segformer_isaid.model_path) not in (

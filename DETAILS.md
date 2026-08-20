@@ -3440,8 +3440,9 @@ EXIF/RGB 源尺寸生成一个固定 1024×1024 视图，禁止旧 multi-ROI 与
 
 ### 79.7 OEM class labels
 
-迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`，没有经训练
-语义验证的 `classes.json`。当前 runtime 保留该事实，不用网络资料猜测类别顺序。
+OEM 9-channel checkpoint 的分类头维度已核验，并以 OpenEarthMap 官方八类顺序
+（加 index 0 background）写入版本化 `classes.json`；runtime 只读取该映射，不再
+暴露旧的 `LABEL_0..8` 占位名。
 
 ### 79.8 Semantic connected-component counting
 
