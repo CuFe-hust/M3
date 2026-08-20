@@ -211,6 +211,7 @@
       },
       "change_semantics": {
         "enabled": true,
+        "participation": "core",
         "role": "object_semantic",
         "neutral_model_labels": ["background"],
         "transient_model_labels": ["Large_Vehicle", "Small_Vehicle", "plane", "ship", "Helicopter"],
@@ -236,21 +237,15 @@
       "supports": {},
       "change_semantics": {
         "enabled": true,
+        "participation": "rescue",
         "role": "persistent_landcover",
         "neutral_model_labels": ["background"],
         "transient_model_labels": [],
-        "structural_model_labels": ["building", "road"],
-        "landcover_candidate_model_labels": ["bareland", "rangeland", "developed_space", "tree", "water", "agriculture_land"],
-        "persistent_model_labels": [
-          "bareland",
-          "rangeland",
-          "developed_space",
-          "road",
-          "tree",
-          "water",
-          "agriculture_land",
-          "building"
-        ]
+        "structural_model_labels": ["building"],
+        "landcover_candidate_model_labels": [],
+        "persistent_model_labels": ["building"],
+        "rescue_model_labels": ["building"],
+        "rescue_strategy": "building_footprint_delta"
       }
     }
   ]

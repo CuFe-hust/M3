@@ -249,18 +249,14 @@ def test_verified_oem_expert_is_active_with_landcover_semantics() -> None:
     assert oem.asset.class_map == "models/segformer_mitb2_oem/classes.json"
     assert oem.supports == {}
     assert oem.change_semantics is not None
+    assert oem.change_semantics.participation == "rescue"
     assert oem.change_semantics.role == "persistent_landcover"
     assert oem.change_semantics.neutral_model_labels == ("background",)
     assert oem.change_semantics.persistent_model_labels == (
-        "bareland",
-        "rangeland",
-        "developed_space",
-        "road",
-        "tree",
-        "water",
-        "agriculture_land",
         "building",
     )
+    assert oem.change_semantics.rescue_model_labels == ("building",)
+    assert oem.change_semantics.rescue_strategy == "building_footprint_delta"
 
 
 def test_separator_and_case_normalization_maps_isaid_label() -> None:

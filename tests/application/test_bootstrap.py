@@ -84,10 +84,11 @@ def test_change_bindings_are_catalog_driven_and_deterministic() -> None:
         {"storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"}
     )
     assert bindings[1].role == "persistent_landcover"
+    assert bindings[1].participation == "rescue"
     assert bindings[1].neutral_labels == frozenset({"background"})
-    assert bindings[1].persistent_labels == frozenset(
-        {"bareland", "rangeland", "developed_space", "road", "tree", "water", "agriculture_land", "building"}
-    )
+    assert bindings[1].persistent_labels == frozenset({"building"})
+    assert bindings[1].rescue_model_labels == frozenset({"building"})
+    assert bindings[1].rescue_strategy == "building_footprint_delta"
 
 
 def _settings(tmp_path: Path) -> AppSettings:

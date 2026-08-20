@@ -110,11 +110,14 @@ class ChangeSemanticSpec(_FrozenModel):
     """Verified, model-neutral semantic roles for Change evidence."""
 
     enabled: bool = False
+    participation: Literal["core", "rescue", "diagnostic"] = "core"
     role: Literal["generic", "persistent_landcover", "object_semantic"] = "generic"
     neutral_model_labels: tuple[str, ...] = ()
     transient_model_labels: tuple[str, ...] = ()
     structural_model_labels: tuple[str, ...] = ()
     landcover_candidate_model_labels: tuple[str, ...] = ()
+    rescue_model_labels: tuple[str, ...] = ()
+    rescue_strategy: Literal["none", "building_footprint_delta", "edge_corner_building"] = "none"
     # Backward-compatible alias for older catalogs.  New code must not treat
     # this field as proof that every class flip is persistent.
     persistent_model_labels: tuple[str, ...] = ()
@@ -125,6 +128,7 @@ class ChangeSemanticSpec(_FrozenModel):
         "structural_model_labels",
         "landcover_candidate_model_labels",
         "persistent_model_labels",
+        "rescue_model_labels",
     )
     @classmethod
     def labels_are_explicit(cls, values: tuple[str, ...]) -> tuple[str, ...]:
@@ -154,6 +158,10 @@ class ChangeSemanticSpec(_FrozenModel):
             for other in range(index)
         ):
             raise ValueError("Change semantic label roles must not overlap")
+        if self.participation == "rescue" and self.rescue_strategy == "none":
+            raise ValueError("rescue semantic experts require an explicit rescue strategy")
+        if self.participation != "rescue" and self.rescue_model_labels:
+            raise ValueError("only rescue semantic experts may declare rescue labels")
         return self
 
 

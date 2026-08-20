@@ -86,8 +86,11 @@ class SemanticExpertBinding:
     transient_labels: frozenset[str]
     persistent_labels: frozenset[str]
     client: DenseSemanticClient
+    participation: str = "core"
     structural_labels: frozenset[str] = frozenset()
     landcover_candidate_labels: frozenset[str] = frozenset()
+    rescue_model_labels: frozenset[str] = frozenset()
+    rescue_strategy: str = "none"
 
 
 @dataclass(frozen=True)
@@ -211,12 +214,23 @@ class ChangePerceptionPipeline:
         identity: ModelCacheIdentity | None = None
         try:
             semantic_settings = self._settings.semantic
+            core_experts = tuple(
+                binding
+                for binding in self._semantic_experts
+                if binding.participation == "core"
+            )
+            if not core_experts:
+                raise ChangePerceptionError("SEGFORMER_CORE_EXPERT_MISSING")
             requested_stages = tuple(semantic_settings.feature_stages)
             expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
             semantic_runs: list[SemanticExpertRun] = []
             expert_failures: list[dict[str, str]] = []
             expert_errors: list[BaseException] = []
-            for binding in self._semantic_experts[: semantic_settings.max_experts if semantic_settings.multi_expert_enabled else 1]:
+            for binding in core_experts[
+                : semantic_settings.max_experts
+                if semantic_settings.multi_expert_enabled
+                else 1
+            ]:
                 try:
                     semantic_runs.append(
                         _infer_semantic_expert_pair(
@@ -234,7 +248,7 @@ class ChangePerceptionPipeline:
                         {"expert_id": binding.expert_id, "error_type": type(error).__name__}
                     )
             if len(semantic_runs) < semantic_settings.min_successful_experts:
-                if len(self._semantic_experts) == 1 and expert_errors:
+                if len(core_experts) == 1 and expert_errors:
                     raise expert_errors[0]
                 raise ChangePerceptionError("SEGFORMER_ALL_EXPERTS_FAILED")
             expert_evidence: list[SemanticExpertEvidence] = []
@@ -248,7 +262,7 @@ class ChangePerceptionPipeline:
                         valid_mask=getattr(prepared, "registration_valid_mask", None),
                     )
                 except Exception as error:
-                    if len(self._semantic_experts) == 1:
+                    if len(core_experts) == 1:
                         raise
                     expert_failures.append(
                         {"expert_id": run.binding.expert_id, "error_type": type(error).__name__}
@@ -268,11 +282,11 @@ class ChangePerceptionPipeline:
                         feature_result is None
                         and prepared.pif_valid
                         and semantic_settings.failure_policy == "fail"
-                        and len(self._semantic_experts) == 1
+                        and len(core_experts) == 1
                     ):
                         raise ChangePerceptionError("FEATURE_RESIDUAL_INSUFFICIENT_PIF")
                 except Exception as error:
-                    if len(self._semantic_experts) == 1:
+                    if len(core_experts) == 1:
                         raise
                     feature_result = None
                     feature_diagnostics = {
@@ -436,6 +450,7 @@ class ChangePerceptionPipeline:
                         "expert_id": item.run.binding.expert_id,
                         "logical_model_id": item.run.identity.model,
                         "priority": item.run.binding.priority,
+                        "participation": item.run.binding.participation,
                         "role": item.run.binding.role,
                         "status": "success",
                         "weights_sha256": item.run.weights_sha256,
@@ -449,6 +464,11 @@ class ChangePerceptionPipeline:
                 "semantic_ensemble": {
                     "selected_experts": [
                         item.binding.expert_id for item in semantic_runs[: semantic_settings.max_experts]
+                    ],
+                    "excluded_rescue_experts": [
+                        item.expert_id
+                        for item in self._semantic_experts
+                        if item.participation == "rescue"
                     ],
                     "successful_experts": [
                         item.run.binding.expert_id for item in expert_evidence

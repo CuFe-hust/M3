@@ -508,6 +508,7 @@ def _build_change_semantic_bindings(
                 expert_id=expert.backend_name,
                 logical_model_id=expert.logical_model_id,
                 priority=expert.priority,
+                participation=semantic.participation,
                 role=semantic.role,
                 neutral_labels=frozenset(semantic.neutral_model_labels),
                 transient_labels=frozenset(semantic.transient_model_labels),
@@ -517,6 +518,8 @@ def _build_change_semantic_bindings(
                 landcover_candidate_labels=frozenset(
                     semantic.landcover_candidate_model_labels
                 ),
+                rescue_model_labels=frozenset(semantic.rescue_model_labels),
+                rescue_strategy=semantic.rescue_strategy,
             )
         )
     return tuple(bindings)

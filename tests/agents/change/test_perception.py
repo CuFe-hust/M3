@@ -256,6 +256,52 @@ def test_multiple_semantic_experts_run_independently_and_are_audited() -> None:
     assert result.diagnostics["semantic_expert_failures"] == []
 
 
+def test_rescue_expert_is_excluded_from_core_fusion(monkeypatch) -> None:
+    monkeypatch.setattr(
+        perception_module,
+        "propose_changes",
+        lambda *args, **kwargs: (np.zeros((16, 16), dtype=np.float32), []),
+    )
+    core_client = _DenseClient()
+    rescue_client = _DenseClient()
+    core = SemanticExpertBinding(
+        expert_id="isaid-core",
+        logical_model_id="isaid-core",
+        priority=200,
+        role="object_semantic",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset(),
+        client=core_client,
+    )
+    rescue = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=rescue_client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+
+    settings = _settings()
+    settings.semantic.multi_expert_enabled = True
+    settings.semantic.max_experts = 2
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(core, rescue),
+    ).run(_prepared())
+
+    assert len(core_client.calls) == 2
+    assert rescue_client.calls == []
+    assert result.diagnostics["semantic_status"] in {"success", "fallback", "fallback_legacy"}
+
+
 def test_typed_semantic_transition_classes() -> None:
     binding = SemanticExpertBinding(
         expert_id="oem",
