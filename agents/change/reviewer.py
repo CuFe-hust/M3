@@ -53,6 +53,49 @@ def meaningful_proposals(
     return [item for item in proposals if item.score >= settings.no_change_conflict_min_score]
 
 
+def has_structural_semantic_support(proposal: ChangeProposal) -> bool:
+    consensus = proposal.semantic_consensus or {}
+    if float(consensus.get("structural_support", 0.0) or 0.0) > 0.0:
+        return True
+    return any(
+        item.get("evidence_type") in {"structural_candidate", "persistent"}
+        for item in proposal.semantic_transitions
+        if isinstance(item, dict)
+    )
+
+
+def has_landcover_only_support(proposal: ChangeProposal) -> bool:
+    consensus = proposal.semantic_consensus or {}
+    if float(consensus.get("landcover_support", 0.0) or 0.0) <= 0.0:
+        return False
+    if has_structural_semantic_support(proposal):
+        return False
+    return any(
+        item.get("evidence_type") == "landcover_candidate"
+        for item in proposal.semantic_transitions
+        if isinstance(item, dict)
+    ) or not proposal.semantic_transitions
+
+
+def has_transient_only_support(proposal: ChangeProposal) -> bool:
+    consensus = proposal.semantic_consensus or {}
+    return (
+        float(consensus.get("transient_support", 0.0) or 0.0) > 0.0
+        and not has_structural_semantic_support(proposal)
+        and not has_landcover_only_support(proposal)
+    )
+
+
+def nonsemantic_reliable_component_count(proposal: ChangeProposal) -> int:
+    reliability = proposal.reliability or {}
+    return sum(
+        1
+        for name in ("low_level", "feature")
+        if float(proposal.component_scores.get(name, 0.0) or 0.0) > 0.0
+        and float(reliability.get(name, 1.0) or 0.0) >= 0.5
+    )
+
+
 def has_no_change_conflict(
     result: AgentResult, proposals: list[ChangeProposal], settings: ChangeReviewSettings
 ) -> bool:
@@ -71,21 +114,54 @@ def _negative_conflict_reasons(
     proposals: list[ChangeProposal], settings: ChangeReviewSettings
 ) -> list[str]:
     reasons: list[str] = []
+    nonsemantic_area = 0.0
     for proposal in proposals:
         adjusted = proposal.score * (
             sum(proposal.reliability.values()) / len(proposal.reliability)
             if proposal.reliability else 1.0
         )
         active = sum(1 for value in proposal.component_scores.values() if value > 0.0)
-        if adjusted >= settings.negative_strong_score:
+        structural = has_structural_semantic_support(proposal)
+        landcover_only = has_landcover_only_support(proposal)
+        nonsemantic = nonsemantic_reliable_component_count(proposal)
+        if nonsemantic or structural:
+            nonsemantic_area += proposal.area_ratio
+        if adjusted >= settings.negative_strong_score and not landcover_only and (
+            structural or nonsemantic or not proposal.semantic_transitions
+        ):
             reasons.append("NEGATIVE_STRONG_PROPOSAL")
-        if adjusted >= settings.negative_moderate_score and active >= settings.negative_min_reliable_components:
+        if adjusted >= settings.negative_moderate_score and (
+            (structural and nonsemantic >= 1) or nonsemantic >= settings.negative_min_reliable_components
+        ):
             reasons.append("NEGATIVE_CROSS_BRANCH_SUPPORT")
         if _is_edge(proposal, settings.negative_edge_margin_ratio) and adjusted >= settings.negative_edge_score:
-            reasons.append("NEGATIVE_EDGE_RESCUE")
-    if sum(item.area_ratio for item in meaningful_proposals(proposals, settings)) >= settings.negative_large_total_area_ratio:
-        reasons.append("NEGATIVE_LARGE_COHERENT_SUPPORT")
+            if structural:
+                reasons.append("NEGATIVE_EDGE_STRUCTURAL_RESCUE")
+            elif nonsemantic:
+                reasons.append("NEGATIVE_EDGE_NONSEMANTIC_RESCUE")
+    if nonsemantic_area >= settings.negative_large_total_area_ratio:
+        reasons.append("NEGATIVE_LARGE_COHERENT_NONSEMANTIC_SUPPORT")
     return list(dict.fromkeys(reasons))
+
+
+def _negative_suppression_reasons(
+    proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> list[str]:
+    if any(
+        item.score >= settings.no_change_conflict_min_score
+        and has_landcover_only_support(item)
+        and nonsemantic_reliable_component_count(item) == 0
+        for item in proposals
+    ):
+        return ["NEGATIVE_LANDCOVER_ONLY_SUPPRESSED"]
+    if any(
+        item.score >= settings.no_change_conflict_min_score
+        and has_transient_only_support(item)
+        and nonsemantic_reliable_component_count(item) == 0
+        for item in proposals
+    ):
+        return ["NEGATIVE_TRANSIENT_ONLY_SUPPRESSED"]
+    return []
 
 
 def _positive_conflict_reasons(result: AgentResult, proposals: list[ChangeProposal], task: str) -> list[str]:
@@ -120,8 +196,9 @@ def _positive_conflict_reasons(result: AgentResult, proposals: list[ChangePropos
 def review_outcome(result: AgentResult, proposals: list[ChangeProposal], settings: ChangeReviewSettings, *, task: str) -> ChangeReviewOutcome:
     reviewed, warnings = review_result(result, proposals, settings)
     negative = _negative_conflict_reasons(proposals, settings) if is_canonical_no_change(result.answer) else []
+    suppressed = _negative_suppression_reasons(proposals, settings) if is_canonical_no_change(result.answer) else []
     positive = _positive_conflict_reasons(result, proposals, task)
-    reasons = negative or positive
+    reasons = negative or positive or suppressed
     route: ReviewRoute = "adjudicate_negative" if negative else "adjudicate_positive" if positive else "accept"
     return ChangeReviewOutcome(reviewed, tuple(warnings), route, tuple(reasons))
 
