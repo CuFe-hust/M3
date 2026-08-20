@@ -1333,6 +1333,59 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
     assert "nested_not_public" not in serialized and "C:/private" not in serialized
 
 
+def test_process_report_includes_vqa_evidence_yolo_and_segformer_calls(tmp_path: Path) -> None:
+    run_dir = _create_run(tmp_path)
+    sample = _sample("evidence-a")
+    sample_dir = _write_sample(
+        run_dir,
+        run_task="general_vqa",
+        sample=sample,
+        status=_status("evidence-a", "general_vqa", "succeeded"),
+        trace=_trace(resolved_task="general_vqa", execution_agent="general_vqa_agent"),
+        payload=AgentResult(agent_name="general_vqa_agent", answer="yes"),
+    )
+    (sample_dir / "vqa_evidence.json").write_text(json.dumps({
+        "workflow": "object_evidence_vqa",
+        "call_audit": [
+            {
+                "layer": "yolo",
+                "roi_id": "roi-1",
+                "input_size": [640, 640],
+                "logical_model_id": "YOLO11s:iSAID:epoch111",
+                "weights_sha256": "c" * 64,
+                "status": "succeeded",
+                "error_code": None,
+            },
+            {
+                "layer": "segformer",
+                "roi_id": "roi-1",
+                "input_size": [768, 768],
+                "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
+                "weights_sha256": "d" * 64,
+                "status": "succeeded",
+                "error_code": None,
+            },
+        ],
+    }), encoding="utf-8")
+
+    report = build_report(run_dir)
+    evidence_steps = [
+        step for step in report.samples[0].execution_steps
+        if step.phase == "evidence_model"
+    ]
+    assert [step.backend_name for step in evidence_steps] == ["yolo", "segformer"]
+    assert evidence_steps[0].summary_fields["logical_model_id"] == "YOLO11s:iSAID:epoch111"
+    assert evidence_steps[1].summary_fields["weights_sha256"] == "d" * 64
+    assert [(item.family, item.logical_model_id) for item in report.process_report.model_weights] == [
+        ("segmentation", "SegFormer-MiT-B2:iSAID:local"),
+        ("yolo", "YOLO11s:iSAID:epoch111"),
+    ]
+    sequence = report.process_report.workflow_sequences[0]
+    assert [step.backend_name for step in sequence.steps if step.phase == "evidence_model"] == [
+        "yolo", "segformer",
+    ]
+
+
 def test_v21_model_call_loader_is_bounded_sanitized_and_best_effort(tmp_path: Path) -> None:
     call_dir = tmp_path / "sample" / "calls" / "01"
     call_dir.mkdir(parents=True)

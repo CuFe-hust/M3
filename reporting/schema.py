@@ -138,7 +138,7 @@ class ModelWeightView(_ViewModel):
     backend_name: str
     backend_kind: str
     logical_model_id: str | None = None
-    weights_file: str | None = Field(default=None, pattern=r"^[^/\\]+$")
+    weights_file: str | None = Field(default=None, pattern=r"^[^/\\:]+$")
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     source_dataset: str | None = None
     model_revision: str | None = None
