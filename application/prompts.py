@@ -19,7 +19,7 @@ _BINDINGS: dict[str, tuple[str, str]] = {
     "count_disagreement": ("count_expert_disagreement_v1.md", "v1"),
     "zero_review": ("missing_point_review_v3.md", "v3"),
     "change": ("change_dual_path_v9.md", "v9"),
-    "change_building_rescue": ("change_building_rescue_v1.md", "v2"),
+    "change_building_rescue": ("change_building_rescue_v1.md", "v3"),
     "general": ("general_vqa_v3.md", "v3"),
     "grounding": ("general_vqa_v3.md", "v3"),
     "caption": ("caption_v1.md", "v1"),

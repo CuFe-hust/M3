@@ -176,6 +176,8 @@ class ChangeAgent:
         rescue_selected_candidates: list[Any] = []
         rescue_review_candidates: list[Any] = []
         rescue_selection_audit: list[dict[str, object]] = []
+        rescue_model_final_answer: str | None = None
+        rescue_deterministic_final_answer: str | None = None
         core_conflict_reasons = [
             warning
             for warning in initial_warnings
@@ -277,6 +279,7 @@ class ChangeAgent:
                 rescue_warnings = self._validate_building_rescue_review(
                     rescue_review, rescue_review_candidates
                 )
+                rescue_model_final_answer = rescue_review.final_answer
                 if rescue_warnings:
                     rescue_failure = ";".join(rescue_warnings)
                     final_warnings = list(dict.fromkeys([*final_warnings, "BUILDING_RESCUE_FAILED"]))
@@ -304,6 +307,9 @@ class ChangeAgent:
                             for item in confirmed
                             if item.candidate_id in candidate_map
                         ]
+                        rescue_deterministic_final_answer = _building_rescue_fallback_caption(
+                            rescue_selected_candidates, rescue_confirmed_reviews
+                        )
                         reviewed = self._merge_building_rescue(
                             reviewed,
                             rescue_review,
@@ -370,6 +376,8 @@ class ChangeAgent:
             "rescue_request_hash": rescue_request_hash,
             "rescue_decision": rescue_decision,
             "rescue_failure": rescue_failure,
+            "rescue_model_final_answer": rescue_model_final_answer,
+            "rescue_deterministic_final_answer": rescue_deterministic_final_answer,
             "building_rescue_review_candidate_count": len(rescue_review_candidates),
             "building_rescue_review_selection": rescue_selection_audit,
             "building_rescue_generation_limit": settings.building_rescue.rescue_max_new_tokens,
@@ -667,11 +675,7 @@ class ChangeAgent:
         }
         candidate_map = {item.candidate_id: item for item in candidates}
         selected = [candidate_map[item_id] for item_id in confirmed if item_id in candidate_map]
-        answer = review.final_answer.strip() if review.final_answer else ""
-        if not answer or _contains_internal_rescue_identifier(
-            answer, selected, confirmed
-        ):
-            answer = _building_rescue_fallback_caption(selected, confirmed)
+        answer = _building_rescue_fallback_caption(selected, confirmed)
         evidence: list[str] = []
         evidence_items: list[VisualEvidence] = []
         boxes: list[list[int]] = []
@@ -1318,8 +1322,13 @@ def _building_rescue_fallback_caption(
             "Two buildings" if count == 2 else "Several buildings"
         )
         verb = "was" if count == 1 else "were"
-        location = _building_rescue_location(grouped[0])
-        fragments.append(f"{noun} {verb} {direction} near the {location}")
+        location = _building_rescue_locations(grouped)
+        location_phrase = (
+            location
+            if location in {"along the image edges", "in the scene"}
+            else f"near the {location}"
+        )
+        fragments.append(f"{noun} {verb} {direction} {location_phrase}")
     return ". ".join(fragments) + "." if fragments else CANONICAL_NO_CHANGE
 
 
@@ -1332,6 +1341,12 @@ _INTERNAL_RESCUE_TERMS = (
     "expert",
     "expert_id",
     "rescue_candidate",
+    "roi",
+    "red box",
+    "marked area",
+    "bounding box",
+    "coordinates",
+    "pixel coordinates",
 )
 _RESCUE_TAXONOMY_TERMS = ("tree", "rangeland", "developed_space")
 
@@ -1366,25 +1381,44 @@ def _contains_internal_rescue_identifier(
 
 
 def _building_rescue_location(candidate: Any) -> str:
-    flags = set(candidate.edge_flags)
-    for pair, name in (
-        ({"top", "left"}, "upper-left corner"),
-        ({"top", "right"}, "upper-right corner"),
-        ({"bottom", "left"}, "lower-left corner"),
-        ({"bottom", "right"}, "lower-right corner"),
-    ):
-        if pair.issubset(flags):
-            return name
-    names = {
-        "top": "upper edge",
-        "bottom": "lower edge",
-        "left": "left edge",
-        "right": "right edge",
-    }
-    for edge in ("top", "bottom", "left", "right"):
-        if edge in flags:
-            return names[edge]
-    return "central area"
+    return _building_rescue_locations([candidate])
+
+
+def _building_rescue_locations(candidates: list[Any]) -> str:
+    """Aggregate confirmed candidate positions without exposing raw geometry."""
+
+    locations: set[str] = set()
+    has_interior = False
+    for candidate in candidates:
+        flags = set(candidate.edge_flags)
+        if not flags:
+            has_interior = True
+            continue
+        location = None
+        for pair, name in (
+            ({"top", "left"}, "upper-left corner"),
+            ({"top", "right"}, "upper-right corner"),
+            ({"bottom", "left"}, "lower-left corner"),
+            ({"bottom", "right"}, "lower-right corner"),
+        ):
+            if pair.issubset(flags):
+                location = name
+                break
+        if location is None:
+            names = {
+                "top": "upper edge",
+                "bottom": "lower edge",
+                "left": "left edge",
+                "right": "right edge",
+            }
+            matching = [names[edge] for edge in ("top", "bottom", "left", "right") if edge in flags]
+            location = matching[0] if len(matching) == 1 else "along the image edges"
+        locations.add(location)
+    if has_interior or not locations:
+        return "in the scene"
+    if len(locations) == 1:
+        return next(iter(locations))
+    return "along the image edges"
 
 
 def _proposal_priority(proposal: Any) -> tuple[float, str]:

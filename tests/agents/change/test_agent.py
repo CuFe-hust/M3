@@ -351,8 +351,45 @@ def test_building_rescue_caption_preserves_clean_answer_and_binary_verdict() -> 
     assert merged.boxes == [list(candidate.normalized_box)]
 
 
+def test_building_rescue_caption_ignores_model_coordinates_and_roi_text() -> None:
+    candidate = _rescue_candidate()
+    review = BuildingRescueReview(
+        reviews=(
+            BuildingRescueCandidateReview(
+                candidate_id=candidate.candidate_id,
+                verdict="confirmed_added_building",
+                visible_building_count=1,
+                reason="partial roof persists in the same ROI",
+            ),
+        ),
+        final_answer="Building at coordinates 213-165-243-187 inside the red box.",
+    )
+    core = AgentResult(
+        agent_name="change_agent",
+        answer=CANONICAL_NO_CHANGE,
+        boxes=[],
+        evidence=[],
+        status="completed",
+    )
+    merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
+    assert merged.answer == "A building was constructed near the upper edge."
+    assert "coordinates" not in merged.answer.casefold()
+    assert "red box" not in merged.answer.casefold()
+    assert "roi" not in merged.answer.casefold()
+
+
 @pytest.mark.parametrize(
-    "leaked_term", ["proposal_id", "expert_id", "tree", "rangeland", "developed_space"]
+    "leaked_term",
+    [
+        "proposal_id",
+        "expert_id",
+        "tree",
+        "rangeland",
+        "developed_space",
+        "coordinates",
+        "red box",
+        "ROI",
+    ],
 )
 def test_building_rescue_caption_sanitizer_handles_all_internal_terms(
     leaked_term: str,

@@ -16,6 +16,7 @@ import pytest
 from PIL import Image
 
 from agents.change.preprocess import (
+    _building_rescue_context_box,
     _local_roi_box,
     _marked_review_crop,
     prepare_pair,
@@ -89,6 +90,28 @@ def _settings(**overrides) -> AgentChangeSettings:
     )
     values.update(overrides)
     return AgentChangeSettings(**values)
+
+
+def _context_candidate(
+    box: tuple[int, int, int, int], edge_flags: tuple[str, ...]
+) -> StructuralRescueCandidate:
+    area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+    return StructuralRescueCandidate(
+        candidate_id="edge-candidate",
+        expert_id="oem",
+        direction="added",
+        box=box,
+        normalized_box=(0, 0, 100, 100),
+        score=0.9,
+        target_mean_probability=0.9,
+        target_p10_probability=0.9,
+        source_mean_probability=0.01,
+        source_max_probability=0.02,
+        area_px=area,
+        area_ratio=area / (256 * 256),
+        edge_flags=edge_flags,
+        registration_tolerance_px=1,
+    )
 
 
 def test_preprocess_with_disabled_stages(tmp_path: Path) -> None:
@@ -428,6 +451,35 @@ def test_building_rescue_roi_transform_and_review_resize_are_deterministic() -> 
 
 def test_building_rescue_roi_transform_clamps_to_crop() -> None:
     assert _local_roi_box((-10, 4, 140, 90), (0, 0, 100, 80)) == (0, 4, 100, 80)
+
+
+def test_building_rescue_edge_context_shifts_to_keep_top_pixels() -> None:
+    settings = _settings()
+    box = _building_rescue_context_box(
+        _context_candidate((0, 9, 11, 22), ("top", "left")),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    assert box == (0, 0, 112, 112)
+
+
+def test_building_rescue_edge_context_shifts_right_and_corner_to_fit() -> None:
+    settings = _settings()
+    right = _building_rescue_context_box(
+        _context_candidate((245, 40, 256, 55), ("right",)),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    corner = _building_rescue_context_box(
+        _context_candidate((245, 0, 256, 11), ("top", "right")),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    assert right == (144, 0, 256, 112)
+    assert corner == (144, 0, 256, 112)
 
 
 def test_building_rescue_publishes_raw_and_marked_review_crops(tmp_path: Path) -> None:

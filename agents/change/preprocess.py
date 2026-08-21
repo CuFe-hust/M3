@@ -574,6 +574,29 @@ def _building_rescue_context_box(
     settings: AgentChangeSettings,
 ) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = candidate.box
+    if candidate.edge_flags:
+        padding_ratio = settings.building_rescue.edge_context_padding_ratio
+        pad_x = max(1, int(width * padding_ratio))
+        pad_y = max(1, int(height * padding_ratio))
+        existing_width = x1 - x0 + (
+            0 if "left" in candidate.edge_flags else pad_x
+        ) + (0 if "right" in candidate.edge_flags else pad_x)
+        existing_height = y1 - y0 + (
+            0 if "top" in candidate.edge_flags else pad_y
+        ) + (0 if "bottom" in candidate.edge_flags else pad_y)
+        target_size = settings.building_rescue.edge_review_context_min_size_px
+        target_width = min(width, max(existing_width, target_size))
+        target_height = min(height, max(existing_height, target_size))
+        center_x = (x0 + x1) / 2.0
+        center_y = (y0 + y1) / 2.0
+        return _symmetric_context_box(
+            center_x=center_x,
+            center_y=center_y,
+            target_width=target_width,
+            target_height=target_height,
+            width=width,
+            height=height,
+        )
     padding_ratio = (
         settings.building_rescue.edge_context_padding_ratio
         if candidate.edge_flags
@@ -590,6 +613,41 @@ def _building_rescue_context_box(
         max(0, y0 - top_pad),
         min(width, x1 + right_pad),
         min(height, y1 + bottom_pad),
+    )
+
+
+def _symmetric_context_box(
+    *,
+    center_x: float,
+    center_y: float,
+    target_width: int,
+    target_height: int,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    """Build a centered window, then shift it into the image canvas."""
+
+    x0 = round(center_x - target_width / 2.0)
+    y0 = round(center_y - target_height / 2.0)
+    x1 = x0 + target_width
+    y1 = y0 + target_height
+    if x0 < 0:
+        x1 += -x0
+        x0 = 0
+    if x1 > width:
+        x0 -= x1 - width
+        x1 = width
+    if y0 < 0:
+        y1 += -y0
+        y0 = 0
+    if y1 > height:
+        y0 -= y1 - height
+        y1 = height
+    return (
+        max(0, x0),
+        max(0, y0),
+        min(width, x1),
+        min(height, y1),
     )
 
 

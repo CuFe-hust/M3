@@ -221,6 +221,7 @@ class ChangeBuildingRescueSettings(BaseModel):
     edge_context_padding_ratio: float = Field(default=0.16, ge=0.0, le=1.0)
     max_candidates: int = Field(default=6, ge=1, le=24)
     min_review_pixel_size: int = Field(default=256, ge=32, le=2048)
+    edge_review_context_min_size_px: int = Field(default=112, ge=96, le=128)
     max_review_candidates: int = Field(default=3, ge=1, le=3)
     rescue_max_new_tokens: int = Field(default=512, ge=1, le=768)
     cache_policy: Literal["use", "bypass"] = "use"
