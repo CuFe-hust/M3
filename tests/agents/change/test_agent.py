@@ -17,9 +17,18 @@ import pytest
 from PIL import Image
 
 from agents.base import AgentContext, AgentExecution
-from agents.change.agent import ChangeAgent, _expanded_union_pixel_box, resolve_input_mode
+from agents.change.agent import (
+    ChangeAgent,
+    _building_rescue_fallback_caption,
+    _contains_internal_rescue_identifier,
+    _expanded_union_pixel_box,
+    resolve_input_mode,
+)
 from agents.change.schema import (
+    CANONICAL_NO_CHANGE,
     ChangeAdjudicationResult,
+    BuildingRescueCandidateReview,
+    BuildingRescueReview,
     ChangePreprocessResult,
     ChangeProposal,
     HarmonizationDecision,
@@ -29,6 +38,7 @@ from agents.change.schema import (
     RegistrationMetrics,
     RegistrationReport,
     SemanticTransition,
+    StructuralRescueCandidate,
 )
 from agents.change.settings import (
     AgentChangeSettings,
@@ -234,6 +244,32 @@ def _proposal(proposal_id: str = "change_000", score: float = 0.8) -> ChangeProp
     )
 
 
+def _rescue_candidate(
+    candidate_id: str = "segmenter_oem_001:added:0:0-0-32-32",
+    *,
+    edge_flags: tuple[str, ...] = ("top",),
+) -> StructuralRescueCandidate:
+    return StructuralRescueCandidate(
+        candidate_id=candidate_id,
+        expert_id="segmenter_oem_001",
+        direction="added",
+        box=(0, 0, 32, 32),
+        normalized_box=(0, 0, 499, 499),
+        score=0.95,
+        target_mean_probability=0.95,
+        target_p10_probability=0.90,
+        target_p50_probability=0.95,
+        source_mean_probability=0.05,
+        source_p90_probability=0.10,
+        source_p95_probability=0.10,
+        source_max_probability=0.10,
+        area_px=1024,
+        area_ratio=0.25,
+        edge_flags=edge_flags,
+        registration_tolerance_px=1,
+    )
+
+
 # ── 协议 / protocol ────────────────────────────────────────────────────────
 
 
@@ -251,6 +287,119 @@ def test_resolve_input_mode_policy() -> None:
         AgentChangeSettings(proposals=ChangeProposalSettings(enabled=False))
     ) == "harmonized_only"
     assert resolve_input_mode(AgentChangeSettings()) == "dual_path"
+
+
+def test_building_rescue_caption_sanitizes_internal_candidate_identifier() -> None:
+    candidate = _rescue_candidate()
+    review = BuildingRescueReview(
+        reviews=(
+            BuildingRescueCandidateReview(
+                candidate_id=candidate.candidate_id,
+                verdict="confirmed_added_building",
+                visible_building_count=1,
+                reason="paired footprint confirmed",
+            ),
+        ),
+        final_answer=(
+            "A new building was added at candidate "
+            "segmenter_oem_001:added:0:0-0-32-32."
+        ),
+    )
+    core = AgentResult(
+        agent_name="change_agent",
+        answer=CANONICAL_NO_CHANGE,
+        status="completed",
+    )
+
+    merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
+
+    assert merged.answer == "A building was constructed near the upper edge."
+    assert "candidate" not in merged.answer.casefold()
+    assert "segmenter_" not in merged.answer.casefold()
+    assert merged.geometry["final_source"] == "building_rescue"
+
+
+def test_building_rescue_caption_preserves_clean_answer_and_binary_verdict() -> None:
+    candidate = _rescue_candidate()
+    clean_answer = "A building was constructed near the upper edge."
+    review = BuildingRescueReview(
+        reviews=(
+            BuildingRescueCandidateReview(
+                candidate_id=candidate.candidate_id,
+                verdict="confirmed_added_building",
+                visible_building_count=1,
+                reason="paired footprint confirmed",
+            ),
+        ),
+        final_answer=clean_answer,
+    )
+    core = AgentResult(
+        agent_name="change_agent",
+        answer=CANONICAL_NO_CHANGE,
+        boxes=[],
+        evidence=[],
+        geometry={"core_verdict": "NO_CHANGE"},
+        status="completed",
+    )
+
+    merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
+
+    assert merged.answer == clean_answer
+    assert merged.geometry["core_verdict"] == "NO_CHANGE"
+    assert merged.status == "completed"
+    assert merged.boxes == [list(candidate.normalized_box)]
+
+
+@pytest.mark.parametrize(
+    "leaked_term", ["proposal_id", "expert_id", "tree", "rangeland", "developed_space"]
+)
+def test_building_rescue_caption_sanitizer_handles_all_internal_terms(
+    leaked_term: str,
+) -> None:
+    candidate = _rescue_candidate()
+    answer = f"A building was added with {leaked_term} hidden."
+
+    assert _contains_internal_rescue_identifier(answer, [candidate], {}) is True
+    assert _contains_internal_rescue_identifier(
+        "A building was constructed near the upper edge.", [candidate], {}
+    ) is False
+
+
+def test_building_rescue_sanitizer_does_not_call_qwen() -> None:
+    candidate = _rescue_candidate()
+    client = _RecordingClient()
+    reviews = {
+        candidate.candidate_id: BuildingRescueCandidateReview(
+            candidate_id=candidate.candidate_id,
+            verdict="confirmed_added_building",
+            visible_building_count=1,
+            reason="paired footprint confirmed",
+        )
+    }
+    assert _contains_internal_rescue_identifier(
+        "A new building was added at candidate foo.", [candidate], reviews
+    )
+    assert _building_rescue_fallback_caption([candidate], reviews).startswith(
+        "A building was constructed"
+    )
+    assert client.calls == []
+
+
+def test_building_rescue_fallback_uses_confirmed_count() -> None:
+    candidates = [_rescue_candidate(f"candidate-{index}") for index in range(2)]
+    reviews = {
+        candidate.candidate_id: BuildingRescueCandidateReview(
+            candidate_id=candidate.candidate_id,
+            verdict="confirmed_added_building",
+            visible_building_count=1,
+            reason="paired footprint confirmed",
+        )
+        for candidate in candidates
+    }
+
+    assert _building_rescue_fallback_caption(candidates, reviews) == (
+        "Two buildings were constructed near the upper edge."
+    )
 
 
 def test_unsupported_task_fails_before_any_io(tmp_path: Path) -> None:

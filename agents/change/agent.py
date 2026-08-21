@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal
 
@@ -171,6 +172,8 @@ class ChangeAgent:
         rescue_request_hash: str | None = None
         rescue_decision: str | None = None
         rescue_failure: str | None = None
+        rescue_confirmed_reviews: dict[str, Any] = {}
+        rescue_selected_candidates: list[Any] = []
         core_conflict_reasons = [
             warning
             for warning in initial_warnings
@@ -273,12 +276,24 @@ class ChangeAgent:
                         for item in rescue_review.reviews
                         if item.verdict.startswith("confirmed_")
                     ]
+                    rescue_confirmed_reviews = {
+                        item.candidate_id: item for item in confirmed
+                    }
                     rescue_decision = confirmed[0].verdict if confirmed else (
                         "reject"
                         if all(item.verdict == "reject" for item in rescue_review.reviews)
                         else "insufficient"
                     )
                     if confirmed:
+                        candidate_map = {
+                            item.candidate_id: item
+                            for item in preprocess.rescue_candidates
+                        }
+                        rescue_selected_candidates = [
+                            candidate_map[item.candidate_id]
+                            for item in confirmed
+                            if item.candidate_id in candidate_map
+                        ]
                         reviewed = self._merge_building_rescue(
                             reviewed,
                             rescue_review,
@@ -297,6 +312,20 @@ class ChangeAgent:
                         "boxes": [],
                         "evidence": [],
                         "evidence_items": [],
+                    }
+                )
+        if reviewed.geometry.get("final_source") == "building_rescue":
+            answer = reviewed.answer.strip()
+            if _contains_internal_rescue_identifier(
+                answer,
+                rescue_selected_candidates,
+                rescue_confirmed_reviews,
+            ):
+                reviewed = reviewed.model_copy(
+                    update={
+                        "answer": _building_rescue_fallback_caption(
+                            rescue_selected_candidates, rescue_confirmed_reviews
+                        )
                     }
                 )
         metrics = preprocess.decision.metrics
@@ -613,7 +642,9 @@ class ChangeAgent:
         candidate_map = {item.candidate_id: item for item in candidates}
         selected = [candidate_map[item_id] for item_id in confirmed if item_id in candidate_map]
         answer = review.final_answer.strip() if review.final_answer else ""
-        if not answer:
+        if not answer or _contains_internal_rescue_identifier(
+            answer, selected, confirmed
+        ):
             answer = _building_rescue_fallback_caption(selected, confirmed)
         evidence: list[str] = []
         evidence_items: list[VisualEvidence] = []
@@ -1243,28 +1274,91 @@ def _is_core_canonical_no_change(result: AgentResult, *, task: str) -> bool:
 def _building_rescue_fallback_caption(
     candidates: list[Any], reviews: dict[str, Any]
 ) -> str:
-    counts: dict[tuple[str, str], int] = {}
+    groups: dict[str, list[Any]] = {}
     for candidate in candidates:
-        verdict = reviews[candidate.candidate_id].verdict
-        direction = "constructed" if verdict == "confirmed_added_building" else "removed"
-        location = _building_rescue_location(candidate)
-        counts[(direction, location)] = counts.get((direction, location), 0) + 1
+        review = reviews.get(candidate.candidate_id)
+        if review is None:
+            continue
+        direction = (
+            "constructed"
+            if review.verdict == "confirmed_added_building"
+            else "removed"
+        )
+        groups.setdefault(direction, []).append(candidate)
     fragments: list[str] = []
-    for (direction, location), count in sorted(counts.items()):
-        noun = "One building" if count == 1 else f"{count} buildings"
+    for direction, grouped in sorted(groups.items()):
+        count = len(grouped)
+        noun = "A building" if count == 1 else (
+            "Two buildings" if count == 2 else "Several buildings"
+        )
         verb = "was" if count == 1 else "were"
+        location = _building_rescue_location(grouped[0])
         fragments.append(f"{noun} {verb} {direction} near the {location}")
-    return ". ".join(fragments).capitalize() + "." if fragments else CANONICAL_NO_CHANGE
+    return ". ".join(fragments) + "." if fragments else CANONICAL_NO_CHANGE
+
+
+_INTERNAL_RESCUE_TERMS = (
+    "candidate",
+    "candidate_id",
+    "segmenter_",
+    "proposal",
+    "proposal_id",
+    "expert",
+    "expert_id",
+    "rescue_candidate",
+)
+_RESCUE_TAXONOMY_TERMS = ("tree", "rangeland", "developed_space")
+
+
+def _contains_internal_rescue_identifier(
+    answer: str,
+    candidates: list[Any],
+    reviews: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether a rescue caption exposes implementation identifiers."""
+
+    lowered = answer.casefold()
+    if any(term in lowered for term in _INTERNAL_RESCUE_TERMS):
+        return True
+    if any(
+        re.search(rf"\b{re.escape(term)}\b", lowered)
+        for term in _RESCUE_TAXONOMY_TERMS
+    ):
+        return True
+    identifiers = {
+        str(value).casefold()
+        for candidate in candidates
+        for value in (candidate.candidate_id, candidate.expert_id)
+        if value
+    }
+    identifiers.update(
+        str(candidate_id).casefold()
+        for candidate_id in (reviews or {})
+        if candidate_id
+    )
+    return any(identifier in lowered for identifier in identifiers)
 
 
 def _building_rescue_location(candidate: Any) -> str:
     flags = set(candidate.edge_flags)
-    if "corner" in flags:
-        for pair, name in (({"top", "left"}, "upper-left corner"), ({"top", "right"}, "upper-right corner"), ({"bottom", "left"}, "lower-left corner"), ({"bottom", "right"}, "lower-right corner")):
-            if pair.issubset(flags):
-                return name
-    names = {"top": "upper edge", "bottom": "lower edge", "left": "left edge", "right": "right edge"}
-    return names.get(next(iter(flags), ""), "image center")
+    for pair, name in (
+        ({"top", "left"}, "upper-left corner"),
+        ({"top", "right"}, "upper-right corner"),
+        ({"bottom", "left"}, "lower-left corner"),
+        ({"bottom", "right"}, "lower-right corner"),
+    ):
+        if pair.issubset(flags):
+            return name
+    names = {
+        "top": "upper edge",
+        "bottom": "lower edge",
+        "left": "left edge",
+        "right": "right edge",
+    }
+    for edge in ("top", "bottom", "left", "right"):
+        if edge in flags:
+            return names[edge]
+    return "central area"
 
 
 def _proposal_priority(proposal: Any) -> tuple[float, str]:
