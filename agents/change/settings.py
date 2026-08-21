@@ -252,18 +252,56 @@ class ChangeReliabilitySettings(BaseModel):
     feature_residual_scale: float = Field(default=1.0, gt=0.0)
 
 
-class ChangeLearnedChangeSettings(BaseModel):
-    """Optional inference hook for one future learned change head.
+class LearnedRescueSettings(BaseModel):
+    """High-confidence learned rescue gates, bounded by checkpoint calibration."""
 
-    This declaration contains no checkpoint path or training parameter.  A
-    concrete client is supplied by the application composition root.
-    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    min_reliability: float = Field(default=0.70, ge=0.0, le=1.0)
+    probability_threshold_override: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    min_component_area_ratio_override: float | None = Field(
+        default=None, gt=0.0, lt=1.0
+    )
+    max_rescue_proposals: int = Field(default=6, ge=1, le=12)
+
+
+class ChangeTrainingCaptureSettings(BaseModel):
+    """Opt-in sample-scoped training capture controls."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    save_dense_features: bool = False
+    capture_learned_inputs_only: bool = True
+
+
+class ChangeLearnedChangeSettings(BaseModel):
+    """Stable runtime configuration for the post-training ChangeHead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: Literal["shadow", "assist", "required"] = "shadow"
+    checkpoint_dir: Path | None = None
+    # Keep the disabled/default composition result byte-for-byte compatible;
+    # production overlays explicitly set the post-training weight.
     fusion_weight: float = Field(default=0.0, ge=0.0)
     failure_policy: Literal["fallback_rule", "fail"] = "fallback_rule"
+    strict_contract: bool = True
+    device: str = "auto"
+    rescue: LearnedRescueSettings = Field(default_factory=LearnedRescueSettings)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.mode == "required" and self.failure_policy != "fail":
+            raise ValueError("required learned change mode requires failure_policy=fail")
+
+    def validate_runtime_configuration(self) -> None:
+        """Reject an enabled config that cannot be auto-assembled."""
+        if self.enabled and self.checkpoint_dir is None:
+            raise ValueError("enabled learned change requires checkpoint_dir")
 
 
 class ChangeReviewSettings(BaseModel):
@@ -316,6 +354,9 @@ class AgentChangeSettings(BaseModel):
     reliability: ChangeReliabilitySettings = Field(default_factory=ChangeReliabilitySettings)
     learned_change: ChangeLearnedChangeSettings = Field(
         default_factory=ChangeLearnedChangeSettings
+    )
+    training_capture: ChangeTrainingCaptureSettings = Field(
+        default_factory=ChangeTrainingCaptureSettings
     )
     evidence: ChangeEvidenceSettings = Field(default_factory=ChangeEvidenceSettings)
     review: ChangeReviewSettings = Field(default_factory=ChangeReviewSettings)

@@ -17,8 +17,22 @@ agents:
       semantic_union_weight: 0.35
     learned_change:
       enabled: false
-      fusion_weight: 0.0
+      mode: shadow
+      checkpoint_dir: models/change_head/production
+      fusion_weight: 0.30
       failure_policy: fallback_rule
+      strict_contract: true
+      device: auto
+      rescue:
+        enabled: true
+        min_reliability: 0.70
+        probability_threshold_override: null
+        min_component_area_ratio_override: null
+        max_rescue_proposals: 6
+    training_capture:
+      enabled: false
+      save_dense_features: false
+      capture_learned_inputs_only: true
 counting:
   multi_detector_enabled: true
   max_selected_detector_experts: 5

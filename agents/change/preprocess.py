@@ -31,6 +31,8 @@ from agents.change.settings import AgentChangeSettings
 from agents.errors import OptionalDependencyMissingError
 from data.schema import UnifiedSample
 
+CHANGE_PREPARED_PAIR_CONTRACT_VERSION = "change-prepared-pair-v1"
+
 
 def _require_numpy():
     """Return the numpy module or a stable optional-dependency error.

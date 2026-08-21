@@ -36,7 +36,10 @@ from models.base import (
     DenseSemanticClient,
     DenseSemanticOutput,
     DenseSemanticPyramidOutput,
+    LearnedChangeExpertPair,
     LearnedChangeClient,
+    LearnedChangeInputSpec,
+    LearnedChangeRequest,
     LearnedChangeOutput,
     MissingModelCacheIdentityError,
     ModelAssetError,
@@ -44,6 +47,7 @@ from models.base import (
     ModelAssetMissingError,
     ModelAssetPointerError,
     ModelCacheIdentity,
+    hash_class_names,
     require_model_cache_identity,
 )
 
@@ -91,6 +95,9 @@ class SemanticExpertBinding:
     landcover_candidate_labels: frozenset[str] = frozenset()
     rescue_model_labels: frozenset[str] = frozenset()
     rescue_strategy: str = "none"
+    class_names: tuple[str, ...] = ()
+    class_names_sha256: str | None = None
+    weights_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -112,6 +119,28 @@ class SemanticExpertEvidence:
     feature_diagnostics: dict[str, object]
     reliability: dict[str, float]
     reliability_diagnostics: dict[str, object]
+
+
+@dataclass(frozen=True)
+class SemanticExpertExecutionPlan:
+    """Explicit, order-independent plan for all semantic consumers."""
+
+    bindings_by_id: Mapping[str, SemanticExpertBinding]
+    requested_stages_by_id: Mapping[str, tuple[int, ...]]
+    core_expert_ids: tuple[str, ...]
+    rescue_expert_ids: tuple[str, ...]
+    learned_required_expert_ids: tuple[str, ...]
+    learned_optional_expert_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class ChangePerceptionExecution:
+    """One complete perception execution, including reusable rescue output."""
+
+    result: ChangePerceptionResult
+    rescue_candidates: tuple[StructuralRescueCandidate, ...]
+    rescue_diagnostics: Mapping[str, object]
+    learned_request: LearnedChangeRequest | None = None
 
 
 class ChangePerceptionPipeline:
@@ -149,6 +178,123 @@ class ChangePerceptionPipeline:
         )
         self._learned_change_client = learned_change_client
         self._settings = settings
+        self._last_runs_by_id: dict[str, SemanticExpertRun] = {}
+        self._last_prepared: ChangePreparedPair | None = None
+        self._include_rescue_in_pool = False
+        self._last_learned_request: LearnedChangeRequest | None = None
+
+    def _build_execution_plan(self) -> SemanticExpertExecutionPlan:
+        bindings_by_id = {
+            binding.expert_id: binding for binding in self._semantic_experts
+        }
+        semantic = self._settings.semantic
+        core = sorted(
+            (
+                binding
+                for binding in self._semantic_experts
+                if binding.participation == "core"
+            ),
+            key=lambda item: (-item.priority, item.expert_id),
+        )
+        if semantic.multi_expert_enabled:
+            core = core[: semantic.max_experts]
+        else:
+            core = core[:1]
+        rescue = (
+            sorted(
+                (
+                    binding
+                    for binding in self._semantic_experts
+                    if binding.participation == "rescue"
+                ),
+                key=lambda item: (-item.priority, item.expert_id),
+            )
+            if self._include_rescue_in_pool or self._settings.learned_change.enabled
+            else []
+        )
+        required: list[str] = []
+        optional: list[str] = []
+        learned_spec = getattr(self._learned_change_client, "input_spec", None)
+        if self._settings.learned_change.enabled and learned_spec is not None:
+            for requirement in learned_spec.expert_requirements:
+                (required if requirement.required else optional).append(
+                    requirement.expert_id
+                )
+        requested: dict[str, tuple[int, ...]] = {}
+        for binding in [*core, *rescue]:
+            requested[binding.expert_id] = tuple(semantic.feature_stages)
+        if learned_spec is not None:
+            for requirement in learned_spec.expert_requirements:
+                requested[requirement.expert_id] = tuple(
+                    sorted(set(requested.get(requirement.expert_id, ()))
+                           | set(requirement.feature_stages))
+                )
+        return SemanticExpertExecutionPlan(
+            bindings_by_id=bindings_by_id,
+            requested_stages_by_id=requested,
+            core_expert_ids=tuple(binding.expert_id for binding in core),
+            rescue_expert_ids=tuple(binding.expert_id for binding in rescue),
+            learned_required_expert_ids=tuple(required),
+            learned_optional_expert_ids=tuple(optional),
+        )
+
+    def _infer_semantic_expert_pool(
+        self,
+        *,
+        plan: SemanticExpertExecutionPlan,
+        prepared: ChangePreparedPair,
+        np: Any,
+    ) -> tuple[dict[str, SemanticExpertRun], list[dict[str, str]]]:
+        expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
+        runs_by_id: dict[str, SemanticExpertRun] = {}
+        failures: list[dict[str, str]] = []
+        planned_ids = tuple(dict.fromkeys(
+            [*plan.core_expert_ids, *plan.rescue_expert_ids,
+             *plan.learned_required_expert_ids, *plan.learned_optional_expert_ids]
+        ))
+        for expert_id in planned_ids:
+            binding = plan.bindings_by_id.get(expert_id)
+            if binding is None:
+                continue
+            stages = plan.requested_stages_by_id.get(
+                expert_id, tuple(self._settings.semantic.feature_stages)
+            )
+            try:
+                runs_by_id[expert_id] = _infer_semantic_expert_pair(
+                    binding,
+                    prepared,
+                    self._settings.semantic,
+                    expected_size=expected_size,
+                    requested_stages=stages,
+                    np=np,
+                )
+            except Exception as error:
+                if (
+                    expert_id in plan.core_expert_ids
+                    and len(plan.core_expert_ids) == 1
+                ):
+                    raise
+                failures.append({
+                    "expert_id": expert_id,
+                    "error_type": type(error).__name__,
+                })
+        return runs_by_id, failures
+
+    def run_full(self, prepared: ChangePreparedPair) -> ChangePerceptionExecution:
+        """Run perception and consume the same expert pool for rescue."""
+        previous = self._include_rescue_in_pool
+        self._include_rescue_in_pool = True
+        try:
+            result = self.run(prepared)
+        finally:
+            self._include_rescue_in_pool = previous
+        rescue_candidates, rescue_diagnostics = self.run_rescue_candidates(prepared)
+        return ChangePerceptionExecution(
+            result=result,
+            rescue_candidates=tuple(rescue_candidates),
+            rescue_diagnostics=rescue_diagnostics,
+            learned_request=self._last_learned_request,
+        )
 
     def run_rescue_candidates(
         self, prepared: ChangePreparedPair
@@ -179,16 +325,21 @@ class ChangePerceptionPipeline:
         failures: list[dict[str, str]] = []
         expert_diagnostics: list[dict[str, object]] = []
         component_diagnostics: list[dict[str, object]] = []
+        cached_runs = (
+            self._last_runs_by_id if self._last_prepared is prepared else {}
+        )
         for binding in rescue_bindings:
             try:
-                run = _infer_semantic_expert_pair(
-                    binding,
-                    prepared,
-                    self._settings.semantic,
-                    expected_size=expected_size,
-                    requested_stages=requested_stages,
-                    np=np,
-                )
+                run = cached_runs.get(binding.expert_id)
+                if run is None:
+                    run = _infer_semantic_expert_pair(
+                        binding,
+                        prepared,
+                        self._settings.semantic,
+                        expected_size=expected_size,
+                        requested_stages=requested_stages,
+                        np=np,
+                    )
                 extracted = _extract_building_rescue_candidates(
                     run,
                     prepared,
@@ -301,42 +452,30 @@ class ChangePerceptionPipeline:
         identity: ModelCacheIdentity | None = None
         try:
             semantic_settings = self._settings.semantic
-            core_experts = tuple(
-                binding
-                for binding in self._semantic_experts
-                if binding.participation == "core"
-            )
-            if not core_experts:
-                raise ChangePerceptionError("SEGFORMER_CORE_EXPERT_MISSING")
-            requested_stages = tuple(semantic_settings.feature_stages)
             expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
-            semantic_runs: list[SemanticExpertRun] = []
-            expert_failures: list[dict[str, str]] = []
-            expert_errors: list[BaseException] = []
-            for binding in core_experts[
-                : semantic_settings.max_experts
-                if semantic_settings.multi_expert_enabled
-                else 1
-            ]:
-                try:
-                    semantic_runs.append(
-                        _infer_semantic_expert_pair(
-                            binding,
-                            prepared,
-                            semantic_settings,
-                            expected_size=expected_size,
-                            requested_stages=requested_stages,
-                            np=np,
+            plan = self._build_execution_plan()
+            if not plan.core_expert_ids:
+                raise ChangePerceptionError("SEGFORMER_CORE_EXPERT_MISSING")
+            runs_by_id, expert_failures = self._infer_semantic_expert_pool(
+                plan=plan, prepared=prepared, np=np
+            )
+            self._last_runs_by_id = runs_by_id
+            self._last_prepared = prepared
+            semantic_runs = [
+                runs_by_id[expert_id]
+                for expert_id in plan.core_expert_ids
+                if expert_id in runs_by_id
+            ]
+            core_experts = tuple(
+                plan.bindings_by_id[expert_id] for expert_id in plan.core_expert_ids
+            )
+            if len(semantic_runs) < semantic_settings.min_successful_experts:
+                if len(core_experts) == 1 and expert_failures:
+                    raise ChangePerceptionError(
+                        expert_failures[0].get(
+                            "reason_code", "SEGFORMER_ALL_EXPERTS_FAILED"
                         )
                     )
-                except Exception as error:
-                    expert_errors.append(error)
-                    expert_failures.append(
-                        {"expert_id": binding.expert_id, "error_type": type(error).__name__}
-                    )
-            if len(semantic_runs) < semantic_settings.min_successful_experts:
-                if len(core_experts) == 1 and expert_errors:
-                    raise expert_errors[0]
                 raise ChangePerceptionError("SEGFORMER_ALL_EXPERTS_FAILED")
             expert_evidence: list[SemanticExpertEvidence] = []
             for run in semantic_runs:
@@ -361,7 +500,7 @@ class ChangePerceptionPipeline:
                         run.second_output,
                         prepared,
                         semantic_settings,
-                        requested_stages=requested_stages,
+                        requested_stages=plan.requested_stages_by_id[run.binding.expert_id],
                         expected_size=expected_size,
                         np=np,
                     )
@@ -382,7 +521,9 @@ class ChangePerceptionPipeline:
                         or "FEATURE_RESIDUAL_INFERENCE_FAILED",
                         "valid_feature_fraction": 0.0,
                         "effective_stages": [],
-                        "missing_stages": list(requested_stages),
+                        "missing_stages": list(
+                            plan.requested_stages_by_id[run.binding.expert_id]
+                        ),
                     }
                     expert_failures.append(
                         {
@@ -426,8 +567,10 @@ class ChangePerceptionPipeline:
                 )
             if len(expert_evidence) < semantic_settings.min_successful_experts:
                 raise ChangePerceptionError("SEGFORMER_ALL_EXPERTS_FAILED")
-            selected_evidence = expert_evidence[0]
-            selected_run = selected_evidence.run
+            selected_run = min(
+                (item.run for item in expert_evidence),
+                key=lambda item: (-item.binding.priority, item.binding.expert_id),
+            )
             identity = selected_run.identity
             first_output = selected_run.first_output
             second_output = selected_run.second_output
@@ -456,14 +599,37 @@ class ChangePerceptionPipeline:
             reliability, reliability_diagnostics = _aggregate_reliability(
                 expert_evidence
             )
-            learned_map, learned_diagnostics = self._run_learned_change_hook(
-                first_output=first_output,
-                second_output=second_output,
-                feature_stage=(
-                    requested_stages[0] if requested_stages else semantic_settings.feature_stage
-                ),
-                valid_mask=getattr(prepared, "registration_valid_mask", None),
+            learned_output, learned_diagnostics = self._run_learned_change_hook(
+                runs_by_id=runs_by_id,
+                prepared=prepared,
             )
+            learned_map = (
+                learned_output.probability_map if learned_output is not None else None
+            )
+            fusion_reliability = dict(reliability)
+            if learned_output is not None:
+                fusion_reliability["learned"] = float(learned_output.reliability)
+            learned_mode = self._settings.learned_change.mode
+            if not isinstance(
+                getattr(self._learned_change_client, "input_spec", None),
+                LearnedChangeInputSpec,
+            ):
+                learned_mode = "assist"
+            calibration_diagnostics = (
+                learned_output.diagnostics if learned_output is not None else {}
+            )
+            rescue_threshold = calibration_diagnostics.get("rescue_probability_threshold")
+            threshold_override = self._settings.learned_change.rescue.probability_threshold_override
+            if rescue_threshold is not None and threshold_override is not None:
+                if self._settings.learned_change.strict_contract and threshold_override < float(rescue_threshold):
+                    raise ChangePerceptionError("LEARNED_CHANGE_CALIBRATION_INVALID")
+                rescue_threshold = max(float(rescue_threshold), float(threshold_override))
+            rescue_area = calibration_diagnostics.get("rescue_min_component_area_ratio")
+            area_override = self._settings.learned_change.rescue.min_component_area_ratio_override
+            if rescue_area is not None and area_override is not None:
+                if self._settings.learned_change.strict_contract and area_override < float(rescue_area):
+                    raise ChangePerceptionError("LEARNED_CHANGE_CALIBRATION_INVALID")
+                rescue_area = max(float(rescue_area), float(area_override))
             fusion_result = fuse_change_proposals(
                 low_level_map,
                 feature_map,
@@ -476,12 +642,21 @@ class ChangePerceptionPipeline:
                     if feature_map is None
                     else None
                 ),
-                reliability=reliability,
+                reliability=fusion_reliability,
                 valid_overlap_mask=getattr(prepared, "registration_valid_mask", None),
                 registration_confidence=reliability["registration"],
                 learned_map=learned_map,
                 learned_weight=self._settings.learned_change.fusion_weight,
                 learned_requested=self._settings.learned_change.enabled,
+                learned_mode=learned_mode,
+                learned_rescue_threshold=(
+                    float(rescue_threshold) if rescue_threshold is not None else None
+                ),
+                learned_rescue_min_reliability=self._settings.learned_change.rescue.min_reliability,
+                learned_rescue_min_component_area_ratio=(
+                    float(rescue_area) if rescue_area is not None else None
+                ),
+                learned_rescue_max_proposals=self._settings.learned_change.rescue.max_rescue_proposals,
             )
         except LearnedChangeFailure:
             raise
@@ -611,12 +786,10 @@ class ChangePerceptionPipeline:
     def _run_learned_change_hook(
         self,
         *,
-        first_output: DenseSemanticOutput | DenseSemanticPyramidOutput,
-        second_output: DenseSemanticOutput | DenseSemanticPyramidOutput,
-        feature_stage: int,
-        valid_mask: Any,
-    ) -> tuple[Any | None, dict[str, object]]:
-        """Run the optional learned-head seam without fabricating a map.
+        runs_by_id: Mapping[str, SemanticExpertRun],
+        prepared: ChangePreparedPair,
+    ) -> tuple[LearnedChangeOutput | None, dict[str, object]]:
+        """Run the explicit learned-head seam without fabricating a map.
 
         The head is an inference-only dependency.  Its concrete runtime and
         checkpoint identity stay outside ``agents/``; when unavailable, the
@@ -624,6 +797,7 @@ class ChangePerceptionPipeline:
         """
 
         settings = self._settings.learned_change
+        self._last_learned_request = None
         if not settings.enabled:
             return None, {
                 "enabled": False,
@@ -631,6 +805,7 @@ class ChangePerceptionPipeline:
                 "available": False,
                 "reason_codes": ["LEARNED_CHANGE_DISABLED"],
                 "fusion_weight": settings.fusion_weight,
+                "mode": settings.mode,
             }
         if self._learned_change_client is None:
             return self._learned_change_failure("LEARNED_CHANGE_CLIENT_MISSING")
@@ -639,26 +814,109 @@ class ChangePerceptionPipeline:
                 self._learned_change_client,
                 component="learned change client",
             )
-            output = self._learned_change_client.infer(
-                first=_as_pyramid_output(first_output, feature_stage=feature_stage),
-                second=_as_pyramid_output(second_output, feature_stage=feature_stage),
-                valid_mask=valid_mask,
-            )
+            input_spec = getattr(self._learned_change_client, "input_spec", None)
+            missing_optional: list[str] = []
+            if isinstance(input_spec, LearnedChangeInputSpec):
+                missing_required = [
+                    requirement.expert_id
+                    for requirement in input_spec.expert_requirements
+                    if requirement.required and requirement.expert_id not in runs_by_id
+                ]
+                if missing_required:
+                    return self._learned_change_failure(
+                        "LEARNED_CHANGE_REQUIRED_EXPERT_MISSING"
+                    )
+                for requirement in input_spec.expert_requirements:
+                    if requirement.required or requirement.expert_id in runs_by_id:
+                        continue
+                    if (
+                        requirement.missing_policy != "zero_with_presence_mask"
+                        or not input_spec.optional_expert_dropout_supported
+                    ):
+                        return self._learned_change_failure(
+                            "LEARNED_CHANGE_REQUIRED_EXPERT_MISSING"
+                        )
+                    missing_optional.append(requirement.expert_id)
+                request = _build_learned_change_request(
+                    input_spec=input_spec,
+                    runs_by_id=runs_by_id,
+                    prepared=prepared,
+                )
+                self._last_learned_request = request
+                output = self._learned_change_client.infer(request)
+            else:
+                # Compatibility bridge for one release: old injected clients
+                # are still deterministic test seams, while production clients
+                # must publish input_spec and accept LearnedChangeRequest.
+                primary = min(
+                    runs_by_id.values(),
+                    key=lambda item: (-item.binding.priority, item.binding.expert_id),
+                )
+                output = self._learned_change_client.infer(
+                    first=_as_pyramid_output(
+                        primary.first_output,
+                        feature_stage=self._settings.semantic.feature_stage,
+                    ),
+                    second=_as_pyramid_output(
+                        primary.second_output,
+                        feature_stage=self._settings.semantic.feature_stage,
+                    ),
+                    valid_mask=getattr(prepared, "registration_valid_mask", None),
+                )
             if not isinstance(output, LearnedChangeOutput):
                 raise ChangePerceptionError("LEARNED_CHANGE_OUTPUT_INVALID")
             np = _require_numpy()
-            score_map = np.asarray(output.score_map)
-            if score_map.ndim != 2 or not bool(np.isfinite(score_map).all()):
+            probability_map = np.asarray(output.probability_map)
+            if (
+                probability_map.ndim != 2
+                or not bool(np.isfinite(probability_map).all())
+                or bool((probability_map < -1e-6).any())
+                or bool((probability_map > 1.0 + 1e-6).any())
+            ):
                 raise ChangePerceptionError("LEARNED_CHANGE_OUTPUT_INVALID")
-            return score_map, {
+            reliability = float(output.reliability)
+            if not math.isfinite(reliability) or not 0.0 <= reliability <= 1.0:
+                raise ChangePerceptionError("LEARNED_CHANGE_OUTPUT_INVALID")
+            if output.uncertainty_map is not None:
+                uncertainty = np.asarray(output.uncertainty_map)
+                if uncertainty.shape != probability_map.shape or not bool(
+                    np.isfinite(uncertainty).all()
+                ):
+                    raise ChangePerceptionError("LEARNED_CHANGE_OUTPUT_INVALID")
+            if bool((probability_map < 0.0).any()) or bool(
+                (probability_map > 1.0).any()
+            ):
+                output = LearnedChangeOutput(
+                    probability_map=np.clip(probability_map, 0.0, 1.0).astype(
+                        np.float32, copy=False
+                    ),
+                    reliability=reliability,
+                    diagnostics=output.diagnostics,
+                    uncertainty_map=output.uncertainty_map,
+                )
+            return output, {
                 "enabled": True,
                 "status": "available",
                 "available": True,
                 "reason_codes": [],
                 "fusion_weight": settings.fusion_weight,
+                "mode": settings.mode,
                 "model": identity.model,
                 "revision": identity.revision,
                 "client_version": identity.client_version,
+                "required_experts": (
+                    [item.expert_id for item in input_spec.expert_requirements if item.required]
+                    if isinstance(input_spec, LearnedChangeInputSpec)
+                    else []
+                ),
+                "optional_experts": (
+                    [item.expert_id for item in input_spec.expert_requirements if not item.required]
+                    if isinstance(input_spec, LearnedChangeInputSpec)
+                    else []
+                ),
+                "available_experts": sorted(runs_by_id),
+                "missing_optional_experts": missing_optional,
+                "reliability": reliability,
                 "diagnostics": _json_safe_diagnostics(output.diagnostics),
             }
         except (
@@ -1049,6 +1307,66 @@ def _as_pyramid_output(
         class_names=output.class_names,
         diagnostics=output.diagnostics,
         weights_sha256=output.weights_sha256,
+    )
+
+
+def _build_learned_change_request(
+    *,
+    input_spec: LearnedChangeInputSpec,
+    runs_by_id: Mapping[str, SemanticExpertRun],
+    prepared: ChangePreparedPair,
+) -> LearnedChangeRequest:
+    """Map verified semantic runs to the explicit learned ABI."""
+
+    pairs: dict[str, LearnedChangeExpertPair] = {}
+    expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
+    for requirement in input_spec.expert_requirements:
+        run = runs_by_id.get(requirement.expert_id)
+        if run is None:
+            if requirement.required:
+                raise ChangePerceptionError("LEARNED_CHANGE_REQUIRED_EXPERT_MISSING")
+            continue
+        if run.binding.expert_id != requirement.expert_id:
+            raise ChangePerceptionError("LEARNED_CHANGE_EXPERT_ID_MISMATCH")
+        if run.identity.model != requirement.logical_model_id:
+            raise ChangePerceptionError("LEARNED_CHANGE_LOGICAL_MODEL_MISMATCH")
+        if run.weights_sha256 != requirement.weights_sha256:
+            raise ChangePerceptionError("LEARNED_CHANGE_BACKBONE_HASH_MISMATCH")
+        first = _as_pyramid_output(
+            run.first_output, feature_stage=requirement.feature_stages[0]
+        )
+        second = _as_pyramid_output(
+            run.second_output, feature_stage=requirement.feature_stages[0]
+        )
+        if tuple(first.class_names) != tuple(second.class_names):
+            raise ChangePerceptionError("LEARNED_CHANGE_CLASS_MAP_MISMATCH")
+        if hash_class_names(first.class_names) != requirement.class_names_sha256:
+            raise ChangePerceptionError("LEARNED_CHANGE_CLASS_MAP_MISMATCH")
+        if tuple(first.original_size) != expected_size or tuple(second.original_size) != expected_size:
+            raise ChangePerceptionError("LEARNED_CHANGE_FEATURE_STAGE_MISMATCH")
+        for stage in requirement.feature_stages:
+            if stage not in first.features_by_stage or stage not in second.features_by_stage:
+                raise ChangePerceptionError("LEARNED_CHANGE_FEATURE_STAGE_MISMATCH")
+            if first.feature_strides_by_stage[stage] != second.feature_strides_by_stage[stage]:
+                raise ChangePerceptionError("LEARNED_CHANGE_FEATURE_STAGE_MISMATCH")
+        if first.weights_sha256 != second.weights_sha256:
+            raise ChangePerceptionError("LEARNED_CHANGE_BACKBONE_HASH_MISMATCH")
+        pairs[requirement.expert_id] = LearnedChangeExpertPair(
+            expert_id=requirement.expert_id,
+            logical_model_id=run.identity.model,
+            weights_sha256=run.weights_sha256 or "",
+            class_names_sha256=hash_class_names(first.class_names),
+            first=first,
+            second=second,
+        )
+    return LearnedChangeRequest(
+        image_size=expected_size,
+        experts=pairs,
+        valid_mask=prepared.registration_valid_mask,
+        pif_mask=prepared.pif_mask if input_spec.use_pif_mask else None,
+        pif_valid=bool(prepared.pif_valid),
+        comparison_t1=prepared.comparison_t1 if input_spec.use_rgb_pair else None,
+        comparison_t2=prepared.comparison_t2 if input_spec.use_rgb_pair else None,
     )
 
 
@@ -1603,9 +1921,11 @@ def _attach_semantic_transitions(
             max((int(item.pixel_box[2]) for item in proposals), default=0),
         )
         if image_shape == (0, 0):
-            image_shape = tuple(
-                np.asarray(expert_evidence[0].run.first_output.probabilities).shape[1:]
-            )
+            primary_evidence = next(iter(expert_evidence), None)
+            if primary_evidence is not None:
+                image_shape = tuple(
+                    np.asarray(primary_evidence.run.first_output.probabilities).shape[1:]
+                )
     updated: list[ChangeProposal] = []
     for proposal in proposals:
         crop = component_masks.get(proposal.mask_filename or "")

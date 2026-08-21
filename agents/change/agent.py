@@ -911,11 +911,16 @@ class ChangeAgent:
                 learned_change_client=self._learned_change_client,
                 semantic_experts=self._semantic_experts,
             )
-            perception = pipeline.run(prepared)
-            rescue_candidates, rescue_diagnostics = pipeline.run_rescue_candidates(
-                prepared
-            )
+            execution = pipeline.run_full(prepared)
+            perception = execution.result
+            rescue_candidates = list(execution.rescue_candidates)
+            rescue_diagnostics = dict(execution.rescue_diagnostics)
             rescue_diagnostics["sample_id"] = sample.sample_id
+            perception.diagnostics["training_capture"] = _save_training_capture(
+                execution.learned_request,
+                artifact_dir=context.artifact_dir,
+                settings=settings,
+            )
         except ChangePerceptionError as error:
             raise AgentExecutionError(
                 self.name,
@@ -1147,6 +1152,53 @@ class ChangeAgent:
             ) from error
 
 
+def _save_training_capture(
+    request: Any,
+    *,
+    artifact_dir: Path,
+    settings: AgentChangeSettings,
+) -> dict[str, object]:
+    """Best-effort sample-scoped capture for future hard-case replay."""
+
+    result: dict[str, object] = {
+        "enabled": settings.training_capture.enabled,
+        "save_dense_features": settings.training_capture.save_dense_features,
+        "dense_features_saved": False,
+    }
+    if not settings.training_capture.enabled or not settings.training_capture.save_dense_features:
+        return result
+    if request is None:
+        result["reason_code"] = "LEARNED_CHANGE_CAPTURE_UNAVAILABLE"
+        return result
+    try:
+        import numpy as np
+
+        output_dir = artifact_dir / "change_training_capture"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        arrays: dict[str, Any] = {
+            "valid_mask": np.asarray(request.valid_mask),
+        }
+        if request.pif_mask is not None:
+            arrays["pif_mask"] = np.asarray(request.pif_mask)
+        metadata: dict[str, object] = {"experts": sorted(request.experts), "pif_valid": request.pif_valid}
+        for expert_id, pair in request.experts.items():
+            for frame_name, output in (("t1", pair.first), ("t2", pair.second)):
+                for stage, value in output.features_by_stage.items():
+                    arrays[f"expert.{expert_id}.{frame_name}.stage.{stage}"] = np.asarray(value)
+                arrays[f"expert.{expert_id}.{frame_name}.semantic"] = np.asarray(output.probabilities)
+        target = output_dir / "learned_inputs.npz"
+        temporary = output_dir / "learned_inputs.npz.tmp"
+        with temporary.open("wb") as file:
+            np.savez_compressed(file, **arrays)
+        temporary.replace(target)
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        result.update({"dense_features_saved": True, "reason_code": None, "artifact": "change_training_capture/learned_inputs.npz"})
+    except Exception:
+        result["reason_code"] = "LEARNED_CHANGE_CAPTURE_FAILED"
+    return result
+
+
 def _perception_audit(
     preprocess: ChangePreprocessResult,
     *,
@@ -1288,11 +1340,22 @@ def _perception_audit(
                 "fusion_weight": settings.learned_change.fusion_weight,
             },
         ),
-        "training_capture": {
-            "enabled": False,
-            "save_dense_features": False,
-            "dense_features_saved": False,
-        },
+        "training_capture": diagnostics.get(
+            "training_capture",
+            {
+                "enabled": settings.training_capture.enabled,
+                "save_dense_features": settings.training_capture.save_dense_features,
+                "dense_features_saved": False,
+                **(
+                    {
+                        "reason_code": "LEARNED_CHANGE_CAPTURE_UNAVAILABLE",
+                        "artifact": None,
+                    }
+                    if settings.training_capture.enabled
+                    else {}
+                ),
+            },
+        ),
         "score_maps": diagnostics.get("score_maps", {}),
     }
 

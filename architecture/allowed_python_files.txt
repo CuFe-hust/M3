@@ -49,6 +49,13 @@ models/qwen3_5/model.py
 models/qwen3_vl/__init__.py
 models/qwen3_vl/baseline.py
 models/segformer_transformers.py
+models/change_head/__init__.py
+models/change_head/calibration.py
+models/change_head/checkpoint.py
+models/change_head/fingerprint.py
+models/change_head/manifest.py
+models/change_head/network.py
+models/change_head/runtime.py
 
 # === agents ===
 agents/__init__.py
@@ -281,6 +288,7 @@ tests/models/test_request_sanitization.py
 tests/models/test_response_cache.py
 tests/models/test_segformer_runtime.py
 tests/models/test_segformer_transformers.py
+tests/models/test_change_head_manifest.py
 
 # === Migration tooling ===
 scripts/generate_migration_fixtures.py
@@ -294,6 +302,22 @@ scripts/prepare_qwen3vl_phase2_sft.py
 scripts/qwen3vl_phase2_data.py
 scripts/finetune_qwen3vl_phase2.py
 scripts/export_qwen3vl_phase2_checkpoint.py
+scripts/build_change_head_manifest.py
+scripts/cache_change_head_features.py
+scripts/calibrate_change_head.py
+scripts/eval_change_head.py
+scripts/eval_change_head_release.py
+
+# === ChangeHead training ===
+training/__init__.py
+training/change_head/__init__.py
+training/change_head/dataset.py
+training/change_head/evaluator.py
+training/change_head/feature_cache.py
+training/change_head/losses.py
+training/change_head/release_gate.py
+training/change_head/schema.py
+training/change_head/trainer.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py

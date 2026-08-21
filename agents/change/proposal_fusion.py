@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from collections.abc import Sequence
 from collections import Counter
-from typing import Any
+from typing import Any, Literal
 
 from agents.change.schema import ChangeProposal, HarmonizationDecision, RegistrationReport
 from agents.change.settings import ChangeProposalSettings, ChangeReliabilitySettings
@@ -435,6 +435,11 @@ def fuse_change_proposals(
     learned_map: Any | None = None,
     learned_weight: float = 0.0,
     learned_requested: bool = False,
+    learned_mode: Literal["disabled", "shadow", "assist", "required"] = "disabled",
+    learned_rescue_threshold: float | None = None,
+    learned_rescue_min_reliability: float = 1.0,
+    learned_rescue_min_component_area_ratio: float | None = None,
+    learned_rescue_max_proposals: int = 6,
 ) -> ProposalFusionResult:
     """Fuse available score maps and extract deterministic V2 proposals."""
 
@@ -446,6 +451,20 @@ def fuse_change_proposals(
         raise ValueError("PROPOSAL_FUSION_MIN_PIF_INVALID")
     if fallback_reason is not None and not isinstance(fallback_reason, str):
         raise ValueError("PROPOSAL_FUSION_FALLBACK_REASON_INVALID")
+    if learned_mode not in {"disabled", "shadow", "assist", "required"}:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_MODE_INVALID")
+    if learned_requested and learned_mode == "disabled":
+        # Legacy injected clients predate the explicit mode field.  Preserve
+        # their old assist behavior; v2 clients always pass a real mode.
+        learned_mode = "assist"
+    if not 0.0 <= float(learned_rescue_min_reliability) <= 1.0:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_RELIABILITY_INVALID")
+    if learned_rescue_threshold is not None and not 0.0 <= float(learned_rescue_threshold) <= 1.0:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_THRESHOLD_INVALID")
+    if learned_rescue_min_component_area_ratio is not None and not 0.0 < float(learned_rescue_min_component_area_ratio) < 1.0:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_AREA_INVALID")
+    if isinstance(learned_rescue_max_proposals, bool) or learned_rescue_max_proposals < 1:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_MAX_PROPOSALS_INVALID")
     if (
         isinstance(learned_weight, bool)
         or not isinstance(learned_weight, (int, float))
@@ -474,7 +493,8 @@ def fuse_change_proposals(
         ).astype(np.float32, copy=False)
 
     requested_component_names = list(_COMPONENT_NAMES)
-    if learned_requested or learned_map is not None:
+    normal_learned_enabled = learned_mode in {"assist", "required"}
+    if normal_learned_enabled and (learned_map is not None or learned_requested):
         requested_component_names.append("learned")
     if learned_map is not None:
         validated_learned = _validate_score_map(learned_map, name="learned", np=np)
@@ -549,6 +569,35 @@ def fuse_change_proposals(
     resolved_fallback_reason = fallback_reason
     if missing_components and resolved_fallback_reason is None:
         resolved_fallback_reason = "MISSING_COMPONENT_MAP"
+    learned_reliability = resolved_reliability.get("learned", 0.0)
+    learned_rescue_mask = np.zeros((height, width), dtype=bool)
+    if (
+        learned_mode in {"assist", "required"}
+        and "learned" in canonical_maps
+        and learned_rescue_threshold is not None
+        and learned_reliability >= float(learned_rescue_min_reliability)
+    ):
+        learned_rescue_mask = canonical_maps["learned"] >= float(learned_rescue_threshold)
+        if valid_overlap is not None:
+            learned_rescue_mask &= valid_overlap
+        rescue_count, rescue_labels, rescue_stats, _ = cv2.connectedComponentsWithStats(
+            learned_rescue_mask.astype(np.uint8), connectivity=8
+        )
+        area_floor = (
+            settings.min_component_area_ratio
+            if learned_rescue_min_component_area_ratio is None
+            else max(settings.min_component_area_ratio, float(learned_rescue_min_component_area_ratio))
+        )
+        filtered_rescue = np.zeros_like(learned_rescue_mask)
+        for label_index in range(1, rescue_count):
+            area = int(rescue_stats[label_index, cv2.CC_STAT_AREA])
+            ratio = area / float(height * width)
+            if area_floor <= ratio <= settings.max_component_area_ratio:
+                filtered_rescue[rescue_labels == label_index] = True
+        learned_rescue_mask = filtered_rescue
+        fused_score[learned_rescue_mask] = np.maximum(
+            fused_score[learned_rescue_mask], canonical_maps["learned"][learned_rescue_mask]
+        )
     common_diagnostics: dict[str, object] = {
         "available_components": available_components,
         "missing_components": missing_components,
@@ -573,6 +622,13 @@ def fuse_change_proposals(
         "score_p95": float(np.quantile(fused_score, 0.95)),
         "score_max": float(np.max(fused_score)),
         "version": PROPOSAL_FUSION_VERSION,
+        "learned_mode": learned_mode,
+        "learned_normal_fusion_enabled": normal_learned_enabled and "learned" in available_components,
+        "learned_rescue_enabled": learned_mode in {"assist", "required"} and learned_rescue_threshold is not None,
+        "learned_reliability": learned_reliability,
+        "learned_rescue_threshold": learned_rescue_threshold,
+        "learned_rescue_min_component_area_ratio": learned_rescue_min_component_area_ratio,
+        "learned_rescue_pixel_count": int(np.count_nonzero(learned_rescue_mask)),
     }
 
     if float(np.max(fused_score)) < settings.threshold_floor:
@@ -622,6 +678,7 @@ def fuse_change_proposals(
     binary = fused_score > threshold
     if valid_overlap is not None:
         binary &= valid_overlap
+    binary |= learned_rescue_mask
     close_kernel = np.ones(
         (settings.mask_close_kernel, settings.mask_close_kernel), dtype=np.uint8
     )
@@ -634,16 +691,20 @@ def fuse_change_proposals(
         # Closing can dilate pixels back across the comparison-canvas edge.
         # Re-apply the hard validity invariant after every morphology step.
         binary &= valid_overlap
+    component_maps_for_output = dict(canonical_maps)
+    if learned_mode == "shadow":
+        component_maps_for_output.pop("learned", None)
     proposals, component_masks, component_diagnostics, component_count = _components(
         binary,
         fused_score=fused_score,
-        component_maps=canonical_maps,
+        component_maps=component_maps_for_output,
         settings=settings,
         cv2=cv2,
         np=np,
         effective_weights=effective_weights,
         reliability=resolved_reliability,
         registration_confidence=common_diagnostics["registration_confidence"],
+        learned_rescue_mask=learned_rescue_mask,
     )
     return ProposalFusionResult(
         fused_score_map=fused_score,
@@ -658,7 +719,13 @@ def fuse_change_proposals(
             "reason_code": None,
             "component_count": component_count,
             "proposal_count": len(proposals),
-            "components": component_diagnostics,
+        "components": component_diagnostics,
+            "learned_rescue_applied": bool(np.any(learned_rescue_mask)),
+            "learned_rescue_component_count": int(
+                cv2.connectedComponentsWithStats(
+                    learned_rescue_mask.astype(np.uint8), connectivity=8
+                )[0] - 1
+            ),
         },
     )
 
@@ -752,6 +819,7 @@ def _components(
     effective_weights: Mapping[str, float],
     reliability: Mapping[str, float],
     registration_confidence: float,
+    learned_rescue_mask: Any | None = None,
 ) -> tuple[list[ChangeProposal], dict[str, Any], list[dict[str, object]], int]:
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
         binary.astype(np.uint8), connectivity=8
@@ -771,6 +839,10 @@ def _components(
         ):
             continue
         component = labels == label_index
+        learned_rescue = bool(
+            learned_rescue_mask is not None
+            and np.any(np.asarray(learned_rescue_mask)[component])
+        )
         component_scores = {
             name: float(np.mean(score_map[component]))
             for name, score_map in component_maps.items()
@@ -784,6 +856,7 @@ def _components(
                 "area_ratio": area_ratio,
                 "max_fused_score": float(np.max(fused_score[component])),
                 "component_scores": component_scores,
+                "learned_rescue": learned_rescue,
             }
         )
 
@@ -853,6 +926,7 @@ def _components(
                 "mean_low_level": component_scores.get("low_level"),
                 "mean_feature": component_scores.get("feature"),
                 "mean_semantic": component_scores.get("semantic"),
+                "learned_rescue": bool(candidate["learned_rescue"]),
             }
         )
     return proposals, component_masks, component_diagnostics, len(candidates)

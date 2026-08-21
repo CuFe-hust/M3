@@ -63,6 +63,8 @@ from models.base import (
     ObjectDetectionOutput,
     RuntimeObjectDetectionClient,
     VisionLanguageClient,
+    hash_class_names,
+    require_model_cache_identity,
 )
 from models.cache import JsonResponseCache
 from models.entry import create_model
@@ -168,7 +170,14 @@ def assemble_runtime(
         settings,
         expert_catalog,
         segformer_clients,
+        project_root=asset_root,
     )
+    if learned_change_client is None:
+        learned_change_client = _build_learned_change_client(
+            settings=settings,
+            project_root=asset_root,
+            semantic_experts=change_semantic_experts,
+        )
     if settings.agents.change.semantic.enabled and semantic_client is None:
         semantic_client = (
             change_semantic_experts[0].client if change_semantic_experts else None
@@ -478,6 +487,8 @@ def _build_change_semantic_bindings(
     settings: AppSettings,
     catalog: ExpertCatalog,
     clients: dict[str, Any],
+    *,
+    project_root: Path | None = None,
 ) -> tuple[SemanticExpertBinding, ...]:
     """Bind only catalog-verified semantic experts into Change runtime."""
 
@@ -507,6 +518,11 @@ def _build_change_semantic_bindings(
             raise RuntimeCompositionError(
                 "Change semantic expert client is unavailable"
             ) from None
+        labels = (
+            _verified_class_map(expert, project_root)
+            if project_root is not None
+            else {}
+        )
         bindings.append(
             SemanticExpertBinding(
                 expert_id=expert.backend_name,
@@ -525,10 +541,69 @@ def _build_change_semantic_bindings(
 
                 rescue_model_labels=frozenset(semantic.rescue_model_labels),
                 rescue_strategy=semantic.rescue_strategy,
+                class_names=tuple(labels.values()),
+                class_names_sha256=hash_class_names(tuple(labels.values())),
+                weights_sha256=expert.asset.sha256,
 
             )
         )
     return tuple(bindings)
+
+
+def _build_learned_change_client(
+    *,
+    settings: AppSettings,
+    project_root: Path,
+    semantic_experts: tuple[SemanticExpertBinding, ...],
+) -> LearnedChangeClient | None:
+    """Auto-assemble a ChangeHead only when the feature is explicitly enabled."""
+
+    learned_settings = settings.agents.change.learned_change
+    if not learned_settings.enabled:
+        return None
+    from models.change_head.checkpoint import (
+        ChangeHeadCheckpointError,
+        load_change_head_checkpoint,
+    )
+    from models.change_head.fingerprint import build_change_input_pipeline_fingerprint
+    from models.change_head.runtime import (
+        ChangeHeadRuntimeError,
+        TorchLearnedChangeClient,
+        validate_change_head_runtime_compatibility,
+    )
+    try:
+        learned_settings.validate_runtime_configuration()
+        checkpoint = load_change_head_checkpoint(
+            (learned_settings.checkpoint_dir
+             if learned_settings.checkpoint_dir is not None
+             and learned_settings.checkpoint_dir.is_absolute()
+             else project_root / learned_settings.checkpoint_dir)  # type: ignore[operator]
+        )
+        identities = {
+            binding.expert_id: require_model_cache_identity(
+                binding.client, component=f"change semantic expert {binding.expert_id}"
+            )
+            for binding in semantic_experts
+        }
+        fingerprint, _ = build_change_input_pipeline_fingerprint(
+            settings=settings.agents.change,
+            semantic_client_identities=identities,
+        )
+        validate_change_head_runtime_compatibility(
+            manifest=checkpoint.manifest,
+            semantic_experts=semantic_experts,
+            pipeline_fingerprint=fingerprint,
+            strict=learned_settings.strict_contract,
+        )
+        return TorchLearnedChangeClient(
+            checkpoint,
+            device=learned_settings.device,
+        )
+    except (ChangeHeadCheckpointError, ChangeHeadRuntimeError, ValueError) as error:
+        code = getattr(error, "code", None) or "LEARNED_CHANGE_INFERENCE_FAILED"
+        if learned_settings.mode == "required" or learned_settings.failure_policy == "fail":
+            raise RuntimeCompositionError(code) from None
+        return None
 
 
 def _expert_asset_root(project_root: Path) -> Path:
