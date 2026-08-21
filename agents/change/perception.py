@@ -1143,8 +1143,6 @@ def _extract_building_rescue_candidates(
                 if edge_flags
                 else settings.min_component_area_ratio
             )
-            if area_ratio < min_area or area_ratio > settings.max_component_area_ratio:
-                continue
             target_values = target[component]
             source_values = source[component]
             target_p10 = float(np.percentile(target_values, 10))
@@ -1175,6 +1173,7 @@ def _extract_building_rescue_candidates(
             elif source_max > settings.source_absence_probability_max:
                 rejection_reason = "SOURCE_ABSENCE_FAILED"
             record = {
+                "direction": direction,
                 "candidate_direction": direction,
                 "component_id": f"{run.binding.expert_id}:{direction}:{component_index}",
                 "area_px": area,

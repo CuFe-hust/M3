@@ -385,6 +385,57 @@ def test_building_rescue_extracts_added_footprint_without_core_proposals() -> No
     assert "source_p95_building_probability" in component
 
 
+@pytest.mark.parametrize(
+    ("area_setting", "expected_reason"),
+    [
+        ("small", "AREA_TOO_SMALL"),
+        ("large", "AREA_TOO_LARGE"),
+    ],
+)
+def test_building_rescue_records_area_rejection_diagnostics(
+    area_setting: str, expected_reason: str
+) -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(4, 8), slice(4, 8))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+    rescue_settings = {
+        "building_probability_threshold": 0.85,
+        "source_absence_probability_max": 0.25,
+        "min_component_area_ratio": 0.001,
+        "min_component_area_ratio_edge": 0.0005,
+        "max_component_area_ratio": 0.50,
+        "registration_tolerance_min_px": 0,
+        "registration_tolerance_max_px": 2,
+    }
+    if area_setting == "small":
+        rescue_settings["min_component_area_ratio"] = 0.10
+    else:
+        rescue_settings["max_component_area_ratio"] = 0.01
+    settings = _settings()
+    settings.building_rescue = ChangeBuildingRescueSettings(**rescue_settings)
+
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+    component = diagnostics["component_diagnostics"][0]
+    assert component["direction"] == "added"
+    assert component["accepted"] is False
+    assert component["rejection_reason"] == expected_reason
+
+
 def test_building_rescue_disables_removed_direction_with_auditable_reason() -> None:
     client = _DenseClient(
         _building_outputs(
