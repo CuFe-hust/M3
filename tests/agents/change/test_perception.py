@@ -363,6 +363,7 @@ def test_building_rescue_extracts_added_footprint_without_core_proposals() -> No
         source_absence_probability_max=0.25,
         min_component_area_ratio=0.001,
         min_component_area_ratio_edge=0.0005,
+        edge_only=False,
         registration_tolerance_min_px=0,
         registration_tolerance_max_px=2,
     )
@@ -414,6 +415,7 @@ def test_building_rescue_records_area_rejection_diagnostics(
         "source_absence_probability_max": 0.25,
         "min_component_area_ratio": 0.001,
         "min_component_area_ratio_edge": 0.0005,
+        "edge_only": False,
         "max_component_area_ratio": 0.50,
         "registration_tolerance_min_px": 0,
         "registration_tolerance_max_px": 2,

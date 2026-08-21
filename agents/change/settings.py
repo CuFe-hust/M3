@@ -204,10 +204,11 @@ class ChangeBuildingRescueSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = True
-    shadow_only: bool = True
-    qwen_review_enabled: bool = False
+    # Default inference profile: the validated edge-building rescue run.
+    shadow_only: bool = False
+    qwen_review_enabled: bool = True
     allowed_directions: tuple[Literal["added", "removed"], ...] = ("added",)
-    edge_only: bool = False
+    edge_only: bool = True
     building_probability_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
     source_absence_probability_max: float = Field(default=0.25, ge=0.0, le=1.0)
     min_component_area_ratio: float = Field(default=0.0003, gt=0.0, le=1.0)
@@ -225,7 +226,7 @@ class ChangeBuildingRescueSettings(BaseModel):
     edge_review_pixel_size: int = Field(default=448, ge=256, le=768)
     max_review_candidates: int = Field(default=3, ge=1, le=3)
     rescue_max_new_tokens: int = Field(default=512, ge=1, le=768)
-    cache_policy: Literal["use", "bypass"] = "use"
+    cache_policy: Literal["use", "bypass"] = "bypass"
 
     def model_post_init(self, __context: Any) -> None:
         if not self.allowed_directions:
