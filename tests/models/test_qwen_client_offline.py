@@ -190,6 +190,46 @@ def test_cache_hit_skips_generation(tmp_path: Path) -> None:
     assert len(processor.calls) == 1
 
 
+def test_cache_bypass_forces_fresh_generation(tmp_path: Path) -> None:
+    cache = JsonResponseCache(tmp_path / "cache")
+    processor = _FakeProcessor(
+        [
+            '{"label": "cached", "box": [1, 2, 3, 4]}',
+            '{"label": "fresh", "box": [1, 2, 3, 4]}',
+        ]
+    )
+    client = QwenTransformersClient(
+        QwenSettings(model="fake", max_tokens=8),
+        model=_FakeModel(),
+        processor=processor,
+        cache=cache,
+    )
+    import asyncio
+
+    meta = _meta(tmp_path / "artifacts")
+    asyncio.run(
+        client.complete_json(
+            messages=[{"role": "user", "content": "Q"}],
+            response_model=_BoxResult,
+            request_meta=meta,
+        )
+    )
+    fresh_meta = meta.model_copy(update={"cache_policy": "bypass"})
+    fresh = asyncio.run(
+        client.complete_json(
+            messages=[{"role": "user", "content": "Q"}],
+            response_model=_BoxResult,
+            request_meta=fresh_meta,
+        )
+    )
+    assert fresh.label == "fresh"
+    assert len(processor.calls) == 2
+    validation = json.loads(
+        (tmp_path / "artifacts" / "validation.json").read_text(encoding="utf-8")
+    )
+    assert validation["cache_hit"] is False
+
+
 def test_truncated_json_recovery(tmp_path: Path) -> None:
     processor = _FakeProcessor(['{"label": "c", "box": [1, 2, 3,'] )
     client = QwenTransformersClient(

@@ -22,6 +22,7 @@ from agents.change.agent import (
     _building_rescue_fallback_caption,
     _contains_internal_rescue_identifier,
     _expanded_union_pixel_box,
+    _select_building_rescue_candidates,
     resolve_input_mode,
 )
 from agents.change.schema import (
@@ -400,6 +401,38 @@ def test_building_rescue_fallback_uses_confirmed_count() -> None:
     assert _building_rescue_fallback_caption(candidates, reviews) == (
         "Two buildings were constructed near the upper edge."
     )
+
+
+def test_building_rescue_review_selection_is_capped_and_spatially_diverse() -> None:
+    candidates = [
+        _rescue_candidate(f"candidate-{index}").model_copy(
+            update={
+                "box": box,
+                "area_px": (box[2] - box[0]) * (box[3] - box[1]),
+                "score": score,
+            }
+        )
+        for index, (box, score) in enumerate(
+            [
+                ((0, 0, 32, 32), 0.99),
+                ((2, 2, 34, 34), 0.98),
+                ((80, 80, 120, 120), 0.80),
+                ((160, 160, 220, 220), 0.70),
+                ((260, 260, 300, 300), 0.60),
+            ]
+        )
+    ]
+    selected, audit = _select_building_rescue_candidates(candidates, limit=3)
+    assert len(selected) == 3
+    assert [item.candidate_id for item in selected] == [
+        "candidate-0",
+        "candidate-3",
+        "candidate-2",
+    ]
+    assert len(audit) == 5
+    duplicate = next(item for item in audit if item["candidate_id"] == "candidate-1")
+    assert duplicate["review_selected"] is False
+    assert str(duplicate["review_selection_reason"]).startswith("spatial_duplicate_of:")
 
 
 def test_unsupported_task_fails_before_any_io(tmp_path: Path) -> None:

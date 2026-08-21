@@ -279,6 +279,12 @@ class StructuralRescueCandidate(BaseModel):
     registration_tolerance_px: int = Field(ge=0)
     supporting_core_signals: dict[str, float] = Field(default_factory=dict)
     artifact_files: tuple[str, ...] = ()
+    review_artifact_files: tuple[str, ...] = ()
+    context_crop_bbox: tuple[int, int, int, int] | None = None
+    local_roi_bbox: tuple[int, int, int, int] | None = None
+    review_local_roi_bbox: tuple[int, int, int, int] | None = None
+    review_image_size: tuple[int, int] | None = None
+    resize_scale: float | None = None
 
 
 RescueVerdict = Literal[

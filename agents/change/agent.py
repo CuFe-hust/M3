@@ -174,6 +174,8 @@ class ChangeAgent:
         rescue_failure: str | None = None
         rescue_confirmed_reviews: dict[str, Any] = {}
         rescue_selected_candidates: list[Any] = []
+        rescue_review_candidates: list[Any] = []
+        rescue_selection_audit: list[dict[str, object]] = []
         core_conflict_reasons = [
             warning
             for warning in initial_warnings
@@ -233,15 +235,22 @@ class ChangeAgent:
         ):
             rescue_triggered = True
             try:
+                rescue_review_candidates, rescue_selection_audit = (
+                    _select_building_rescue_candidates(
+                        preprocess.rescue_candidates,
+                        limit=settings.building_rescue.max_review_candidates,
+                    )
+                )
                 rescue_content, rescue_hashes, rescue_manifest = (
                     self._build_building_rescue_evidence(
-                        sample, context, preprocess.rescue_candidates
+                        sample, context, rescue_review_candidates
                     )
                 )
                 rescue_payload = {
                     "decision_stage": "building_rescue",
                     "task": sample.task,
                     "candidate_count": len(preprocess.rescue_candidates),
+                    "review_candidate_count": len(rescue_review_candidates),
                     "candidates": [
                         {
                             "candidate_id": item.candidate_id,
@@ -250,8 +259,9 @@ class ChangeAgent:
                             "normalized_box": list(item.normalized_box),
                             "edge_flags": list(item.edge_flags),
                         }
-                        for item in preprocess.rescue_candidates
+                        for item in rescue_review_candidates
                     ],
+                    "review_selection": rescue_selection_audit,
                     "image_manifest": rescue_manifest,
                 }
                 rescue_content.append(
@@ -265,7 +275,7 @@ class ChangeAgent:
                     image_hashes=rescue_hashes,
                 )
                 rescue_warnings = self._validate_building_rescue_review(
-                    rescue_review, preprocess.rescue_candidates
+                    rescue_review, rescue_review_candidates
                 )
                 if rescue_warnings:
                     rescue_failure = ";".join(rescue_warnings)
@@ -287,7 +297,7 @@ class ChangeAgent:
                     if confirmed:
                         candidate_map = {
                             item.candidate_id: item
-                            for item in preprocess.rescue_candidates
+                            for item in rescue_review_candidates
                         }
                         rescue_selected_candidates = [
                             candidate_map[item.candidate_id]
@@ -297,7 +307,7 @@ class ChangeAgent:
                         reviewed = self._merge_building_rescue(
                             reviewed,
                             rescue_review,
-                            preprocess.rescue_candidates,
+                            rescue_review_candidates,
                         )
             except Exception as error:
                 rescue_failure = type(error).__name__
@@ -360,6 +370,13 @@ class ChangeAgent:
             "rescue_request_hash": rescue_request_hash,
             "rescue_decision": rescue_decision,
             "rescue_failure": rescue_failure,
+            "building_rescue_review_candidate_count": len(rescue_review_candidates),
+            "building_rescue_review_selection": rescue_selection_audit,
+            "building_rescue_generation_limit": settings.building_rescue.rescue_max_new_tokens,
+            "building_rescue_cache_policy": settings.building_rescue.cache_policy,
+            "building_rescue_cache_hit": (
+                False if settings.building_rescue.cache_policy == "bypass" else None
+            ),
             "final_source": (
                 "building_rescue"
                 if reviewed.geometry.get("final_source") == "building_rescue"
@@ -453,9 +470,11 @@ class ChangeAgent:
             },
             {"role": "user", "content": content},
         ]
+        generation = identity.generation_payload()
+        generation["max_tokens"] = self._settings.building_rescue.rescue_max_new_tokens
         request_hash = build_request_hash(
             model=identity.model,
-            generation=identity.generation_payload(),
+            generation=generation,
             prompt_version=prompt.version,
             messages=messages,
             image_sha256="|".join(image_hashes),
@@ -473,7 +492,9 @@ class ChangeAgent:
                 prompt_version=prompt.version,
                 sample_id=sample.sample_id,
                 artifact_dir=context.artifact_dir / self.name,
+                cache_policy=self._settings.building_rescue.cache_policy,
             ),
+            max_tokens=self._settings.building_rescue.rescue_max_new_tokens,
         )
         return result, request_hash
 
@@ -502,7 +523,12 @@ class ChangeAgent:
                 raise AgentExecutionError(
                     self.name, sample.sample_id, cause="BUILDING_RESCUE_ARTIFACT_MISSING"
                 )
-            for temporal, relative in zip(("t1", "t2"), candidate.artifact_files):
+            review_files = candidate.review_artifact_files or candidate.artifact_files
+            if len(review_files) != 2:
+                raise AgentExecutionError(
+                    self.name, sample.sample_id, cause="BUILDING_RESCUE_REVIEW_ARTIFACT_MISSING"
+                )
+            for temporal, relative in zip(("t1", "t2"), review_files):
                 path = context.artifact_dir / relative
                 data = self._read_artifact(path, sample.sample_id, kind="artifact")
                 mime = detect_image_mime(path)
@@ -1481,6 +1507,18 @@ def _evidence_label(role: str) -> str:
         return "TRANSIENT CONTEXT T1 - expanded same-location context"
     if role == "transient_context_t2":
         return "TRANSIENT CONTEXT T2 - expanded same-location context"
+    if role.startswith("building_rescue:"):
+        temporal = role.rsplit(":", 1)[-1]
+        if temporal == "t1":
+            return (
+                "T1 SAME-LOCATION VISUAL EVIDENCE - the thin marked box is the exact candidate ROI; "
+                "the pixels inside it are authoritative"
+            )
+        if temporal == "t2":
+            return (
+                "T2 SAME-LOCATION VISUAL EVIDENCE - the thin marked box is the exact same candidate ROI; "
+                "the pixels inside it are authoritative"
+            )
     if ":" in role:
         proposal_id, crop_role = role.split(":", 1)
         if crop_role == "reference_t1_crop":
@@ -1488,6 +1526,112 @@ def _evidence_label(role: str) -> str:
         if crop_role in {"t2_registered_crop", "t2_raw_fallback_crop"}:
             return f"CANDIDATE {proposal_id} - T2 comparison crop - inspect the same location"
     return f"AUXILIARY {role} - attention evidence only"
+
+
+def _rescue_box_iou(first: Any, second: Any) -> float:
+    ax0, ay0, ax1, ay1 = first.box
+    bx0, by0, bx1, by1 = second.box
+    intersection = max(0, min(ax1, bx1) - max(ax0, bx0)) * max(
+        0, min(ay1, by1) - max(ay0, by0)
+    )
+    first_area = max(1, (ax1 - ax0) * (ay1 - ay0))
+    second_area = max(1, (bx1 - bx0) * (by1 - by0))
+    return intersection / max(1, first_area + second_area - intersection)
+
+
+def _rescue_candidates_are_near(first: Any, second: Any) -> bool:
+    if _rescue_box_iou(first, second) >= 0.5:
+        return True
+    ax0, ay0, ax1, ay1 = first.box
+    bx0, by0, bx1, by1 = second.box
+    acx, acy = (ax0 + ax1) / 2.0, (ay0 + ay1) / 2.0
+    bcx, bcy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+    distance_squared = (acx - bcx) ** 2 + (acy - bcy) ** 2
+    minimum_size = max(1.0, min(ax1 - ax0, ay1 - ay0, bx1 - bx0, by1 - by0))
+    return distance_squared <= (0.25 * minimum_size) ** 2
+
+
+def _select_building_rescue_candidates(
+    candidates: list[Any], *, limit: int
+) -> tuple[list[Any], list[dict[str, object]]]:
+    """Select a small, spatially diverse review set while retaining all diagnostics."""
+
+    if limit < 1:
+        raise ValueError("building rescue review limit must be positive")
+    if not candidates:
+        return [], []
+    indexed = list(enumerate(candidates))
+    score_order = sorted(
+        indexed,
+        key=lambda item: (
+            -float(item[1].score),
+            -int(item[1].area_px),
+            -len(item[1].edge_flags),
+            item[0],
+        ),
+    )
+    area_order = sorted(
+        indexed,
+        key=lambda item: (
+            -int(item[1].area_px),
+            -float(item[1].score),
+            -len(item[1].edge_flags),
+            item[0],
+        ),
+    )
+    selected: list[Any] = []
+    reasons: dict[str, str] = {}
+
+    def add(candidate: Any, reason: str) -> bool:
+        if len(selected) >= limit or candidate in selected:
+            return False
+        if any(_rescue_candidates_are_near(candidate, other) for other in selected):
+            return False
+        selected.append(candidate)
+        reasons[candidate.candidate_id] = reason
+        return True
+
+    add(score_order[0][1], "highest_score")
+    for _, candidate in area_order:
+        if len(selected) >= limit:
+            break
+        if add(candidate, "largest_area_spatially_distinct"):
+            break
+    for _, candidate in score_order:
+        if len(selected) >= limit:
+            break
+        add(candidate, "next_high_score_spatially_distinct")
+
+    selected_ids = {item.candidate_id for item in selected}
+    audit: list[dict[str, object]] = []
+    for index, candidate in indexed:
+        if candidate.candidate_id in selected_ids:
+            audit.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "review_selected": True,
+                    "review_selection_reason": reasons[candidate.candidate_id],
+                    "rank": index,
+                }
+            )
+            continue
+        overlap_with = next(
+            (other.candidate_id for other in selected if _rescue_candidates_are_near(candidate, other)),
+            None,
+        )
+        audit.append(
+            {
+                "candidate_id": candidate.candidate_id,
+                "review_selected": False,
+                "review_selection_reason": (
+                    f"spatial_duplicate_of:{overlap_with}"
+                    if overlap_with
+                    else "review_limit"
+                ),
+                "rank": index,
+            }
+        )
+    return selected, audit
 
 
 def _proposal_manifest_role(

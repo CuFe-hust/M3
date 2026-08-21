@@ -13,7 +13,7 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
@@ -398,6 +398,7 @@ class RequestMeta(BaseModel):
     tile_id: str | None = None
     image_sha256: str | None = None
     artifact_dir: Path | None = None
+    cache_policy: Literal["use", "bypass"] = "use"
 
 
 class VisionLanguageClient(Protocol):
