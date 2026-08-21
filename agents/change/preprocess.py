@@ -495,6 +495,11 @@ def publish_change_proposals(
             review_min_short_side = (
                 settings.building_rescue.edge_review_pixel_size
                 if candidate.edge_flags
+                and _is_extreme_edge_candidate(
+                    candidate,
+                    width=prepared.raw_t1.shape[1],
+                    height=prepared.raw_t1.shape[0],
+                )
                 else settings.building_rescue.min_review_pixel_size
             )
             review_t1, review_local_roi, review_size, resize_scale = (
@@ -579,7 +584,9 @@ def _building_rescue_context_box(
     settings: AgentChangeSettings,
 ) -> tuple[int, int, int, int]:
     x0, y0, x1, y1 = candidate.box
-    if candidate.edge_flags:
+    if candidate.edge_flags and _is_extreme_edge_candidate(
+        candidate, width=width, height=height
+    ):
         padding_ratio = settings.building_rescue.edge_context_padding_ratio
         pad_x = max(1, int(width * padding_ratio))
         pad_y = max(1, int(height * padding_ratio))
@@ -618,6 +625,24 @@ def _building_rescue_context_box(
         max(0, y0 - top_pad),
         min(width, x1 + right_pad),
         min(height, y1 + bottom_pad),
+    )
+
+
+def _is_extreme_edge_candidate(
+    candidate: StructuralRescueCandidate,
+    *,
+    width: int,
+    height: int,
+    margin_px: int = 10,
+) -> bool:
+    """Identify candidates close enough to a canvas edge to need rescue context."""
+
+    x0, y0, x1, y1 = candidate.box
+    return (
+        x0 <= margin_px
+        or y0 <= margin_px
+        or width - x1 <= margin_px
+        or height - y1 <= margin_px
     )
 
 

@@ -482,6 +482,17 @@ def test_building_rescue_edge_context_shifts_right_and_corner_to_fit() -> None:
     assert corner == (144, 0, 256, 112)
 
 
+def test_building_rescue_near_edge_context_expands_within_margin() -> None:
+    settings = _settings()
+    box = _building_rescue_context_box(
+        _context_candidate((20, 9, 31, 22), ("top",)),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    assert box == (0, 0, 112, 112)
+
+
 def test_building_rescue_publishes_raw_and_marked_review_crops(tmp_path: Path) -> None:
     root = tmp_path / "data"
     sample = _write_pair(root)
