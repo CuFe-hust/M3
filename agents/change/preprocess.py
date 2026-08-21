@@ -492,18 +492,23 @@ def publish_change_proposals(
             raw_t1_crop = prepared.raw_t1[cy0:cy1, cx0:cx1].copy()
             raw_t2_crop = prepared.raw_t2[cy0:cy1, cx0:cx1].copy()
             local_roi = _local_roi_box(candidate.box, crop_box)
+            review_min_short_side = (
+                settings.building_rescue.edge_review_pixel_size
+                if candidate.edge_flags
+                else settings.building_rescue.min_review_pixel_size
+            )
             review_t1, review_local_roi, review_size, resize_scale = (
                 _marked_review_crop(
                     raw_t1_crop,
                     local_roi,
-                    min_short_side=settings.building_rescue.min_review_pixel_size,
+                    min_short_side=review_min_short_side,
                 )
             )
             review_t2, review_local_roi_t2, review_size_t2, resize_scale_t2 = (
                 _marked_review_crop(
                     raw_t2_crop,
                     local_roi,
-                    min_short_side=settings.building_rescue.min_review_pixel_size,
+                    min_short_side=review_min_short_side,
                 )
             )
             if (
