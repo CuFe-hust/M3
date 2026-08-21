@@ -29,7 +29,7 @@ Exporter 只恢复、合并、保存和验证模型；不读取训练集、不�
 3. 阅读现有 `scripts/merge_qwen3vl_merger_lora.py`，只复用已经稳定且适用的加载、processor
    和辅助文件思路，不把它直接当作当前复合 checkpoint exporter；
 4. 检查第三轮真实 checkpoint manifest 和权重 key，不靠本文示例猜名称；
-5. 确认新脚本与测试路径已经过架构白名单批准；
+5. 确认新脚本职责清晰、符合 import DAG，并有对应测试；
 6. 默认离线，不触发模型下载。
 
 用户已经明确：导出器必须独立实现，不能隐含在训练结束回调中。

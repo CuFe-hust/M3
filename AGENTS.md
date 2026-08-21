@@ -49,10 +49,8 @@
 |---|---|
 | `AGENTS.md` | 编码代理的长期行为规则 |
 | `DETAILS.md` | 当前有效的架构、接口、运行与评测事实 |
-| `architecture/allowed_python_files.txt` | 最终批准的 Python 路径白名单 |
 | `architecture/implementation_status.json` | 当前实际实现状态 |
 | `architecture/import_rules.json` | 顶层包 import DAG 与 path-specific 依赖规则 |
-| `architecture/ALLOWLIST_CHANGE_POLICY.md` | 白名单变更政策 |
 | `tests/fixtures/migration/` | 离线 Golden 行为基线 |
 | `docs/migration/` | `try_yolo` → 新架构的迁移基线与有意行为差异 |
 | `docs/architecture/` | 重要架构决策、收口说明和运行门禁 |
@@ -81,28 +79,12 @@ git show ec962eb87c3ad0b8c1502efcbd08db0daec48868:<path>
 
 ---
 
-## 2. 架构白名单与文件范围
+## 2. 文件范围与架构边界
 
-### 2.1 白名单是硬约束
+### 2.1 新文件职责
 
-`architecture/allowed_python_files.txt` 冻结整个新架构最终批准的 Python 路径。
-
-必须理解：
-
-- 白名单不是“当前存在文件列表”；
-- 当前存在情况以 `architecture/implementation_status.json` 为准；
-- 白名单中的未创建路径只是已批准未来路径；
-- 不得为“结构看起来完整”提前创建空壳；
-- 普通实现任务不得修改白名单。
-
-如果任务需要新增一个不在白名单中的 `.py`：
-
-1. 停止创建该文件；
-2. 报告缺失路径以及为什么现有职责无法容纳；
-3. 等待用户批准独立架构变更；
-4. 白名单变更与业务实现不得混在同一个普通实现步骤中。
-
-不得为了绕过此限制创建或泛化：
+新增 Python 文件不再受逐路径白名单约束，但必须具有清晰、单一且符合顶层包职责的边界。
+不得为了临时复用或绕过现有包边界创建空壳或泛化：
 
 ```text
 utils.py
@@ -113,7 +95,8 @@ legacy.py
 common.py
 ```
 
-除非用户明确批准新的职责边界。
+确需新增文件时，应同步补充任务相关测试；生产包状态变化时同步更新
+`architecture/implementation_status.json`。不得为“结构看起来完整”提前创建空壳。
 
 ### 2.2 永久禁止旧包
 
@@ -1139,14 +1122,13 @@ huggingface/
 - config parsing；
 - CLI；
 - bug fix；
-- import boundary / allowlist 行为。
+- import boundary 行为。
 
 ### 22.3 架构测试
 
 修改跨模块依赖、文件布局或 `__init__.py` 时，应特别运行：
 
 ```text
-tests/architecture/test_allowed_python_files.py
 tests/architecture/test_implementation_status.py
 tests/architecture/test_import_boundaries.py
 tests/architecture/test_init_side_effects.py
@@ -1290,7 +1272,6 @@ git rev-parse HEAD
 - 保持 diff 局部；
 - 不触碰用户已有无关修改；
 - 不修改 Golden fixture 逃避问题；
-- 不擅自改白名单；
 - 不引入旧包回退。
 
 ### 修改后

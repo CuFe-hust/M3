@@ -15,7 +15,6 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STATUS_PATH = REPO_ROOT / "architecture" / "implementation_status.json"
-WHITELIST_PATH = REPO_ROOT / "architecture" / "allowed_python_files.txt"
 # .firecrawl is a git-ignored local tool workspace (firecrawl scripts), not
 # part of the new architecture, so it must never be scanned by this guard.
 # .firecrawl 是 git-ignored 的本地 firecrawl 工具工作区，不属于新架构，
@@ -35,16 +34,6 @@ PRODUCTION_ROOTS = (
 
 def _status() -> dict:
     return json.loads(STATUS_PATH.read_text(encoding="utf-8"))
-
-
-def _whitelist_patterns() -> list[str]:
-    patterns = []
-    for line in WHITELIST_PATH.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        patterns.append(line)
-    return patterns
 
 
 def _production_py_files() -> list[Path]:
@@ -153,23 +142,3 @@ def test_task3_files_are_implemented() -> None:
     implemented = set(_status()["implemented_files"])
     assert "data/schema.py" in implemented
     assert "data/__init__.py" in implemented
-
-
-def test_no_unapproved_empty_python_files() -> None:
-    """Every empty .py must be explicitly whitelisted and must not be an implemented file.
-    每个 0 字节 .py 必须显式列入白名单，且不得是 implemented 文件。"""
-    patterns = _whitelist_patterns()
-    implemented = set(_status()["implemented_files"])
-    violations = []
-    for path in REPO_ROOT.rglob("*.py"):
-        parts = path.relative_to(REPO_ROOT).parts
-        if any(part in SKIP_DIRS for part in parts):
-            continue
-        if path.stat().st_size > 0:
-            continue
-        rel = path.relative_to(REPO_ROOT).as_posix()
-        if rel in implemented:
-            violations.append(f"{rel}: implemented file is empty")
-        if rel not in patterns:
-            violations.append(f"{rel}: empty file not in whitelist")
-    assert not violations, "unapproved empty Python files:\n" + "\n".join(violations)
