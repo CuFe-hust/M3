@@ -16,7 +16,10 @@ from models.base import (
 from models.change_head.calibration import ChangeHeadCalibration
 from models.change_head.checkpoint import LoadedChangeHeadCheckpoint
 from models.change_head.manifest import ChangeHeadManifest
-from models.change_head.network import MultiExpertSiameseChangeHead
+from models.change_head.network import (
+    ChangeHeadNetworkError,
+    MultiExpertSiameseChangeHead,
+)
 
 
 @dataclass(frozen=True)
@@ -112,13 +115,20 @@ class TorchLearnedChangeClient:
         self._manifest = checkpoint.manifest
         self._calibration: ChangeHeadCalibration = checkpoint.calibration
         self._device = resolve_torch_device(device)
-        self._network = MultiExpertSiameseChangeHead(self._manifest)
         try:
+            if self._manifest.architecture.use_rgb_pair:
+                raise ChangeHeadNetworkError(
+                    "LEARNED_CHANGE_UNSUPPORTED_RGB_INPUT",
+                    "RGB pair is not implemented by this runtime",
+                )
+            self._network = MultiExpertSiameseChangeHead(self._manifest)
             self._network.load_state_dict(checkpoint.state_dict, strict=True)
             self._network.to(self._device)
             self._network.eval()
             for parameter in self._network.parameters():
                 parameter.requires_grad_(False)
+        except ChangeHeadNetworkError as error:
+            raise ChangeHeadRuntimeError(error.code, str(error)) from error
         except Exception as error:
             raise ChangeHeadRuntimeError("LEARNED_CHANGE_CONTRACT_MISMATCH", "state dict mismatch") from error
         self._identity = ModelCacheIdentity(

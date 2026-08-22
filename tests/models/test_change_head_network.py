@@ -10,6 +10,7 @@ from models.base import (  # noqa: E402
 )
 from models.change_head.manifest import ChangeHeadManifest  # noqa: E402
 from models.change_head.network import MultiExpertSiameseChangeHead  # noqa: E402
+from models.change_head.network import ChangeHeadNetworkError  # noqa: E402
 from training.change_head.losses import masked_bce_with_logits  # noqa: E402
 
 
@@ -103,3 +104,36 @@ def test_invalid_pixels_do_not_contribute_to_loss() -> None:
     loss_a = masked_bce_with_logits(logits, target_a, valid)
     loss_b = masked_bce_with_logits(logits, target_b, valid)
     assert torch.equal(loss_a, loss_b)
+
+
+def test_hidden_dim_changes_parameter_count() -> None:
+    first = _manifest(use_pif_mask=False)
+    second_data = first.model_dump(mode="python")
+    second_data["architecture"]["hidden_dim"] = 32
+    second = type(first).model_validate(second_data)
+    assert sum(parameter.numel() for parameter in MultiExpertSiameseChangeHead(first).parameters()) != sum(
+        parameter.numel() for parameter in MultiExpertSiameseChangeHead(second).parameters()
+    )
+
+
+def test_decoder_dim_changes_parameter_count() -> None:
+    first = _manifest(use_pif_mask=False)
+    second_data = first.model_dump(mode="python")
+    second_data["architecture"]["decoder_dim"] = 32
+    second = type(first).model_validate(second_data)
+    assert sum(parameter.numel() for parameter in MultiExpertSiameseChangeHead(first).parameters()) != sum(
+        parameter.numel() for parameter in MultiExpertSiameseChangeHead(second).parameters()
+    )
+
+
+def test_t1_t2_use_the_same_projection_and_required_missing_is_rejected() -> None:
+    network = _fixed_network(use_pif_mask=False)
+    assert network.projections["expert_1__1"] is not None
+    with pytest.raises(ChangeHeadNetworkError, match="REQUIRED_EXPERT_MISSING"):
+        network(
+            expert_features={},
+            semantic_probabilities={},
+            expert_presence={},
+            valid_mask=torch.ones(1, 3, 3),
+            pif_mask=None,
+        )
