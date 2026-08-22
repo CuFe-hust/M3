@@ -21,7 +21,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
+torch = pytest.importorskip(
+    "torch",
+    reason="Qwen3-VL Phase2 data tests require PyTorch",
+)
 from PIL import Image
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -479,7 +482,12 @@ def test_path_safety_rejects_unsafe_paths(data):
 def test_path_safety_symlink_escape(data, tmp_path):
     outside = tmp_path / "outside.png"
     Image.fromarray(np.zeros((8, 8, 3), dtype=np.uint8)).save(outside)
-    (data["vroot"] / "evil.png").symlink_to(outside)
+    try:
+        (data["vroot"] / "evil.png").symlink_to(outside)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("symlink creation requires Windows Developer Mode or SeCreateSymbolicLinkPrivilege")
+        raise
     with pytest.raises(ImagePathError) as ei:
         data["roots"].image_path("vrsbench", "evil.png")
     assert ei.value.code == "unsafe_image_path"

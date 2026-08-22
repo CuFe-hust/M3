@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 
 import pytest
-import torch
+torch = pytest.importorskip(
+    "torch",
+    reason="Qwen3-VL LoRA CLI tests require PyTorch",
+)
 from PIL import Image
 
 

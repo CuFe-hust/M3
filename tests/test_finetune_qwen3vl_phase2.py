@@ -24,6 +24,20 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+
+pytest.importorskip(
+    "torch",
+    reason="Qwen3-VL Phase2 finetune tests require PyTorch",
+)
+pytest.importorskip(
+    "safetensors.torch",
+    reason="Qwen3-VL Phase2 finetune tests require safetensors",
+)
+pytest.importorskip(
+    "peft",
+    reason="Qwen3-VL Phase2 finetune tests require PEFT",
+)
+
 import torch
 import torch.nn as nn
 from PIL import Image

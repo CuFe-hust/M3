@@ -220,6 +220,3 @@ jobs:
 
       - name: Verify migration generator imports
         run: python scripts/generate_migration_fixtures.py --help
-
-      - name: Full offline test suite
-        run: python -m pytest -q

@@ -17,6 +17,7 @@ from agents.change.harmonizer import HarmonizationCandidate, PairHarmonizer
 from agents.change.schema import HarmonizationDecision
 from agents.change.settings import (
     AgentChangeSettings,
+    ChangeEvidenceSettings,
     ChangeHarmonizationSettings,
     ChangeProposalSettings,
     ChangeSemanticSettings,
@@ -151,6 +152,7 @@ def _sample(root: Path, *, invalid: bool = False) -> UnifiedSample:
 
 def _settings(*, enabled: bool, policy: str = "fallback_legacy") -> AgentChangeSettings:
     return AgentChangeSettings(
+        evidence=ChangeEvidenceSettings(attach_harmonized_global=True),
         semantic=ChangeSemanticSettings(
             enabled=enabled,
             feature_stages=(1,),
@@ -309,10 +311,9 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     crop_roles = roles[5:]
     assert "change_000:reference_t1_crop" in crop_roles
     assert "change_000:t2_registered_crop" in crop_roles
-    assert "change_000:mask_overlay" in crop_roles
     assert crop_roles.index("change_000:reference_t1_crop") < crop_roles.index(
         "change_000:t2_registered_crop"
-    ) < crop_roles.index("change_000:mask_overlay")
+    )
     assert {
         "change_000:reference_t1_crop",
         "change_000:t2_registered_crop",

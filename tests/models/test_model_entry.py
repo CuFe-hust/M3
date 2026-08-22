@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import subprocess
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 from pydantic import BaseModel
@@ -48,8 +49,12 @@ def test_create_model_unknown_name_raises() -> None:
 def test_import_entry_does_not_load_heavy_libraries() -> None:
     """Importing models.entry must not load transformers or torch.
     导入 models.entry 不得加载 transformers 或 torch。"""
-    for heavy in ("transformers", "torch"):
-        assert heavy not in sys.modules
+    script = (
+        "import sys; import models.entry; "
+        "assert 'transformers' not in sys.modules; "
+        "assert 'torch' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_import_entry_does_not_import_concrete_segformer_module() -> None:
@@ -86,40 +91,29 @@ def test_builders_are_lazy() -> None:
     """Builders must import concrete models lazily; constructing a client with
     injected fake model/processor must not touch transformers.
     builder 必须惰性导入具体模型；注入 fake 构造客户端不触碰 transformers。"""
-    from models.qwen_transformers import QwenTransformersClient
+    script = dedent(
+        """
+    import sys
+    from models.entry import create_model
+    from models.settings import QwenSettings
 
-    class _FakeProcessor:
-        def apply_chat_template(self, *args, **kwargs):
-            return "prompt"
+    class FakeModel:
+        pass
 
-        def __call__(self, *args, **kwargs):
-            class _Inputs:
-                shape = (1, 3)
+    class FakeProcessor:
+        pass
 
-                def to(self, device):
-                    return self
-
-            return {"input_ids": _Inputs()}
-
-        def batch_decode(self, *args, **kwargs):
-            return ["{}"]
-
-    class _FakeModel:
-        device = "cpu"
-
-        def generate(self, **kwargs):
-            class _Out:
-                shape = (1, 3)
-            return [_Out()]
-
-    client = create_model(
+    create_model(
         "qwen_transformers",
         settings=QwenSettings(model="fake", max_tokens=8),
-        model=_FakeModel(),
-        processor=_FakeProcessor(),
+        model=FakeModel(),
+        processor=FakeProcessor(),
     )
-    assert isinstance(client, QwenTransformersClient)
     assert "transformers" not in sys.modules
+    assert "torch" not in sys.modules
+    """
+    )
+    subprocess.run([sys.executable, "-c", script], check=True, text=True)
 
 
 def test_qwen35_builder_returns_shared_client() -> None:

@@ -23,6 +23,20 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+
+pytest.importorskip(
+    "torch",
+    reason="Qwen3-VL Phase2 checkpoint tests require PyTorch",
+)
+pytest.importorskip(
+    "safetensors.torch",
+    reason="Qwen3-VL Phase2 checkpoint tests require safetensors",
+)
+pytest.importorskip(
+    "peft",
+    reason="Qwen3-VL Phase2 checkpoint tests require PEFT",
+)
+
 import safetensors.torch
 import torch
 import torch.nn as nn

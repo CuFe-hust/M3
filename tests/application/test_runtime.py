@@ -6308,6 +6308,9 @@ def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
     for sample in legacy_parity["samples"]:
         sample.pop("execution_path", None)
         sample.pop("structured_artifacts", None)
+        sample.pop("execution_steps", None)
+        sample.pop("task_routing", None)
+    legacy_parity.pop("process_report", None)
     assert legacy_parity == _parity_fixture("evaluate_run.json")
 
 

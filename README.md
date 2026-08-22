@@ -1408,11 +1408,30 @@ DeepSeek audit
 
 ## 31. 开发与测试
 
-运行全部测试：
+### 轻量离线测试
+
+普通开发环境：
 
 ```bash
-python -m pytest
+python -m pip install -e ".[dev,change]"
 ```
+
+GitHub Actions 会在每次 push / pull request 上自动运行架构、领域契约、wheel smoke、
+Golden fixture 和 migration smoke 等轻量检查。
+
+### 全量离线测试
+
+仓库全量 pytest 还包含 Qwen3-VL Phase2 / ChangeHead 等可选重依赖测试。
+本地未安装对应重依赖时，这些测试模块会明确 skip，而不是在 collection 阶段失败。
+
+完整依赖准备后可运行：
+
+```bash
+python -m pytest -q
+```
+
+GitHub Actions 中的 Full offline tests 只通过 `workflow_dispatch` 手动触发，
+不在每次 push / pull request 时执行。
 
 架构测试：
 
