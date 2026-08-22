@@ -65,7 +65,6 @@ jobs:
           /tmp/m3-wheel-test/bin/python -m pip install dist/*.whl
           cd /tmp
           /tmp/m3-wheel-test/bin/python - <<'PY'
-          import os
           import sys
           from pathlib import Path
 
@@ -201,8 +200,9 @@ jobs:
           assert yolo_backend._detector.weights.is_absolute()
           assert yolo_backend._store._models == {}
           assert ExpertCatalog is not None
-          source_root = Path(os.environ["GITHUB_WORKSPACE"]).resolve()
-          assert source_root not in Path(application.__file__).resolve().parents
+          application_path = Path(application.__file__).resolve()
+          environment_root = Path(sys.prefix).resolve()
+          assert environment_root in application_path.parents
 
           print("wheel-import-contract: PASS")
           print("counting-wheel-runtime: PASS")

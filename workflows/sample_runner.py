@@ -238,8 +238,8 @@ class SampleRunner:
         self.judge_service = judge_service
         self.fallback_on_partial = fallback_on_partial
         self.data_root = data_root
-        # Bindings are lightweight services for the already materialized v3 plan.
-        # 绑定只携带已物化 v3 计划所需的轻量服务。
+        # Bindings are lightweight services for the already materialized v4 plan.
+        # 绑定只携带已物化 v4 计划所需的轻量服务。
         self.visual_bindings = visual_bindings
 
     async def run_one(
@@ -256,9 +256,9 @@ class SampleRunner:
         """Execute one already-materialized task route and persist its result.
         执行一条已经物化的 task 路由并持久化结果。
 
-        Dataset runs pass the v3 plan and frozen views. Direct tools may omit
+        Dataset runs pass the v4 plan and frozen views. Direct tools may omit
         them for an explicitly selected sample task; such calls never plan.
-        数据集运行传入 v3 计划与冻结视图；显式选择 task 的直连工具可以省略，
+        数据集运行传入 v4 计划与冻结视图；显式选择 task 的直连工具可以省略，
         这类调用绝不在此规划。
         """
 
@@ -597,12 +597,11 @@ def _rebuild_sample_for_task(
     sample: UnifiedSample,
     task: str,
 ) -> UnifiedSample | None:
-    """Rebuild only the declared routing fallback task contract.
-    仅为声明的路由 fallback 重建任务契约。
+    """Rebuild an already-selected task contract; this is not task discovery.
+    重建已经选定的 task 契约；这不是 task discovery。
 
-    This is not task discovery: the router has already selected the fallback,
-    and incompatible image roles fail closed.
-    这不是任务发现：Router 已经选定 fallback，不兼容的图像角色严格失败。
+    The planner or router has already selected the task, and incompatible image
+    roles fail closed. planner 或 Router 已经选定 task，不兼容的图像角色严格失败。
     """
 
     change_task = task in CHANGE_TASKS

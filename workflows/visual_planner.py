@@ -226,33 +226,6 @@ class VisualTaskPlanner:
         )
         return plan, self.materialize_views(plan, view, data_root=data_root)
 
-    async def plan_explicit_with_views(
-        self,
-        view: UnifiedSample,
-        *,
-        data_root: Path,
-        artifact_dir: Path,
-    ) -> tuple[VisualTaskPlan, tuple[MaterializedVisualView, ...]]:
-        """Create a task-locked plan without reclassifying an explicit sample.
-
-        Dataset adapters have already supplied the authoritative task for a
-        ``UnifiedSample``. Change tasks therefore need deterministic view
-        materialization and must not spend a planner call that can fail or
-        turn ``change_caption`` into an unrelated task.
-        """
-        task = view.task
-        if task in COUNTING_TASKS:
-            raise VisualTaskPlanError("EXPLICIT_COUNTING_TASK_REQUIRES_TARGET")
-        plan = VisualTaskPlan(
-            version="visual-task-plan-v4",
-            task=task,
-            needs_visual_assistance=False,
-            object_categories=[],
-            count_target=None,
-            reason_codes=["explicit_task_locked"],
-        )
-        return plan, self.materialize_views(plan, view, data_root=data_root)
-
     def materialize_views(
         self,
         plan: VisualTaskPlan,
@@ -363,37 +336,6 @@ class VisualTaskPlanner:
     ) -> VisualTaskPlan:
         """Apply v4 leaf/category consistency and image-index policy.
         执行 v4 叶子类别一致性与图像索引策略校验。"""
-        # Empty-question caption routing is structural, not semantic: one
-        # ordered image is a caption request and two ordered images are a
-        # change-caption request.  Enforce the same invariant stated in the
-        # planner prompt so a single model classification slip cannot divert
-        # an explicit LEVIR-CC pair into general VQA before Change Agent runs.
-        deterministic_task = None
-        if not view.question.strip():
-            if len(view.images) == 1:
-                deterministic_task = "caption"
-            elif len(view.images) == 2:
-                deterministic_task = "change_caption"
-        if deterministic_task is not None and plan.task != deterministic_task:
-            reason_codes = [
-                *plan.reason_codes[:7],
-                "deterministic_empty_question_task",
-            ]
-            plan = VisualTaskPlan.model_validate(
-                {
-                    **plan.model_dump(mode="python"),
-                    "task": deterministic_task,
-                    "needs_visual_assistance": False,
-                    "object_categories": [],
-                    "count_target": None,
-                    "region_request": {
-                        "explicit": False,
-                        "image_index": None,
-                        "focus_xy_norm": None,
-                    },
-                    "reason_codes": reason_codes,
-                }
-            )
         if plan.needs_visual_assistance:
             try:
                 self._catalog.validate_plan_leaves(

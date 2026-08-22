@@ -1250,7 +1250,7 @@ predictions.jsonl.run_task
 tasks/<run_task>/
 ```
 
-当低置信度 candidate fallback 成功时，这三个值可能不完全相同。
+当 Router-declared execution fallback 成功时，这三个值可能不完全相同。
 
 Resume 和 Evaluation 不能把 resolved task 与 execution task 混为一谈。
 
@@ -1449,19 +1449,17 @@ live_dataset
 
 ## 32. 架构保护
 
-项目有机器可检查的架构控制文件：
+项目的机器可检查架构边界以以下规则和测试为主：
 
 ```text
-architecture/allowed_python_files.txt
-architecture/implementation_status.json
 architecture/import_rules.json
-architecture/ALLOWLIST_CHANGE_POLICY.md
+tests/architecture/
 ```
 
 重要规则：
 
-- Python 文件路径需要在 allowlist 中；
-- 普通任务不直接扩白名单；
+- Python 文件可以根据功能需要新增，不维护中央路径白名单；
+- 新文件必须符合所在 package 的职责和 import DAG；
 - `spacers_agent/**` 和 `eval/**` 永久禁止重新出现；
 - `main.py` 只 import `application`；
 - Router 不 import models；
