@@ -134,6 +134,61 @@ def test_localized_three_source_agreement_produces_mask_and_v2_proposal() -> Non
     assert result.diagnostics["version"] == PROPOSAL_FUSION_VERSION
 
 
+def test_shadow_learned_map_cannot_change_deterministic_result() -> None:
+    low, feature, semantic = _maps()
+    patch = np.s_[20:36, 22:38]
+    low[patch] = 0.80
+    feature[patch] = 0.90
+    semantic[patch] = 0.70
+    baseline = fuse_change_proposals(
+        low, feature, semantic, _pif_without_patch(), _settings()
+    )
+    for learned_map in (np.ones_like(low), np.random.default_rng(7).random(low.shape)):
+        shadow = fuse_change_proposals(
+            low,
+            feature,
+            semantic,
+            _pif_without_patch(),
+            _settings(),
+            learned_map=learned_map,
+            learned_weight=1.0,
+            learned_requested=True,
+            learned_mode="shadow",
+            learned_rescue_threshold=0.5,
+            learned_rescue_min_reliability=0.0,
+        )
+        assert np.array_equal(shadow.fused_score_map, baseline.fused_score_map)
+        assert [item.model_dump() for item in shadow.proposals] == [
+            item.model_dump() for item in baseline.proposals
+        ]
+
+
+def test_learned_rescue_top_k_and_provenance_are_recorded() -> None:
+    low, feature, semantic = _maps()
+    learned = np.zeros_like(low)
+    learned[4:10, 4:10] = 0.95
+    learned[20:28, 20:28] = 0.90
+    learned[40:48, 40:48] = 0.85
+    result = fuse_change_proposals(
+        low,
+        feature,
+        semantic,
+        np.ones_like(low, dtype=np.uint8),
+        _settings(),
+        learned_map=learned,
+        learned_weight=0.0,
+        learned_requested=True,
+        learned_mode="assist",
+        learned_rescue_threshold=0.8,
+        learned_rescue_min_reliability=0.0,
+        learned_rescue_min_component_area_ratio=0.001,
+        learned_rescue_max_proposals=2,
+    )
+    assert result.diagnostics["learned_rescue_component_count"] == 2
+    assert result.diagnostics["learned_rescue_max_proposals"] == 2
+    rescued = [item for item in result.diagnostics["components"] if item["learned_rescue"]]
+    assert len(rescued) == 2
+    assert all(item["source"] == "learned_rescue" for item in rescued)
 def test_low_level_only_brightness_change_is_downweighted() -> None:
     low, feature, semantic = _maps()
     patch = np.s_[16:40, 16:40]

@@ -872,6 +872,72 @@ def test_enabled_learned_change_fail_policy_is_strict() -> None:
         ChangePerceptionPipeline(_DenseClient(), settings).run(_prepared())
 
 
+class _RaisingLearnedClient(_LearnedClient):
+    def infer(self, **kwargs: Any) -> LearnedChangeOutput:
+        del kwargs
+        raise RuntimeError("learned runtime exploded")
+
+
+class _NaNLearnedClient(_LearnedClient):
+    def infer(self, **kwargs: Any) -> LearnedChangeOutput:
+        del kwargs
+        return LearnedChangeOutput(
+            probability_map=np.full((16, 16), np.nan, dtype=np.float32),
+            reliability=1.0,
+        )
+
+
+class _CalibrationLearnedClient(_LearnedClient):
+    def infer(self, **kwargs: Any) -> LearnedChangeOutput:
+        del kwargs
+        return LearnedChangeOutput(
+            probability_map=self.score_map,
+            reliability=0.9,
+            diagnostics={
+                "rescue_probability_threshold": 0.9,
+                "rescue_min_component_area_ratio": 0.01,
+            },
+        )
+
+
+@pytest.mark.parametrize("client", [_RaisingLearnedClient(), _NaNLearnedClient()])
+def test_learned_failure_keeps_deterministic_v2(
+    client: _LearnedClient,
+) -> None:
+    baseline = ChangePerceptionPipeline(_DenseClient(), _settings()).run(_prepared())
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(
+        enabled=True,
+        fusion_weight=0.2,
+        failure_policy="fallback_rule",
+    )
+    result = ChangePerceptionPipeline(
+        _DenseClient(), settings, learned_change_client=client
+    ).run(_prepared())
+    assert np.array_equal(result.score_map, baseline.score_map)
+    assert result.diagnostics["proposal_source"] == "fused_change_v2"
+    assert result.diagnostics["learned_change"]["status"] == "fallback"
+
+
+def test_calibration_error_keeps_deterministic_v2() -> None:
+    baseline = ChangePerceptionPipeline(_DenseClient(), _settings()).run(_prepared())
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(
+        enabled=True,
+        fusion_weight=0.2,
+        failure_policy="fallback_rule",
+        strict_contract=True,
+        rescue={"probability_threshold_override": 0.5},
+    )
+    result = ChangePerceptionPipeline(
+        _DenseClient(), settings, learned_change_client=_CalibrationLearnedClient()
+    ).run(_prepared())
+    assert np.array_equal(result.score_map, baseline.score_map)
+    assert result.diagnostics["learned_change"]["reason_codes"] == [
+        "LEARNED_CHANGE_CALIBRATION_INVALID"
+    ]
+
+
 def test_invalid_pif_keeps_semantic_inference_and_skips_feature_residual() -> None:
     client = _DenseClient()
     prepared = replace(_prepared(), pif_valid=False)

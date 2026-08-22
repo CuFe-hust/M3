@@ -588,12 +588,19 @@ def fuse_change_proposals(
             if learned_rescue_min_component_area_ratio is None
             else max(settings.min_component_area_ratio, float(learned_rescue_min_component_area_ratio))
         )
-        filtered_rescue = np.zeros_like(learned_rescue_mask)
+        rescue_components: list[tuple[float, int, int]] = []
         for label_index in range(1, rescue_count):
             area = int(rescue_stats[label_index, cv2.CC_STAT_AREA])
             ratio = area / float(height * width)
             if area_floor <= ratio <= settings.max_component_area_ratio:
-                filtered_rescue[rescue_labels == label_index] = True
+                component = rescue_labels == label_index
+                values = canonical_maps["learned"][component]
+                score = 0.7 * float(np.mean(values)) + 0.3 * float(np.max(values))
+                rescue_components.append((score, area, label_index))
+        rescue_components.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        filtered_rescue = np.zeros_like(learned_rescue_mask)
+        for _, _, label_index in rescue_components[:learned_rescue_max_proposals]:
+            filtered_rescue[rescue_labels == label_index] = True
         learned_rescue_mask = filtered_rescue
         fused_score[learned_rescue_mask] = np.maximum(
             fused_score[learned_rescue_mask], canonical_maps["learned"][learned_rescue_mask]
@@ -628,6 +635,7 @@ def fuse_change_proposals(
         "learned_reliability": learned_reliability,
         "learned_rescue_threshold": learned_rescue_threshold,
         "learned_rescue_min_component_area_ratio": learned_rescue_min_component_area_ratio,
+        "learned_rescue_max_proposals": int(learned_rescue_max_proposals),
         "learned_rescue_pixel_count": int(np.count_nonzero(learned_rescue_mask)),
     }
 
@@ -927,6 +935,11 @@ def _components(
                 "mean_feature": component_scores.get("feature"),
                 "mean_semantic": component_scores.get("semantic"),
                 "learned_rescue": bool(candidate["learned_rescue"]),
+                "source": (
+                    "learned_rescue"
+                    if bool(candidate["learned_rescue"])
+                    else "normal_fusion"
+                ),
             }
         )
     return proposals, component_masks, component_diagnostics, len(candidates)

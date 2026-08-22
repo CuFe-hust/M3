@@ -615,49 +615,105 @@ class ChangePerceptionPipeline:
                 LearnedChangeInputSpec,
             ):
                 learned_mode = "assist"
-            calibration_diagnostics = (
-                learned_output.diagnostics if learned_output is not None else {}
-            )
-            rescue_threshold = calibration_diagnostics.get("rescue_probability_threshold")
-            threshold_override = self._settings.learned_change.rescue.probability_threshold_override
-            if rescue_threshold is not None and threshold_override is not None:
-                if self._settings.learned_change.strict_contract and threshold_override < float(rescue_threshold):
-                    raise ChangePerceptionError("LEARNED_CHANGE_CALIBRATION_INVALID")
-                rescue_threshold = max(float(rescue_threshold), float(threshold_override))
-            rescue_area = calibration_diagnostics.get("rescue_min_component_area_ratio")
-            area_override = self._settings.learned_change.rescue.min_component_area_ratio_override
-            if rescue_area is not None and area_override is not None:
-                if self._settings.learned_change.strict_contract and area_override < float(rescue_area):
-                    raise ChangePerceptionError("LEARNED_CHANGE_CALIBRATION_INVALID")
-                rescue_area = max(float(rescue_area), float(area_override))
-            fusion_result = fuse_change_proposals(
-                low_level_map,
-                feature_map,
-                semantic_map,
-                prepared.pif_mask,
-                self._settings.proposals,
-                min_pif_pixels=self._settings.harmonization.min_pif_pixels,
-                fallback_reason=(
-                    "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
-                    if feature_map is None
-                    else None
-                ),
-                reliability=fusion_reliability,
-                valid_overlap_mask=getattr(prepared, "registration_valid_mask", None),
-                registration_confidence=reliability["registration"],
-                learned_map=learned_map,
-                learned_weight=self._settings.learned_change.fusion_weight,
-                learned_requested=self._settings.learned_change.enabled,
-                learned_mode=learned_mode,
-                learned_rescue_threshold=(
-                    float(rescue_threshold) if rescue_threshold is not None else None
-                ),
-                learned_rescue_min_reliability=self._settings.learned_change.rescue.min_reliability,
-                learned_rescue_min_component_area_ratio=(
-                    float(rescue_area) if rescue_area is not None else None
-                ),
-                learned_rescue_max_proposals=self._settings.learned_change.rescue.max_rescue_proposals,
-            )
+            rescue_threshold = None
+            rescue_area = None
+            try:
+                calibration_diagnostics = (
+                    learned_output.diagnostics if learned_output is not None else {}
+                )
+                rescue_threshold = calibration_diagnostics.get("rescue_probability_threshold")
+                threshold_override = self._settings.learned_change.rescue.probability_threshold_override
+                if rescue_threshold is not None and threshold_override is not None:
+                    if self._settings.learned_change.strict_contract and threshold_override < float(rescue_threshold):
+                        raise ChangePerceptionError("LEARNED_CHANGE_CALIBRATION_INVALID")
+                    rescue_threshold = max(float(rescue_threshold), float(threshold_override))
+                rescue_area = calibration_diagnostics.get("rescue_min_component_area_ratio")
+                area_override = self._settings.learned_change.rescue.min_component_area_ratio_override
+                if rescue_area is not None and area_override is not None:
+                    if self._settings.learned_change.strict_contract and area_override < float(rescue_area):
+                        raise ChangePerceptionError("LEARNED_CHANGE_CALIBRATION_INVALID")
+                    rescue_area = max(float(rescue_area), float(area_override))
+            except (ChangePerceptionError, RuntimeError, ValueError) as error:
+                reason_code = _fallback_reason_code(error) or "LEARNED_CHANGE_CALIBRATION_INVALID"
+                if self._settings.learned_change.failure_policy == "fail":
+                    raise LearnedChangeFailure(reason_code) from None
+                learned_output = None
+                learned_map = None
+                fusion_reliability.pop("learned", None)
+                learned_mode = "disabled"
+                learned_diagnostics = {
+                    "enabled": True,
+                    "status": "fallback",
+                    "available": False,
+                    "reason_codes": [reason_code],
+                    "fusion_weight": self._settings.learned_change.fusion_weight,
+                }
+            try:
+                fusion_result = fuse_change_proposals(
+                    low_level_map,
+                    feature_map,
+                    semantic_map,
+                    prepared.pif_mask,
+                    self._settings.proposals,
+                    min_pif_pixels=self._settings.harmonization.min_pif_pixels,
+                    fallback_reason=(
+                        "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+                        if feature_map is None
+                        else None
+                    ),
+                    reliability=fusion_reliability,
+                    valid_overlap_mask=getattr(prepared, "registration_valid_mask", None),
+                    registration_confidence=reliability["registration"],
+                    learned_map=learned_map,
+                    learned_weight=self._settings.learned_change.fusion_weight,
+                    learned_requested=self._settings.learned_change.enabled,
+                    learned_mode=learned_mode,
+                    learned_rescue_threshold=(
+                        float(rescue_threshold) if rescue_threshold is not None else None
+                    ),
+                    learned_rescue_min_reliability=self._settings.learned_change.rescue.min_reliability,
+                    learned_rescue_min_component_area_ratio=(
+                        float(rescue_area) if rescue_area is not None else None
+                    ),
+                    learned_rescue_max_proposals=self._settings.learned_change.rescue.max_rescue_proposals,
+                )
+            except (ChangePerceptionError, RuntimeError, ValueError) as error:
+                reason_code = _fallback_reason_code(error)
+                if learned_output is None or reason_code is None:
+                    raise
+                if self._settings.learned_change.failure_policy == "fail":
+                    raise LearnedChangeFailure(reason_code) from None
+                learned_output = None
+                learned_map = None
+                fusion_reliability.pop("learned", None)
+                learned_mode = "disabled"
+                learned_diagnostics = {
+                    "enabled": True,
+                    "status": "fallback",
+                    "available": False,
+                    "reason_codes": [reason_code],
+                    "fusion_weight": self._settings.learned_change.fusion_weight,
+                }
+                fusion_result = fuse_change_proposals(
+                    low_level_map,
+                    feature_map,
+                    semantic_map,
+                    prepared.pif_mask,
+                    self._settings.proposals,
+                    min_pif_pixels=self._settings.harmonization.min_pif_pixels,
+                    fallback_reason=(
+                        "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+                        if feature_map is None
+                        else None
+                    ),
+                    reliability=fusion_reliability,
+                    valid_overlap_mask=getattr(prepared, "registration_valid_mask", None),
+                    registration_confidence=reliability["registration"],
+                    learned_map=None,
+                    learned_weight=self._settings.learned_change.fusion_weight,
+                    learned_requested=self._settings.learned_change.enabled,
+                    learned_mode="disabled",
+                )
         except LearnedChangeFailure:
             raise
         except (
