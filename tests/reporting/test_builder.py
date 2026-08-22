@@ -1277,13 +1277,27 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
             CountingBackendAttemptAudit(
                 backend_name="detector", backend_kind="yolo_obb", phase="primary",
                 status="succeeded", counting=zero,
-                backend_trace={"raw_detections": 0, "classes": ["vehicle"]},
+                backend_trace={
+                    "raw_detections": 0,
+                    "classes": ["vehicle"],
+                    "model_id": "YOLO11s:iSAID:epoch111",
+                    "weights_file": "isaid-yolo11s-best.pt",
+                    "weights_sha256": "a" * 64,
+                    "source_dataset": "iSAID",
+                },
             ),
             CountingBackendAttemptAudit(
                 backend_name="segmenter", backend_kind="semantic_segmentation",
                 phase="zero_review", status="succeeded", counting=positive,
-                backend_trace={"raw_components": 2, "nested_not_public": {"mask": [1, 2, 3]},
-                               "checkpoint": "C:/private/model.bin"},
+                error_type="ZeroReviewRecovery",
+                backend_trace={
+                    "raw_components": 2,
+                    "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
+                    "weights_sha256": "b" * 64,
+                    "model_revision": "rev-2",
+                    "nested_not_public": {"mask": [1, 2, 3]},
+                    "checkpoint": "C:/private/model.bin",
+                },
             ),
         ],
     )
@@ -1296,8 +1310,81 @@ def test_v21_projects_ground_truth_and_persisted_backend_attempt_order(tmp_path:
         (1, "detector", "primary"), (2, "segmenter", "zero_review")]
     assert [stage.predicted_count for stage in row.backend_stages] == [0, 1]
     assert row.backend_stages[1].accepted_count == 1
+    assert row.backend_stages[1].error_type == "ZeroReviewRecovery"
+    backend_steps = [step for step in row.execution_steps if step.phase == "backend"]
+    assert [(step.backend_name, step.operation) for step in backend_steps] == [
+        ("detector", "primary"), ("segmenter", "zero_review")]
+    assert backend_steps[1].reason_code == "ZeroReviewRecovery"
+    assert backend_steps[0].summary_fields["weights_file"] == "isaid-yolo11s-best.pt"
+    assert backend_steps[1].summary_fields["logical_model_id"] == "SegFormer-MiT-B2:iSAID:local"
+    assert row.task_routing.resolved_task == "counting"
+    assert row.task_routing.executed_agent == "counting_agent"
+    process = build_report(run_dir).process_report
+    assert process.sample_process_count == 1
+    assert len(process.workflow_sequences) == 1
+    assert [item.family for item in process.model_weights] == ["segmentation", "yolo"]
+    yolo = next(item for item in process.model_weights if item.family == "yolo")
+    assert yolo.logical_model_id == "YOLO11s:iSAID:epoch111"
+    assert yolo.weights_file == "isaid-yolo11s-best.pt"
+    assert yolo.weights_sha256 == "a" * 64
+    segmenter = next(item for item in process.model_weights if item.family == "segmentation")
+    assert segmenter.logical_model_id == "SegFormer-MiT-B2:iSAID:local"
+    assert segmenter.weights_sha256 == "b" * 64
     serialized = json.dumps(row.model_dump(mode="json"))
     assert "nested_not_public" not in serialized and "C:/private" not in serialized
+
+
+def test_process_report_includes_vqa_evidence_yolo_and_segformer_calls(tmp_path: Path) -> None:
+    run_dir = _create_run(tmp_path)
+    sample = _sample("evidence-a")
+    sample_dir = _write_sample(
+        run_dir,
+        run_task="general_vqa",
+        sample=sample,
+        status=_status("evidence-a", "general_vqa", "succeeded"),
+        trace=_trace(resolved_task="general_vqa", execution_agent="general_vqa_agent"),
+        payload=AgentResult(agent_name="general_vqa_agent", answer="yes"),
+    )
+    (sample_dir / "vqa_evidence.json").write_text(json.dumps({
+        "workflow": "object_evidence_vqa",
+        "call_audit": [
+            {
+                "layer": "yolo",
+                "roi_id": "roi-1",
+                "input_size": [640, 640],
+                "logical_model_id": "YOLO11s:iSAID:epoch111",
+                "weights_sha256": "c" * 64,
+                "status": "succeeded",
+                "error_code": None,
+            },
+            {
+                "layer": "segformer",
+                "roi_id": "roi-1",
+                "input_size": [768, 768],
+                "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
+                "weights_sha256": "d" * 64,
+                "status": "succeeded",
+                "error_code": None,
+            },
+        ],
+    }), encoding="utf-8")
+
+    report = build_report(run_dir)
+    evidence_steps = [
+        step for step in report.samples[0].execution_steps
+        if step.phase == "evidence_model"
+    ]
+    assert [step.backend_name for step in evidence_steps] == ["yolo", "segformer"]
+    assert evidence_steps[0].summary_fields["logical_model_id"] == "YOLO11s:iSAID:epoch111"
+    assert evidence_steps[1].summary_fields["weights_sha256"] == "d" * 64
+    assert [(item.family, item.logical_model_id) for item in report.process_report.model_weights] == [
+        ("segmentation", "SegFormer-MiT-B2:iSAID:local"),
+        ("yolo", "YOLO11s:iSAID:epoch111"),
+    ]
+    sequence = report.process_report.workflow_sequences[0]
+    assert [step.backend_name for step in sequence.steps if step.phase == "evidence_model"] == [
+        "yolo", "segformer",
+    ]
 
 
 def test_v21_model_call_loader_is_bounded_sanitized_and_best_effort(tmp_path: Path) -> None:

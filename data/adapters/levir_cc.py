@@ -152,6 +152,12 @@ class LEVIRCCAdapter:
                     "source": "LEVIR-CC",
                     "source_index": index,
                     "adapter_version": "official-captions-v1",
+                    # The official LEVIR-CC A/B chips are pixel-aligned
+                    # bi-temporal crops.  Preserve that dataset contract so a
+                    # large real change is not mistaken for failed geometric
+                    # registration merely because few SIFT features survive.
+                    "geometry_aligned": True,
+                    "alignment_source": "official-levir-cc-pair",
                 },
             )
         if yielded == 0:

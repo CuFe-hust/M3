@@ -6,9 +6,201 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from typing import Literal
+
 from agents.change.schema import ChangeProposal
 from agents.change.settings import ChangeReviewSettings
 from agents.schema import AgentResult
+
+ReviewRoute = Literal["accept", "adjudicate_negative", "adjudicate_positive"]
+
+
+@dataclass(frozen=True)
+class ChangeReviewOutcome:
+    result: AgentResult
+    warnings: tuple[str, ...]
+    route: ReviewRoute
+    route_reasons: tuple[str, ...]
+
+
+def is_canonical_no_change(answer: str) -> bool:
+    return answer.strip() == "No significant semantic change detected."
+
+
+def is_unresolved_change_answer(answer: str) -> bool:
+    return answer.strip() == "Unable to confirm a persistent semantic change from the available evidence."
+
+
+def is_positive_change_answer(answer: str) -> bool:
+    return bool(answer.strip()) and not is_canonical_no_change(answer) and not is_unresolved_change_answer(answer)
+
+
+def is_no_change_answer(answer: str) -> bool:
+    """Recognize completed no-change wording without treating uncertainty as negative."""
+    if is_canonical_no_change(answer):
+        return True
+    normalized = answer.casefold()
+    return any(token in normalized for token in (
+        "no visible change", "no change", "no significant semantic change",
+        "no significant change", "未见变化", "没有变化", "无显著语义变化", "无明显变化",
+    ))
+
+
+def meaningful_proposals(
+    proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> list[ChangeProposal]:
+    return [item for item in proposals if item.score >= settings.no_change_conflict_min_score]
+
+
+def has_structural_semantic_support(proposal: ChangeProposal) -> bool:
+    consensus = proposal.semantic_consensus or {}
+    if float(consensus.get("structural_support", 0.0) or 0.0) > 0.0:
+        return True
+    return any(
+        item.get("evidence_type") in {"structural_candidate", "persistent"}
+        for item in proposal.semantic_transitions
+        if isinstance(item, dict)
+    )
+
+
+def has_landcover_only_support(proposal: ChangeProposal) -> bool:
+    consensus = proposal.semantic_consensus or {}
+    if float(consensus.get("landcover_support", 0.0) or 0.0) <= 0.0:
+        return False
+    if has_structural_semantic_support(proposal):
+        return False
+    return any(
+        item.get("evidence_type") == "landcover_candidate"
+        for item in proposal.semantic_transitions
+        if isinstance(item, dict)
+    ) or not proposal.semantic_transitions
+
+
+def has_transient_only_support(proposal: ChangeProposal) -> bool:
+    consensus = proposal.semantic_consensus or {}
+    return (
+        float(consensus.get("transient_support", 0.0) or 0.0) > 0.0
+        and not has_structural_semantic_support(proposal)
+        and not has_landcover_only_support(proposal)
+    )
+
+
+def nonsemantic_reliable_component_count(proposal: ChangeProposal) -> int:
+    reliability = proposal.reliability or {}
+    return sum(
+        1
+        for name in ("low_level", "feature")
+        if float(proposal.component_scores.get(name, 0.0) or 0.0) > 0.0
+        and float(reliability.get(name, 1.0) or 0.0) >= 0.5
+    )
+
+
+def has_no_change_conflict(
+    result: AgentResult, proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> bool:
+    if not settings.enabled or not is_no_change_answer(result.answer):
+        return False
+    return _negative_conflict_reasons(proposals, settings) != []
+
+
+def _is_edge(proposal: ChangeProposal, margin_ratio: float) -> bool:
+    margin = round(999 * margin_ratio)
+    x1, y1, x2, y2 = proposal.box
+    return x1 <= margin or y1 <= margin or x2 >= 999 - margin or y2 >= 999 - margin
+
+
+def _negative_conflict_reasons(
+    proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> list[str]:
+    reasons: list[str] = []
+    nonsemantic_area = 0.0
+    for proposal in proposals:
+        adjusted = proposal.score * (
+            sum(proposal.reliability.values()) / len(proposal.reliability)
+            if proposal.reliability else 1.0
+        )
+        active = sum(1 for value in proposal.component_scores.values() if value > 0.0)
+        structural = has_structural_semantic_support(proposal)
+        landcover_only = has_landcover_only_support(proposal)
+        nonsemantic = nonsemantic_reliable_component_count(proposal)
+        if nonsemantic or structural:
+            nonsemantic_area += proposal.area_ratio
+        if adjusted >= settings.negative_strong_score and not landcover_only and (
+            structural or nonsemantic or not proposal.semantic_transitions
+        ):
+            reasons.append("NEGATIVE_STRONG_PROPOSAL")
+        if adjusted >= settings.negative_moderate_score and (
+            (structural and nonsemantic >= 1) or nonsemantic >= settings.negative_min_reliable_components
+        ):
+            reasons.append("NEGATIVE_CROSS_BRANCH_SUPPORT")
+        if _is_edge(proposal, settings.negative_edge_margin_ratio) and adjusted >= settings.negative_edge_score:
+            if structural:
+                reasons.append("NEGATIVE_EDGE_STRUCTURAL_RESCUE")
+            elif nonsemantic:
+                reasons.append("NEGATIVE_EDGE_NONSEMANTIC_RESCUE")
+    if nonsemantic_area >= settings.negative_large_total_area_ratio:
+        reasons.append("NEGATIVE_LARGE_COHERENT_NONSEMANTIC_SUPPORT")
+    return list(dict.fromkeys(reasons))
+
+
+def _negative_suppression_reasons(
+    proposals: list[ChangeProposal], settings: ChangeReviewSettings
+) -> list[str]:
+    if any(
+        item.score >= settings.no_change_conflict_min_score
+        and has_landcover_only_support(item)
+        and nonsemantic_reliable_component_count(item) == 0
+        for item in proposals
+    ):
+        return ["NEGATIVE_LANDCOVER_ONLY_SUPPRESSED"]
+    if any(
+        item.score >= settings.no_change_conflict_min_score
+        and has_transient_only_support(item)
+        and nonsemantic_reliable_component_count(item) == 0
+        for item in proposals
+    ):
+        return ["NEGATIVE_TRANSIENT_ONLY_SUPPRESSED"]
+    return []
+
+
+def _positive_conflict_reasons(result: AgentResult, proposals: list[ChangeProposal], task: str) -> list[str]:
+    if task != "change_caption" or not is_positive_change_answer(result.answer):
+        return []
+    answer = result.answer.casefold()
+    reasons: list[str] = []
+    persistent = ("building", "structure", "road", "cleared", "vegetation", "wooded", "land", "basin", "shoreline", "infrastructure")
+    transient = ("vehicle", "truck", "car", "equipment")
+    water_state = ("water-filled", "filled", "dry", "wet", "turbidity", "reflection")
+    appearance = ("greener", "brown", "brightness", "brighter", "darker", "shadow", "color", "seasonal")
+    if any(token in answer for token in transient) and not any(token in answer for token in persistent):
+        reasons.append("POSITIVE_TRANSIENT_ONLY")
+    if any(token in answer for token in water_state) and not any(token in answer for token in ("shoreline", "boundary", "basin", "constructed", "removed", "expanded", "contracted")):
+        reasons.append("POSITIVE_WATER_STATE_ONLY")
+    if any(token in answer for token in appearance) and not any(token in answer for token in ("cleared", "removed", "replaced", "extent")):
+        reasons.append("POSITIVE_APPEARANCE_ONLY")
+    local = any(token in answer for token in ("building", "structure", "road", "water", "reservoir", "pool", "canal"))
+    temporal = {_temporal_side(item.image_id) for item in result.evidence_items if item.image_id}
+    if local and not result.boxes and not result.evidence_items:
+        reasons.append("POSITIVE_LOCAL_CLAIM_WITHOUT_PAIRED_EVIDENCE")
+    if local and result.evidence_items and temporal != {"t1", "t2"}:
+        reasons.append("POSITIVE_MISSING_TEMPORAL_PAIR")
+    if local and proposals and result.evidence_items and all(
+        item.box is None or not any(_iou(item.box, proposal.box) > 0.05 for proposal in proposals)
+        for item in result.evidence_items
+    ):
+        reasons.append("POSITIVE_LOCAL_CLAIM_OUTSIDE_ATTENTION")
+    return reasons
+
+
+def review_outcome(result: AgentResult, proposals: list[ChangeProposal], settings: ChangeReviewSettings, *, task: str) -> ChangeReviewOutcome:
+    reviewed, warnings = review_result(result, proposals, settings)
+    negative = _negative_conflict_reasons(proposals, settings) if is_canonical_no_change(result.answer) else []
+    suppressed = _negative_suppression_reasons(proposals, settings) if is_canonical_no_change(result.answer) else []
+    positive = _positive_conflict_reasons(result, proposals, task)
+    reasons = negative or positive or suppressed
+    route: ReviewRoute = "adjudicate_negative" if negative else "adjudicate_positive" if positive else "accept"
+    return ChangeReviewOutcome(reviewed, tuple(warnings), route, tuple(reasons))
 
 
 def review_result(
@@ -21,11 +213,8 @@ def review_result(
     if not settings.enabled:
         return result, []
     warnings: list[str] = []
-    answer = result.answer.lower()
-    no_change = any(
-        token in answer
-        for token in ("no visible change", "no change", "未见变化", "没有变化")
-    )
+    answer = result.answer.casefold()
+    no_change = is_no_change_answer(result.answer)
     if (
         settings.require_proposal_evidence
         and not no_change
@@ -33,7 +222,7 @@ def review_result(
         and not result.evidence_items
     ):
         warnings.append("CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE")
-    if no_change and sum(item.score >= 0.5 for item in proposals) >= 2:
+    if has_no_change_conflict(result, proposals, settings):
         warnings.append("CHANGE_RESULT_CONFLICT")
     proposal_boxes = [item.box for item in proposals]
     for evidence in result.evidence_items:
@@ -68,6 +257,18 @@ def review_result(
             warnings.append("EVIDENCE_REFERENCES_UNKNOWN_PROPOSAL")
         if any(token in image_id.casefold() for token in ("invalid", "non_overlap", "non-overlap")):
             warnings.append("EVIDENCE_REFERENCES_INVALID_OVERLAP")
+    temporal_sides = {
+        side
+        for evidence in result.evidence_items
+        if isinstance(evidence.image_id, str)
+        if (side := _temporal_side(evidence.image_id)) is not None
+    }
+    if (
+        settings.require_temporal_pair_evidence
+        and temporal_sides
+        and temporal_sides != {"t1", "t2"}
+    ):
+        warnings.append("EVIDENCE_MISSING_TEMPORAL_PAIR")
     warnings = list(dict.fromkeys(warnings))
     geometry.update(
         {
@@ -80,10 +281,14 @@ def review_result(
             ),
         }
     )
+    review_status = result.status
+    if warnings:
+        # Warnings are audit diagnostics, not execution degradation. Preserve
+        # a completed model result as completed; only an already-partial result
+        # (for example an unresolved adjudication) may remain partial.
+        review_status = "completed" if result.status == "completed" else "partial"
     return (
-        result.model_copy(
-            update={"geometry": geometry, "status": "partial" if warnings else result.status}
-        ),
+        result.model_copy(update={"geometry": geometry, "status": review_status}),
         warnings,
     )
 
@@ -98,3 +303,22 @@ def _iou(first: list[int] | list[float], second: list[int] | list[float]) -> flo
         - intersection
     )
     return float(intersection / union) if union > 0 else 0.0
+
+
+def _temporal_side(image_id: str) -> str | None:
+    normalized = image_id.casefold()
+    t1_tokens = ("raw_full_t1", "reference_t1", "harmonized_t1", "_t1_crop", "transient_context_t1")
+    t2_tokens = (
+        "raw_full_t2",
+        "registered_t2",
+        "harmonized_t2",
+        "t2_registered",
+        "t2_raw_fallback",
+        "_t2_crop",
+        "transient_context_t2",
+    )
+    if any(token in normalized for token in t1_tokens):
+        return "t1"
+    if any(token in normalized for token in t2_tokens):
+        return "t2"
+    return None

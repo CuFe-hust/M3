@@ -31,6 +31,26 @@ backend:
         allow_cpu_fallback: false
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
+      - name: detector_yolo_detect_001
+        enabled: true
+        weights: models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
+        runtime: ultralytics
+        task: detect
+        model_id: YOLO11s:iSAID:tiles1024-o20:epoch111
+        sha256: f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266
+        source_dataset: iSAID
+        priority: 200
+        classes: [baseball_diamond, basketball_court, bridge, ground_track_field, harbor, helicopter, large_vehicle, plane, roundabout, ship, small_vehicle, soccer_ball_field, storage_tank, swimming_pool, tennis_court]
+        aliases: {baseball diamond: baseball_diamond, basketball court: basketball_court, ground track field: ground_track_field, large vehicle: large_vehicle, small vehicle: small_vehicle, soccer ball field: soccer_ball_field, storage tank: storage_tank, swimming pool: swimming_pool, tennis court: tennis_court}
+        confidence: 0.20
+        iou: 0.50
+        image_size: 1024
+        device: "0"
+        max_detections: 2000
+        require_cuda: true
+        allow_cpu_fallback: false
+        boundary_duplicate_iou: 0.50
+        boundary_duplicate_center_px: 16.0
 
 # VQA visual evidence calibration: bindings are stable logical identities;
 # the composition root maps them to verified clients, never to raw paths.

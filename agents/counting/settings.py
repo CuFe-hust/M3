@@ -49,6 +49,17 @@ class CountingSettings(BaseModel):
     verify_empty_detection: bool = True
     verify_empty_semantic: bool = False
     trust_empty_detection: bool = False
+    multi_detector_enabled: bool = True
+    max_selected_detector_experts: int = Field(default=5, ge=1, le=5)
+    min_successful_detector_experts: int = Field(default=1, ge=1)
+    ensemble_iou_threshold: float = Field(default=0.45, gt=0.0, le=1.0)
+    ensemble_center_distance_ratio: float = Field(default=0.60, gt=0.0, le=2.0)
+    ensemble_singleton_high_confidence: float = Field(default=0.65, ge=0.0, le=1.0)
+    max_disagreement_regions: int = Field(default=12, ge=1, le=12)
+    disagreement_context_padding_ratio: float = Field(default=0.35, ge=0.0, le=2.0)
+    unresolved_ensemble_policy: Literal[
+        "retain_high_confidence", "reject_unresolved"
+    ] = "retain_high_confidence"
 
     @model_validator(mode="before")
     @classmethod
@@ -97,6 +108,11 @@ class CountingSettings(BaseModel):
                 "seam_conflict_min_distance_px cannot exceed "
                 "seam_conflict_max_distance_px"
             )
+        if self.min_successful_detector_experts > self.max_selected_detector_experts:
+            raise ValueError(
+                "min_successful_detector_experts cannot exceed "
+                "max_selected_detector_experts"
+            )
 
 
 class CountingTargetStrategy(BaseModel):
@@ -129,7 +145,7 @@ class AgentCountingSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    default_backend: Literal["auto", "qwen_point", "yolo_obb"] = "auto"
+    default_backend: Literal["auto", "qwen_point", "yolo_obb", "yolo_detect"] = "auto"
 
 
 class YoloDetectorSettings(BaseModel):
@@ -144,7 +160,7 @@ class YoloDetectorSettings(BaseModel):
     enabled: bool = False
     weights: Path
     runtime: Literal["ultralytics", "onnx_yolov5_obb"] = "ultralytics"
-    task: Literal["obb"] = "obb"
+    task: Literal["obb", "detect"] = "obb"
     model_id: str = Field(min_length=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_dataset: str = Field(default="DOTAv1", min_length=1)

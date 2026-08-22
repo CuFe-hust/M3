@@ -8,8 +8,8 @@ contracts are terminal. Zero is always valid and only enters explicit review.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Literal
+from dataclasses import dataclass, replace
+from typing import Literal, Sequence
 
 from agents.base import AgentContext
 from agents.counting.backends.base import (
@@ -20,8 +20,10 @@ from agents.counting.backends.base import (
     CountingRequest,
 )
 from agents.counting.backends.selector import BackendSelector
+from agents.counting.point_pipeline import fuse_detector_observations
 from agents.counting.schema import (
     CountingBackendAttemptAudit,
+    DisagreementReview,
     IssueRecord,
 )
 from agents.errors import (
@@ -54,6 +56,13 @@ class CountingExecutionPolicy:
     verify_empty_detection: bool
     trust_empty_detection: bool
     verify_empty_semantic: bool = False
+    min_successful_detector_experts: int = 1
+    ensemble_iou_threshold: float = 0.45
+    ensemble_center_distance_ratio: float = 0.60
+    ensemble_singleton_high_confidence: float = 0.65
+    unresolved_ensemble_policy: Literal[
+        "retain_high_confidence", "reject_unresolved"
+    ] = "retain_high_confidence"
 
 
 @dataclass(frozen=True)
@@ -119,6 +128,13 @@ class CountingPlanExecutor:
         context: AgentContext,
         agent_name: AgentName,
     ) -> CountingExecutionResult:
+        if len(plan.selected_backend_names) > 1:
+            return await self._execute_detector_ensemble(
+                plan=plan,
+                request=request,
+                context=context,
+                agent_name=agent_name,
+            )
         candidates = (plan.primary_backend_name, *plan.fallback_backend_names)
         if len(candidates) != len(set(candidates)):
             raise AgentExecutionError(
@@ -246,7 +262,7 @@ class CountingPlanExecutor:
                     outcome=outcome,
                 )
             )
-            if kind == "yolo_obb":
+            if kind in {"yolo_obb", "yolo_detect"}:
                 yolo_trace = {**(yolo_trace or {}), **dict(outcome.trace or {})}
             break
 
@@ -285,7 +301,7 @@ class CountingPlanExecutor:
                 agent_name=agent_name,
                 sample_id=request.sample.sample_id,
             )
-            if yolo_trace is not None and final_kind == "yolo_obb":
+            if yolo_trace is not None and final_kind in {"yolo_obb", "yolo_detect"}:
                 yolo_trace.update(
                     {
                         "zero_review_triggered": True,
@@ -301,7 +317,7 @@ class CountingPlanExecutor:
                 review = await review_obj.count(request, context)
                 if not isinstance(review, CountingBackendOutcome):
                     raise InvalidBackendContract()
-                if yolo_trace is not None and final_kind == "yolo_obb":
+                if yolo_trace is not None and final_kind in {"yolo_obb", "yolo_detect"}:
                     yolo_trace.update(
                         {
                             "zero_review_status": review.counting.status,
@@ -345,14 +361,14 @@ class CountingPlanExecutor:
                     )
                 )
                 outcome = _with_review_warning(original_outcome, source_kind=final_kind)
-                if yolo_trace is not None and final_kind == "yolo_obb":
+                if yolo_trace is not None and final_kind in {"yolo_obb", "yolo_detect"}:
                     yolo_trace.update(
                         {
                             "zero_review_status": "failed",
                             "zero_review_result_count": None,
                         }
                     )
-            if yolo_trace is not None and primary_kind == "yolo_obb":
+            if yolo_trace is not None and primary_kind in {"yolo_obb", "yolo_detect"}:
                 yolo_trace["zero_overridden"] = zero_overridden
 
         first_failure = history[0] if history else None
@@ -375,7 +391,7 @@ class CountingPlanExecutor:
             fallback_kind = "zero_review"
             fallback_reason_code = (
                 "DETECTOR_ZERO_OVERRIDDEN_BY_REVIEW"
-                if primary_kind == "yolo_obb"
+                if primary_kind in {"yolo_obb", "yolo_detect"}
                 else "SEMANTIC_ZERO_OVERRIDDEN_BY_REVIEW"
             )
 
@@ -396,6 +412,257 @@ class CountingPlanExecutor:
             fallback_error_type=fallback_error_type,
             yolo_trace=yolo_trace,
             attempt_audits=tuple(attempt_audits),
+        )
+
+    async def _execute_detector_ensemble(
+        self,
+        *,
+        plan: BackendPlan,
+        request: CountingRequest,
+        context: AgentContext,
+        agent_name: AgentName,
+    ) -> CountingExecutionResult:
+        """Run every co-primary detector, then fall back as one group."""
+
+        selected = plan.selected_backend_names
+        candidates = (*selected, *plan.fallback_backend_names)
+        if len(candidates) != len(set(candidates)):
+            raise AgentExecutionError(
+                agent_name, request.sample.sample_id, cause="INVALID_BACKEND_PLAN"
+            )
+        attempted: list[str] = []
+        history: list[BackendFailureRecord] = []
+        audits: list[CountingBackendAttemptAudit] = []
+        successes: list[tuple[str, CountingBackendOutcome]] = []
+        primary_kind: BackendKind | None = None
+        yolo_trace: dict[str, object] | None = None
+        for index, name in enumerate(selected):
+            backend = self._resolve_backend(
+                name,
+                request=request,
+                agent_name=agent_name,
+                primary=index == 0,
+            )
+            kind = _backend_kind(
+                backend, agent_name=agent_name, sample_id=request.sample.sample_id
+            )
+            if kind not in {"yolo_obb", "yolo_detect"}:
+                raise AgentExecutionError(
+                    agent_name, request.sample.sample_id, cause="INVALID_BACKEND_PLAN"
+                )
+            if primary_kind is None:
+                primary_kind = kind
+                yolo_trace = _yolo_profile(backend, kind)
+            _validate_backend_contract(
+                backend,
+                agent_name=agent_name,
+                sample_id=request.sample.sample_id,
+            )
+            attempted.append(name)
+            try:
+                available = backend.is_available()
+                if not isinstance(available, bool):
+                    raise InvalidBackendContract()
+                if not available:
+                    raise BackendUnavailable()
+                outcome = await backend.count(request, context)
+                if not isinstance(outcome, CountingBackendOutcome):
+                    raise InvalidBackendContract()
+                successes.append((name, outcome))
+                audits.append(
+                    _success_attempt_audit(
+                        backend=name,
+                        kind=kind,
+                        phase="primary" if index == 0 else "ensemble",
+                        outcome=outcome,
+                    )
+                )
+                if yolo_trace is not None:
+                    yolo_trace.update(dict(outcome.trace or {}))
+            except InvalidBackendContract as error:
+                raise AgentExecutionError(
+                    agent_name, request.sample.sample_id, cause="INVALID_BACKEND_CONTRACT"
+                ) from error
+            except Exception as error:
+                reason = "BACKEND_UNAVAILABLE" if isinstance(error, (BackendUnavailable, *_UNAVAILABLE_ERRORS)) else "BACKEND_RUNTIME_ERROR"
+                history.append(
+                    BackendFailureRecord(
+                        backend=name,
+                        kind=kind,
+                        reason_code=reason,
+                        error_type=type(error).__name__,
+                    )
+                )
+                audits.append(
+                    CountingBackendAttemptAudit(
+                        backend_name=name,
+                        backend_kind=kind,
+                        phase="primary" if index == 0 else "ensemble",
+                        status="unavailable" if reason == "BACKEND_UNAVAILABLE" else "failed",
+                        reason_code=reason,
+                        error_type=type(error).__name__,
+                    )
+                )
+
+        if len(successes) >= self._policy.min_successful_detector_experts:
+            fused = fuse_detector_observations(
+                [
+                    (name, outcome.counting.global_points)
+                    for name, outcome in successes
+                ],
+                iou_threshold=self._policy.ensemble_iou_threshold,
+                center_distance_ratio=self._policy.ensemble_center_distance_ratio,
+                singleton_high_confidence=self._policy.ensemble_singleton_high_confidence,
+            )
+            first_name, first_outcome = successes[0]
+            base = first_outcome.counting
+            review_trace: dict[str, object] = {
+                "disagreement_review_triggered": False,
+                "review_backend": None,
+                "review_request_hash": None,
+                "requested_conflict_ids": [
+                    str(item.get("conflict_id")) for item in fused.review_candidates
+                ],
+                "reviewed_conflict_ids": [],
+                "truncated_conflict_ids": [],
+                "review_decisions": [],
+                "review_failure": None,
+                "unresolved_ensemble_policy": self._policy.unresolved_ensemble_policy,
+                "unresolved_policy_applied": False,
+            }
+            reviewed_points = fused.points
+            reviewed_unresolved = fused.unresolved_conflicts
+            review_warnings = list(fused.warnings)
+            reviewer = next(
+                (
+                    self._selector.backend_by_name(name)
+                    for name in plan.fallback_backend_names
+                    if callable(getattr(self._selector.backend_by_name(name), "review_disagreements", None))
+                ),
+                None,
+            ) if fused.review_candidates else None
+            if reviewer is not None:
+                review_trace["review_backend"] = getattr(reviewer, "name", None)
+                try:
+                    review = await reviewer.review_disagreements(
+                        request=request,
+                        conflicts=fused.review_candidates,
+                        context=context,
+                    )
+                    review = DisagreementReview.model_validate(review)
+                    reviewed_points, reviewed_unresolved, review_warnings = _apply_disagreement_review(
+                        fused,
+                        review,
+                    )
+                    review_trace.update(
+                        {
+                            "disagreement_review_triggered": True,
+                            "review_backend": getattr(reviewer, "name", None),
+                            "reviewed_conflict_ids": [item.conflict_id for item in review.decisions],
+                            "review_decisions": [item.model_dump(mode="json") for item in review.decisions],
+                        }
+                    )
+                    reviewer_trace = getattr(reviewer, "last_disagreement_review_trace", None)
+                    if isinstance(reviewer_trace, dict):
+                        review_trace.update(reviewer_trace)
+                except Exception as error:
+                    review_trace["review_failure"] = type(error).__name__
+                    review_warnings.append(
+                        IssueRecord(
+                            code="DETECTOR_DISAGREEMENT_REVIEW_FAILED",
+                            message=f"Disagreement review failed: {type(error).__name__}.",
+                        )
+                    )
+            if reviewed_unresolved:
+                unresolved_before_policy = list(reviewed_unresolved)
+                reviewed_points, reviewed_unresolved, policy_warnings = resolve_unresolved_observations(
+                    reviewed_points,
+                    self._policy.unresolved_ensemble_policy,
+                    self._policy.ensemble_singleton_high_confidence,
+                    unresolved_conflict_ids=reviewed_unresolved,
+                )
+                review_warnings.extend(policy_warnings)
+                review_trace["unresolved_policy_applied"] = {
+                    "policy": self._policy.unresolved_ensemble_policy,
+                    "singleton_min_confidence": self._policy.ensemble_singleton_high_confidence,
+                    "conflict_ids": unresolved_before_policy,
+                    "remaining_conflict_ids": reviewed_unresolved,
+                }
+            status = "completed_with_warnings" if (history or review_warnings or base.status == "completed_with_warnings") else base.status
+            counting = base.model_copy(
+                update={
+                    "global_points": reviewed_points,
+                    "merged_groups": fused.merged_groups,
+                    "unresolved_conflicts": reviewed_unresolved,
+                    "warnings": [*base.warnings, *review_warnings],
+                    "final_count": sum(point.accepted for point in reviewed_points),
+                    "status": status,
+                }
+            )
+            trace = dict(first_outcome.trace or {})
+            trace["ensemble"] = {
+                "selected_experts": list(selected),
+                "successful_experts": [name for name, _ in successes],
+                "failed_experts": [entry.to_trace() for entry in history],
+                "fused_instance_count": counting.final_count,
+                "merged_groups": fused.merged_groups,
+                "unresolved_conflicts": reviewed_unresolved,
+                "review_required": bool(fused.unresolved_conflicts),
+                "disagreement_review": review_trace,
+            }
+            outcome = CountingBackendOutcome(counting=counting, trace=trace)
+            return CountingExecutionResult(
+                outcome=outcome,
+                primary_backend=plan.primary_backend_name,
+                primary_kind=primary_kind or "yolo_obb",
+                final_backend=first_name,
+                final_kind=primary_kind or "yolo_obb",
+                candidate_backends=candidates,
+                attempted_backends=tuple(attempted),
+                review_backend=(getattr(reviewer, "name", None) if reviewer is not None else None),
+                review_error_type=(
+                    str(review_trace["review_failure"])
+                    if review_trace["review_failure"] is not None
+                    else None
+                ),
+                fallback_history=tuple(history),
+                fallback_triggered=bool(history),
+                fallback_kind="ensemble_degraded" if history else None,
+                fallback_reason_code="DETECTOR_ENSEMBLE_PARTIAL" if history else None,
+                fallback_error_type=history[0].error_type if history else None,
+                yolo_trace=yolo_trace,
+                attempt_audits=tuple(audits),
+            )
+
+        if not plan.fallback_backend_names:
+            raise CountingBackendUnavailableError(
+                request.target.canonical_label,
+                primary_backend=plan.primary_backend_name,
+                reason_code="DETECTOR_ENSEMBLE_EXHAUSTED",
+            )
+        fallback_plan = BackendPlan(
+            primary_backend_name=plan.fallback_backend_names[0],
+            fallback_backend_names=plan.fallback_backend_names[1:],
+        )
+        fallback_result = await self.execute(
+            plan=fallback_plan,
+            request=request,
+            context=context,
+            agent_name=agent_name,
+        )
+        return replace(
+            fallback_result,
+            primary_backend=plan.primary_backend_name,
+            primary_kind=primary_kind or fallback_result.primary_kind,
+            candidate_backends=candidates,
+            attempted_backends=tuple(attempted) + fallback_result.attempted_backends,
+            fallback_history=tuple(history) + fallback_result.fallback_history,
+            fallback_triggered=True,
+            fallback_kind=fallback_result.fallback_kind or "ensemble_exhausted",
+            fallback_reason_code=fallback_result.fallback_reason_code or "DETECTOR_ENSEMBLE_EXHAUSTED",
+            fallback_error_type=fallback_result.fallback_error_type or (history[0].error_type if history else None),
+            yolo_trace=yolo_trace or fallback_result.yolo_trace,
+            attempt_audits=tuple(audits) + fallback_result.attempt_audits,
         )
 
     def _record_or_raise(
@@ -494,7 +761,7 @@ class CountingPlanExecutor:
         final_kind: BackendKind,
     ) -> int | None:
         if (
-            final_kind == "yolo_obb"
+            final_kind in {"yolo_obb", "yolo_detect"}
             and not self._policy.trust_empty_detection
             and self._policy.verify_empty_detection
         ):
@@ -525,7 +792,7 @@ def _success_attempt_audit(
     *,
     backend: str,
     kind: BackendKind,
-    phase: Literal["primary", "fallback", "zero_review"],
+    phase: Literal["primary", "ensemble", "fallback", "zero_review"],
     outcome: CountingBackendOutcome,
 ) -> CountingBackendAttemptAudit:
     counting_status = outcome.counting.status
@@ -573,7 +840,7 @@ def _validate_backend_contract(
 
 def _yolo_profile(backend: object, kind: BackendKind) -> dict[str, object] | None:
     profile = getattr(backend, "trace_profile", None)
-    return dict(profile()) if kind == "yolo_obb" and callable(profile) else None
+    return dict(profile()) if kind in {"yolo_obb", "yolo_detect"} and callable(profile) else None
 
 
 def _with_review_warning(
@@ -583,7 +850,7 @@ def _with_review_warning(
 ) -> CountingBackendOutcome:
     code = (
         "DETECTOR_ZERO_REVIEW_FAILED"
-        if source_kind == "yolo_obb"
+        if source_kind in {"yolo_obb", "yolo_detect"}
         else "SEMANTIC_ZERO_REVIEW_FAILED"
     )
     warning = IssueRecord(
@@ -605,3 +872,178 @@ def _with_review_warning(
         agent_result=outcome.agent_result,
         trace=outcome.trace,
     )
+
+
+def resolve_unresolved_observations(
+    observations: Sequence,
+    policy: Literal["retain_high_confidence", "reject_unresolved"],
+    singleton_min_confidence: float,
+    *,
+    unresolved_conflict_ids: Sequence[str] = (),
+) -> tuple[list, list[str], list[IssueRecord]]:
+    """Apply the deterministic policy to every unresolved detector candidate."""
+
+    if policy not in {"retain_high_confidence", "reject_unresolved"}:
+        raise ValueError("unknown unresolved ensemble policy")
+    if not 0.0 <= singleton_min_confidence <= 1.0:
+        raise ValueError("invalid singleton confidence threshold")
+    points = list(observations)
+    point_ids = {point.global_id for point in points}
+    unresolved_points: set[str] = set()
+    matched_conflicts: set[str] = set()
+    remaining: list[str] = []
+    for conflict_id in unresolved_conflict_ids:
+        conflict_id = str(conflict_id)
+        candidate_ids = (
+            {conflict_id}
+            if conflict_id in point_ids
+            else set(conflict_id.split("|"))
+        )
+        present = candidate_ids & point_ids
+        if not present:
+            remaining.append(conflict_id)
+            continue
+        matched_conflicts.add(conflict_id)
+        unresolved_points.update(present)
+
+    retained: list[str] = []
+    rejected: list[str] = []
+    for index, point in enumerate(points):
+        if point.global_id not in unresolved_points:
+            continue
+        keep = (
+            policy == "retain_high_confidence"
+            and point.confidence >= singleton_min_confidence
+        )
+        if keep:
+            retained.append(point.global_id)
+            provenance = point.provenance
+            if provenance is not None:
+                points[index] = point.model_copy(
+                    update={
+                        "provenance": provenance.model_copy(
+                            update={"review_status": "retained_high_confidence_unresolved"}
+                        )
+                    }
+                )
+        else:
+            rejected.append(point.global_id)
+            points[index] = point.model_copy(
+                update={
+                    "accepted": False,
+                    "rejection_reason": (
+                        "DETECTOR_DISAGREEMENT_REJECT_UNRESOLVED"
+                        if policy == "reject_unresolved"
+                        else "DETECTOR_DISAGREEMENT_BELOW_SINGLETON_THRESHOLD"
+                    ),
+                }
+            )
+    if matched_conflicts:
+        message = (
+            "Unresolved detector candidates were retained only when they met the "
+            "configured singleton confidence threshold."
+            if policy == "retain_high_confidence"
+            else "Unresolved detector candidates were rejected by policy."
+        )
+        warnings = [
+            IssueRecord(
+                code="DETECTOR_ENSEMBLE_UNRESOLVED_POLICY_APPLIED",
+                message=message,
+                point_ids=sorted({*retained, *rejected}),
+            )
+        ]
+    else:
+        warnings = []
+    return points, sorted(remaining), warnings
+
+
+def _apply_disagreement_review(
+    fused: object,
+    review: DisagreementReview,
+) -> tuple[list, list[str], list[IssueRecord]]:
+    """Apply only exact, reviewer-supplied candidate decisions.
+
+    Consensus points are intentionally addressed by exact ``global_id`` only;
+    a reviewer cannot replace, delete, or re-select a fused consensus point.
+    """
+
+    points = list(getattr(fused, "points"))
+    requested = {
+        str(item.get("conflict_id")): item
+        for item in getattr(fused, "review_candidates")
+    }
+    unresolved = set(getattr(fused, "unresolved_conflicts"))
+    warnings = list(getattr(fused, "warnings"))
+    seen: set[str] = set()
+    for decision in review.decisions:
+        conflict = requested.get(decision.conflict_id)
+        if conflict is None:
+            raise ValueError("review returned an unknown conflict")
+        candidate_id_list = [str(value) for value in conflict.get("candidate_ids", [])]
+        candidate_ids = set(candidate_id_list)
+        if len(candidate_id_list) != len(candidate_ids):
+            raise ValueError("review request contains duplicate candidates")
+        accepted_ids = [str(value) for value in decision.accepted_candidate_ids]
+        if len(accepted_ids) != len(set(accepted_ids)):
+            raise ValueError("review returned duplicate candidate ids")
+        if not set(accepted_ids).issubset(candidate_ids):
+            raise ValueError("review returned an unknown candidate")
+        if decision.conflict_id in seen:
+            raise ValueError("review returned a duplicate conflict")
+        seen.add(decision.conflict_id)
+        point_index_by_id = {point.global_id: index for index, point in enumerate(points)}
+        candidate_indexes = {
+            candidate_id: point_index_by_id[candidate_id]
+            for candidate_id in candidate_ids
+            if candidate_id in point_index_by_id
+        }
+        if set(candidate_indexes) != candidate_ids:
+            raise ValueError("review candidate is not present in fused result")
+        if decision.decision == "accept_one":
+            if len(accepted_ids) != 1:
+                raise ValueError("accept_one must select exactly one requested candidate")
+            keep_id = accepted_ids[0]
+            for candidate_id, index in candidate_indexes.items():
+                if candidate_id != keep_id:
+                    points[index] = points[index].model_copy(
+                        update={
+                            "accepted": False,
+                            "rejection_reason": "DISAGREEMENT_REVIEW_ACCEPT_ONE",
+                        }
+                    )
+        elif decision.decision == "accept_multiple":
+            if len(accepted_ids) != decision.instance_count or len(accepted_ids) < 2:
+                raise ValueError(
+                    "accept_multiple instance_count must equal exact selected candidates"
+                )
+            for candidate_id, index in candidate_indexes.items():
+                if candidate_id not in accepted_ids:
+                    points[index] = points[index].model_copy(
+                        update={
+                            "accepted": False,
+                            "rejection_reason": "DISAGREEMENT_REVIEW_ACCEPT_MULTIPLE",
+                        }
+                    )
+        elif decision.decision == "reject_all":
+            if accepted_ids:
+                raise ValueError("reject_all cannot accept candidates")
+            for index in candidate_indexes.values():
+                points[index] = points[index].model_copy(
+                    update={
+                        "accepted": False,
+                        "rejection_reason": "DISAGREEMENT_REVIEW_REJECTED",
+                    }
+                )
+        elif decision.decision == "uncertain":
+            if accepted_ids:
+                raise ValueError("uncertain cannot accept candidates")
+            warnings.append(
+                IssueRecord(
+                    code="DETECTOR_DISAGREEMENT_REVIEW_UNCERTAIN",
+                    message="Detector disagreement remained uncertain; unresolved policy will decide.",
+                    point_ids=sorted(candidate_ids),
+                )
+            )
+        if decision.decision != "uncertain":
+            unresolved.discard(decision.conflict_id)
+    return points, sorted(unresolved), warnings

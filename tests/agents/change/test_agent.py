@@ -17,8 +17,19 @@ import pytest
 from PIL import Image
 
 from agents.base import AgentContext, AgentExecution
-from agents.change.agent import ChangeAgent, resolve_input_mode
+from agents.change.agent import (
+    ChangeAgent,
+    _building_rescue_fallback_caption,
+    _contains_internal_rescue_identifier,
+    _expanded_union_pixel_box,
+    _select_building_rescue_candidates,
+    resolve_input_mode,
+)
 from agents.change.schema import (
+    CANONICAL_NO_CHANGE,
+    ChangeAdjudicationResult,
+    BuildingRescueCandidateReview,
+    BuildingRescueReview,
     ChangePreprocessResult,
     ChangeProposal,
     HarmonizationDecision,
@@ -28,6 +39,7 @@ from agents.change.schema import (
     RegistrationMetrics,
     RegistrationReport,
     SemanticTransition,
+    StructuralRescueCandidate,
 )
 from agents.change.settings import (
     AgentChangeSettings,
@@ -70,6 +82,14 @@ class _RecordingClient:
 
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
         self.calls.append({"messages": messages, "request_hash": request_meta.request_hash})
+        if response_model.__name__ == "ChangeAdjudicationResult":
+            payload = json.loads(messages[1]["content"][-1]["text"])
+            return response_model.model_validate({
+                "agent_name": "change_agent",
+                "global_review": {"verdict": "no_persistent_change", "t1_state": "stable scene", "t2_state": "stable scene", "reason": "no persistent geometry change", "change_category": None},
+                "candidate_reviews": [{"proposal_id": item["proposal_id"], "verdict": "appearance_only", "t1_state": "same structure", "t2_state": "same structure", "reason": "appearance differs only", "change_category": None} for item in payload["adjudication_candidates"]],
+                "answer": "No significant semantic change detected.", "status": "completed",
+            })
         return response_model.model_validate(
             {"agent_name": "change_agent", "answer": self._answer, "status": "completed"}
         )
@@ -225,6 +245,32 @@ def _proposal(proposal_id: str = "change_000", score: float = 0.8) -> ChangeProp
     )
 
 
+def _rescue_candidate(
+    candidate_id: str = "segmenter_oem_001:added:0:0-0-32-32",
+    *,
+    edge_flags: tuple[str, ...] = ("top",),
+) -> StructuralRescueCandidate:
+    return StructuralRescueCandidate(
+        candidate_id=candidate_id,
+        expert_id="segmenter_oem_001",
+        direction="added",
+        box=(0, 0, 32, 32),
+        normalized_box=(0, 0, 499, 499),
+        score=0.95,
+        target_mean_probability=0.95,
+        target_p10_probability=0.90,
+        target_p50_probability=0.95,
+        source_mean_probability=0.05,
+        source_p90_probability=0.10,
+        source_p95_probability=0.10,
+        source_max_probability=0.10,
+        area_px=1024,
+        area_ratio=0.25,
+        edge_flags=edge_flags,
+        registration_tolerance_px=1,
+    )
+
+
 # ── 协议 / protocol ────────────────────────────────────────────────────────
 
 
@@ -242,6 +288,188 @@ def test_resolve_input_mode_policy() -> None:
         AgentChangeSettings(proposals=ChangeProposalSettings(enabled=False))
     ) == "harmonized_only"
     assert resolve_input_mode(AgentChangeSettings()) == "dual_path"
+
+
+def test_building_rescue_caption_sanitizes_internal_candidate_identifier() -> None:
+    candidate = _rescue_candidate()
+    review = BuildingRescueReview(
+        reviews=(
+            BuildingRescueCandidateReview(
+                candidate_id=candidate.candidate_id,
+                verdict="confirmed_added_building",
+                visible_building_count=1,
+                reason="paired footprint confirmed",
+            ),
+        ),
+        final_answer=(
+            "A new building was added at candidate "
+            "segmenter_oem_001:added:0:0-0-32-32."
+        ),
+    )
+    core = AgentResult(
+        agent_name="change_agent",
+        answer=CANONICAL_NO_CHANGE,
+        status="completed",
+    )
+
+    merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
+
+    assert merged.answer == "A building was constructed near the upper edge."
+    assert "candidate" not in merged.answer.casefold()
+    assert "segmenter_" not in merged.answer.casefold()
+    assert merged.geometry["final_source"] == "building_rescue"
+
+
+def test_building_rescue_caption_preserves_clean_answer_and_binary_verdict() -> None:
+    candidate = _rescue_candidate()
+    clean_answer = "A building was constructed near the upper edge."
+    review = BuildingRescueReview(
+        reviews=(
+            BuildingRescueCandidateReview(
+                candidate_id=candidate.candidate_id,
+                verdict="confirmed_added_building",
+                visible_building_count=1,
+                reason="paired footprint confirmed",
+            ),
+        ),
+        final_answer=clean_answer,
+    )
+    core = AgentResult(
+        agent_name="change_agent",
+        answer=CANONICAL_NO_CHANGE,
+        boxes=[],
+        evidence=[],
+        geometry={"core_verdict": "NO_CHANGE"},
+        status="completed",
+    )
+
+    merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
+
+    assert merged.answer == clean_answer
+    assert merged.geometry["core_verdict"] == "NO_CHANGE"
+    assert merged.status == "completed"
+    assert merged.boxes == [list(candidate.normalized_box)]
+
+
+def test_building_rescue_caption_ignores_model_coordinates_and_roi_text() -> None:
+    candidate = _rescue_candidate()
+    review = BuildingRescueReview(
+        reviews=(
+            BuildingRescueCandidateReview(
+                candidate_id=candidate.candidate_id,
+                verdict="confirmed_added_building",
+                visible_building_count=1,
+                reason="partial roof persists in the same ROI",
+            ),
+        ),
+        final_answer="Building at coordinates 213-165-243-187 inside the red box.",
+    )
+    core = AgentResult(
+        agent_name="change_agent",
+        answer=CANONICAL_NO_CHANGE,
+        boxes=[],
+        evidence=[],
+        status="completed",
+    )
+    merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
+    assert merged.answer == "A building was constructed near the upper edge."
+    assert "coordinates" not in merged.answer.casefold()
+    assert "red box" not in merged.answer.casefold()
+    assert "roi" not in merged.answer.casefold()
+
+
+@pytest.mark.parametrize(
+    "leaked_term",
+    [
+        "proposal_id",
+        "expert_id",
+        "tree",
+        "rangeland",
+        "developed_space",
+        "coordinates",
+        "red box",
+        "ROI",
+    ],
+)
+def test_building_rescue_caption_sanitizer_handles_all_internal_terms(
+    leaked_term: str,
+) -> None:
+    candidate = _rescue_candidate()
+    answer = f"A building was added with {leaked_term} hidden."
+
+    assert _contains_internal_rescue_identifier(answer, [candidate], {}) is True
+    assert _contains_internal_rescue_identifier(
+        "A building was constructed near the upper edge.", [candidate], {}
+    ) is False
+
+
+def test_building_rescue_sanitizer_does_not_call_qwen() -> None:
+    candidate = _rescue_candidate()
+    client = _RecordingClient()
+    reviews = {
+        candidate.candidate_id: BuildingRescueCandidateReview(
+            candidate_id=candidate.candidate_id,
+            verdict="confirmed_added_building",
+            visible_building_count=1,
+            reason="paired footprint confirmed",
+        )
+    }
+    assert _contains_internal_rescue_identifier(
+        "A new building was added at candidate foo.", [candidate], reviews
+    )
+    assert _building_rescue_fallback_caption([candidate], reviews).startswith(
+        "A building was constructed"
+    )
+    assert client.calls == []
+
+
+def test_building_rescue_fallback_uses_confirmed_count() -> None:
+    candidates = [_rescue_candidate(f"candidate-{index}") for index in range(2)]
+    reviews = {
+        candidate.candidate_id: BuildingRescueCandidateReview(
+            candidate_id=candidate.candidate_id,
+            verdict="confirmed_added_building",
+            visible_building_count=1,
+            reason="paired footprint confirmed",
+        )
+        for candidate in candidates
+    }
+
+    assert _building_rescue_fallback_caption(candidates, reviews) == (
+        "Two buildings were constructed near the upper edge."
+    )
+
+
+def test_building_rescue_review_selection_is_capped_and_spatially_diverse() -> None:
+    candidates = [
+        _rescue_candidate(f"candidate-{index}").model_copy(
+            update={
+                "box": box,
+                "area_px": (box[2] - box[0]) * (box[3] - box[1]),
+                "score": score,
+            }
+        )
+        for index, (box, score) in enumerate(
+            [
+                ((0, 0, 32, 32), 0.99),
+                ((2, 2, 34, 34), 0.98),
+                ((80, 80, 120, 120), 0.80),
+                ((160, 160, 220, 220), 0.70),
+                ((260, 260, 300, 300), 0.60),
+            ]
+        )
+    ]
+    selected, audit = _select_building_rescue_candidates(candidates, limit=3)
+    assert len(selected) == 3
+    assert [item.candidate_id for item in selected] == [
+        "candidate-0",
+        "candidate-3",
+        "candidate-2",
+    ]
+    assert len(audit) == 5
+    duplicate = next(item for item in audit if item["candidate_id"] == "candidate-1")
+    assert duplicate["review_selected"] is False
+    assert str(duplicate["review_selection_reason"]).startswith("spatial_duplicate_of:")
 
 
 def test_unsupported_task_fails_before_any_io(tmp_path: Path) -> None:
@@ -296,8 +524,8 @@ def test_run_raw_only_uses_real_preprocess(tmp_path: Path) -> None:
     assert execution.agent_name == "change_agent"
     assert execution.result_filename == "agent_result.json"
     assert _manifest_roles(client) == ["raw_full_t1", "raw_full_t2"]
-    assert budget.qwen_calls == 1
-    assert len(client.calls) == 1
+    assert budget.qwen_calls == 2
+    assert len(client.calls) == 2
 
 
 def test_run_dual_path_with_identical_images(tmp_path: Path) -> None:
@@ -309,13 +537,7 @@ def test_run_dual_path_with_identical_images(tmp_path: Path) -> None:
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
     assert payload["input_mode"] == "dual_path"
-    assert _manifest_roles(client) == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "harmonized_t1",
-        "harmonized_t2",
-        "proposal_overlay",
-    ]
+    assert _manifest_roles(client) == ["raw_full_t1", "raw_full_t2"]
     assert execution.trace["harmonization_status"] == "applied"
     assert execution.trace["pif_ratio"] is not None
     assert execution.trace["proposal_count"] == 0
@@ -330,12 +552,7 @@ def test_run_harmonized_only(tmp_path: Path) -> None:
     asyncio.run(agent.run(_sample(tmp_path), _context(tmp_path)))
     payload = _last_user_payload(client)
     assert payload["input_mode"] == "harmonized_only"
-    assert _manifest_roles(client) == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "harmonized_t1",
-        "harmonized_t2",
-    ]
+    assert _manifest_roles(client) == ["raw_full_t1", "raw_full_t2"]
 
 
 def test_raw_authority_is_present_even_when_derived_evidence_is_available(
@@ -394,11 +611,7 @@ def test_registered_global_evidence_has_explicit_role(
     )
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
-    assert _manifest_roles(client)[0:3] == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "registered_t2",
-    ]
+    assert _manifest_roles(client)[0:2] == ["raw_full_t1", "raw_full_t2"]
     payload = _last_user_payload(client)
     assert payload["registration"]["quality"] == {
         "inlier_ratio": 0.9,
@@ -418,13 +631,8 @@ def test_run_dual_path_includes_crops(tmp_path: Path, monkeypatch) -> None:
     client = _RecordingClient()
     asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
     assert _manifest_roles(client) == [
-        "raw_full_t1",
-        "raw_full_t2",
-        "harmonized_t1",
-        "harmonized_t2",
-        "proposal_overlay",
-        "change_000:reference_t1_crop",
-        "change_000:t2_raw_fallback_crop",
+        "raw_full_t1", "raw_full_t2", "proposal_overlay",
+        "change_000:reference_t1_crop", "change_000:t2_raw_fallback_crop",
     ]
 
 
@@ -458,8 +666,8 @@ def test_rejected_transform_keeps_raw_and_attaches_proposal_evidence(
         "change_000:reference_t1_crop",
         "change_000:t2_raw_fallback_crop",
     ]
-    assert len(client.calls) == 1
-    assert budget.qwen_calls == 1
+    assert len(client.calls) == 2
+    assert budget.qwen_calls == 2
     assert execution.trace["harmonized_evidence_available"] is False
     assert execution.trace["proposal_evidence_attached"] is True
     assert execution.trace["image_manifest_roles"] == _manifest_roles(client)
@@ -484,9 +692,7 @@ def test_proposals_are_ranked_by_score_times_reliability_and_truncated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = AgentChangeSettings(
-        proposals=ChangeProposalSettings(max_proposals=1)
-    )
+    settings = AgentChangeSettings()
     low_score_high_reliability = _proposal("change_000", 0.9).model_copy(
         update={"reliability": {"registration": 0.1}}
     )
@@ -506,10 +712,10 @@ def test_proposals_are_ranked_by_score_times_reliability_and_truncated(
     asyncio.run(_agent(client, settings=settings).run(_sample(tmp_path), _context(tmp_path)))
     roles = _manifest_roles(client)
     assert "change_001:reference_t1_crop" in roles
-    assert "change_000:reference_t1_crop" not in roles
+    assert "change_000:reference_t1_crop" in roles
     payload = _last_user_payload(client)
     assert payload["evidence_audit"]["proposal_count_total"] == 2
-    assert payload["evidence_audit"]["proposal_count_attached"] == 1
+    assert payload["evidence_audit"]["proposal_count_attached"] == 2
     assert {item["proposal_id"] for item in payload["proposals"]} == {
         "change_000",
         "change_001",
@@ -543,7 +749,7 @@ def test_payload_contract(tmp_path: Path, monkeypatch) -> None:
         "quality",
     }
     assert "effective_weights" in payload["perception"]
-    assert "semantic_transition_note" in payload
+    assert "semantic_support_note" in payload
     serialized = json.dumps(payload, ensure_ascii=False)
     assert str(tmp_path) not in serialized
     assert payload["perception"]["training_capture"] == {
@@ -579,8 +785,8 @@ def test_vlm_payload_and_trace_are_compact_json_safe(tmp_path: Path, monkeypatch
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
 
     payload = _last_user_payload(client)
-    assert payload["proposals"][0]["semantic_transition"]["from_class"] == "vegetation"
-    assert payload["proposals"][0]["semantic_transition"]["to_class"] == "building"
+    assert payload["proposals"][0]["semantic_support"]["from_class"] == "vegetation"
+    assert payload["proposals"][0]["semantic_support"]["to_class"] == "building"
     trace_json = json.dumps(execution.trace, ensure_ascii=False)
     assert "base64" not in trace_json.casefold()
     assert str(tmp_path) not in trace_json
@@ -591,10 +797,56 @@ def test_vlm_payload_and_trace_are_compact_json_safe(tmp_path: Path, monkeypatch
     assert "answers" not in payload
 
 
+def test_vlm_payload_deanchors_landcover_only_transition(tmp_path: Path, monkeypatch) -> None:
+    proposal = _proposal().model_copy(
+        update={
+            "semantic_transition": SemanticTransition(
+                from_class="rangeland",
+                from_confidence=0.9,
+                to_class="tree",
+                to_confidence=0.9,
+                changed_class="tree",
+                support_ratio=0.9,
+                transition_confidence=0.9,
+            ),
+            "semantic_transitions": [
+                {
+                    "expert_role": "persistent_landcover",
+                    "evidence_type": "landcover_candidate",
+                    "from_class": "rangeland",
+                    "to_class": "tree",
+                    "confidence": 0.9,
+                }
+            ],
+            "semantic_consensus": {
+                "structural_support": 0.0,
+                "landcover_support": 0.9,
+                "transient_support": 0.0,
+                "expert_count": 2,
+            },
+        }
+    )
+    preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=[proposal])
+    monkeypatch.setattr(
+        ChangeAgent,
+        "_prepare_perception_and_publish",
+        lambda self, sample, context: preprocess,
+    )
+    client = _RecordingClient()
+    asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    payload = _last_user_payload(client)
+    support = payload["proposals"][0]["semantic_support"]
+    assert support["status"] == "informative"
+    assert support["from_class"] == "rangeland"
+    assert support["to_class"] == "tree"
+    assert "semantic_expert_evidence" not in payload["proposals"][0]
+    assert "semantic_consensus" not in payload["proposals"][0]
+
+
 # ── 复核与失败语义 / review and failure semantics ─────────────────────────
 
 
-def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch) -> None:
+def test_canonical_no_change_warning_does_not_leak_partial_status(tmp_path: Path, monkeypatch) -> None:
     preprocess = _stub_preprocess(
         tmp_path / "artifacts", proposals=[_proposal("change_000", 0.8), _proposal("change_001", 0.7)]
     )
@@ -605,8 +857,10 @@ def test_review_warnings_downgrade_status_to_partial(tmp_path: Path, monkeypatch
     monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", _stub)
     client = _RecordingClient(answer="No visible change.")
     execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
-    assert execution.payload.status == "partial"
+    assert execution.payload.status == "completed"
     assert "CHANGE_RESULT_CONFLICT" in execution.trace["review_warnings"]
+    assert execution.trace["core_conflict_detected"] is True
+    assert execution.trace["adjudication_used"] is False
     assert execution.trace["review_used"] is True
 
 
@@ -620,6 +874,170 @@ def test_clean_semantic_answer_stays_completed(tmp_path: Path, monkeypatch) -> N
     execution = asyncio.run(_agent(_RecordingClient()).run(_sample(tmp_path), _context(tmp_path)))
     assert execution.payload.status == "completed"
     assert execution.trace["review_warnings"] == []
+
+
+def _adjudication_result(
+    global_verdict: str, candidate_verdicts: list[str], *, answer: str = "A building was added."
+) -> ChangeAdjudicationResult:
+    return ChangeAdjudicationResult.model_validate({
+        "agent_name": "change_agent",
+        "global_review": {
+            "verdict": global_verdict, "t1_state": "before", "t2_state": "after",
+            "reason": "reviewed raw pair",
+            "change_category": "building_structure" if global_verdict == "persistent_change" else None,
+            "persistent_geometry_changed": True if global_verdict == "persistent_change" else None,
+        },
+        "candidate_reviews": [
+            {
+                "proposal_id": f"change_{index:03d}", "verdict": verdict,
+                "t1_state": "before", "t2_state": "after", "reason": "reviewed crop",
+                "change_category": "building_structure" if verdict == "persistent_change" else None,
+                "persistent_geometry_changed": True if verdict == "persistent_change" else None,
+            }
+            for index, verdict in enumerate(candidate_verdicts)
+        ],
+        "answer": answer,
+        "boxes": [[1, 2, 3, 4]], "evidence": ["raw_full_t1"],
+        "status": "completed",
+    })
+
+
+def test_global_negative_overrides_local_insufficient_merge(tmp_path: Path) -> None:
+    merged, outcome, provenance = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["insufficient_visual_evidence"]),
+        "change_caption", [],
+    )
+    assert outcome == "negative"
+    assert merged.answer == "No significant semantic change detected."
+    assert merged.status == "completed"
+    assert merged.boxes == merged.evidence == merged.evidence_items == []
+    assert provenance["final_rule"] == "GLOBAL_NEGATIVE_OVERRIDES_LOCAL_INSUFFICIENT"
+
+
+def test_global_negative_with_mixed_nonpersistent_reviews_is_canonical(tmp_path: Path) -> None:
+    merged, outcome, _ = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["appearance_only", "transient", "registration_artifact", "insufficient_visual_evidence"]),
+        "change_caption", [],
+    )
+    assert outcome == "negative"
+    assert merged.answer == "No significant semantic change detected."
+    assert merged.status == "completed"
+
+
+def test_valid_candidate_positive_wins_over_global_negative(tmp_path: Path) -> None:
+    merged, outcome, provenance = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["persistent_change"]), "change_caption", []
+    )
+    assert outcome == "positive"
+    assert merged.answer == "A building was added."
+    assert provenance["final_rule"] == "VALID_PERSISTENT_POSITIVE"
+
+
+def test_persistent_candidate_without_geometry_is_blocked(tmp_path: Path) -> None:
+    result = _adjudication_result("no_persistent_change", ["persistent_change"])
+    candidate = result.candidate_reviews[0].model_copy(
+        update={"persistent_geometry_changed": False}
+    )
+    result = result.model_copy(update={"candidate_reviews": [candidate]})
+    warnings = _agent()._validate_adjudication(result, ["change_000"])
+    assert "ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:change_000" in warnings
+    _, outcome, provenance = _agent()._merge_adjudication(
+        result, "change_caption", warnings
+    )
+    assert outcome == "negative"
+    assert provenance["valid_persistent_candidate_count"] == 0
+
+
+def test_nuisance_reason_blocks_raw_persistent_global_review(tmp_path: Path) -> None:
+    result = _adjudication_result("persistent_change", [])
+    global_review = result.global_review.model_copy(
+        update={
+            "persistent_geometry_changed": True,
+            "reason": "A vehicle shadow is seasonal and not a durable change.",
+        }
+    )
+    result = result.model_copy(update={"global_review": global_review})
+    warnings = _agent()._validate_adjudication(result, [])
+    assert any(
+        warning.startswith("ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON:global")
+        for warning in warnings
+    )
+    _, outcome, provenance = _agent()._merge_adjudication(
+        result, "change_caption", warnings
+    )
+    assert outcome == "unresolved"
+    assert provenance["valid_persistent_candidate_count"] == 0
+
+
+def test_invalid_global_negative_with_insufficient_candidate_remains_partial(tmp_path: Path) -> None:
+    merged, outcome, _ = _agent()._merge_adjudication(
+        _adjudication_result("no_persistent_change", ["insufficient_visual_evidence"]),
+        "change_caption", ["ADJUDICATION_INVALID_AGENT"],
+    )
+    assert outcome == "unresolved"
+    assert merged.status == "partial"
+
+
+def test_local_water_positive_without_paired_evidence_routes_to_adjudication(tmp_path: Path, monkeypatch) -> None:
+    preprocess = _stub_preprocess(tmp_path / "artifacts")
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", lambda self, sample, context: preprocess)
+    client = _RecordingClient("A new water reservoir appeared.")
+    execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    assert len(client.calls) == 2
+    assert execution.trace["adjudication_trigger"] == "positive_conflict"
+    assert "POSITIVE_LOCAL_CLAIM_WITHOUT_PAIRED_EVIDENCE" in execution.trace["review_route_reasons"]
+
+
+def test_water_geometry_without_persistent_boundary_support_is_invalid(tmp_path: Path) -> None:
+    result = _adjudication_result("no_persistent_change", ["persistent_change"])
+    candidate = result.candidate_reviews[0].model_copy(update={
+        "change_category": "water_geometry", "persistent_geometry_changed": False,
+        "geometry_change_description": "became filled with water",
+    })
+    result = result.model_copy(update={"candidate_reviews": [candidate]})
+    warnings = _agent()._validate_adjudication(result, ["change_000"])
+    assert "ADJUDICATION_WATER_STATE_NOT_GEOMETRY:change_000" in warnings
+    merged, outcome, _ = _agent()._merge_adjudication(result, "change_caption", warnings)
+    assert outcome == "negative"
+    assert merged.answer == "No significant semantic change detected."
+
+
+def test_water_geometry_with_shoreline_footprint_support_remains_positive(tmp_path: Path) -> None:
+    result = _adjudication_result("no_persistent_change", ["persistent_change"])
+    candidate = result.candidate_reviews[0].model_copy(update={
+        "change_category": "water_geometry", "persistent_geometry_changed": True,
+        "geometry_change_description": "shoreline boundary expands into previous land footprint",
+    })
+    result = result.model_copy(update={"candidate_reviews": [candidate]})
+    warnings = _agent()._validate_adjudication(result, ["change_000"])
+    assert not any("WATER_STATE_NOT_GEOMETRY" in warning for warning in warnings)
+    _, outcome, _ = _agent()._merge_adjudication(result, "change_caption", warnings)
+    assert outcome == "positive"
+
+
+def test_transient_adjudication_attaches_one_expanded_context_pair(tmp_path: Path, monkeypatch) -> None:
+    proposals = [_proposal("change_000", 0.9), _proposal("change_001", 0.8)]
+    preprocess = _stub_preprocess(tmp_path / "artifacts", proposals=proposals)
+    monkeypatch.setattr(ChangeAgent, "_prepare_perception_and_publish", lambda self, sample, context: preprocess)
+    client = _RecordingClient("A vehicle appeared.")
+    execution = asyncio.run(_agent(client).run(_sample(tmp_path), _context(tmp_path)))
+    roles = _manifest_roles(client)
+    assert roles.count("transient_context_t1") == 1
+    assert roles.count("transient_context_t2") == 1
+    assert execution.trace["transient_context_attached"] is True
+    assert len(client.calls) == 2
+
+
+def test_expanded_context_box_clamps_to_image_boundaries() -> None:
+    proposal = _proposal().model_copy(update={"pixel_box": [0, 0, 10, 10]})
+    assert _expanded_union_pixel_box([proposal], width=32, height=32, scale=1.8) == [0, 0, 14, 14]
+
+
+def test_edge_candidate_is_reserved_ahead_of_central_candidate(tmp_path: Path) -> None:
+    central = _proposal("central", 0.99).model_copy(update={"box": [400, 400, 600, 600]})
+    edge = _proposal("edge", 0.50).model_copy(update={"box": [900, 900, 999, 999]})
+    selected = _agent()._select_proposals([central, edge], limit=1)
+    assert [item.proposal_id for item in selected] == ["edge"]
 
 
 def test_wrong_agent_name_fails_not_masked(tmp_path: Path, monkeypatch) -> None:

@@ -1,0 +1,47 @@
+architecture:
+  name: multi_expert_siamese_change_head_v1
+  hidden_dim: 64
+  semantic_dim: 32
+  decoder_dim: 96
+  use_pif_mask: true
+  use_rgb_pair: false
+  optional_expert_dropout_supported: true
+data:
+  mask_frame: t1_reference
+experts:
+  - expert_id: segmenter_mitb2_001
+    required: true
+    feature_stages: [1, 2, 3]
+    use_semantic_probabilities: true
+    missing_policy: error
+  - expert_id: segmenter_oem_001
+    required: false
+    feature_stages: [1, 2, 3]
+    use_semantic_probabilities: true
+    missing_policy: zero_with_presence_mask
+optimization:
+  epochs: 30
+  batch_size: 4
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  grad_clip_norm: 1.0
+  amp: true
+  seed: 42
+loss:
+  bce_weight: 1.0
+  dice_weight: 1.0
+  boundary_weight: 0.25
+  swap_consistency_weight: 0.10
+  max_pos_weight: 8.0
+optional_expert_dropout:
+  enabled: true
+  probability: 0.20
+selection:
+  primary_metric: val_pixel_f1
+  early_stop_patience: 6
+sampling:
+  default_weight: 1.0
+  tag_multipliers:
+    hard_case: 2.0
+    building_edge: 1.5
+    no_change: 1.0

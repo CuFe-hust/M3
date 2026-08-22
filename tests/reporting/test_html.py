@@ -22,13 +22,20 @@ from reporting.schema import (
     FallbackTransitionView,
     GroundTruthView,
     ModelCallAuditView,
+    ModelWeightView,
+    ProcessReport,
     Report,
     ReportSample,
     RoutingAttemptView,
     RoutingView,
     StructuredArtifactView,
+    TaskCandidateView,
+    TaskRoutingView,
+    ExecutionStepView,
     TaskSummary,
     VisualAssetView,
+    WorkflowSequenceView,
+    WorkflowStepView,
 )
 from workflows.artifact_writer import ArtifactWriter
 from workflows.run_store import RunStore
@@ -189,6 +196,81 @@ def test_html_displays_execution_path_and_submodel_outputs() -> None:
     assert "vqa_evidence.json" in document
     assert "&quot;answer&quot;" in document
     assert "red" in document
+
+
+def test_html_displays_concrete_workflow_and_yolo_seg_weights() -> None:
+    report = Report(
+        run_id="process-run",
+        total=2,
+        succeeded=2,
+        partial=0,
+        failed=0,
+        skipped=0,
+        process_report=ProcessReport(
+            sample_process_count=2,
+            workflow_sequences=[WorkflowSequenceView(
+                task="counting",
+                sample_count=2,
+                steps=[
+                    WorkflowStepView(
+                        order=1,
+                        phase="routing",
+                        component="routing.router.TaskRouter",
+                        operation="route",
+                    ),
+                    WorkflowStepView(
+                        order=2,
+                        phase="backend",
+                        component="agents.counting.CountingAgent",
+                        operation="primary",
+                        backend_name="isaid_yolo11s",
+                        repeat_count=2,
+                    ),
+                ],
+            )],
+            model_weights=[
+                ModelWeightView(
+                    family="yolo",
+                    backend_name="isaid_yolo11s",
+                    backend_kind="yolo_obb",
+                    logical_model_id="YOLO11s:iSAID:epoch111",
+                    weights_file="isaid-yolo11s-best.pt",
+                    weights_sha256="a" * 64,
+                    source_dataset="iSAID",
+                    use_count=2,
+                    phases=["primary"],
+                    statuses=["succeeded"],
+                ),
+                ModelWeightView(
+                    family="segmentation",
+                    backend_name="isaid_segformer",
+                    backend_kind="semantic_segmentation",
+                    logical_model_id="SegFormer-MiT-B2:iSAID:local",
+                    weights_sha256="b" * 64,
+                    model_revision="rev-2",
+                    use_count=1,
+                    phases=["zero_review"],
+                    statuses=["succeeded"],
+                ),
+            ],
+        ),
+    )
+
+    document = build_html(report)
+
+    for text in (
+        "具体流程 / Concrete execution workflow",
+        "实际使用的 YOLO / Seg 权重",
+        "观测到的执行顺序 / Observed execution order",
+        "YOLO11s:iSAID:epoch111",
+        "isaid-yolo11s-best.pt",
+        "SegFormer-MiT-B2:iSAID:local",
+        "routing.router.TaskRouter",
+        "backend=isaid_yolo11s",
+        "repeated ×2",
+    ):
+        assert text in document
+    assert "C:/" not in document
 
 
 def _semantic_report(*, complete: bool) -> Report:
@@ -479,6 +561,72 @@ def test_v21_model_call_raw_and_parsed_text_are_escaped() -> None:
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in document
     assert "<b>yes</b>" not in document
     assert "&lt;b&gt;yes&lt;/b&gt;" in document
+
+
+def test_task_routing_and_execution_timeline_are_rendered() -> None:
+    sample = ReportSample(
+        sample_id="route-flow",
+        run_task="auto",
+        task="counting",
+        state="succeeded",
+        task_routing=TaskRoutingView(
+            source_task="auto",
+            resolved_task="counting",
+            executed_task="counting",
+            planning_mode="visual-task-plan-v4",
+            resolution_source="visual-task-plan-v4",
+            candidate_tasks=[TaskCandidateView(
+                order=1,
+                task="counting",
+                agent_names=["counting_agent"],
+                status="executed",
+                selected=True,
+                executed=True,
+            )],
+            primary_agent="counting_agent",
+            fallback_agents=["general_vqa_agent"],
+            executed_agent="counting_agent",
+            execution_mode="fallback",
+            primary_reason="ROUTE_POLICY",
+            reason_codes=["TASK_COUNTING"],
+        ),
+        execution_steps=[
+            ExecutionStepView(
+                order=1,
+                phase="routing",
+                component="routing.router.TaskRouter",
+                operation="route",
+                status="selected",
+                task="counting",
+                agent_name="counting_agent",
+                reason_code="TASK_COUNTING",
+            ),
+            ExecutionStepView(
+                order=2,
+                phase="model_call",
+                component="models.structured_client",
+                operation="complete_json",
+                status="succeeded",
+                request_id="route-flow:qwen",
+                artifact_names=["visual_task_plan.json"],
+            ),
+        ],
+        routing=RoutingView(final_backend="detector"),
+    )
+    document = build_html(Report(
+        run_id="route-flow", total=1, succeeded=1, partial=0, failed=0, skipped=0,
+        samples=[sample],
+    ))
+    for text in (
+        "Task Routing / 任务路由", "visual-task-plan-v4", "counting_agent",
+        "ROUTE_POLICY", "Task candidates", "Execution Process / 执行过程",
+        "routing.router.TaskRouter", "request=route-flow:qwen",
+        "artifacts=visual_task_plan.json",
+    ):
+        assert text in document
+    assert "Detailed per-backend outputs were not persisted" not in document
+    assert 'class="route-chain"' in document
+    assert 'class="stage timeline-step"' in document
 
 
 def test_report_v2_bundle_contains_offline_outputs_and_assets_directory(

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from agents.change.reviewer import review_result
+from agents.change.reviewer import review_outcome, review_result
 from agents.change.schema import ChangeProposal
 from agents.change.settings import ChangeReviewSettings
 from agents.schema import AgentResult, VisualEvidence
@@ -20,13 +20,14 @@ def _proposal(
     proposal_id: str = "p1",
     box: list[int] | None = None,
     score: float = 0.9,
+    area_ratio: float = 0.05,
 ) -> ChangeProposal:
     return ChangeProposal(
         proposal_id=proposal_id,
         box=box or [100, 100, 300, 300],
         pixel_box=box or [100, 100, 300, 300],
         score=score,
-        area_ratio=0.05,
+        area_ratio=area_ratio,
     )
 
 
@@ -40,7 +41,7 @@ def test_claim_without_proposal_evidence_is_warned() -> None:
     result = _result(answer="The tree disappeared.")
     reviewed, warnings = review_result(result, [], ChangeReviewSettings())
     assert "CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE" in warnings
-    assert reviewed.status == "partial"
+    assert reviewed.status == "completed"
 
 
 def test_claim_without_evidence_when_disabled_passes_through() -> None:
@@ -58,15 +59,77 @@ def test_no_change_with_high_score_proposals_is_conflict() -> None:
         result, [_proposal("p1"), _proposal("p2", score=0.8)], ChangeReviewSettings()
     )
     assert "CHANGE_RESULT_CONFLICT" in warnings
-    assert reviewed.status == "partial"
+    assert reviewed.status == "completed"
 
 
 def test_no_change_with_single_proposal_is_not_conflict() -> None:
     result = _result(answer="No visible change.")
     _, warnings = review_result(
-        result, [_proposal("p1", score=0.9)], ChangeReviewSettings()
+        result, [_proposal("p1", score=0.9, area_ratio=0.001)], ChangeReviewSettings()
+    )
+    assert "CHANGE_RESULT_CONFLICT" in warnings
+
+
+def test_landcover_only_semantic_candidate_is_suppressed_from_adjudication() -> None:
+    proposal = _proposal("landcover", score=0.9).model_copy(
+        update={
+            "component_scores": {"semantic": 0.9},
+            "semantic_consensus": {
+                "structural_support": 0.0,
+                "landcover_support": 0.9,
+                "transient_support": 0.0,
+            },
+            "semantic_transitions": [
+                {"evidence_type": "landcover_candidate"}
+            ],
+        }
+    )
+    outcome = review_outcome(
+        _result(answer="No significant semantic change detected."),
+        [proposal],
+        ChangeReviewSettings(),
+        task="change_caption",
+    )
+    assert outcome.route == "accept"
+    assert "NEGATIVE_LANDCOVER_ONLY_SUPPRESSED" in outcome.route_reasons
+
+
+def test_structural_semantic_candidate_still_routes_to_adjudication() -> None:
+    proposal = _proposal("building", score=0.5).model_copy(
+        update={
+            "component_scores": {"semantic": 0.5},
+            "semantic_consensus": {
+                "structural_support": 0.8,
+                "landcover_support": 0.0,
+                "transient_support": 0.0,
+            },
+            "semantic_transitions": [
+                {"evidence_type": "structural_candidate"}
+            ],
+        }
+    )
+    outcome = review_outcome(
+        _result(answer="No significant semantic change detected."),
+        [proposal],
+        ChangeReviewSettings(),
+        task="change_caption",
+    )
+    assert outcome.route == "adjudicate_negative"
+    assert "NEGATIVE_STRONG_PROPOSAL" in outcome.route_reasons
+
+
+def test_canonical_no_change_phrase_uses_current_proposal_score_scale() -> None:
+    result = _result(answer="No significant semantic change detected.")
+    _, warnings = review_result(
+        result,
+        [
+            _proposal("p1", score=0.23, area_ratio=0.006),
+            _proposal("p2", score=0.20, area_ratio=0.005),
+        ],
+        ChangeReviewSettings(),
     )
     assert "CHANGE_RESULT_CONFLICT" not in warnings
+    assert "CHANGE_CLAIM_WITHOUT_PROPOSAL_EVIDENCE" not in warnings
 
 
 def test_evidence_box_outside_proposals_is_warned() -> None:
@@ -177,6 +240,25 @@ def test_invalid_overlap_evidence_reference_is_warned() -> None:
         result, [_proposal("p1")], ChangeReviewSettings()
     )
     assert "EVIDENCE_REFERENCES_INVALID_OVERLAP" in warnings
+
+
+def test_one_sided_temporal_evidence_is_warned() -> None:
+    result = _result(
+        answer="No significant semantic change detected.",
+        evidence_items=[
+            VisualEvidence(
+                label="No visible change.",
+                image_id="raw_full_t1",
+                box=[100, 100, 200, 200],
+            )
+        ],
+    )
+    _, warnings = review_result(
+        result,
+        [_proposal("p1", box=[100, 100, 300, 300], area_ratio=0.001)],
+        ChangeReviewSettings(),
+    )
+    assert "EVIDENCE_MISSING_TEMPORAL_PAIR" in warnings
 
 
 def test_reviewer_never_calls_models_or_dataset_logic() -> None:

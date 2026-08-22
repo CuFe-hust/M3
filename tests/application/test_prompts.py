@@ -17,10 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 12
+    assert len(catalog.all_keys()) == 14
     for key in (
         "count_tile",
         "change",
+        "change_building_rescue",
         "general",
         "grounding",
         "caption",
@@ -47,8 +48,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v5.md"
     assert catalog.version("vqa_judge") == "v2"
     assert catalog.version("seam") == "v2"
-    assert catalog.version("change") == "v3"
-    assert catalog.asset("change").path.name == "change_dual_path_v3.md"
+    assert catalog.version("change") == "v9"
+    assert catalog.asset("change").path.name == "change_dual_path_v9.md"
     assert catalog.asset("seam").path.name == "seam_review_v2.md"
     assert catalog.asset("vqa_judge").path.name == "deepseek_vqa_judge_v2.md"
     assert (REPO_ROOT / "prompts" / "deepseek_vqa_judge_v1.md").is_file()
@@ -57,7 +58,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 11  # 12 keys, general_vqa_v3 shared by two keys
+    assert len(paths) == 13  # 14 keys, general_vqa_v3 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 
@@ -77,18 +78,51 @@ def test_vqa_judge_v2_declares_semantic_text_only_rules() -> None:
         assert required in prompt
 
 
-def test_change_prompt_v3_keeps_auxiliary_evidence_non_authoritative() -> None:
+def test_change_prompt_v7_requires_factual_caption_not_class_label() -> None:
     prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
     for required in (
-        "raw t1/t2 images",
-        "authoritative",
-        "segformer labels and features are attention hints",
-        "proposal masks are attention hints",
-        "not proof",
+        "evidence-grounded semantic change analyst",
+        "non-negotiable answer rule",
+        "natural-language caption",
+        "never use a standalone decision token",
+        "must name at least one changed persistent entity",
+        "no significant semantic change detected.",
+    ):
+        assert required in prompt
+    for forbidden in (
+        "balanced full-path semantic change analyst",
+        "conservative full-path semantic change analyst",
+    ):
+        assert forbidden not in prompt
+
+
+def test_change_prompt_v7_two_sided_confirmation_gate() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
+    for required in (
+        "two-sided confirmation gate",
+        "t1 state",
+        "t2 state",
+        "spatial correspondence",
+        "persistence",
         "raw_full_t1",
         "raw_full_t2",
-        "proposal-driven semantic confirmer",
-        "no significant semantic change detected",
+        "authoritative temporal pair",
+        "image_manifest",
+    ):
+        assert required in prompt
+
+
+def test_change_prompt_v7_mandatory_visual_scan() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["change"].casefold()
+    for required in (
+        "mandatory visual scan",
+        "3-by-3",
+        "border and corner pass",
+        "vegetation-extent pass",
+        "artifact rejection pass",
+        "new or removed buildings",
+        "new/removed roads",
+        "exact no-change sentence",
     ):
         assert required in prompt
 
@@ -165,10 +199,12 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
     prompts_root.mkdir()
     for filename in (
         "count_tile_v4.md",
-        "count_localize_v1.md",
+            "count_localize_v1.md",
+            "count_expert_disagreement_v1.md",
         "target_parse_v1.md",
         "missing_point_review_v3.md",
-            "change_dual_path_v3.md",
+            "change_dual_path_v9.md",
+        "change_building_rescue_v1.md",
         "general_vqa_v3.md",
         "caption_v1.md",
         "seam_review_v2.md",

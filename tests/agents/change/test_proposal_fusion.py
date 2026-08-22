@@ -10,7 +10,10 @@ import agents.change.proposal_fusion as proposal_fusion_module
 from agents.change.proposal_fusion import (
     PROPOSAL_FUSION_VERSION,
     compute_reliabilities,
+    compute_temporal_semantic_stability,
     fuse_change_proposals,
+    fuse_feature_evidence,
+    fuse_semantic_evidence,
 )
 from agents.change.schema import (
     HarmonizationDecision,
@@ -35,6 +38,33 @@ def _settings(**overrides: object) -> ChangeProposalSettings:
 
 def _maps(size: int = 64) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return tuple(np.zeros((size, size), dtype=np.float32) for _ in range(3))
+
+
+def test_semantic_evidence_fuses_maps_without_cross_taxonomy_shapes() -> None:
+    isaid = np.zeros((16, 16), dtype=np.float32)
+    oem = np.zeros((8, 8), dtype=np.float32)
+    isaid[4:8, 4:8] = 0.8
+    oem[2:4, 2:4] = 0.9
+
+    fused, diagnostics = fuse_semantic_evidence(
+        [isaid, oem], [0.8, 0.9]
+    )
+
+    assert fused.shape == (16, 16)
+    assert diagnostics["method"] == "semantic_consensus_union"
+    assert diagnostics["expert_count"] == 2
+    assert float(fused[6, 6]) > 0.0
+
+
+def test_feature_evidence_allows_partial_success() -> None:
+    first = np.full((8, 8), 0.2, dtype=np.float32)
+    second = np.full((4, 4), 0.8, dtype=np.float32)
+
+    fused, diagnostics = fuse_feature_evidence([first, second], [0.7, 0.3])
+
+    assert fused is not None
+    assert fused.shape == first.shape
+    assert diagnostics["method"] == "reliability_weighted_mean"
 
 
 def _pif_without_patch(
@@ -104,6 +134,61 @@ def test_localized_three_source_agreement_produces_mask_and_v2_proposal() -> Non
     assert result.diagnostics["version"] == PROPOSAL_FUSION_VERSION
 
 
+def test_shadow_learned_map_cannot_change_deterministic_result() -> None:
+    low, feature, semantic = _maps()
+    patch = np.s_[20:36, 22:38]
+    low[patch] = 0.80
+    feature[patch] = 0.90
+    semantic[patch] = 0.70
+    baseline = fuse_change_proposals(
+        low, feature, semantic, _pif_without_patch(), _settings()
+    )
+    for learned_map in (np.ones_like(low), np.random.default_rng(7).random(low.shape)):
+        shadow = fuse_change_proposals(
+            low,
+            feature,
+            semantic,
+            _pif_without_patch(),
+            _settings(),
+            learned_map=learned_map,
+            learned_weight=1.0,
+            learned_requested=True,
+            learned_mode="shadow",
+            learned_rescue_threshold=0.5,
+            learned_rescue_min_reliability=0.0,
+        )
+        assert np.array_equal(shadow.fused_score_map, baseline.fused_score_map)
+        assert [item.model_dump() for item in shadow.proposals] == [
+            item.model_dump() for item in baseline.proposals
+        ]
+
+
+def test_learned_rescue_top_k_and_provenance_are_recorded() -> None:
+    low, feature, semantic = _maps()
+    learned = np.zeros_like(low)
+    learned[4:10, 4:10] = 0.95
+    learned[20:28, 20:28] = 0.90
+    learned[40:48, 40:48] = 0.85
+    result = fuse_change_proposals(
+        low,
+        feature,
+        semantic,
+        np.ones_like(low, dtype=np.uint8),
+        _settings(),
+        learned_map=learned,
+        learned_weight=0.0,
+        learned_requested=True,
+        learned_mode="assist",
+        learned_rescue_threshold=0.8,
+        learned_rescue_min_reliability=0.0,
+        learned_rescue_min_component_area_ratio=0.001,
+        learned_rescue_max_proposals=2,
+    )
+    assert result.diagnostics["learned_rescue_component_count"] == 2
+    assert result.diagnostics["learned_rescue_max_proposals"] == 2
+    rescued = [item for item in result.diagnostics["components"] if item["learned_rescue"]]
+    assert len(rescued) == 2
+    assert all(item["source"] == "learned_rescue" for item in rescued)
 def test_low_level_only_brightness_change_is_downweighted() -> None:
     low, feature, semantic = _maps()
     patch = np.s_[16:40, 16:40]
@@ -288,6 +373,70 @@ def test_low_quality_registration_reduces_registration_reliability() -> None:
 
     assert reliability["registration"] < reliability["semantic"]
     assert diagnostics["raw"]["registration"] < 0.5
+
+
+def _semantic_probabilities(first_label: int, second_label: int, size: int = 8) -> tuple[np.ndarray, np.ndarray]:
+    first = np.zeros((2, size, size), dtype=np.float32)
+    second = np.zeros_like(first)
+    first[first_label] = 1.0
+    second[second_label] = 1.0
+    return first, second
+
+
+def test_temporal_stability_reports_stable_pif_without_penalty() -> None:
+    first, second = _semantic_probabilities(0, 0)
+    diagnostics = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.ones((8, 8), dtype=np.uint8),
+        class_names=("background", "building"),
+        neutral_labels=("background",),
+    )
+    assert diagnostics["temporal_stability_status"] == "available"
+    assert diagnostics["pif_pixel_count"] == 64
+    assert diagnostics["pif_label_flip_rate_all"] == pytest.approx(0.0)
+    assert diagnostics["temporal_stability_multiplier"] == pytest.approx(1.0)
+
+
+def test_temporal_stability_penalty_is_smooth_and_optional() -> None:
+    first, second = _semantic_probabilities(0, 1)
+    enabled = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.ones((8, 8), dtype=np.uint8),
+        class_names=("background", "building"),
+        neutral_labels=("background",),
+        enabled=True,
+        soft_flip_rate=0.10,
+        hard_flip_rate=0.90,
+        floor=0.25,
+    )
+    disabled = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.ones((8, 8), dtype=np.uint8),
+        class_names=("background", "building"),
+        neutral_labels=("background",),
+        enabled=False,
+        soft_flip_rate=0.10,
+        hard_flip_rate=0.90,
+        floor=0.25,
+    )
+    assert enabled["pif_label_flip_rate_non_neutral"] == pytest.approx(1.0)
+    assert enabled["temporal_stability_multiplier"] == pytest.approx(0.25)
+    assert disabled["temporal_stability_multiplier"] == pytest.approx(1.0)
+
+
+def test_temporal_stability_is_neutral_when_pif_is_unavailable() -> None:
+    first, second = _semantic_probabilities(0, 1)
+    diagnostics = compute_temporal_semantic_stability(
+        first,
+        second,
+        pif_mask=np.zeros((8, 8), dtype=np.uint8),
+        enabled=True,
+    )
+    assert diagnostics["temporal_stability_status"] == "unavailable"
+    assert diagnostics["temporal_stability_multiplier"] == pytest.approx(1.0)
 
 
 @pytest.mark.parametrize("reason_codes", [["REGISTRATION_NOT_NEEDED", "METADATA_ALIGNMENT_USED"], ["REGISTRATION_NOT_NEEDED", "IDENTICAL_INPUTS"]])

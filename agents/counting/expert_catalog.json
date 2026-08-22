@@ -147,6 +147,38 @@
       }
     },
     {
+      "backend_name": "detector_yolo_detect_001",
+      "kind": "yolo_detect",
+      "logical_model_id": "YOLO11s:iSAID:tiles1024-o20:epoch111",
+      "enabled": true,
+      "status": "active",
+      "priority": 200,
+      "asset": {
+        "model_dir": "models/isaid-yolo11s-tiles1024-o20",
+        "class_map": "configs/local.yaml",
+        "weights": "models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt",
+        "sha256": "f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266"
+      },
+      "verification": {"class_map": "verified"},
+      "supports": {
+        "baseball-diamond": {"model_labels": ["baseball_diamond"], "counting_mode": "native_detection"},
+        "basketball-court": {"model_labels": ["basketball_court"], "counting_mode": "native_detection"},
+        "bridge": {"model_labels": ["bridge"], "counting_mode": "native_detection"},
+        "ground-track-field": {"model_labels": ["ground_track_field"], "counting_mode": "native_detection"},
+        "harbor": {"model_labels": ["harbor"], "counting_mode": "native_detection"},
+        "helicopter": {"model_labels": ["helicopter"], "counting_mode": "native_detection"},
+        "large-vehicle": {"model_labels": ["large_vehicle"], "counting_mode": "native_detection"},
+        "plane": {"model_labels": ["plane"], "counting_mode": "native_detection"},
+        "roundabout": {"model_labels": ["roundabout"], "counting_mode": "native_detection"},
+        "ship": {"model_labels": ["ship"], "counting_mode": "native_detection"},
+        "small-vehicle": {"model_labels": ["small_vehicle"], "counting_mode": "native_detection"},
+        "soccer-ball-field": {"model_labels": ["soccer_ball_field"], "counting_mode": "native_detection"},
+        "storage-tank": {"model_labels": ["storage_tank"], "counting_mode": "native_detection"},
+        "swimming-pool": {"model_labels": ["swimming_pool"], "counting_mode": "native_detection"},
+        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "native_detection"}
+      }
+    },
+    {
       "backend_name": "segmenter_mitb2_001",
       "kind": "semantic_segmentation",
       "logical_model_id": "SegFormer-MiT-B2:iSAID:local",
@@ -176,13 +208,23 @@
         "storage-tank": {"model_labels": ["storage_tank"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 20, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.48, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "swimming-pool": {"model_labels": ["Swimming_pool"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 32, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}},
         "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "connected_components", "policy": {"min_component_area_px": 48, "max_component_area_ratio": 0.12, "min_mean_confidence": 0.50, "morphology": {"open_kernel": 0, "close_kernel": 0}}}
+      },
+      "change_semantics": {
+        "enabled": true,
+        "participation": "core",
+        "role": "object_semantic",
+        "neutral_model_labels": ["background"],
+        "transient_model_labels": ["Large_Vehicle", "Small_Vehicle", "plane", "ship", "Helicopter"],
+        "structural_model_labels": ["storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"],
+        "landcover_candidate_model_labels": [],
+        "persistent_model_labels": ["storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"]
       }
     },
     {
       "backend_name": "segmenter_oem_001",
       "kind": "semantic_segmentation",
       "logical_model_id": "SegFormer-MiT-B2:OpenEarthMap:local",
-      "enabled": false,
+      "enabled": true,
       "status": "active",
       "priority": 100,
       "asset": {
@@ -192,7 +234,21 @@
         "sha256": "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
       },
       "verification": {"class_map": "verified"},
-      "supports": {}
+      "supports": {},
+      "change_semantics": {
+        "enabled": true,
+        "participation": "rescue",
+        "role": "persistent_landcover",
+        "neutral_model_labels": ["background"],
+        "transient_model_labels": [],
+
+        "structural_model_labels": ["building"],
+        "landcover_candidate_model_labels": [],
+        "persistent_model_labels": ["building"],
+        "rescue_model_labels": ["building"],
+        "rescue_strategy": "building_footprint_delta"
+
+      }
     }
   ]
 }

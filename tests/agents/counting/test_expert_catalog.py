@@ -34,11 +34,15 @@ def _load_payload(tmp_path: Path, payload: dict[str, object]) -> ExpertCatalog:
     return ExpertCatalog.load(path, asset_root=REPO_ROOT)
 
 
+def _expert_payload(payload: dict[str, object], name: str) -> dict[str, object]:
+    return next(item for item in payload["experts"] if item["backend_name"] == name)
+
+
 def test_semantic_label_absent_from_verified_class_map_fails_closed(
     tmp_path: Path,
 ) -> None:
     payload = _payload()
-    payload["experts"][1]["supports"]["small-vehicle"]["model_labels"] = [
+    _expert_payload(payload, "segmenter_mitb2_001")["supports"]["small-vehicle"]["model_labels"] = [
         "not_a_verified_label"
     ]
 
@@ -55,6 +59,31 @@ def test_valid_catalog_loads_and_exposes_capability_specs() -> None:
     assert expert.priority == 100
     assert expert.supports["small-vehicle"].model_labels == ("Small_Vehicle",)
     assert expert.supports["small-vehicle"].counting_mode == "connected_components"
+
+
+def test_change_semantic_roles_are_explicit_and_verified() -> None:
+    catalog = ExpertCatalog.load(CATALOG_PATH)
+
+    expert = catalog.expert("segmenter_mitb2_001")
+
+    assert expert.change_semantics is not None
+    assert expert.change_semantics.enabled is True
+    assert expert.change_semantics.role == "object_semantic"
+    assert "background" in expert.change_semantics.neutral_model_labels
+    assert "plane" in expert.change_semantics.transient_model_labels
+    assert "storage_tank" in expert.change_semantics.persistent_model_labels
+
+
+def test_change_semantic_label_absent_from_verified_class_map_fails_closed(
+    tmp_path: Path,
+) -> None:
+    payload = _payload()
+    _expert_payload(payload, "segmenter_mitb2_001")["change_semantics"][
+        "persistent_model_labels"
+    ] = ["not_a_verified_label"]
+
+    with pytest.raises(ExpertCatalogError, match="validation failed"):
+        _load_payload(tmp_path, payload)
 
 
 def test_expert_supports_are_physical_canonical_leaves_only() -> None:
@@ -75,7 +104,7 @@ def test_duplicate_or_placeholder_leaf_model_labels_fail_closed(
         ["Small_Vehicle", "LABEL_7"],
     ):
         payload = _payload()
-        payload["experts"][1]["supports"]["small-vehicle"]["model_labels"] = labels
+        _expert_payload(payload, "segmenter_mitb2_001")["supports"]["small-vehicle"]["model_labels"] = labels
         with pytest.raises(ExpertCatalogError, match="validation failed"):
             _load_payload(tmp_path, payload)
 
@@ -169,6 +198,7 @@ def test_explicit_alias_resolves_to_canonical_target() -> None:
     hints = catalog.target_hints(_target("car"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
+        "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -186,7 +216,10 @@ def test_candidates_have_deterministic_kind_priority_name_order(tmp_path: Path) 
     high_b = copy.deepcopy(payload["experts"][0])
     high_b["backend_name"] = "detector_b"
     high_b["priority"] = 200
-    payload["experts"] = [payload["experts"][1], low, high_b, payload["experts"][2], high_a]
+    payload["experts"] = [
+        _expert_payload(payload, "segmenter_mitb2_001"), low, high_b,
+        _expert_payload(payload, "segmenter_oem_001"), high_a,
+    ]
     catalog = _load_payload(tmp_path, payload)
 
     assert tuple(expert.backend_name for expert in catalog.candidates(_target("plane"))) == (
@@ -199,26 +232,31 @@ def test_candidates_have_deterministic_kind_priority_name_order(tmp_path: Path) 
 
 def test_enabled_semantic_expert_requires_verified_class_map(tmp_path: Path) -> None:
     payload = _payload()
-    payload["experts"][1]["verification"]["class_map"] = "unverified"
+    _expert_payload(payload, "segmenter_mitb2_001")["verification"]["class_map"] = "unverified"
 
     with pytest.raises(ExpertCatalogError, match="validation failed"):
         _load_payload(tmp_path, payload)
 
 
-def test_oem_expert_has_frozen_class_map_but_is_not_a_counting_candidate() -> None:
+def test_verified_oem_expert_is_active_with_landcover_semantics() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     oem = catalog.expert("segmenter_oem_001")
 
-    assert oem.enabled is False
+    assert oem.enabled is True
     assert oem.status == "active"
     assert oem.verification.class_map == "verified"
     assert oem.asset.class_map == "models/segformer_mitb2_oem/classes.json"
-    assert oem.asset.sha256 == (
-        "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
-    )
     assert oem.supports == {}
-    assert oem not in catalog.candidates(_target("small vehicle"), enabled_only=False)
+    assert oem.change_semantics is not None
+    assert oem.change_semantics.participation == "rescue"
+    assert oem.change_semantics.role == "persistent_landcover"
+    assert oem.change_semantics.neutral_model_labels == ("background",)
+    assert oem.change_semantics.persistent_model_labels == (
+        "building",
+    )
+    assert oem.change_semantics.rescue_model_labels == ("building",)
+    assert oem.change_semantics.rescue_strategy == "building_footprint_delta"
 
 
 def test_separator_and_case_normalization_maps_isaid_label() -> None:
@@ -227,6 +265,7 @@ def test_separator_and_case_normalization_maps_isaid_label() -> None:
     candidates = catalog.candidates(_target("Small_Vehicle"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
+        "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -240,7 +279,7 @@ def test_unsupported_target_has_no_candidates_or_hints() -> None:
     assert catalog.target_hints(_target("water")) == {}
     assert tuple(
         expert.backend_name for expert in catalog.candidates(_target("bridge"))
-    ) == ("detector_obb_csl_001",)
+    ) == ("detector_yolo_detect_001", "detector_obb_csl_001")
     assert "background" not in isaid.supports
     assert isaid.supports["bridge"].counting_mode == "unsupported"
     assert isaid.supports["harbor"].counting_mode == "unsupported"
@@ -324,11 +363,14 @@ def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
 
     assert isinstance(enabled, tuple)
     assert tuple(expert.backend_name for expert in enabled) == (
+        "detector_yolo_detect_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
+        "segmenter_oem_001",
     )
     assert tuple(expert.backend_name for expert in semantic) == (
         "segmenter_mitb2_001",
+        "segmenter_oem_001",
     )
     assert tuple(expert.backend_name for expert in all_semantic) == (
         "segmenter_mitb2_001",

@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -139,8 +140,12 @@ def test_request_meta_rejects_credentials() -> None:
 def test_import_models_does_not_load_transformers_or_torch() -> None:
     """Importing models must not import transformers or torch.
     导入 models 不得导入 transformers 或 torch。"""
-    for heavy in ("transformers", "torch"):
-        assert heavy not in sys.modules
+    script = (
+        "import sys; import models; "
+        "assert 'transformers' not in sys.modules; "
+        "assert 'torch' not in sys.modules"
+    )
+    subprocess.run([sys.executable, "-c", script], check=True)
 
 
 def test_vision_language_client_protocol_is_structural() -> None:

@@ -16,6 +16,9 @@ import pytest
 from PIL import Image
 
 from agents.change.preprocess import (
+    _building_rescue_context_box,
+    _local_roi_box,
+    _marked_review_crop,
     prepare_pair,
     preprocess_pair,
     publish_change_proposals,
@@ -28,6 +31,7 @@ from agents.change.schema import (
     RegistrationDecision,
     RegistrationMetrics,
     RegistrationReport,
+    StructuralRescueCandidate,
 )
 from agents.change.settings import (
     AgentChangeSettings,
@@ -86,6 +90,28 @@ def _settings(**overrides) -> AgentChangeSettings:
     )
     values.update(overrides)
     return AgentChangeSettings(**values)
+
+
+def _context_candidate(
+    box: tuple[int, int, int, int], edge_flags: tuple[str, ...]
+) -> StructuralRescueCandidate:
+    area = max(1, (box[2] - box[0]) * (box[3] - box[1]))
+    return StructuralRescueCandidate(
+        candidate_id="edge-candidate",
+        expert_id="oem",
+        direction="added",
+        box=box,
+        normalized_box=(0, 0, 100, 100),
+        score=0.9,
+        target_mean_probability=0.9,
+        target_p10_probability=0.9,
+        source_mean_probability=0.01,
+        source_max_probability=0.02,
+        area_px=area,
+        area_ratio=area / (256 * 256),
+        edge_flags=edge_flags,
+        registration_tolerance_px=1,
+    )
 
 
 def test_preprocess_with_disabled_stages(tmp_path: Path) -> None:
@@ -410,6 +436,106 @@ def test_result_is_serializable(tmp_path: Path) -> None:
     assert payload["proposals"] == []
 
 
+def test_building_rescue_roi_transform_and_review_resize_are_deterministic() -> None:
+    local = _local_roi_box((40, 30, 90, 80), (20, 10, 120, 110))
+    assert local == (20, 20, 70, 70)
+    crop = np.zeros((100, 100, 3), dtype=np.uint8)
+    marked, scaled, size, scale = _marked_review_crop(
+        crop, local, min_short_side=256
+    )
+    assert size == (256, 256)
+    assert marked.shape[:2] == (256, 256)
+    assert scaled == (51, 51, 179, 179)
+    assert scale == pytest.approx(2.56)
+
+
+def test_building_rescue_roi_transform_clamps_to_crop() -> None:
+    assert _local_roi_box((-10, 4, 140, 90), (0, 0, 100, 80)) == (0, 4, 100, 80)
+
+
+def test_building_rescue_edge_context_shifts_to_keep_top_pixels() -> None:
+    settings = _settings()
+    box = _building_rescue_context_box(
+        _context_candidate((0, 9, 11, 22), ("top", "left")),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    assert box == (0, 0, 112, 112)
+
+
+def test_building_rescue_edge_context_shifts_right_and_corner_to_fit() -> None:
+    settings = _settings()
+    right = _building_rescue_context_box(
+        _context_candidate((245, 40, 256, 55), ("right",)),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    corner = _building_rescue_context_box(
+        _context_candidate((245, 0, 256, 11), ("top", "right")),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    assert right == (144, 0, 256, 112)
+    assert corner == (144, 0, 256, 112)
+
+
+def test_building_rescue_near_edge_context_expands_within_margin() -> None:
+    settings = _settings()
+    box = _building_rescue_context_box(
+        _context_candidate((20, 9, 31, 22), ("top",)),
+        width=256,
+        height=256,
+        settings=settings,
+    )
+    assert box == (0, 0, 112, 112)
+
+
+def test_building_rescue_publishes_raw_and_marked_review_crops(tmp_path: Path) -> None:
+    root = tmp_path / "data"
+    sample = _write_pair(root)
+    settings = _settings()
+    prepared = prepare_pair(sample, settings, tmp_path / "run", data_root=root)
+    candidate = StructuralRescueCandidate(
+        candidate_id="oem:added:0",
+        expert_id="oem",
+        direction="added",
+        box=(16, 16, 32, 32),
+        normalized_box=(250, 250, 500, 500),
+        score=0.95,
+        target_mean_probability=0.95,
+        target_p10_probability=0.9,
+        target_p50_probability=0.95,
+        source_mean_probability=0.01,
+        source_p90_probability=0.02,
+        source_p95_probability=0.02,
+        source_max_probability=0.03,
+        area_px=256,
+        area_ratio=0.0625,
+        registration_tolerance_px=1,
+    )
+    result = publish_change_proposals(
+        prepared,
+        score_map=np.zeros((64, 64), dtype=np.float32),
+        proposals=[],
+        artifact_dir=tmp_path / "run",
+        settings=settings,
+        rescue_candidates=[candidate],
+    )
+    published = result.rescue_candidates[0]
+    assert len(published.artifact_files) == 2
+    assert len(published.review_artifact_files) == 2
+    raw_t1 = Image.open(tmp_path / "run" / published.artifact_files[0])
+    review_t1 = Image.open(tmp_path / "run" / published.review_artifact_files[0])
+    assert raw_t1.size == (26, 26)
+    assert min(review_t1.size) >= 256
+    assert published.context_crop_bbox is not None
+    assert published.local_roi_bbox == (5, 5, 21, 21)
+    assert published.review_local_roi_bbox is not None
+
+
 def test_preprocess_never_calls_qwen() -> None:
     source = (Path(__file__).resolve().parents[3] / "agents" / "change" / "preprocess.py").read_text(
         encoding="utf-8"
@@ -487,12 +613,16 @@ def test_prepared_pair_keeps_runtime_arrays_outside_serializable_result(
         )
 
 
-def test_semantic_settings_default_disabled_and_validate_geometry() -> None:
+def test_semantic_settings_default_to_full_multiscale_and_validate_geometry() -> None:
     settings = AgentChangeSettings()
-    assert settings.semantic.enabled is False
+    assert settings.semantic.enabled is True
     assert settings.semantic.feature_stage == 1
-    assert settings.semantic.feature_stages == (1,)
-    assert settings.semantic.feature_stage_weights == {1: 1.0}
+    assert settings.semantic.feature_stages == (1, 2, 3)
+    assert settings.semantic.feature_stage_weights == {
+        1: pytest.approx(1 / 3),
+        2: pytest.approx(1 / 3),
+        3: pytest.approx(1 / 3),
+    }
     assert settings.semantic.tile_size == 768
     assert settings.semantic.tile_overlap == 64
     assert settings.proposals.pif_threshold_k == 4.5

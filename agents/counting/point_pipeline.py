@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
+import math
 from typing import Any, Literal, Protocol
 
 from PIL import Image
@@ -29,6 +30,7 @@ from agents.counting.schema import (
     GlobalPointObservation,
     IssueRecord,
     PixelRect,
+    PointProvenance,
     SeamDecision,
     TileCountResponse,
     TileSpec,
@@ -84,6 +86,282 @@ class _TileOutcome:
     failed_tile_ids: list[str]
     warnings: list[str]
     processed_tiles: list[TileSpec]
+
+
+@dataclass(frozen=True)
+class DetectorFusionResult:
+    """Deterministic evidence-level result for a group of detector experts."""
+
+    points: list[GlobalPointObservation]
+    merged_groups: list[list[str]]
+    unresolved_conflicts: list[str]
+    warnings: list[IssueRecord]
+    successful_experts: tuple[str, ...]
+    review_candidates: list[dict[str, object]]
+
+
+def fuse_detector_observations(
+    observations_by_expert: Sequence[tuple[str, Sequence[GlobalPointObservation]]],
+    *,
+    iou_threshold: float = 0.45,
+    center_distance_ratio: float = 0.60,
+    singleton_high_confidence: float = 0.65,
+) -> DetectorFusionResult:
+    """Fuse detector instances without averaging expert-level counts.
+
+    A connected component may contain at most one observation per backend.  An
+    edge that would violate that rule is retained as an unresolved structural
+    conflict rather than allowing transitive union-find to merge neighbors.
+    """
+
+    if not 0.0 < iou_threshold <= 1.0 or center_distance_ratio <= 0.0:
+        raise ValueError("invalid detector fusion thresholds")
+    accepted: list[GlobalPointObservation] = []
+    rejected: list[GlobalPointObservation] = []
+    source_by_id: dict[str, str] = {}
+    for backend_name, points in observations_by_expert:
+        for point in points:
+            point_id = point.global_id
+            if point_id in source_by_id or any(item.global_id == point_id for item in accepted):
+                point_id = f"{backend_name}::{point_id}"
+                suffix = 2
+                existing_ids = {item.global_id for item in accepted}
+                while point_id in existing_ids:
+                    point_id = f"{backend_name}::{point.global_id}::{suffix}"
+                    suffix += 1
+                point = point.model_copy(
+                    update={
+                        "global_id": point_id,
+                        "local_id": f"{backend_name}::{point.local_id}",
+                    }
+                )
+            if point.accepted:
+                accepted.append(point)
+                source_by_id[point.global_id] = backend_name
+            else:
+                rejected.append(point)
+    accepted.sort(key=lambda point: (-point.confidence, source_by_id[point.global_id], point.global_id))
+    parent = {point.global_id: point.global_id for point in accepted}
+    members: dict[str, list[str]] = {point.global_id: [point.global_id] for point in accepted}
+    conflict_pairs: set[tuple[str, str]] = set()
+    point_by_id = {point.global_id: point for point in accepted}
+    edges: list[tuple[float, str, str]] = []
+    for index, first in enumerate(accepted):
+        for second in accepted[index + 1:]:
+            if _normalize_target_label(first.target) != _normalize_target_label(second.target):
+                continue
+            if source_by_id[first.global_id] == source_by_id[second.global_id]:
+                continue
+            score = _detector_match_score(first, second)
+            if score is not None and score >= (iou_threshold if _has_envelope(first) and _has_envelope(second) else center_distance_ratio):
+                edges.append((score, first.global_id, second.global_id))
+    edges.sort(key=lambda item: (-item[0], item[1], item[2]))
+
+    def find(point_id: str) -> str:
+        while parent[point_id] != point_id:
+            parent[point_id] = parent[parent[point_id]]
+            point_id = parent[point_id]
+        return point_id
+
+    for _, first_id, second_id in edges:
+        first_root, second_root = find(first_id), find(second_id)
+        if first_root == second_root:
+            continue
+        first_sources = {source_by_id[item] for item in members[first_root]}
+        second_sources = {source_by_id[item] for item in members[second_root]}
+        if first_sources & second_sources:
+            conflict_pairs.add(tuple(sorted((first_id, second_id))))
+            continue
+        if first_root > second_root:
+            first_root, second_root = second_root, first_root
+        parent[second_root] = first_root
+        members[first_root].extend(members.pop(second_root))
+
+    clusters: dict[str, list[str]] = {}
+    for point_id in parent:
+        clusters.setdefault(find(point_id), []).append(point_id)
+    fused_points: list[GlobalPointObservation] = []
+    merged_groups: list[list[str]] = []
+    unresolved: set[str] = {f"{first}|{second}" for first, second in conflict_pairs}
+    warnings: list[IssueRecord] = []
+    review_candidates: list[dict[str, object]] = []
+    for group in sorted(clusters.values(), key=lambda values: min(values)):
+        group = sorted(group)
+        cluster_points = [point_by_id[item] for item in group]
+        if len(group) == 1:
+            point = cluster_points[0]
+            if point.confidence < singleton_high_confidence:
+                unresolved.add(point.global_id)
+                review_status = "unresolved_singleton"
+                review_candidates.append(
+                    {
+                        "conflict_id": point.global_id,
+                        "candidate_ids": [point.global_id],
+                        "candidate_points": [point.model_dump(mode="json")],
+                    }
+                )
+            else:
+                review_status = "high_confidence_singleton"
+            fused_points.append(_annotate_singleton(point, source_by_id[point.global_id], review_status))
+            continue
+        merged_groups.append(group)
+        fused_points.append(_fuse_detector_cluster(cluster_points, source_by_id))
+
+    if unresolved:
+        warnings.append(
+            IssueRecord(
+                code="DETECTOR_ENSEMBLE_CONFLICT_UNRESOLVED",
+                message=(
+                    f"{len(unresolved)} detector ensemble conflicts require review."
+                ),
+                point_ids=sorted(unresolved),
+            )
+        )
+    for first, second in sorted(conflict_pairs):
+        review_candidates.append(
+            {
+                "conflict_id": f"{first}|{second}",
+                "candidate_ids": [first, second],
+                "candidate_points": [
+                    point_by_id[first].model_dump(mode="json"),
+                    point_by_id[second].model_dump(mode="json"),
+                ],
+            }
+        )
+    rejected_points = [
+        point.model_copy(
+            update={"global_id": f"rejected_{index:04d}_{point.global_id}"}
+        )
+        for index, point in enumerate(rejected)
+    ]
+    return DetectorFusionResult(
+        points=[*fused_points, *rejected_points],
+        merged_groups=merged_groups,
+        unresolved_conflicts=sorted(unresolved),
+        warnings=warnings,
+        successful_experts=tuple(name for name, _ in observations_by_expert),
+        review_candidates=review_candidates,
+    )
+
+
+def _annotate_singleton(
+    point: GlobalPointObservation,
+    backend_name: str,
+    review_status: str,
+) -> GlobalPointObservation:
+    provenance = point.provenance
+    if provenance is None:
+        return point
+    updated = provenance.model_copy(
+        update={
+            "source_backend_names": [backend_name],
+            "source_model_ids": [provenance.model_id] if provenance.model_id else [],
+            "source_confidences": [provenance.detector_confidence or point.confidence],
+            "source_classes": [provenance.source_class] if provenance.source_class else [],
+            "source_weights_sha256": [provenance.weights_sha256] if provenance.weights_sha256 else [],
+            "consensus_size": 1,
+            "review_status": review_status,
+        }
+    )
+    return point.model_copy(update={"provenance": updated})
+
+
+def _fuse_detector_cluster(
+    points: Sequence[GlobalPointObservation],
+    source_by_id: dict[str, str],
+) -> GlobalPointObservation:
+    weights = [max(point.confidence, 1e-6) for point in points]
+    total = sum(weights)
+    x_px = round(sum(point.global_x_px * weight for point, weight in zip(points, weights)) / total)
+    y_px = round(sum(point.global_y_px * weight for point, weight in zip(points, weights)) / total)
+    x_norm = round(sum(point.global_x_norm * weight for point, weight in zip(points, weights)) / total)
+    y_norm = round(sum(point.global_y_norm * weight for point, weight in zip(points, weights)) / total)
+    representative = max(points, key=lambda point: (point.confidence, point.global_id))
+    representative_provenance = representative.provenance
+    backends = [source_by_id[point.global_id] for point in points]
+    model_ids = [point.provenance.model_id for point in points if point.provenance and point.provenance.model_id]
+    confidences = [point.provenance.detector_confidence or point.confidence for point in points if point.provenance]
+    classes = [point.provenance.source_class for point in points if point.provenance and point.provenance.source_class]
+    hashes = [point.provenance.weights_sha256 for point in points if point.provenance and point.provenance.weights_sha256]
+    provenance = PointProvenance(
+        source="fused",
+        backend_name="multi_detector_fusion",
+        detector_confidence=sum(confidences) / len(confidences) if confidences else representative.confidence,
+        source_backend_names=backends,
+        source_model_ids=model_ids,
+        source_confidences=confidences,
+        source_classes=classes,
+        source_weights_sha256=hashes,
+        consensus_size=len(points),
+        fusion_method="confidence_weighted_center",
+        review_status="consensus",
+        bbox_xyxy_global_px=(
+            list(representative_provenance.bbox_xyxy_global_px)
+            if representative_provenance and representative_provenance.bbox_xyxy_global_px
+            else None
+        ),
+    )
+    return representative.model_copy(
+        update={
+            "global_id": "fused_" + "_".join(sorted(point.global_id for point in points)),
+            "local_id": "fused_" + "_".join(sorted(point.local_id for point in points)),
+            "global_x_px": max(0, x_px),
+            "global_y_px": max(0, y_px),
+            "global_x_norm": max(0, min(999, x_norm)),
+            "global_y_norm": max(0, min(999, y_norm)),
+            "confidence": sum(point.confidence for point in points) / len(points),
+            "provenance": provenance,
+        }
+    )
+
+
+def _has_envelope(point: GlobalPointObservation) -> bool:
+    provenance = point.provenance
+    return bool(
+        provenance
+        and (provenance.bbox_xyxy_global_px or provenance.obb_polygon_global_px)
+    )
+
+
+def _detector_match_score(
+    first: GlobalPointObservation,
+    second: GlobalPointObservation,
+) -> float | None:
+    if _has_envelope(first) and _has_envelope(second):
+        return _observation_box_iou(first, second)
+    scale = max(first.radius_px, second.radius_px, 1.0)
+    distance = math.hypot(
+        first.global_x_px - second.global_x_px,
+        first.global_y_px - second.global_y_px,
+    )
+    return 1.0 - distance / max(scale * 2.0, 1.0)
+
+
+def _observation_box(point: GlobalPointObservation) -> tuple[float, float, float, float] | None:
+    provenance = point.provenance
+    if provenance is None:
+        return None
+    if provenance.bbox_xyxy_global_px:
+        return tuple(provenance.bbox_xyxy_global_px)  # type: ignore[return-value]
+    if provenance.obb_polygon_global_px:
+        xs = [item[0] for item in provenance.obb_polygon_global_px]
+        ys = [item[1] for item in provenance.obb_polygon_global_px]
+        return min(xs), min(ys), max(xs), max(ys)
+    return None
+
+
+def _observation_box_iou(
+    first: GlobalPointObservation,
+    second: GlobalPointObservation,
+) -> float:
+    a, b = _observation_box(first), _observation_box(second)
+    if a is None or b is None:
+        return 0.0
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    overlap = max(0.0, min(ax2, bx2) - max(ax1, bx1)) * max(0.0, min(ay2, by2) - max(ay1, by1))
+    union = max(0.0, ax2 - ax1) * max(0.0, ay2 - ay1) + max(0.0, bx2 - bx1) * max(0.0, by2 - by1) - overlap
+    return overlap / union if union > 0.0 else 0.0
 
 
 class PointCountingOrchestrator:
@@ -706,7 +984,7 @@ def find_boundary_conflicts(
             second_tile = tile_by_id.get(second.source_tile_id)
             if second_tile is None or first.target.casefold() != second.target.casefold():
                 continue
-            if _is_yolo_obb_pair(first, second):
+            if _is_yolo_detection_pair(first, second):
                 continue
             if not _cores_are_neighbours(first_tile, second_tile):
                 continue
@@ -798,15 +1076,15 @@ def _seam_pair(conflict: Any) -> tuple[str, str]:
     )
 
 
-def _is_yolo_obb_pair(
+def _is_yolo_detection_pair(
     first: GlobalPointObservation,
     second: GlobalPointObservation,
 ) -> bool:
     return (
         first.provenance is not None
         and second.provenance is not None
-        and first.provenance.source == "yolo_obb_center"
-        and second.provenance.source == "yolo_obb_center"
+        and first.provenance.source in {"yolo_obb_center", "yolo_box_center"}
+        and second.provenance.source in {"yolo_obb_center", "yolo_box_center"}
     )
 
 

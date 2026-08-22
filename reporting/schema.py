@@ -70,6 +70,91 @@ class RoutingView(_ViewModel):
     selection_reason: str | None = None
 
 
+class TaskCandidateView(_ViewModel):
+    order: int = Field(ge=1)
+    task: str
+    agent_names: list[str] = Field(default_factory=list)
+    status: str = "not_recorded"
+    reason_code: str | None = None
+    selected: bool = False
+    executed: bool = False
+
+
+class TaskRoutingView(_ViewModel):
+    source_task: str | None = None
+    resolved_task: str | None = None
+    executed_task: str | None = None
+    planning_mode: str | None = None
+    resolution_source: str | None = None
+    candidate_tasks: list[TaskCandidateView] = Field(default_factory=list)
+    primary_agent: str | None = None
+    fallback_agents: list[str] = Field(default_factory=list)
+    executed_agent: str | None = None
+    execution_mode: str | None = None
+    primary_reason: str | None = None
+    fallback_from_task: str | None = None
+    skipped_candidates: list[str] = Field(default_factory=list)
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class ExecutionStepView(_ViewModel):
+    order: int = Field(ge=1)
+    phase: str
+    component: str
+    operation: str | None = None
+    status: str = "not_recorded"
+    task: str | None = None
+    agent_name: str | None = None
+    backend_name: str | None = None
+    reason_code: str | None = None
+    request_id: str | None = None
+    artifact_names: list[str] = Field(default_factory=list)
+    summary_fields: dict[str, JsonScalar | list[JsonScalar]] = Field(default_factory=dict)
+
+
+class WorkflowStepView(_ViewModel):
+    """One normalized step in an observed run-level execution sequence."""
+
+    order: int = Field(ge=1)
+    phase: str
+    component: str
+    operation: str | None = None
+    backend_name: str | None = None
+    repeat_count: int = Field(default=1, ge=1)
+
+
+class WorkflowSequenceView(_ViewModel):
+    """A concrete execution sequence shared by one or more samples."""
+
+    task: str
+    sample_count: int = Field(ge=1)
+    steps: list[WorkflowStepView] = Field(default_factory=list)
+
+
+class ModelWeightView(_ViewModel):
+    """Path-free identity of one YOLO or segmentation weight actually used."""
+
+    family: Literal["yolo", "segmentation"]
+    backend_name: str
+    backend_kind: str
+    logical_model_id: str | None = None
+    weights_file: str | None = Field(default=None, pattern=r"^[^/\\:]+$")
+    weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_dataset: str | None = None
+    model_revision: str | None = None
+    use_count: int = Field(ge=1)
+    phases: list[str] = Field(default_factory=list)
+    statuses: list[str] = Field(default_factory=list)
+
+
+class ProcessReport(_ViewModel):
+    """Observed workflow order and local visual-expert weight identities."""
+
+    sample_process_count: int = Field(default=0, ge=0)
+    workflow_sequences: list[WorkflowSequenceView] = Field(default_factory=list)
+    model_weights: list[ModelWeightView] = Field(default_factory=list)
+
+
 _UNSAFE_SUMMARY_RE = re.compile(
     r"(?i)(?:data:image/[^;]+;base64,|https?://|(?:^|[^a-z0-9])(?:[a-z]:[\\/]|/(?:home|tmp|users|private|var)/))"
 )
@@ -108,6 +193,7 @@ class BackendStageView(_ViewModel):
     accepted_count: int | None = None
     rejected_count: int | None = None
     warning_codes: list[str] = Field(default_factory=list)
+    error_type: str | None = None
     summary_fields: dict[str, JsonScalar | list[JsonScalar]] = Field(default_factory=dict)
     overlay_asset: str | None = None
 
@@ -286,6 +372,8 @@ class ReportSample(_ViewModel):
     evaluation: EvaluationRecord | None = None
     result_quality: Literal["correct", "incorrect", "unknown", "not_applicable"] = "unknown"
     routing: RoutingView = Field(default_factory=RoutingView)
+    task_routing: TaskRoutingView = Field(default_factory=TaskRoutingView)
+    execution_steps: list[ExecutionStepView] = Field(default_factory=list)
     execution_path: list[str] = Field(default_factory=list)
     routing_decision: dict[str, JsonValue] | None = None
     backend_stages: list[BackendStageView] = Field(default_factory=list)
@@ -363,5 +451,6 @@ class Report(_ViewModel):
     routing_summary: RoutingSummary = Field(default_factory=RoutingSummary)
     failure_summary: FailureSummary = Field(default_factory=FailureSummary)
     counting_target_summary: list[CountingTargetSummary] = Field(default_factory=list)
+    process_report: ProcessReport = Field(default_factory=ProcessReport)
     visual_materialized_count: int = 0
     visual_total: int = 0

@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from agents.change.difference_proposal import propose_changes, render_overlay
 from agents.change.harmonizer import PairHarmonizer
@@ -25,10 +25,13 @@ from agents.change.schema import (
     HarmonizationDecision,
     PairValidationReport,
     RegistrationReport,
+    StructuralRescueCandidate,
 )
 from agents.change.settings import AgentChangeSettings
 from agents.errors import OptionalDependencyMissingError
 from data.schema import UnifiedSample
+
+CHANGE_PREPARED_PAIR_CONTRACT_VERSION = "change-prepared-pair-v1"
 
 
 def _require_numpy():
@@ -348,6 +351,7 @@ def publish_change_proposals(
     component_maps: dict[str, Any] | None = None,
     component_masks: dict[str, Any] | None = None,
     diagnostics: dict[str, object] | None = None,
+    rescue_candidates: list[StructuralRescueCandidate] | None = None,
 ) -> ChangePreprocessResult:
     """Publish legacy or V2 maps, overlays, crops, and serializable reports."""
 
@@ -474,6 +478,91 @@ def publish_change_proposals(
         [item.model_dump(mode="json") for item in updated],
     )
     files["proposals"] = "change_preprocess/proposals.json"
+    candidate_payload = None if rescue_candidates is None else list(rescue_candidates)
+    if candidate_payload is not None:
+        rescue_output = output / "building_rescue"
+        updated_rescue: list[StructuralRescueCandidate] = []
+        for candidate in candidate_payload:
+            x0, y0, x1, y1 = candidate.box
+            crop_box = _building_rescue_context_box(
+                candidate,
+                width=prepared.raw_t1.shape[1],
+                height=prepared.raw_t1.shape[0],
+                settings=settings,
+            )
+            cx0, cy0, cx1, cy1 = crop_box
+            raw_t1_crop = prepared.raw_t1[cy0:cy1, cx0:cx1].copy()
+            raw_t2_crop = prepared.raw_t2[cy0:cy1, cx0:cx1].copy()
+            local_roi = _local_roi_box(candidate.box, crop_box)
+            review_min_short_side = (
+                settings.building_rescue.edge_review_pixel_size
+                if candidate.edge_flags
+                and _is_extreme_edge_candidate(
+                    candidate,
+                    width=prepared.raw_t1.shape[1],
+                    height=prepared.raw_t1.shape[0],
+                )
+                else settings.building_rescue.min_review_pixel_size
+            )
+            review_t1, review_local_roi, review_size, resize_scale = (
+                _marked_review_crop(
+                    raw_t1_crop,
+                    local_roi,
+                    min_short_side=review_min_short_side,
+                )
+            )
+            review_t2, review_local_roi_t2, review_size_t2, resize_scale_t2 = (
+                _marked_review_crop(
+                    raw_t2_crop,
+                    local_roi,
+                    min_short_side=review_min_short_side,
+                )
+            )
+            if (
+                review_local_roi != review_local_roi_t2
+                or review_size != review_size_t2
+                or resize_scale != resize_scale_t2
+            ):
+                raise ValueError("building rescue T1/T2 review ROI transforms diverged")
+            safe_id = "".join(
+                character if character.isalnum() or character in "-_" else "_"
+                for character in candidate.candidate_id
+            )
+            raw_t1_name = f"{safe_id}_raw_t1.png"
+            raw_t2_name = f"{safe_id}_raw_t2.png"
+            review_t1_name = f"{safe_id}_review_t1.png"
+            review_t2_name = f"{safe_id}_review_t2.png"
+            _write_image(rescue_output / raw_t1_name, raw_t1_crop)
+            _write_image(rescue_output / raw_t2_name, raw_t2_crop)
+            _write_image(rescue_output / review_t1_name, review_t1)
+            _write_image(rescue_output / review_t2_name, review_t2)
+            updated_rescue.append(
+                candidate.model_copy(
+                    update={
+                        "artifact_files": (
+                            f"change_preprocess/building_rescue/{raw_t1_name}",
+                            f"change_preprocess/building_rescue/{raw_t2_name}",
+                        ),
+                        "review_artifact_files": (
+                            f"change_preprocess/building_rescue/{review_t1_name}",
+                            f"change_preprocess/building_rescue/{review_t2_name}",
+                        ),
+                        "context_crop_bbox": crop_box,
+                        "local_roi_bbox": local_roi,
+                        "review_local_roi_bbox": review_local_roi,
+                        "review_image_size": review_size,
+                        "resize_scale": resize_scale,
+                    }
+                )
+            )
+        candidate_payload = updated_rescue
+        _write_json(
+            output / "building_rescue_candidates.json",
+            [item.model_dump(mode="json") for item in candidate_payload],
+        )
+        files["building_rescue_candidates"] = (
+            "change_preprocess/building_rescue_candidates.json"
+        )
     files["harmonization_report"] = "change_preprocess/harmonization_report.json"
     result = ChangePreprocessResult(
         validation=prepared.validation,
@@ -483,9 +572,167 @@ def publish_change_proposals(
         transform_summary=prepared.transform_summary,
         diagnostics=diagnostics,
         registration=prepared.registration_report,
+        rescue_candidates=candidate_payload or [],
     )
     _write_json(output / "harmonization_report.json", result.model_dump(mode="json"))
     return result
+
+
+def _building_rescue_context_box(
+    candidate: StructuralRescueCandidate,
+    *,
+    width: int,
+    height: int,
+    settings: AgentChangeSettings,
+) -> tuple[int, int, int, int]:
+    x0, y0, x1, y1 = candidate.box
+    if candidate.edge_flags and _is_extreme_edge_candidate(
+        candidate, width=width, height=height
+    ):
+        padding_ratio = settings.building_rescue.edge_context_padding_ratio
+        pad_x = max(1, int(width * padding_ratio))
+        pad_y = max(1, int(height * padding_ratio))
+        existing_width = x1 - x0 + (
+            0 if "left" in candidate.edge_flags else pad_x
+        ) + (0 if "right" in candidate.edge_flags else pad_x)
+        existing_height = y1 - y0 + (
+            0 if "top" in candidate.edge_flags else pad_y
+        ) + (0 if "bottom" in candidate.edge_flags else pad_y)
+        target_size = settings.building_rescue.edge_review_context_min_size_px
+        target_width = min(width, max(existing_width, target_size))
+        target_height = min(height, max(existing_height, target_size))
+        center_x = (x0 + x1) / 2.0
+        center_y = (y0 + y1) / 2.0
+        return _symmetric_context_box(
+            center_x=center_x,
+            center_y=center_y,
+            target_width=target_width,
+            target_height=target_height,
+            width=width,
+            height=height,
+        )
+    padding_ratio = (
+        settings.building_rescue.edge_context_padding_ratio
+        if candidate.edge_flags
+        else settings.building_rescue.interior_context_padding_ratio
+    )
+    pad_x = max(1, int(width * padding_ratio))
+    pad_y = max(1, int(height * padding_ratio))
+    left_pad = 0 if "left" in candidate.edge_flags else pad_x
+    right_pad = 0 if "right" in candidate.edge_flags else pad_x
+    top_pad = 0 if "top" in candidate.edge_flags else pad_y
+    bottom_pad = 0 if "bottom" in candidate.edge_flags else pad_y
+    return (
+        max(0, x0 - left_pad),
+        max(0, y0 - top_pad),
+        min(width, x1 + right_pad),
+        min(height, y1 + bottom_pad),
+    )
+
+
+def _is_extreme_edge_candidate(
+    candidate: StructuralRescueCandidate,
+    *,
+    width: int,
+    height: int,
+    margin_px: int = 10,
+) -> bool:
+    """Identify candidates close enough to a canvas edge to need rescue context."""
+
+    x0, y0, x1, y1 = candidate.box
+    return (
+        x0 <= margin_px
+        or y0 <= margin_px
+        or width - x1 <= margin_px
+        or height - y1 <= margin_px
+    )
+
+
+def _symmetric_context_box(
+    *,
+    center_x: float,
+    center_y: float,
+    target_width: int,
+    target_height: int,
+    width: int,
+    height: int,
+) -> tuple[int, int, int, int]:
+    """Build a centered window, then shift it into the image canvas."""
+
+    x0 = round(center_x - target_width / 2.0)
+    y0 = round(center_y - target_height / 2.0)
+    x1 = x0 + target_width
+    y1 = y0 + target_height
+    if x0 < 0:
+        x1 += -x0
+        x0 = 0
+    if x1 > width:
+        x0 -= x1 - width
+        x1 = width
+    if y0 < 0:
+        y1 += -y0
+        y0 = 0
+    if y1 > height:
+        y0 -= y1 - height
+        y1 = height
+    return (
+        max(0, x0),
+        max(0, y0),
+        min(width, x1),
+        min(height, y1),
+    )
+
+
+def _local_roi_box(
+    global_box: tuple[int, int, int, int],
+    crop_box: tuple[int, int, int, int],
+) -> tuple[int, int, int, int]:
+    """Transform a global candidate box into one clamped crop-local box."""
+
+    x0, y0, x1, y1 = global_box
+    cx0, cy0, cx1, cy1 = crop_box
+    return (
+        max(0, min(cx1 - cx0, x0 - cx0)),
+        max(0, min(cy1 - cy0, y0 - cy0)),
+        max(0, min(cx1 - cx0, x1 - cx0)),
+        max(0, min(cy1 - cy0, y1 - cy0)),
+    )
+
+
+def _marked_review_crop(
+    crop: Any,
+    local_roi: tuple[int, int, int, int],
+    *,
+    min_short_side: int,
+) -> tuple[Any, tuple[int, int, int, int], tuple[int, int], float]:
+    """Draw a thin ROI box, then resize it for the rescue VLM."""
+
+    np = _require_numpy()
+    image = Image.fromarray(np.asarray(crop, dtype=np.uint8), mode="RGB")
+    draw = ImageDraw.Draw(image)
+    short_side = min(image.size)
+    line_width = max(1, round(short_side / 160))
+    x0, y0, x1, y1 = local_roi
+    draw.rectangle(
+        (x0, y0, max(x0, x1 - 1), max(y0, y1 - 1)),
+        outline=(255, 32, 32),
+        width=line_width,
+    )
+    resize_scale = max(1.0, min_short_side / max(1, short_side))
+    if resize_scale != 1.0:
+        size = (
+            max(1, round(image.width * resize_scale)),
+            max(1, round(image.height * resize_scale)),
+        )
+        image = image.resize(size, resample=Image.Resampling.LANCZOS)
+    scaled_roi = tuple(
+        max(0, min(limit, round(value * resize_scale)))
+        for value, limit in zip(
+            local_roi,
+            (image.width, image.height, image.width, image.height),
+        )
+    )
+    return np.asarray(image, dtype=np.uint8), scaled_roi, image.size, resize_scale
 
 
 def _audit_files(prepared: ChangePreparedPair | None = None) -> dict[str, str]:

@@ -153,6 +153,7 @@ class PointProvenance(BaseModel):
     source: Literal[
         "qwen_point",
         "semantic_component_centroid",
+        "yolo_box_center",
         "yolo_obb_center",
         "fused",
     ] = "qwen_point"
@@ -162,9 +163,19 @@ class PointProvenance(BaseModel):
     detector_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     obb_polygon_local_px: list[list[float]] | None = None
     obb_polygon_global_px: list[list[float]] | None = None
-    detector_task: Literal["obb"] | None = None
+    bbox_xyxy_local_px: list[float] | None = None
+    bbox_xyxy_global_px: list[float] | None = None
+    detector_task: Literal["obb", "detect"] | None = None
     detector_source_dataset: str | None = None
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    source_backend_names: list[str] = Field(default_factory=list)
+    source_model_ids: list[str] = Field(default_factory=list)
+    source_confidences: list[float] = Field(default_factory=list)
+    source_classes: list[str] = Field(default_factory=list)
+    source_weights_sha256: list[str] = Field(default_factory=list)
+    consensus_size: int = Field(default=1, ge=1)
+    fusion_method: str | None = None
+    review_status: str | None = None
 
 
 class GlobalPointObservation(BaseModel):
@@ -282,7 +293,7 @@ class CountingBackendAttemptAudit(BaseModel):
 
     backend_name: str = Field(min_length=1)
     backend_kind: str = Field(min_length=1)
-    phase: Literal["primary", "fallback", "zero_review"]
+    phase: Literal["primary", "ensemble", "fallback", "zero_review"]
     status: Literal["succeeded", "partial", "failed", "unavailable"]
     reason_code: str | None = None
     error_type: str | None = None
@@ -299,3 +310,35 @@ class CountingExecutionAudit(BaseModel):
     sample_id: str = Field(min_length=1)
     target: str = Field(min_length=1)
     attempts: list[CountingBackendAttemptAudit] = Field(default_factory=list)
+
+
+class DisagreementDecision(BaseModel):
+    """One bounded VLM decision for a requested detector conflict."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    conflict_id: str = Field(min_length=1)
+    decision: Literal["accept_one", "accept_multiple", "reject_all", "uncertain"]
+    accepted_candidate_ids: list[str] = Field(default_factory=list)
+    instance_count: int = Field(ge=0)
+    reason: str = Field(default="", max_length=240)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "DisagreementDecision":
+        if self.decision == "accept_one" and self.instance_count != 1:
+            raise ValueError("accept_one must report one instance")
+        if self.decision == "accept_multiple" and self.instance_count < 2:
+            raise ValueError("accept_multiple must report at least two instances")
+        if self.decision == "reject_all" and self.instance_count != 0:
+            raise ValueError("reject_all must report zero instances")
+        if self.decision == "uncertain" and self.instance_count != 0:
+            raise ValueError("uncertain must report zero committed instances")
+        return self
+
+
+class DisagreementReview(BaseModel):
+    """Strict response for one expert-disagreement review call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    decisions: list[DisagreementDecision] = Field(default_factory=list)

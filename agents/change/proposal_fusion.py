@@ -5,7 +5,9 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from collections.abc import Mapping
-from typing import Any
+from collections.abc import Sequence
+from collections import Counter
+from typing import Any, Literal
 
 from agents.change.schema import ChangeProposal, HarmonizationDecision, RegistrationReport
 from agents.change.settings import ChangeProposalSettings, ChangeReliabilitySettings
@@ -33,6 +35,19 @@ def compute_reliabilities(
         }
         return reliability, {"enabled": False, "raw": reliability.copy()}
 
+    semantic_raw = _semantic_reliability(
+        semantic_diagnostics,
+        confidence_floor=settings.semantic_confidence_floor,
+    )
+    stability_multiplier = (
+        semantic_diagnostics.get("temporal_stability_multiplier", 1.0)
+        if semantic_diagnostics
+        else 1.0
+    )
+    if not isinstance(stability_multiplier, (int, float)) or not math.isfinite(
+        float(stability_multiplier)
+    ):
+        stability_multiplier = 1.0
     raw = {
         "registration": _registration_reliability(
             registration_report, settings=settings
@@ -41,10 +56,7 @@ def compute_reliabilities(
             feature_diagnostics,
             residual_scale=settings.feature_residual_scale,
         ),
-        "semantic": _semantic_reliability(
-            semantic_diagnostics,
-            confidence_floor=settings.semantic_confidence_floor,
-        ),
+        "semantic": _clamp(semantic_raw * float(stability_multiplier)),
         "low_level": _harmonization_reliability(harmonization_decision),
     }
     reliability = {
@@ -60,8 +72,125 @@ def compute_reliabilities(
             "min_branch_reliability": settings.min_branch_reliability,
             "semantic_confidence_floor": settings.semantic_confidence_floor,
             "feature_residual_scale": settings.feature_residual_scale,
+            "temporal_stability_multiplier": float(stability_multiplier),
+            "semantic_reliability_before_temporal_stability": semantic_raw,
         },
     }
+
+
+def compute_temporal_semantic_stability(
+    probabilities_t1: Any,
+    probabilities_t2: Any,
+    *,
+    pif_mask: Any | None,
+    registration_valid_mask: Any | None = None,
+    class_names: Sequence[str] | None = None,
+    neutral_labels: Sequence[str] = (),
+    score_map: Any | None = None,
+    enabled: bool = False,
+    soft_flip_rate: float = 0.15,
+    hard_flip_rate: float = 0.50,
+    floor: float = 0.25,
+) -> dict[str, object]:
+    """Measure per-expert label stability inside unchanged PIF pixels.
+
+    The metric is always reported when a usable mask exists.  The multiplier
+    remains one unless explicitly enabled by settings, so diagnostics cannot
+    silently retune a production run.
+    """
+
+    np = _require_numpy()
+    first = np.asarray(probabilities_t1)
+    second = np.asarray(probabilities_t2)
+    if first.ndim != 3 or second.shape != first.shape:
+        raise ValueError("SEMANTIC_TEMPORAL_STABILITY_SHAPE_INVALID")
+    valid = _resize_bool_mask(pif_mask, first.shape[1:], np=np)
+    if registration_valid_mask is not None:
+        valid &= _resize_bool_mask(registration_valid_mask, first.shape[1:], np=np)
+    pixel_count = int(np.count_nonzero(valid))
+    base: dict[str, object] = {
+        "temporal_stability_status": "available" if pixel_count else "unavailable",
+        "temporal_stability_enabled": bool(enabled),
+        "temporal_stability_multiplier": 1.0,
+        "pif_pixel_count": pixel_count,
+        "pif_label_flip_rate_all": None,
+        "pif_label_flip_rate_non_neutral": None,
+        "pif_mean_semantic_score": None,
+        "pif_p95_semantic_score": None,
+        "top_pif_flip_pairs": [],
+    }
+    if pixel_count == 0:
+        return base
+
+    labels_t1 = np.argmax(first, axis=0)
+    labels_t2 = np.argmax(second, axis=0)
+    flips = labels_t1 != labels_t2
+    flip_values = flips[valid]
+    flip_rate = float(np.mean(flip_values))
+    names = tuple(str(item) for item in (class_names or ()))
+    neutral_ids = {index for index, name in enumerate(names) if name in set(neutral_labels)}
+    non_neutral = valid & (
+        ~np.isin(labels_t1, tuple(neutral_ids)) | ~np.isin(labels_t2, tuple(neutral_ids))
+    ) if neutral_ids else valid.copy()
+    non_neutral_count = int(np.count_nonzero(non_neutral))
+    non_neutral_rate = (
+        float(np.count_nonzero(flips & non_neutral) / non_neutral_count)
+        if non_neutral_count else 0.0
+    )
+    pair_counter: Counter[tuple[str, str]] = Counter()
+    for source, target in zip(labels_t1[valid].tolist(), labels_t2[valid].tolist()):
+        if source != target:
+            pair_counter[(names[source] if source < len(names) else str(source), names[target] if target < len(names) else str(target))] += 1
+    base.update(
+        {
+            "pif_label_flip_rate_all": flip_rate,
+            "pif_label_flip_rate_non_neutral": non_neutral_rate,
+            "top_pif_flip_pairs": [
+                {"from_class": pair[0], "to_class": pair[1], "count": count}
+                for pair, count in pair_counter.most_common(10)
+            ],
+        }
+    )
+    if score_map is not None:
+        scores = np.asarray(score_map)
+        if scores.shape != first.shape[1:]:
+            scores = _resize_numeric_map(scores, first.shape[1:], np=np)
+        pif_scores = scores[valid]
+        base["pif_mean_semantic_score"] = float(np.mean(pif_scores))
+        base["pif_p95_semantic_score"] = float(np.percentile(pif_scores, 95))
+    if enabled:
+        if hard_flip_rate <= soft_flip_rate:
+            raise ValueError("SEMANTIC_TEMPORAL_STABILITY_THRESHOLDS_INVALID")
+        if flip_rate <= soft_flip_rate:
+            multiplier = 1.0
+        elif flip_rate >= hard_flip_rate:
+            multiplier = floor
+        else:
+            ratio = (flip_rate - soft_flip_rate) / (hard_flip_rate - soft_flip_rate)
+            multiplier = 1.0 + ratio * (floor - 1.0)
+        base["temporal_stability_multiplier"] = float(
+            max(floor, min(1.0, multiplier))
+        )
+    return base
+
+
+def _resize_bool_mask(value: Any, shape: tuple[int, int], *, np: Any) -> Any:
+    if value is None:
+        return np.ones(shape, dtype=bool)
+    mask = np.asarray(value)
+    if mask.ndim != 2:
+        raise ValueError("SEMANTIC_TEMPORAL_STABILITY_MASK_INVALID")
+    if mask.shape == shape:
+        return mask.astype(bool, copy=False)
+    rows = np.minimum(np.arange(shape[0]) * mask.shape[0] // shape[0], mask.shape[0] - 1)
+    cols = np.minimum(np.arange(shape[1]) * mask.shape[1] // shape[1], mask.shape[1] - 1)
+    return mask.astype(bool, copy=False)[rows[:, None], cols[None, :]]
+
+
+def _resize_numeric_map(value: Any, shape: tuple[int, int], *, np: Any) -> Any:
+    rows = np.minimum(np.arange(shape[0]) * value.shape[0] // shape[0], value.shape[0] - 1)
+    cols = np.minimum(np.arange(shape[1]) * value.shape[1] // shape[1], value.shape[1] - 1)
+    return value[rows[:, None], cols[None, :]]
 
 
 def _registration_reliability(
@@ -194,6 +323,103 @@ class ProposalFusionResult:
     component_masks: dict[str, Any]
 
 
+def fuse_semantic_evidence(
+    score_maps: Sequence[Any],
+    reliabilities: Sequence[float] | None = None,
+    *,
+    consensus_weight: float = 0.65,
+    union_weight: float = 0.35,
+) -> tuple[Any, dict[str, object]]:
+    """Fuse already taxonomy-independent semantic change maps.
+
+    This function intentionally accepts score maps only; it never receives or
+    averages expert class probabilities.
+    """
+
+    return _fuse_expert_maps(
+        score_maps,
+        reliabilities,
+        mode="semantic",
+        consensus_weight=consensus_weight,
+        union_weight=union_weight,
+    )
+
+
+def fuse_feature_evidence(
+    score_maps: Sequence[Any],
+    reliabilities: Sequence[float] | None = None,
+) -> tuple[Any | None, dict[str, object]]:
+    """Reliability-weight feature residual maps without requiring all experts."""
+
+    if not score_maps:
+        return None, {"method": "none", "expert_count": 0}
+    fused, diagnostics = _fuse_expert_maps(
+        score_maps,
+        reliabilities,
+        mode="feature",
+        consensus_weight=1.0,
+        union_weight=0.0,
+    )
+    diagnostics["method"] = "reliability_weighted_mean"
+    return fused, diagnostics
+
+
+def _fuse_expert_maps(
+    score_maps: Sequence[Any],
+    reliabilities: Sequence[float] | None,
+    *,
+    mode: str,
+    consensus_weight: float,
+    union_weight: float,
+) -> tuple[Any, dict[str, object]]:
+    np = _require_numpy()
+    cv2 = _require_cv2()
+    if not score_maps:
+        raise ValueError("CHANGE_EXPERT_MAPS_EMPTY")
+    if consensus_weight < 0.0 or union_weight < 0.0 or consensus_weight + union_weight <= 0.0:
+        raise ValueError("CHANGE_EXPERT_FUSION_WEIGHTS_INVALID")
+    weights = [1.0] * len(score_maps) if reliabilities is None else [
+        _clamp(value) for value in reliabilities
+    ]
+    if len(weights) != len(score_maps) or not any(value > 0.0 for value in weights):
+        raise ValueError("CHANGE_EXPERT_RELIABILITIES_INVALID")
+    first = np.asarray(score_maps[0], dtype=np.float32)
+    if first.ndim != 2 or not bool(np.isfinite(first).all()):
+        raise ValueError("CHANGE_EXPERT_MAP_INVALID")
+    height, width = first.shape
+    maps = []
+    for value in score_maps:
+        current = np.asarray(value, dtype=np.float32)
+        if current.ndim != 2 or not bool(np.isfinite(current).all()):
+            raise ValueError("CHANGE_EXPERT_MAP_INVALID")
+        if current.shape != (height, width):
+            current = cv2.resize(current, (width, height), interpolation=cv2.INTER_LINEAR)
+        maps.append(np.clip(current, 0.0, 1.0))
+    normalized = np.asarray(weights, dtype=np.float64)
+    normalized /= normalized.sum()
+    stack = np.stack(maps, axis=0)
+    weighted_mean = np.sum(stack * normalized[:, None, None], axis=0)
+    weighted_max = np.max(
+        stack * np.asarray(weights, dtype=np.float32)[:, None, None],
+        axis=0,
+    )
+    total = consensus_weight + union_weight
+    merged = (
+        consensus_weight * weighted_mean + union_weight * weighted_max
+    ) / total
+    return np.clip(merged, 0.0, 1.0).astype(np.float32, copy=False), {
+        "method": (
+            "semantic_consensus_union"
+            if mode == "semantic"
+            else "reliability_weighted_mean"
+        ),
+        "expert_count": len(maps),
+        "weights": [float(value) for value in normalized],
+        "consensus_weight": float(consensus_weight / total),
+        "union_weight": float(union_weight / total),
+    }
+
+
 def fuse_change_proposals(
     low_level_map: Any,
     feature_map: Any | None,
@@ -209,6 +435,11 @@ def fuse_change_proposals(
     learned_map: Any | None = None,
     learned_weight: float = 0.0,
     learned_requested: bool = False,
+    learned_mode: Literal["disabled", "shadow", "assist", "required"] = "disabled",
+    learned_rescue_threshold: float | None = None,
+    learned_rescue_min_reliability: float = 1.0,
+    learned_rescue_min_component_area_ratio: float | None = None,
+    learned_rescue_max_proposals: int = 6,
 ) -> ProposalFusionResult:
     """Fuse available score maps and extract deterministic V2 proposals."""
 
@@ -220,6 +451,20 @@ def fuse_change_proposals(
         raise ValueError("PROPOSAL_FUSION_MIN_PIF_INVALID")
     if fallback_reason is not None and not isinstance(fallback_reason, str):
         raise ValueError("PROPOSAL_FUSION_FALLBACK_REASON_INVALID")
+    if learned_mode not in {"disabled", "shadow", "assist", "required"}:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_MODE_INVALID")
+    if learned_requested and learned_mode == "disabled":
+        # Legacy injected clients predate the explicit mode field.  Preserve
+        # their old assist behavior; v2 clients always pass a real mode.
+        learned_mode = "assist"
+    if not 0.0 <= float(learned_rescue_min_reliability) <= 1.0:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_RELIABILITY_INVALID")
+    if learned_rescue_threshold is not None and not 0.0 <= float(learned_rescue_threshold) <= 1.0:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_THRESHOLD_INVALID")
+    if learned_rescue_min_component_area_ratio is not None and not 0.0 < float(learned_rescue_min_component_area_ratio) < 1.0:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_AREA_INVALID")
+    if isinstance(learned_rescue_max_proposals, bool) or learned_rescue_max_proposals < 1:
+        raise ValueError("PROPOSAL_FUSION_LEARNED_MAX_PROPOSALS_INVALID")
     if (
         isinstance(learned_weight, bool)
         or not isinstance(learned_weight, (int, float))
@@ -248,7 +493,8 @@ def fuse_change_proposals(
         ).astype(np.float32, copy=False)
 
     requested_component_names = list(_COMPONENT_NAMES)
-    if learned_requested or learned_map is not None:
+    normal_learned_enabled = learned_mode in {"assist", "required"}
+    if normal_learned_enabled and (learned_map is not None or learned_requested):
         requested_component_names.append("learned")
     if learned_map is not None:
         validated_learned = _validate_score_map(learned_map, name="learned", np=np)
@@ -323,6 +569,42 @@ def fuse_change_proposals(
     resolved_fallback_reason = fallback_reason
     if missing_components and resolved_fallback_reason is None:
         resolved_fallback_reason = "MISSING_COMPONENT_MAP"
+    learned_reliability = resolved_reliability.get("learned", 0.0)
+    learned_rescue_mask = np.zeros((height, width), dtype=bool)
+    if (
+        learned_mode in {"assist", "required"}
+        and "learned" in canonical_maps
+        and learned_rescue_threshold is not None
+        and learned_reliability >= float(learned_rescue_min_reliability)
+    ):
+        learned_rescue_mask = canonical_maps["learned"] >= float(learned_rescue_threshold)
+        if valid_overlap is not None:
+            learned_rescue_mask &= valid_overlap
+        rescue_count, rescue_labels, rescue_stats, _ = cv2.connectedComponentsWithStats(
+            learned_rescue_mask.astype(np.uint8), connectivity=8
+        )
+        area_floor = (
+            settings.min_component_area_ratio
+            if learned_rescue_min_component_area_ratio is None
+            else max(settings.min_component_area_ratio, float(learned_rescue_min_component_area_ratio))
+        )
+        rescue_components: list[tuple[float, int, int]] = []
+        for label_index in range(1, rescue_count):
+            area = int(rescue_stats[label_index, cv2.CC_STAT_AREA])
+            ratio = area / float(height * width)
+            if area_floor <= ratio <= settings.max_component_area_ratio:
+                component = rescue_labels == label_index
+                values = canonical_maps["learned"][component]
+                score = 0.7 * float(np.mean(values)) + 0.3 * float(np.max(values))
+                rescue_components.append((score, area, label_index))
+        rescue_components.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        filtered_rescue = np.zeros_like(learned_rescue_mask)
+        for _, _, label_index in rescue_components[:learned_rescue_max_proposals]:
+            filtered_rescue[rescue_labels == label_index] = True
+        learned_rescue_mask = filtered_rescue
+        fused_score[learned_rescue_mask] = np.maximum(
+            fused_score[learned_rescue_mask], canonical_maps["learned"][learned_rescue_mask]
+        )
     common_diagnostics: dict[str, object] = {
         "available_components": available_components,
         "missing_components": missing_components,
@@ -347,6 +629,14 @@ def fuse_change_proposals(
         "score_p95": float(np.quantile(fused_score, 0.95)),
         "score_max": float(np.max(fused_score)),
         "version": PROPOSAL_FUSION_VERSION,
+        "learned_mode": learned_mode,
+        "learned_normal_fusion_enabled": normal_learned_enabled and "learned" in available_components,
+        "learned_rescue_enabled": learned_mode in {"assist", "required"} and learned_rescue_threshold is not None,
+        "learned_reliability": learned_reliability,
+        "learned_rescue_threshold": learned_rescue_threshold,
+        "learned_rescue_min_component_area_ratio": learned_rescue_min_component_area_ratio,
+        "learned_rescue_max_proposals": int(learned_rescue_max_proposals),
+        "learned_rescue_pixel_count": int(np.count_nonzero(learned_rescue_mask)),
     }
 
     if float(np.max(fused_score)) < settings.threshold_floor:
@@ -396,6 +686,7 @@ def fuse_change_proposals(
     binary = fused_score > threshold
     if valid_overlap is not None:
         binary &= valid_overlap
+    binary |= learned_rescue_mask
     close_kernel = np.ones(
         (settings.mask_close_kernel, settings.mask_close_kernel), dtype=np.uint8
     )
@@ -408,16 +699,20 @@ def fuse_change_proposals(
         # Closing can dilate pixels back across the comparison-canvas edge.
         # Re-apply the hard validity invariant after every morphology step.
         binary &= valid_overlap
+    component_maps_for_output = dict(canonical_maps)
+    if learned_mode == "shadow":
+        component_maps_for_output.pop("learned", None)
     proposals, component_masks, component_diagnostics, component_count = _components(
         binary,
         fused_score=fused_score,
-        component_maps=canonical_maps,
+        component_maps=component_maps_for_output,
         settings=settings,
         cv2=cv2,
         np=np,
         effective_weights=effective_weights,
         reliability=resolved_reliability,
         registration_confidence=common_diagnostics["registration_confidence"],
+        learned_rescue_mask=learned_rescue_mask,
     )
     return ProposalFusionResult(
         fused_score_map=fused_score,
@@ -432,7 +727,13 @@ def fuse_change_proposals(
             "reason_code": None,
             "component_count": component_count,
             "proposal_count": len(proposals),
-            "components": component_diagnostics,
+        "components": component_diagnostics,
+            "learned_rescue_applied": bool(np.any(learned_rescue_mask)),
+            "learned_rescue_component_count": int(
+                cv2.connectedComponentsWithStats(
+                    learned_rescue_mask.astype(np.uint8), connectivity=8
+                )[0] - 1
+            ),
         },
     )
 
@@ -526,6 +827,7 @@ def _components(
     effective_weights: Mapping[str, float],
     reliability: Mapping[str, float],
     registration_confidence: float,
+    learned_rescue_mask: Any | None = None,
 ) -> tuple[list[ChangeProposal], dict[str, Any], list[dict[str, object]], int]:
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
         binary.astype(np.uint8), connectivity=8
@@ -545,6 +847,10 @@ def _components(
         ):
             continue
         component = labels == label_index
+        learned_rescue = bool(
+            learned_rescue_mask is not None
+            and np.any(np.asarray(learned_rescue_mask)[component])
+        )
         component_scores = {
             name: float(np.mean(score_map[component]))
             for name, score_map in component_maps.items()
@@ -558,6 +864,7 @@ def _components(
                 "area_ratio": area_ratio,
                 "max_fused_score": float(np.max(fused_score[component])),
                 "component_scores": component_scores,
+                "learned_rescue": learned_rescue,
             }
         )
 
@@ -627,6 +934,12 @@ def _components(
                 "mean_low_level": component_scores.get("low_level"),
                 "mean_feature": component_scores.get("feature"),
                 "mean_semantic": component_scores.get("semantic"),
+                "learned_rescue": bool(candidate["learned_rescue"]),
+                "source": (
+                    "learned_rescue"
+                    if bool(candidate["learned_rescue"])
+                    else "normal_fusion"
+                ),
             }
         )
     return proposals, component_masks, component_diagnostics, len(candidates)

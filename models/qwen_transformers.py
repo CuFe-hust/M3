@@ -161,7 +161,7 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         缓存条目通过重新生成恢复。"""
         cache_error: str | None = None
         cached = None
-        if self.cache is not None:
+        if self.cache is not None and request_meta.cache_policy != "bypass":
             try:
                 cached = self.cache.load(request_meta.request_hash)
             except ModelCacheError as error:
@@ -258,7 +258,7 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
             raise QwenTransformersError(f"Local Qwen generation failed: {error}") from error
         rendered_raw = _render_raw_responses(raw_responses)
         cache_write_error: str | None = None
-        if self.cache:
+        if self.cache and request_meta.cache_policy != "bypass":
             cache_write_error = self._persist_cache_entry(
                 request_hash=request_meta.request_hash,
                 raw_response=rendered_raw,

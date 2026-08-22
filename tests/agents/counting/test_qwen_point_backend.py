@@ -15,7 +15,7 @@ import pytest
 from PIL import Image
 from pydantic import BaseModel, ConfigDict
 
-from agents.counting.backends.qwen_point import QwenPointCountingBackend
+from agents.counting.backends.qwen_point import QwenPointCountingBackend, _disagreement_crop
 from agents.counting.backends.base import CountingBackendOutcome, CountingRequest
 from agents.counting.schema import (
     CountTargetSpec,
@@ -138,6 +138,46 @@ def test_supports_all_counting_targets() -> None:
     backend = _backend(_FakeClient())
     assert backend.supports(_TARGET) is True
     assert backend.supports(_TARGET, hints={"x": 1}) is True
+
+
+def test_disagreement_crop_marks_candidates_with_crop_local_geometry() -> None:
+    image = Image.new("RGB", (120, 100), "white")
+    conflict = {
+        "conflict_id": "a|b",
+        "candidate_ids": ["a", "b"],
+        "candidate_points": [
+            {
+                "global_id": "a",
+                "global_x_px": 30,
+                "global_y_px": 30,
+                "provenance": {"bbox_xyxy_global_px": [20, 20, 40, 40]},
+            },
+            {
+                "global_id": "b",
+                "global_x_px": 80,
+                "global_y_px": 70,
+                "provenance": {
+                    "obb_polygon_global_px": [[70, 60], [90, 60], [90, 80], [70, 80]]
+                },
+            },
+        ],
+    }
+
+    crop, digest, annotations = _disagreement_crop(
+        image, conflict, padding_ratio=0.35
+    )
+
+    assert crop.size[0] < image.size[0]
+    assert crop.size[1] < image.size[1]
+    assert len(digest) == 64
+    assert [(item["marker"], item["candidate_id"]) for item in annotations] == [
+        ("A", "a"),
+        ("B", "b"),
+    ]
+    assert annotations[0]["geometry"]["type"] == "bbox"
+    assert annotations[1]["geometry"]["type"] == "obb_polygon"
+    assert annotations[0]["geometry"]["xyxy"][0] >= 0
+    assert annotations[1]["geometry"]["points"][0][0] >= 0
 
 
 # ── 执行 / execution ───────────────────────────────────────────────────────

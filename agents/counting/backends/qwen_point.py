@@ -8,7 +8,7 @@ import json
 from collections.abc import Callable
 from typing import Any
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from agents.base import CallBudget
 from agents.counting.backends.base import (
@@ -20,6 +20,7 @@ from agents.counting.backends.base import (
 from agents.counting.point_pipeline import PointCountingOrchestrator
 from agents.counting.schema import (
     CountTargetSpec,
+    DisagreementReview,
     GlobalPointObservation,
     PixelRect,
     SeamDecision,
@@ -49,6 +50,8 @@ class QwenPointCountingBackend:
         empty_review_prompt_version: str | None = None,
         seam_prompt: str | None = None,
         seam_prompt_version: str | None = None,
+        disagreement_prompt: str | None = None,
+        disagreement_prompt_version: str | None = None,
         strategy_resolver: Callable[[CountTargetSpec], CountingTargetStrategy]
         | None = None,
     ) -> None:
@@ -62,6 +65,9 @@ class QwenPointCountingBackend:
         )
         self._seam_prompt = seam_prompt
         self._seam_prompt_version = seam_prompt_version
+        self._disagreement_prompt = disagreement_prompt or self._empty_review_prompt
+        self._disagreement_prompt_version = disagreement_prompt_version or self._prompt_version
+        self.last_disagreement_review_trace: dict[str, object] = {}
         self._strategy_resolver = strategy_resolver
 
     def is_enabled(self) -> bool:
@@ -168,6 +174,202 @@ class QwenPointCountingBackend:
                 ),
             },
         )
+
+    async def review_disagreements(
+        self,
+        *,
+        request: CountingRequest,
+        conflicts: list[dict[str, Any]],
+        context: object,
+    ) -> DisagreementReview:
+        """Review a bounded batch of unresolved detector conflicts once."""
+
+        require_model_cache_identity(self._client, component="qwen_disagreement")
+        ordered = sorted(conflicts, key=lambda item: str(item.get("conflict_id", "")))
+        selected = ordered[: self._counting.max_disagreement_regions]
+        truncated = ordered[self._counting.max_disagreement_regions :]
+        content: list[dict[str, Any]] = []
+        image_digests: list[str] = []
+        for conflict in selected:
+            crop, crop_hash, annotations = _disagreement_crop(
+                request.image,
+                conflict,
+                padding_ratio=self._counting.disagreement_context_padding_ratio,
+            )
+            image_digests.append(crop_hash)
+            content.append(
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "conflict_id": conflict.get("conflict_id"),
+                            "target": request.target.canonical_label,
+                            "candidate_ids": conflict.get("candidate_ids", []),
+                            "candidate_annotations": annotations,
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+            with io.BytesIO() as buffer:
+                crop.save(buffer, format="JPEG", quality=95)
+                content.append(
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_to_data_url(buffer.getvalue())},
+                    }
+                )
+        messages = [
+            {"role": "system", "content": self._disagreement_prompt},
+            {"role": "user", "content": content},
+        ]
+        digest = hashlib.sha256("|".join(image_digests).encode("utf-8")).hexdigest()
+        request_hash = build_request_hash(
+            model=require_model_cache_identity(self._client, component="qwen_disagreement").model,
+            generation=require_model_cache_identity(self._client, component="qwen_disagreement").generation_payload(),
+            prompt_version=self._disagreement_prompt_version,
+            messages=messages,
+            image_sha256=digest,
+            target_spec=request.target.model_dump(mode="json"),
+            response_schema=DisagreementReview.model_json_schema(),
+            client_version=require_model_cache_identity(self._client, component="qwen_disagreement").client_version,
+        )
+        budget = getattr(context, "call_budget", None)
+        if budget is not None:
+            budget.reserve_qwen()
+        self.last_disagreement_review_trace = {
+            "disagreement_review_triggered": True,
+            "review_backend": self.name,
+            "requested_conflict_ids": [str(item.get("conflict_id")) for item in ordered],
+            "reviewed_conflict_ids": [str(item.get("conflict_id")) for item in selected],
+            "truncated_conflict_ids": [str(item.get("conflict_id")) for item in truncated],
+            "review_request_hash": request_hash,
+            "review_failure": None,
+        }
+        try:
+            result = await self._client.complete_json(
+                messages=messages,
+                response_model=DisagreementReview,
+                request_meta=RequestMeta(
+                    request_id=f"{request.sample.sample_id}:detector-disagreement-review",
+                    request_hash=request_hash,
+                    prompt_version=self._disagreement_prompt_version,
+                    sample_id=request.sample.sample_id,
+                    artifact_dir=request.artifact_dir / "disagreement_review",
+                ),
+            )
+        except Exception as error:
+            self.last_disagreement_review_trace["review_failure"] = type(error).__name__
+            raise
+        return DisagreementReview.model_validate(result)
+
+
+def _disagreement_crop(
+    image: Image.Image,
+    conflict: dict[str, Any],
+    *,
+    padding_ratio: float,
+) -> tuple[Image.Image, str, list[dict[str, object]]]:
+    """Render one bounded conflict region with crop-local candidate markers."""
+
+    boxes: list[tuple[float, float, float, float]] = []
+    centers: list[tuple[float, float]] = []
+    for point in conflict.get("candidate_points", []):
+        if not isinstance(point, dict):
+            continue
+        centers.append((float(point.get("global_x_px", 0)), float(point.get("global_y_px", 0))))
+        provenance = point.get("provenance")
+        if isinstance(provenance, dict):
+            raw_box = provenance.get("bbox_xyxy_global_px")
+            if isinstance(raw_box, list) and len(raw_box) == 4:
+                boxes.append(tuple(float(value) for value in raw_box))
+    if boxes:
+        left = min(box[0] for box in boxes)
+        top = min(box[1] for box in boxes)
+        right = max(box[2] for box in boxes)
+        bottom = max(box[3] for box in boxes)
+    elif centers:
+        left = min(center[0] for center in centers) - 32
+        top = min(center[1] for center in centers) - 32
+        right = max(center[0] for center in centers) + 32
+        bottom = max(center[1] for center in centers) + 32
+    else:
+        left, top, right, bottom = 0, 0, image.width, image.height
+    width = max(1.0, right - left)
+    height = max(1.0, bottom - top)
+    pad_x = width * padding_ratio
+    pad_y = height * padding_ratio
+    bounds = (
+        max(0, int(left - pad_x)),
+        max(0, int(top - pad_y)),
+        min(image.width, int(right + pad_x + 1)),
+        min(image.height, int(bottom + pad_y + 1)),
+    )
+    if bounds[0] >= bounds[2] or bounds[1] >= bounds[3]:
+        bounds = (0, 0, image.width, image.height)
+    crop = image.crop(bounds)
+    draw = ImageDraw.Draw(crop)
+    point_by_id = {
+        str(point.get("global_id")): point
+        for point in conflict.get("candidate_points", [])
+        if isinstance(point, dict) and point.get("global_id")
+    }
+    annotations: list[dict[str, object]] = []
+    colors = ((255, 64, 64), (64, 224, 96), (64, 144, 255), (255, 192, 64))
+    for index, candidate_id in enumerate(conflict.get("candidate_ids", [])):
+        candidate_id = str(candidate_id)
+        point = point_by_id.get(candidate_id, {})
+        marker = chr(65 + index) if index < 26 else f"A{index - 25}"
+        provenance = point.get("provenance") if isinstance(point, dict) else None
+        geometry: dict[str, object] = {}
+        if isinstance(provenance, dict):
+            polygon = provenance.get("obb_polygon_global_px")
+            if isinstance(polygon, list) and len(polygon) >= 3:
+                local_polygon = [
+                    [float(vertex[0]) - bounds[0], float(vertex[1]) - bounds[1]]
+                    for vertex in polygon
+                    if isinstance(vertex, list) and len(vertex) >= 2
+                ]
+                if len(local_polygon) >= 3:
+                    geometry = {"type": "obb_polygon", "points": local_polygon}
+                    draw.line([tuple(vertex) for vertex in local_polygon + [local_polygon[0]]], fill=colors[index % len(colors)], width=3)
+            if not geometry:
+                bbox = provenance.get("bbox_xyxy_global_px")
+                if isinstance(bbox, list) and len(bbox) == 4:
+                    local_bbox = [
+                        float(bbox[0]) - bounds[0],
+                        float(bbox[1]) - bounds[1],
+                        float(bbox[2]) - bounds[0],
+                        float(bbox[3]) - bounds[1],
+                    ]
+                    geometry = {"type": "bbox", "xyxy": local_bbox}
+                    draw.rectangle(local_bbox, outline=colors[index % len(colors)], width=3)
+        center = (
+            float(point.get("global_x_px", (bounds[0] + bounds[2]) / 2)) - bounds[0],
+            float(point.get("global_y_px", (bounds[1] + bounds[3]) / 2)) - bounds[1],
+        )
+        if not geometry:
+            radius = max(4.0, float(point.get("radius_px", 4.0)))
+            geometry = {"type": "point", "xy": [center[0], center[1]], "radius": radius}
+            draw.ellipse(
+                (center[0] - radius, center[1] - radius, center[0] + radius, center[1] + radius),
+                outline=colors[index % len(colors)],
+                width=3,
+            )
+        label_box = (center[0] + 4, center[1] + 4, center[0] + 20, center[1] + 20)
+        draw.rectangle(label_box, fill=colors[index % len(colors)])
+        draw.text((center[0] + 7, center[1] + 5), marker, fill=(0, 0, 0))
+        annotations.append(
+            {
+                "marker": marker,
+                "candidate_id": candidate_id,
+                "geometry": geometry,
+            }
+        )
+    with io.BytesIO() as buffer:
+        crop.save(buffer, format="JPEG", quality=95)
+        digest = hashlib.sha256(buffer.getvalue()).hexdigest()
+    return crop, digest, annotations
 
 
 class _PipelineTileCallback:

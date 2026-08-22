@@ -10,21 +10,32 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Literal
+
+from PIL import Image
 
 from agents.base import AgentContext, AgentExecution
 from agents.change.perception import (
     ChangePerceptionError,
     ChangePerceptionPipeline,
+    SemanticExpertBinding,
 )
 from agents.change.preprocess import prepare_pair, publish_change_proposals
 from agents.change.registration import RegistrationError
-from agents.change.reviewer import review_result
-from agents.change.schema import ChangePreprocessResult
+from agents.change.reviewer import meaningful_proposals, review_outcome, review_result
+from agents.change.schema import (
+    CANONICAL_NO_CHANGE,
+    BuildingRescueReview,
+    ChangeAdjudicationResult,
+    ChangeInitialResult,
+    ChangePreprocessResult,
+    SemanticTransition,
+)
 from agents.change.settings import AgentChangeSettings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
-from agents.schema import AgentName, AgentResult
+from agents.schema import AgentName, AgentResult, VisualEvidence
 from agents.visual_base import PromptBinding
 from data.schema import UnifiedSample
 from models.base import (
@@ -39,6 +50,7 @@ from models.images import UnsupportedImageFormatError, detect_image_mime, image_
 
 # Runtime prompt authority is injected from the versioned PromptCatalog.
 InputMode = Literal["raw_only", "harmonized_only", "dual_path"]
+EvidenceStage = Literal["initial", "adjudication"]
 
 
 def resolve_input_mode(settings: AgentChangeSettings) -> InputMode:
@@ -68,16 +80,20 @@ class ChangeAgent:
         client: VisionLanguageClient,
         *,
         semantic_client: DenseSemanticClient | None = None,
+        semantic_experts: tuple[SemanticExpertBinding, ...] = (),
         learned_change_client: LearnedChangeClient | None = None,
         prompt: PromptBinding | None = None,
+        building_rescue_prompt: PromptBinding | None = None,
         settings: AgentChangeSettings | None = None,
     ) -> None:
         self._client = client
         self._semantic_client = semantic_client
+        self._semantic_experts = tuple(semantic_experts)
         self._learned_change_client = learned_change_client
         if prompt is None:
             raise ValueError("ChangeAgent requires an injected PromptBinding")
         self._prompt = prompt
+        self._building_rescue_prompt = building_rescue_prompt or prompt
         self._settings = settings or AgentChangeSettings()
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
@@ -116,104 +132,218 @@ class ChangeAgent:
         # budget 或调用模型之前稳定失败。
         mode = resolve_input_mode(settings)
         content, image_hashes, image_manifest, evidence_audit = self._build_evidence(
-            sample, context, preprocess, mode
+            sample, context, preprocess, mode, stage="initial"
         )
         perception_audit = _perception_audit(
             preprocess,
             settings=settings,
         )
-        payload: dict[str, Any] = {
-            "question": sample.question,
-            "task": sample.task,
-            "coordinate_frame": "normalized_0_999_top_left",
-            "input_mode": mode,
-            "evidence_audit": evidence_audit,
-            "temporal_roles": [ref.role for ref in sample.images],
-            "image_manifest": image_manifest,
-            "harmonization": {
-                "status": preprocess.decision.status,
-                "reason_codes": preprocess.decision.reason_codes,
-                "used_for_proposal": preprocess.decision.used_for_proposal,
-            },
-            "registration": _registration_payload(preprocess),
-            "perception": perception_audit,
-            "proposals": [
-                {
-                    "proposal_id": item.proposal_id,
-                    "box": item.box,
-                    "score": round(item.score, 6),
-                    "source": item.source,
-                    "component_scores": {
-                        name: round(score, 6)
-                        for name, score in item.component_scores.items()
-                    },
-                    "semantic_transition": (
-                        item.semantic_transition.model_dump(mode="json")
-                        if item.semantic_transition is not None
-                        else None
-                    ),
-                    "effective_weights": item.effective_weights,
-                    "reliability": item.reliability,
-                    "registration_confidence": item.registration_confidence,
-                }
-                for item in preprocess.proposals
-            ],
-            "semantic_transition_note": (
-                "Semantic transitions are auxiliary model evidence, not ground truth; "
-                "inspect raw T1/T2 evidence before confirming or explaining change."
-            ),
-            "empty_proposals_instruction": (
-                "Inspect raw full T1/T2; do not infer no change from an empty proposal list."
-            ),
-        }
+        perception_payload = json.loads(json.dumps(perception_audit))
+        perception_payload.pop("semantic_ensemble", None)
+        for metadata in perception_payload.get("proposal_metadata", []):
+            metadata.pop("semantic_expert_evidence", None)
+            metadata.pop("semantic_consensus", None)
+        payload = self._request_payload(
+            sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_payload,
+            image_manifest=image_manifest, evidence_audit=evidence_audit, stage="initial",
+        )
         content.append({"type": "text", "text": json.dumps(payload, ensure_ascii=False)})
-        structured_prompt = (
-            self._prompt.text
-            + "\n\nReturn valid JSON only. Set agent_name to 'change_agent'; "
-            "put the concise final answer in answer, retain relevant labeled boxes "
-            "in evidence_items and boxes, use concise factual evidence strings, "
-            "treat semantic_transition as auxiliary evidence rather than ground truth "
-            "and verify it against raw T1/T2 crops, "
-            "record proposal ids and evidence path types in geometry, and set "
-            "status to 'completed'."
-        )
-        messages: list[dict[str, Any]] = [
-            {"role": "system", "content": structured_prompt},
-            {"role": "user", "content": content},
-        ]
-        request_hash = build_request_hash(
-            model=identity.model,
-            generation=identity.generation_payload(),
-            prompt_version=self._prompt.version,
-            messages=messages,
-            image_sha256="|".join(image_hashes),
-            response_schema=AgentResult.model_json_schema(),
-            client_version=identity.client_version,
-            model_revision=identity.revision,
-        )
-
-        # Consume exactly one Qwen budget entry before the call.
-        # 调用前恰好消费一次 Qwen budget。
-        context.call_budget.reserve_qwen()
-        result = await self._client.complete_json(
-            messages=messages,
-            response_model=AgentResult,
-            request_meta=RequestMeta(
-                request_id=f"{sample.sample_id}:{self.name}",
-                request_hash=request_hash,
-                prompt_version=self._prompt.version,
-                sample_id=sample.sample_id,
-                artifact_dir=context.artifact_dir / self.name,
-            ),
+        result, request_hash = await self._call_vlm_json(
+            sample=sample, context=context, identity=identity, content=content,
+            image_hashes=image_hashes, response_model=ChangeInitialResult, decision_stage="initial",
         )
         if result.agent_name != self.name:
-            raise AgentExecutionError(
-                self.name,
-                sample.sample_id,
-                cause=f"model returned agent_name {result.agent_name!r}",
-            )
+            raise AgentExecutionError(self.name, sample.sample_id, cause=f"model returned agent_name {result.agent_name!r}")
 
-        reviewed, review_warnings = review_result(result, preprocess.proposals, settings.review)
+        result = _normalize_positive_caption(result)
+        review = review_outcome(result, preprocess.proposals, settings.review, task=sample.task)
+        reviewed, initial_warnings = review.result, list(review.warnings)
+        adjudication_used = False
+        adjudication_request_hash: str | None = None
+        adjudication_candidate_ids: list[str] = []
+        adjudication_global_verdict: str | None = None
+        adjudication_verdicts: dict[str, str] = {}
+        adjudication_outcome: str | None = None
+        adjudication_merge: dict[str, object] | None = None
+        consistency_warnings: list[str] = []
+        final_warnings = initial_warnings
+        rescue_eligible = bool(preprocess.rescue_candidates)
+        rescue_triggered = False
+        rescue_request_hash: str | None = None
+        rescue_decision: str | None = None
+        rescue_failure: str | None = None
+        rescue_confirmed_reviews: dict[str, Any] = {}
+        rescue_selected_candidates: list[Any] = []
+        rescue_review_candidates: list[Any] = []
+        rescue_selection_audit: list[dict[str, object]] = []
+        rescue_model_final_answer: str | None = None
+        rescue_deterministic_final_answer: str | None = None
+        core_conflict_reasons = [
+            warning
+            for warning in initial_warnings
+            if warning == "CHANGE_RESULT_CONFLICT"
+            or warning.startswith("NEGATIVE_")
+        ]
+        if (
+            not _is_core_canonical_no_change(reviewed, task=sample.task)
+            and settings.review.adjudication_enabled
+            and review.route != "accept"
+        ):
+            selected = self._select_proposals(
+                meaningful_proposals(preprocess.proposals, settings.review) or preprocess.proposals,
+                limit=settings.evidence.adjudication_max_proposals,
+            )
+            adjudication_candidate_ids = [item.proposal_id for item in selected]
+            content, image_hashes, image_manifest, adjudication_audit = self._build_evidence(
+                sample, context, preprocess, mode, stage="adjudication", selected_proposals=selected,
+                attach_transient_context=any(
+                    reason == "POSITIVE_TRANSIENT_ONLY"
+                    for reason in review.route_reasons
+                ),
+            )
+            adjudication_payload = self._request_payload(
+                sample=sample, preprocess=preprocess, mode=mode, perception_audit=perception_payload,
+                image_manifest=image_manifest, evidence_audit=adjudication_audit, stage="adjudication",
+                first_pass={"answer": result.answer, "review_warnings": initial_warnings, "review_route_reasons": list(review.route_reasons)},
+                selected_proposals=selected,
+                transient_context_attached=bool(adjudication_audit.get("transient_context_attached")),
+            )
+            content.append({"type": "text", "text": json.dumps(adjudication_payload, ensure_ascii=False)})
+            adjudication, adjudication_request_hash = await self._call_vlm_json(
+                sample=sample, context=context, identity=identity, content=content, image_hashes=image_hashes,
+                response_model=ChangeAdjudicationResult, decision_stage="adjudication",
+            )
+            consistency_warnings = self._validate_adjudication(adjudication, adjudication_candidate_ids)
+            reviewed, adjudication_outcome, adjudication_merge = self._merge_adjudication(
+                adjudication, sample.task, consistency_warnings
+            )
+            reviewed, final_warnings = review_result(reviewed, preprocess.proposals, settings.review)
+            if adjudication_outcome == "negative":
+                final_warnings = [warning for warning in final_warnings if warning != "CHANGE_RESULT_CONFLICT"]
+                if not final_warnings:
+                    reviewed = reviewed.model_copy(update={"status": "completed"})
+            if adjudication_outcome == "unresolved":
+                final_warnings = list(dict.fromkeys([*final_warnings, "CHANGE_ADJUDICATION_UNRESOLVED"]))
+                reviewed = reviewed.model_copy(update={"status": "partial"})
+            adjudication_used = True
+            evidence_audit = adjudication_audit
+            adjudication_global_verdict = adjudication.global_review.verdict
+            adjudication_verdicts = {item.proposal_id: item.verdict for item in adjudication.candidate_reviews}
+        if (
+            _is_core_canonical_no_change(reviewed, task=sample.task)
+            and rescue_eligible
+            and settings.building_rescue.qwen_review_enabled
+            and not settings.building_rescue.shadow_only
+        ):
+            rescue_triggered = True
+            try:
+                rescue_review_candidates, rescue_selection_audit = (
+                    _select_building_rescue_candidates(
+                        preprocess.rescue_candidates,
+                        limit=settings.building_rescue.max_review_candidates,
+                    )
+                )
+                rescue_content, rescue_hashes, rescue_manifest = (
+                    self._build_building_rescue_evidence(
+                        sample, context, rescue_review_candidates
+                    )
+                )
+                rescue_payload = {
+                    "decision_stage": "building_rescue",
+                    "task": sample.task,
+                    "candidate_count": len(preprocess.rescue_candidates),
+                    "review_candidate_count": len(rescue_review_candidates),
+                    "candidates": [
+                        {
+                            "candidate_id": item.candidate_id,
+                            "direction": item.direction,
+                            "label": "possible building footprint",
+                            "normalized_box": list(item.normalized_box),
+                            "edge_flags": list(item.edge_flags),
+                        }
+                        for item in rescue_review_candidates
+                    ],
+                    "review_selection": rescue_selection_audit,
+                    "image_manifest": rescue_manifest,
+                }
+                rescue_content.append(
+                    {"type": "text", "text": json.dumps(rescue_payload, ensure_ascii=False)}
+                )
+                rescue_review, rescue_request_hash = await self._call_building_rescue_json(
+                    sample=sample,
+                    context=context,
+                    identity=identity,
+                    content=rescue_content,
+                    image_hashes=rescue_hashes,
+                )
+                rescue_warnings = self._validate_building_rescue_review(
+                    rescue_review, rescue_review_candidates
+                )
+                rescue_model_final_answer = rescue_review.final_answer
+                if rescue_warnings:
+                    rescue_failure = ";".join(rescue_warnings)
+                    final_warnings = list(dict.fromkeys([*final_warnings, "BUILDING_RESCUE_FAILED"]))
+                else:
+                    confirmed = [
+                        item
+                        for item in rescue_review.reviews
+                        if item.verdict.startswith("confirmed_")
+                    ]
+                    rescue_confirmed_reviews = {
+                        item.candidate_id: item for item in confirmed
+                    }
+                    rescue_decision = confirmed[0].verdict if confirmed else (
+                        "reject"
+                        if all(item.verdict == "reject" for item in rescue_review.reviews)
+                        else "insufficient"
+                    )
+                    if confirmed:
+                        candidate_map = {
+                            item.candidate_id: item
+                            for item in rescue_review_candidates
+                        }
+                        rescue_selected_candidates = [
+                            candidate_map[item.candidate_id]
+                            for item in confirmed
+                            if item.candidate_id in candidate_map
+                        ]
+                        rescue_deterministic_final_answer = _building_rescue_fallback_caption(
+                            rescue_selected_candidates, rescue_confirmed_reviews
+                        )
+                        reviewed = self._merge_building_rescue(
+                            reviewed,
+                            rescue_review,
+                            rescue_review_candidates,
+                        )
+            except Exception as error:
+                rescue_failure = type(error).__name__
+                final_warnings = list(dict.fromkeys([*final_warnings, "BUILDING_RESCUE_FAILED"]))
+            if (
+                rescue_decision in {None, "reject", "insufficient"}
+                and sample.task == "change_caption"
+            ):
+                reviewed = reviewed.model_copy(
+                    update={
+                        "answer": CANONICAL_NO_CHANGE,
+                        "boxes": [],
+                        "evidence": [],
+                        "evidence_items": [],
+                    }
+                )
+        if reviewed.geometry.get("final_source") == "building_rescue":
+            answer = reviewed.answer.strip()
+            if _contains_internal_rescue_identifier(
+                answer,
+                rescue_selected_candidates,
+                rescue_confirmed_reviews,
+            ):
+                reviewed = reviewed.model_copy(
+                    update={
+                        "answer": _building_rescue_fallback_caption(
+                            rescue_selected_candidates, rescue_confirmed_reviews
+                        )
+                    }
+                )
         metrics = preprocess.decision.metrics
         trace = {
             "prompt_version": self._prompt.version,
@@ -235,6 +365,31 @@ class ChangeAgent:
                 preprocess.transform_summary.get("sharpness_adjustment_used", False)
             ),
             "proposal_count": len(preprocess.proposals),
+            "building_rescue_shadow": preprocess.diagnostics.get(
+                "building_rescue_shadow", {}
+            ),
+            "building_rescue_candidate_count": len(preprocess.rescue_candidates),
+            "core_request_hash": request_hash,
+            "core_answer": result.answer,
+            "rescue_eligible": rescue_eligible,
+            "rescue_triggered": rescue_triggered,
+            "rescue_request_hash": rescue_request_hash,
+            "rescue_decision": rescue_decision,
+            "rescue_failure": rescue_failure,
+            "rescue_model_final_answer": rescue_model_final_answer,
+            "rescue_deterministic_final_answer": rescue_deterministic_final_answer,
+            "building_rescue_review_candidate_count": len(rescue_review_candidates),
+            "building_rescue_review_selection": rescue_selection_audit,
+            "building_rescue_generation_limit": settings.building_rescue.rescue_max_new_tokens,
+            "building_rescue_cache_policy": settings.building_rescue.cache_policy,
+            "building_rescue_cache_hit": (
+                False if settings.building_rescue.cache_policy == "bypass" else None
+            ),
+            "final_source": (
+                "building_rescue"
+                if reviewed.geometry.get("final_source") == "building_rescue"
+                else "core"
+            ),
             **perception_audit,
             # Compatibility aliases retained for readers of the Task 08 trace.
             "semantic_reason_code": preprocess.diagnostics.get(
@@ -242,7 +397,25 @@ class ChangeAgent:
             ),
             "segformer_model": preprocess.diagnostics.get("semantic_model"),
             "review_used": settings.review.enabled,
-            "review_warnings": review_warnings,
+            "review_warnings": final_warnings,
+            "core_conflict_detected": bool(core_conflict_reasons),
+            "core_conflict_reasons": core_conflict_reasons,
+            "adjudication_enabled": settings.review.adjudication_enabled,
+            "adjudication_used": adjudication_used,
+            "adjudication_trigger": ("negative_conflict" if review.route == "adjudicate_negative" else "positive_conflict") if adjudication_used else None,
+            "adjudication_request_hash": adjudication_request_hash,
+            "adjudication_candidate_ids": adjudication_candidate_ids,
+            "adjudication_global_verdict": adjudication_global_verdict,
+            "adjudication_verdicts": adjudication_verdicts,
+            "adjudication_outcome": adjudication_outcome,
+            "adjudication_merge": adjudication_merge,
+            "initial_review_warnings": initial_warnings,
+            "final_review_warnings": final_warnings,
+            "review_route": review.route,
+            "review_route_reasons": list(review.route_reasons),
+            "initial_result_normalizations": result.geometry.get("change_input_normalizations", []),
+            "adjudication_consistency_warnings": consistency_warnings if adjudication_used else [],
+            "final_merge_reason": adjudication_outcome,
             "preprocess_artifacts": preprocess.artifact_files,
             "perception_artifacts": preprocess.artifact_files,
         }
@@ -252,6 +425,456 @@ class ChangeAgent:
             result_filename="agent_result.json",
             trace=trace,
         )
+
+    async def _call_vlm_json(
+        self, *, sample: UnifiedSample, context: AgentContext, identity: ModelCacheIdentity,
+        content: list[dict[str, Any]], image_hashes: list[str], response_model: Any,
+        decision_stage: EvidenceStage,
+    ) -> tuple[Any, str]:
+        suffix = (
+            "Decision stage is initial. Return valid JSON matching AgentResult only. "
+            "Set agent_name to change_agent and status to completed."
+            if decision_stage == "initial" else
+            "Decision stage is adjudication. Return valid JSON matching ChangeAdjudicationResult only. "
+            "Review the global raw pair and every supplied adjudication candidate exactly once."
+        )
+        messages = [
+            {"role": "system", "content": self._prompt.text + "\n\n" + suffix},
+            {"role": "user", "content": content},
+        ]
+        request_hash = build_request_hash(
+            model=identity.model, generation=identity.generation_payload(), prompt_version=self._prompt.version,
+            messages=messages, image_sha256="|".join(image_hashes),
+            response_schema=response_model.model_json_schema(), client_version=identity.client_version,
+            model_revision=identity.revision,
+        )
+        context.call_budget.reserve_qwen()
+        result = await self._client.complete_json(
+            messages=messages, response_model=response_model,
+            request_meta=RequestMeta(
+                request_id=f"{sample.sample_id}:{self.name}" + ("" if decision_stage == "initial" else ":adjudication"),
+                request_hash=request_hash, prompt_version=self._prompt.version, sample_id=sample.sample_id,
+                artifact_dir=context.artifact_dir / self.name,
+            ),
+        )
+        return result, request_hash
+
+    async def _call_building_rescue_json(
+        self,
+        *,
+        sample: UnifiedSample,
+        context: AgentContext,
+        identity: ModelCacheIdentity,
+        content: list[dict[str, Any]],
+        image_hashes: list[str],
+    ) -> tuple[BuildingRescueReview, str]:
+        prompt = self._building_rescue_prompt
+        assert prompt is not None
+        messages = [
+            {
+                "role": "system",
+                "content": prompt.text
+                + "\n\nReturn valid JSON matching BuildingRescueReview only.",
+            },
+            {"role": "user", "content": content},
+        ]
+        generation = identity.generation_payload()
+        generation["max_tokens"] = self._settings.building_rescue.rescue_max_new_tokens
+        request_hash = build_request_hash(
+            model=identity.model,
+            generation=generation,
+            prompt_version=prompt.version,
+            messages=messages,
+            image_sha256="|".join(image_hashes),
+            response_schema=BuildingRescueReview.model_json_schema(),
+            client_version=identity.client_version,
+            model_revision=identity.revision,
+        )
+        context.call_budget.reserve_qwen()
+        result = await self._client.complete_json(
+            messages=messages,
+            response_model=BuildingRescueReview,
+            request_meta=RequestMeta(
+                request_id=f"{sample.sample_id}:{self.name}:building_rescue",
+                request_hash=request_hash,
+                prompt_version=prompt.version,
+                sample_id=sample.sample_id,
+                artifact_dir=context.artifact_dir / self.name,
+                cache_policy=self._settings.building_rescue.cache_policy,
+            ),
+            max_tokens=self._settings.building_rescue.rescue_max_new_tokens,
+        )
+        return result, request_hash
+
+    def _build_building_rescue_evidence(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+        candidates: list[Any],
+    ) -> tuple[list[dict[str, Any]], list[str], list[dict[str, str]]]:
+        content: list[dict[str, Any]] = []
+        hashes: list[str] = []
+        manifest: list[dict[str, str]] = []
+        for candidate in candidates:
+            direction = "added" if candidate.direction == "added" else "removed"
+            edge = ", ".join(candidate.edge_flags) if candidate.edge_flags else "interior"
+            content.append(
+                {
+                    "type": "text",
+                    "text": (
+                        f"Candidate {candidate.candidate_id}: possible {direction} "
+                        f"building footprint, {edge}. Review this candidate only."
+                    ),
+                }
+            )
+            if len(candidate.artifact_files) != 2:
+                raise AgentExecutionError(
+                    self.name, sample.sample_id, cause="BUILDING_RESCUE_ARTIFACT_MISSING"
+                )
+            review_files = candidate.review_artifact_files or candidate.artifact_files
+            if len(review_files) != 2:
+                raise AgentExecutionError(
+                    self.name, sample.sample_id, cause="BUILDING_RESCUE_REVIEW_ARTIFACT_MISSING"
+                )
+            for temporal, relative in zip(("t1", "t2"), review_files):
+                path = context.artifact_dir / relative
+                data = self._read_artifact(path, sample.sample_id, kind="artifact")
+                mime = detect_image_mime(path)
+                role = f"building_rescue:{candidate.candidate_id}:{temporal}"
+                content.append({"type": "text", "text": _evidence_label(role)})
+                content.append(
+                    {"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}}
+                )
+                hashes.append(hashlib.sha256(data).hexdigest())
+                manifest.append({"index": str(len(manifest)), "role": role})
+        return content, hashes, manifest
+
+    def _request_payload(
+        self, *, sample: UnifiedSample, preprocess: ChangePreprocessResult, mode: InputMode,
+        perception_audit: dict[str, object], image_manifest: list[dict[str, str]],
+        evidence_audit: dict[str, object], stage: EvidenceStage,
+        first_pass: dict[str, object] | None = None,
+        selected_proposals: list[Any] | None = None,
+        transient_context_attached: bool = False,
+    ) -> dict[str, Any]:
+        proposals = selected_proposals if stage == "adjudication" and selected_proposals is not None else preprocess.proposals
+        payload: dict[str, Any] = {
+            "decision_stage": stage, "question": sample.question, "task": sample.task,
+            "coordinate_frame": "normalized_0_999_top_left", "input_mode": mode,
+            "evidence_audit": evidence_audit, "temporal_roles": [ref.role for ref in sample.images],
+            "image_manifest": image_manifest,
+            "harmonization": {"status": preprocess.decision.status, "reason_codes": preprocess.decision.reason_codes,
+                               "used_for_proposal": preprocess.decision.used_for_proposal},
+            "registration": _registration_payload(preprocess), "perception": perception_audit,
+            "proposals": [self._proposal_payload(item) for item in proposals],
+            "semantic_support_note": "semantic_support is auxiliary attention evidence only; unavailable or uninformative support is neutral.",
+            "empty_proposals_instruction": "Inspect raw full T1/T2; do not infer no change from an empty proposal list.",
+        }
+        if stage == "adjudication":
+            payload["first_pass"] = first_pass or {}
+            payload["adjudication_trigger"] = "positive_conflict" if any(
+                str(item).startswith("POSITIVE_") for item in (first_pass or {}).get("review_route_reasons", [])
+            ) else "negative_conflict"
+            payload["adjudication_candidates"] = [self._proposal_payload(item) for item in proposals]
+            if transient_context_attached:
+                payload["mandatory_context_checks"] = [
+                    "If a candidate is transient, inspect its same-location context for a persistent building, road, or land-cover change before concluding no persistent change."
+                ]
+        return payload
+
+    def _proposal_payload(self, item: Any) -> dict[str, object]:
+        return {
+            "proposal_id": item.proposal_id, "box": item.box, "score": round(item.score, 6),
+            "source": item.source,
+            "component_scores": {name: round(score, 6) for name, score in item.component_scores.items()},
+            "semantic_support": _semantic_support_payload(
+                item.semantic_transition, confidence_floor=self._settings.semantic.semantic_confidence_floor
+            ),
+            "effective_weights": item.effective_weights, "reliability": item.reliability,
+            "registration_confidence": item.registration_confidence,
+        }
+
+    def _validate_adjudication(
+        self, result: ChangeAdjudicationResult, selected_ids: list[str]
+    ) -> list[str]:
+        warnings: list[str] = []
+        if result.agent_name != self.name:
+            warnings.append("ADJUDICATION_INVALID_AGENT")
+        ids = [item.proposal_id for item in result.candidate_reviews]
+        if len(ids) != len(set(ids)):
+            warnings.append("ADJUDICATION_DUPLICATE_PROPOSAL_ID")
+        if set(ids) - set(selected_ids):
+            warnings.append("ADJUDICATION_UNKNOWN_PROPOSAL_ID")
+        if set(selected_ids) - set(ids):
+            warnings.append("ADJUDICATION_MISSING_PROPOSAL_ID")
+        positive = result.global_review.verdict == "persistent_change" or any(
+            item.verdict == "persistent_change" for item in result.candidate_reviews
+        )
+        if positive and (result.answer.strip() == "No significant semantic change detected." or result.answer.strip().upper() in {"CHANGE", "NO_CHANGE", "YES", "NO"}):
+            warnings.append("ADJUDICATION_POSITIVE_WITH_CANONICAL_NEGATIVE_ANSWER")
+        nuisance = ("seasonal", "greener", "brown", "water-filled", "vehicle", "truck", "car", "brightness", "shadow")
+        for item in [result.global_review, *result.candidate_reviews]:
+            identifier = getattr(item, "proposal_id", "global")
+            if item.verdict == "persistent_change" and any(token in item.reason.casefold() for token in nuisance):
+                warnings.append(
+                    f"ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON:{identifier}"
+                )
+            if (
+                item.verdict == "persistent_change"
+                and item.change_category == "water_geometry"
+                and not _has_valid_water_geometry(item)
+            ):
+                warnings.append(f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{identifier}")
+            if (
+                item.verdict == "persistent_change"
+                and item.change_category
+                in {
+                    "building_structure",
+                    "road_network",
+                    "other_persistent_infrastructure",
+                }
+                and item.persistent_geometry_changed is not True
+            ):
+                warnings.append(f"ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:{identifier}")
+        return list(dict.fromkeys(warnings))
+
+    @staticmethod
+
+    def _validate_building_rescue_review(
+        result: BuildingRescueReview, candidates: list[Any]
+    ) -> list[str]:
+        expected = {item.candidate_id: item.direction for item in candidates}
+        actual = [item.candidate_id for item in result.reviews]
+        warnings: list[str] = []
+        if len(actual) != len(expected):
+            warnings.append("BUILDING_RESCUE_REVIEW_COUNT_MISMATCH")
+        if set(actual) - set(expected):
+            warnings.append("BUILDING_RESCUE_UNKNOWN_CANDIDATE")
+        if set(expected) - set(actual):
+            warnings.append("BUILDING_RESCUE_MISSING_CANDIDATE")
+        for item in result.reviews:
+            direction = expected.get(item.candidate_id)
+            if direction == "added" and item.verdict == "confirmed_removed_building":
+                warnings.append(f"BUILDING_RESCUE_WRONG_DIRECTION:{item.candidate_id}")
+            if direction == "removed" and item.verdict == "confirmed_added_building":
+                warnings.append(f"BUILDING_RESCUE_WRONG_DIRECTION:{item.candidate_id}")
+            if item.verdict.startswith("confirmed_") and item.visible_building_count == 0:
+                warnings.append(f"BUILDING_RESCUE_ZERO_VISIBLE_BUILDINGS:{item.candidate_id}")
+        return list(dict.fromkeys(warnings))
+
+    @staticmethod
+    def _merge_building_rescue(
+        core: AgentResult,
+        review: BuildingRescueReview,
+        candidates: list[Any],
+    ) -> AgentResult:
+        confirmed = {
+            item.candidate_id: item
+            for item in review.reviews
+            if item.verdict.startswith("confirmed_")
+        }
+        candidate_map = {item.candidate_id: item for item in candidates}
+        selected = [candidate_map[item_id] for item_id in confirmed if item_id in candidate_map]
+        answer = _building_rescue_fallback_caption(selected, confirmed)
+        evidence: list[str] = []
+        evidence_items: list[VisualEvidence] = []
+        boxes: list[list[int]] = []
+        for candidate in selected:
+            boxes.append(list(candidate.normalized_box))
+            evidence.extend(candidate.artifact_files)
+            for temporal, relative in zip(("t1", "t2"), candidate.artifact_files):
+                evidence_items.append(
+                    VisualEvidence(
+                        label=f"confirmed {candidate.direction} building context {temporal}",
+                        box=list(candidate.normalized_box),
+                        confidence=candidate.score,
+                        image_id=relative,
+                    )
+                )
+        geometry = dict(core.geometry)
+        geometry.update(
+            {
+                "final_source": "building_rescue",
+                "building_rescue_candidate_ids": [item.candidate_id for item in selected],
+            }
+        )
+        return core.model_copy(
+            update={
+                "answer": answer,
+                "boxes": boxes,
+                "evidence": evidence[:12],
+                "evidence_items": evidence_items,
+                "geometry": geometry,
+                "status": "completed",
+            }
+        )
+
+    @staticmethod
+
+    def _effective_persistent_review(
+        review: Any,
+        consistency_warnings: list[str],
+        *,
+        identifier: str,
+        global_review: bool = False,
+    ) -> bool:
+        """Apply deterministic geometry and nuisance blockers to positives."""
+
+        if review.verdict != "persistent_change":
+            return False
+        prefix = "global" if global_review else identifier
+        if (
+            f"ADJUDICATION_PERSISTENT_WITH_NUISANCE_ONLY_REASON:{prefix}"
+            in consistency_warnings
+        ):
+            return False
+        if any(
+            warning == f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{prefix}"
+            for warning in consistency_warnings
+        ):
+            return False
+        if any(
+            warning == f"ADJUDICATION_PERSISTENT_GEOMETRY_REQUIRED:{prefix}"
+            for warning in consistency_warnings
+        ):
+            return False
+        category = review.change_category
+        if category in {
+            "building_structure",
+            "road_network",
+            "water_geometry",
+            "other_persistent_infrastructure",
+        }:
+            return review.persistent_geometry_changed is True
+        if category in {"vegetation_extent", "land_use_conversion"}:
+            if review.persistent_geometry_changed is True:
+                return True
+            description = " ".join(
+                [str(review.reason), str(review.geometry_change_description or "")]
+            ).casefold()
+            return any(
+                token in description
+                for token in (
+                    "durable extent",
+                    "persistent extent",
+                    "land-use conversion",
+                    "land use conversion",
+                    "cleared",
+                    "replaced",
+                )
+            ) if global_review else False
+        return review.persistent_geometry_changed is True
+
+    def _merge_adjudication(
+        self, result: ChangeAdjudicationResult, task: str, consistency_warnings: list[str]
+    ) -> tuple[AgentResult, Literal["positive", "negative", "unresolved"], dict[str, object]]:
+        """Merge validated review state; raw adjudication prose is not authority.
+
+        The global raw-pair negative resolves the scene even when an individual
+        crop is insufficient. 全局原始图对的负结论可在局部裁剪证据不足时仍解析整景。
+        """
+        global_valid = (
+            "ADJUDICATION_INVALID_AGENT" not in consistency_warnings
+            and "ADJUDICATION_WATER_STATE_NOT_GEOMETRY:global" not in consistency_warnings
+        )
+        candidate_ids_valid = not any(
+            warning in consistency_warnings
+            for warning in (
+                "ADJUDICATION_DUPLICATE_PROPOSAL_ID",
+                "ADJUDICATION_UNKNOWN_PROPOSAL_ID",
+                "ADJUDICATION_MISSING_PROPOSAL_ID",
+            )
+        )
+        valid_global_positive = global_valid and self._effective_persistent_review(
+            result.global_review,
+            consistency_warnings,
+            identifier="global",
+            global_review=True,
+        )
+        valid_global_negative = global_valid and result.global_review.verdict == "no_persistent_change"
+        valid_candidate_positives = [
+            item for item in result.candidate_reviews
+            if (
+                candidate_ids_valid
+                and self._effective_persistent_review(
+                    item,
+                    consistency_warnings,
+                    identifier=item.proposal_id,
+                )
+                and f"ADJUDICATION_WATER_STATE_NOT_GEOMETRY:{item.proposal_id}" not in consistency_warnings
+            )
+        ]
+        local_insufficient_count = sum(
+            item.verdict == "insufficient_visual_evidence"
+            for item in result.candidate_reviews
+        )
+        all_resolved_nonpersistent = bool(result.candidate_reviews) and all(
+            item.verdict in {"appearance_only", "registration_artifact", "transient"}
+            for item in result.candidate_reviews
+        )
+        merge: dict[str, object] = {
+            "global_verdict": result.global_review.verdict,
+            "valid_persistent_candidate_count": len(valid_candidate_positives),
+            "local_insufficient_count": local_insufficient_count,
+            "final_rule": None,
+            "final_semantic_decision": None,
+            "canonical_negative_applied": False,
+        }
+        if valid_global_positive or valid_candidate_positives:
+            outcome: Literal["positive", "negative", "unresolved"] = "positive"
+            status = "completed"
+            answer = result.answer
+            boxes, evidence, evidence_items = result.boxes, result.evidence, result.evidence_items
+            merge.update(final_rule="VALID_PERSISTENT_POSITIVE", final_semantic_decision="persistent_change")
+        elif valid_global_negative:
+            outcome = "negative"
+            status = "completed"
+            answer = CANONICAL_NO_CHANGE if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = [], [], []
+            merge.update(
+                final_rule="GLOBAL_NEGATIVE_OVERRIDES_LOCAL_INSUFFICIENT",
+                final_semantic_decision="no_change",
+                canonical_negative_applied=task == "change_caption",
+            )
+        elif all_resolved_nonpersistent:
+            outcome = "negative"
+            status = "completed"
+            answer = CANONICAL_NO_CHANGE if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = [], [], []
+            merge.update(
+                final_rule="ALL_LOCAL_REVIEWS_RESOLVED_NONPERSISTENT",
+                final_semantic_decision="no_change",
+                canonical_negative_applied=task == "change_caption",
+            )
+        else:
+            outcome = "unresolved"
+            status = "partial"
+            answer = "Unable to confirm a persistent semantic change from the available evidence." if task == "change_caption" else result.answer
+            boxes, evidence, evidence_items = result.boxes, result.evidence, result.evidence_items
+            merge.update(final_rule="UNRESOLVED_VALIDATED_REVIEW_STATE", final_semantic_decision="unresolved")
+        return AgentResult(
+            agent_name=self.name, answer=answer, boxes=boxes, evidence=evidence,
+            evidence_items=evidence_items, geometry=dict(result.geometry), status=status,
+        ), outcome, merge
+
+    def _select_proposals(self, proposals: list[Any], *, limit: int) -> list[Any]:
+        ranked = sorted(proposals, key=_proposal_priority)
+        selected: list[Any] = []
+        # Reserve the strongest edge/corner proposal before central seasonal
+        # regions consume the bounded evidence set. 在中心季节性区域占满有限
+        # 证据槽位前，优先保留最可靠的边缘/角落候选。
+        edge = next((item for item in ranked if _is_edge_proposal(item, self._settings.evidence.edge_margin_ratio)), None)
+        if edge is not None and len(selected) < limit:
+            selected.append(edge)
+        if ranked and ranked[0] not in selected and len(selected) < limit:
+            selected.append(ranked[0])
+        diverse = next((item for item in ranked if item not in selected and all(_box_iou(item.box, other.box) < 0.5 for other in selected)), None)
+        if diverse is not None and len(selected) < limit:
+            selected.append(diverse)
+        for item in ranked:
+            if item not in selected and len(selected) < limit:
+                selected.append(item)
+        return selected
 
     def _prepare_perception_and_publish(
         self,
@@ -282,11 +905,22 @@ class ChangeAgent:
                 cause="INVALID_CHANGE_PAIR",
             )
         try:
-            perception = ChangePerceptionPipeline(
+            pipeline = ChangePerceptionPipeline(
                 self._semantic_client,
                 settings,
                 learned_change_client=self._learned_change_client,
-            ).run(prepared)
+                semantic_experts=self._semantic_experts,
+            )
+            execution = pipeline.run_full(prepared)
+            perception = execution.result
+            rescue_candidates = list(execution.rescue_candidates)
+            rescue_diagnostics = dict(execution.rescue_diagnostics)
+            rescue_diagnostics["sample_id"] = sample.sample_id
+            perception.diagnostics["training_capture"] = _save_training_capture(
+                execution.learned_request,
+                artifact_dir=context.artifact_dir,
+                settings=settings,
+            )
         except ChangePerceptionError as error:
             raise AgentExecutionError(
                 self.name,
@@ -299,6 +933,8 @@ class ChangeAgent:
                 sample.sample_id,
                 cause=error.reason_code,
             ) from error
+        diagnostics = dict(perception.diagnostics)
+        diagnostics["building_rescue_shadow"] = rescue_diagnostics
         return publish_change_proposals(
             prepared,
             score_map=perception.score_map,
@@ -307,7 +943,8 @@ class ChangeAgent:
             settings=settings,
             component_maps=perception.component_maps,
             component_masks=perception.component_masks,
-            diagnostics=perception.diagnostics,
+            diagnostics=diagnostics,
+            rescue_candidates=rescue_candidates,
         )
 
     def _build_evidence(
@@ -316,6 +953,10 @@ class ChangeAgent:
         context: AgentContext,
         preprocess: ChangePreprocessResult,
         mode: InputMode,
+        *,
+        stage: EvidenceStage,
+        selected_proposals: list[Any] | None = None,
+        attach_transient_context: bool = False,
     ) -> tuple[
         list[dict[str, Any]],
         list[str],
@@ -354,10 +995,9 @@ class ChangeAgent:
         # absent, rejected, or stale; the VLM must still see the source pair.
         raw_authority_required = True
         paths.extend(raw)
-        if mode == "raw_only":
-            pass
-        else:
+        if self._settings.evidence.attach_registered_global and mode != "raw_only":
             paths.extend(registered)
+        if self._settings.evidence.attach_harmonized_global and mode != "raw_only":
             paths.extend(harmonized)
 
         proposal_evidence_count = 0
@@ -366,28 +1006,42 @@ class ChangeAgent:
         # attaching meaningful proposal evidence in every base mode.
         # 保留既有 dual-path 空 overlay 契约，同时在任意 base mode 下独立附加
         # 有意义的 proposal evidence。
-        if overlay and (preprocess.proposals or (mode == "dual_path" and harmonized)):
+        if self._settings.evidence.attach_proposal_overlay and overlay and preprocess.proposals:
             paths.append(
                 ("proposal_overlay", context.artifact_dir / overlay, "artifact")
             )
             proposal_evidence_count += 1
-        selected_proposals = sorted(
+        selected = selected_proposals if selected_proposals is not None else self._select_proposals(
             preprocess.proposals,
-            key=_proposal_priority,
-        )[: self._settings.proposals.max_proposals]
-        for proposal in selected_proposals:
+            limit=self._settings.evidence.initial_max_proposals if stage == "initial" else self._settings.evidence.adjudication_max_proposals,
+        )
+        skipped_incomplete: list[str] = []
+        attached_ids: list[str] = []
+        for proposal in selected:
+            choices: dict[str, tuple[str, Path, str]] = {}
             for relative in proposal.evidence_filenames:
-                paths.append(
-                    (
-                        _proposal_manifest_role(proposal, relative, preprocess),
-                        context.artifact_dir / relative,
-                        "artifact",
-                    )
-                )
-                proposal_evidence_count += 1
+                role = _proposal_manifest_role(proposal, relative, preprocess)
+                if role.endswith(":reference_t1_crop"):
+                    choices["t1"] = (role, context.artifact_dir / relative, "artifact")
+                elif role.endswith(":t2_registered_crop"):
+                    choices["t2"] = (role, context.artifact_dir / relative, "artifact")
+                elif role.endswith(":t2_raw_fallback_crop") and "t2" not in choices:
+                    choices["t2"] = (role, context.artifact_dir / relative, "artifact")
+            if set(choices) != {"t1", "t2"}:
+                skipped_incomplete.append(proposal.proposal_id)
+                continue
+            paths.extend([choices["t1"], choices["t2"]])
+            attached_ids.append(proposal.proposal_id)
+            proposal_evidence_count += 2
+        transient_context_attached = False
+        if stage == "adjudication" and attach_transient_context and selected:
+            context_paths = self._write_transient_context_pair(sample, context, selected)
+            paths.extend(context_paths)
+            transient_context_attached = True
         content: list[dict[str, Any]] = []
         hashes: list[str] = []
         manifest: list[dict[str, str]] = []
+        content.append({"type": "text", "text": f"Decision stage: {stage}. Compare the next two authoritative raw images first."})
         for index, (role, path, kind) in enumerate(paths):
             data = self._read_artifact(path, sample.sample_id, kind=kind)
             try:
@@ -398,6 +1052,7 @@ class ChangeAgent:
                     sample.sample_id,
                     cause=f"image_format_error:{type(error).__name__}",
                 ) from error
+            content.append({"type": "text", "text": _evidence_label(role)})
             content.append({"type": "image_url", "image_url": {"url": image_to_data_url(data, mime)}})
             hashes.append(hashlib.sha256(data).hexdigest())
             manifest.append({"index": str(index), "role": role})
@@ -414,10 +1069,49 @@ class ChangeAgent:
             "proposal_evidence_attached": proposal_evidence_count > 0,
             "proposal_evidence_count": proposal_evidence_count,
             "proposal_count_total": len(preprocess.proposals),
-            "proposal_count_attached": len(selected_proposals),
+            "proposal_count_attached": len(attached_ids),
             "image_manifest_roles": [item["role"] for item in manifest],
+            "evidence_stage": stage,
+            "image_count_attached": len(manifest),
+            "initial_max_proposals": self._settings.evidence.initial_max_proposals,
+            "adjudication_max_proposals": self._settings.evidence.adjudication_max_proposals,
+            "selected_proposal_ids": attached_ids,
+            "edge_rescue_candidate_ids": [
+                item.proposal_id for item in selected
+                if _is_edge_proposal(item, self._settings.evidence.edge_margin_ratio)
+            ],
+            "skipped_incomplete_proposal_ids": skipped_incomplete,
+            "registered_global_attached": self._settings.evidence.attach_registered_global and bool(registered),
+            "harmonized_global_attached": self._settings.evidence.attach_harmonized_global and bool(harmonized),
+            "proposal_overlay_attached": bool(self._settings.evidence.attach_proposal_overlay and overlay and preprocess.proposals),
+            "transient_context_attached": transient_context_attached,
         }
         return content, hashes, manifest, evidence_audit
+
+    def _write_transient_context_pair(
+        self, sample: UnifiedSample, context: AgentContext, proposals: list[Any]
+    ) -> list[tuple[str, Path, str]]:
+        """Create one clamped 1.8x same-location context pair for adjudication.
+
+        A single union prevents nearby transient candidates from consuming the
+        image budget. 将邻近瞬态候选合并为一个区域，避免消耗多个图像预算槽位。
+        """
+        t1_path = self._resolve_raw(sample.images[0].path, context, sample.sample_id)
+        t2_path = self._resolve_raw(sample.images[1].path, context, sample.sample_id)
+        with Image.open(t1_path) as t1_source, Image.open(t2_path) as t2_source:
+            width, height = t1_source.size
+            box = _expanded_union_pixel_box(proposals, width=width, height=height, scale=1.8)
+            output = context.artifact_dir / "change_preprocess" / "crops"
+            output.mkdir(parents=True, exist_ok=True)
+            paths: list[tuple[str, Path, str]] = []
+            for role, source, filename in (
+                ("transient_context_t1", t1_source, "adjudication_transient_context_t1.png"),
+                ("transient_context_t2", t2_source, "adjudication_transient_context_t2.png"),
+            ):
+                target = output / filename
+                source.crop(tuple(box)).save(target)
+                paths.append((role, target, "artifact"))
+        return paths
 
     def _resolve_raw(
         self,
@@ -456,6 +1150,53 @@ class ChangeAgent:
                 sample_id,
                 cause=f"{kind}_read_failed:{type(error).__name__}",
             ) from error
+
+
+def _save_training_capture(
+    request: Any,
+    *,
+    artifact_dir: Path,
+    settings: AgentChangeSettings,
+) -> dict[str, object]:
+    """Best-effort sample-scoped capture for future hard-case replay."""
+
+    result: dict[str, object] = {
+        "enabled": settings.training_capture.enabled,
+        "save_dense_features": settings.training_capture.save_dense_features,
+        "dense_features_saved": False,
+    }
+    if not settings.training_capture.enabled or not settings.training_capture.save_dense_features:
+        return result
+    if request is None:
+        result["reason_code"] = "LEARNED_CHANGE_CAPTURE_UNAVAILABLE"
+        return result
+    try:
+        import numpy as np
+
+        output_dir = artifact_dir / "change_training_capture"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        arrays: dict[str, Any] = {
+            "valid_mask": np.asarray(request.valid_mask),
+        }
+        if request.pif_mask is not None:
+            arrays["pif_mask"] = np.asarray(request.pif_mask)
+        metadata: dict[str, object] = {"experts": sorted(request.experts), "pif_valid": request.pif_valid}
+        for expert_id, pair in request.experts.items():
+            for frame_name, output in (("t1", pair.first), ("t2", pair.second)):
+                for stage, value in output.features_by_stage.items():
+                    arrays[f"expert.{expert_id}.{frame_name}.stage.{stage}"] = np.asarray(value)
+                arrays[f"expert.{expert_id}.{frame_name}.semantic"] = np.asarray(output.probabilities)
+        target = output_dir / "learned_inputs.npz"
+        temporary = output_dir / "learned_inputs.npz.tmp"
+        with temporary.open("wb") as file:
+            np.savez_compressed(file, **arrays)
+        temporary.replace(target)
+        metadata_path = output_dir / "metadata.json"
+        metadata_path.write_text(json.dumps(metadata, sort_keys=True), encoding="utf-8")
+        result.update({"dense_features_saved": True, "reason_code": None, "artifact": "change_training_capture/learned_inputs.npz"})
+    except Exception:
+        result["reason_code"] = "LEARNED_CHANGE_CAPTURE_FAILED"
+    return result
 
 
 def _perception_audit(
@@ -540,6 +1281,7 @@ def _perception_audit(
         "reliability_raw": reliability_data.get("raw", {}),
         "registration_confidence": fusion_data.get("registration_confidence"),
         "semantic_transition_note": diagnostics.get("semantic_transition_note"),
+        "semantic_ensemble": diagnostics.get("semantic_ensemble", {}),
         "threshold_mode": fusion_data.get("threshold_mode"),
         "threshold_value": fusion_data.get("threshold"),
         "threshold_floor": diagnostics.get(
@@ -579,6 +1321,8 @@ def _perception_audit(
                     if proposal.semantic_transition is not None
                     else None
                 ),
+                "semantic_expert_evidence": proposal.semantic_transitions,
+                "semantic_consensus": proposal.semantic_consensus,
                 "effective_weights": proposal.effective_weights,
                 "reliability": proposal.reliability,
             }
@@ -596,13 +1340,148 @@ def _perception_audit(
                 "fusion_weight": settings.learned_change.fusion_weight,
             },
         ),
-        "training_capture": {
-            "enabled": False,
-            "save_dense_features": False,
-            "dense_features_saved": False,
-        },
+        "training_capture": diagnostics.get(
+            "training_capture",
+            {
+                "enabled": settings.training_capture.enabled,
+                "save_dense_features": settings.training_capture.save_dense_features,
+                "dense_features_saved": False,
+                **(
+                    {
+                        "reason_code": "LEARNED_CHANGE_CAPTURE_UNAVAILABLE",
+                        "artifact": None,
+                    }
+                    if settings.training_capture.enabled
+                    else {}
+                ),
+            },
+        ),
         "score_maps": diagnostics.get("score_maps", {}),
     }
+
+
+def _is_core_canonical_no_change(result: AgentResult, *, task: str) -> bool:
+    return task == "change_caption" and result.answer.strip() == CANONICAL_NO_CHANGE
+
+
+def _building_rescue_fallback_caption(
+    candidates: list[Any], reviews: dict[str, Any]
+) -> str:
+    groups: dict[str, list[Any]] = {}
+    for candidate in candidates:
+        review = reviews.get(candidate.candidate_id)
+        if review is None:
+            continue
+        direction = (
+            "constructed"
+            if review.verdict == "confirmed_added_building"
+            else "removed"
+        )
+        groups.setdefault(direction, []).append(candidate)
+    fragments: list[str] = []
+    for direction, grouped in sorted(groups.items()):
+        count = len(grouped)
+        noun = "A building" if count == 1 else (
+            "Two buildings" if count == 2 else "Several buildings"
+        )
+        verb = "was" if count == 1 else "were"
+        location = _building_rescue_locations(grouped)
+        location_phrase = (
+            location
+            if location in {"along the image edges", "in the scene"}
+            else f"near the {location}"
+        )
+        fragments.append(f"{noun} {verb} {direction} {location_phrase}")
+    return ". ".join(fragments) + "." if fragments else CANONICAL_NO_CHANGE
+
+
+_INTERNAL_RESCUE_TERMS = (
+    "candidate",
+    "candidate_id",
+    "segmenter_",
+    "proposal",
+    "proposal_id",
+    "expert",
+    "expert_id",
+    "rescue_candidate",
+    "roi",
+    "red box",
+    "marked area",
+    "bounding box",
+    "coordinates",
+    "pixel coordinates",
+)
+_RESCUE_TAXONOMY_TERMS = ("tree", "rangeland", "developed_space")
+
+
+def _contains_internal_rescue_identifier(
+    answer: str,
+    candidates: list[Any],
+    reviews: dict[str, Any] | None = None,
+) -> bool:
+    """Return whether a rescue caption exposes implementation identifiers."""
+
+    lowered = answer.casefold()
+    if any(term in lowered for term in _INTERNAL_RESCUE_TERMS):
+        return True
+    if any(
+        re.search(rf"\b{re.escape(term)}\b", lowered)
+        for term in _RESCUE_TAXONOMY_TERMS
+    ):
+        return True
+    identifiers = {
+        str(value).casefold()
+        for candidate in candidates
+        for value in (candidate.candidate_id, candidate.expert_id)
+        if value
+    }
+    identifiers.update(
+        str(candidate_id).casefold()
+        for candidate_id in (reviews or {})
+        if candidate_id
+    )
+    return any(identifier in lowered for identifier in identifiers)
+
+
+def _building_rescue_location(candidate: Any) -> str:
+    return _building_rescue_locations([candidate])
+
+
+def _building_rescue_locations(candidates: list[Any]) -> str:
+    """Aggregate confirmed candidate positions without exposing raw geometry."""
+
+    locations: set[str] = set()
+    has_interior = False
+    for candidate in candidates:
+        flags = set(candidate.edge_flags)
+        if not flags:
+            has_interior = True
+            continue
+        location = None
+        for pair, name in (
+            ({"top", "left"}, "upper-left corner"),
+            ({"top", "right"}, "upper-right corner"),
+            ({"bottom", "left"}, "lower-left corner"),
+            ({"bottom", "right"}, "lower-right corner"),
+        ):
+            if pair.issubset(flags):
+                location = name
+                break
+        if location is None:
+            names = {
+                "top": "upper edge",
+                "bottom": "lower edge",
+                "left": "left edge",
+                "right": "right edge",
+            }
+            matching = [names[edge] for edge in ("top", "bottom", "left", "right") if edge in flags]
+            location = matching[0] if len(matching) == 1 else "along the image edges"
+        locations.add(location)
+    if has_interior or not locations:
+        return "in the scene"
+    if len(locations) == 1:
+        return next(iter(locations))
+    return "along the image edges"
 
 
 def _proposal_priority(proposal: Any) -> tuple[float, str]:
@@ -615,6 +1494,241 @@ def _proposal_priority(proposal: Any) -> tuple[float, str]:
     ]
     confidence = sum(values) / len(values) if values else 1.0
     return (-float(proposal.score) * confidence, str(proposal.proposal_id))
+
+
+def _is_edge_proposal(proposal: Any, margin_ratio: float) -> bool:
+    margin = round(999 * margin_ratio)
+    x1, y1, x2, y2 = proposal.box
+    return x1 <= margin or y1 <= margin or x2 >= 999 - margin or y2 >= 999 - margin
+
+
+def _box_iou(first: list[int], second: list[int]) -> float:
+    x1, y1 = max(first[0], second[0]), max(first[1], second[1])
+    x2, y2 = min(first[2], second[2]), min(first[3], second[3])
+    intersection = max(0, x2 - x1) * max(0, y2 - y1)
+    union = (first[2] - first[0]) * (first[3] - first[1]) + (second[2] - second[0]) * (second[3] - second[1]) - intersection
+    return intersection / union if union else 0.0
+
+
+def _expanded_union_pixel_box(proposals: list[Any], *, width: int, height: int, scale: float) -> list[int]:
+    """Expand the selected proposal union and clamp it to image boundaries.
+
+    以选定候选的并集扩展，并裁剪到图像边界内。
+    """
+    x1 = min(int(item.pixel_box[0]) for item in proposals)
+    y1 = min(int(item.pixel_box[1]) for item in proposals)
+    x2 = max(int(item.pixel_box[2]) for item in proposals)
+    y2 = max(int(item.pixel_box[3]) for item in proposals)
+    center_x, center_y = (x1 + x2) / 2, (y1 + y2) / 2
+    half_width, half_height = max(1, (x2 - x1) * scale / 2), max(1, (y2 - y1) * scale / 2)
+    return [
+        max(0, int(center_x - half_width)), max(0, int(center_y - half_height)),
+        min(width, max(1, int(center_x + half_width))), min(height, max(1, int(center_y + half_height))),
+    ]
+
+
+def _has_valid_water_geometry(review: Any) -> bool:
+    """Require concrete shoreline/basin geometry, not water-state wording.
+
+    This is a deterministic validation gate rather than a lexical negative:
+    the model may still establish a real water footprint change with paired
+    evidence.  这是确定性验证门，不是词法负规则；有配对证据的真实水体边界
+    变化仍可成立。
+    """
+    description = (review.geometry_change_description or "").casefold().strip()
+    if review.persistent_geometry_changed is not True or not description:
+        return False
+    geometry_terms = ("shoreline", "boundary", "footprint", "basin", "canal", "outward", "expand", "contract")
+    return any(term in description for term in geometry_terms)
+
+
+def _normalize_positive_caption(result: AgentResult) -> AgentResult:
+    answer = result.answer.strip()
+    lowered = answer.casefold()
+    for prefix in ("persistent change detected:", "change detected:", "significant change detected:"):
+        if lowered.startswith(prefix):
+            caption = answer[len(prefix):].strip()
+            if caption:
+                geometry = dict(result.geometry)
+                values = list(geometry.get("change_input_normalizations") or [])
+                values.append("generic_positive_prefix_stripped")
+                geometry["change_input_normalizations"] = list(dict.fromkeys(values))
+                return result.model_copy(update={"answer": caption, "geometry": geometry})
+    return result
+
+
+def _semantic_support_payload(
+    transition: SemanticTransition | None, *, confidence_floor: float
+) -> dict[str, object]:
+    """Make auxiliary class evidence neutral unless it is a confident transition."""
+    if transition is None:
+        return {"status": "unavailable"}
+    if transition.from_class.casefold() == transition.to_class.casefold():
+        return {"status": "uninformative", "reason": "same_auxiliary_class"}
+    if transition.from_confidence < confidence_floor or transition.to_confidence < confidence_floor:
+        return {"status": "uninformative", "reason": "low_auxiliary_class_confidence"}
+    return {
+        "status": "informative", "from_class": transition.from_class, "to_class": transition.to_class,
+        "from_confidence": transition.from_confidence, "to_confidence": transition.to_confidence,
+        "transition_confidence": transition.transition_confidence, "support_ratio": transition.support_ratio,
+    }
+
+
+def _typed_semantic_support_payload(proposal: Any) -> dict[str, object]:
+    """Summarize typed evidence without promoting one transition to truth."""
+
+    consensus = dict(proposal.semantic_consensus or {})
+    structural = float(consensus.get("structural_support", 0.0) or 0.0)
+    landcover = float(consensus.get("landcover_support", 0.0) or 0.0)
+    transient = float(consensus.get("transient_support", 0.0) or 0.0)
+    return {
+        "status": "hypothesis_summary",
+        "structural_support": structural,
+        "landcover_support": landcover,
+        "transient_support": transient,
+        "disagreement": bool(consensus.get("disagreement", False)),
+        "expert_count": int(consensus.get("expert_count", len(proposal.semantic_transitions))),
+        "landcover_only": landcover > 0.0 and structural <= 0.0 and transient <= 0.0,
+        "transient_only": transient > 0.0 and structural <= 0.0 and landcover <= 0.0,
+    }
+
+
+def _evidence_label(role: str) -> str:
+    if role == "raw_full_t1":
+        return "AUTHORITATIVE RAW T1 - earlier full scene"
+    if role == "raw_full_t2":
+        return "AUTHORITATIVE RAW T2 - later full scene"
+    if role == "proposal_overlay":
+        return "AUXILIARY PROPOSAL OVERLAY - attention guidance only; not proof of change"
+    if role == "transient_context_t1":
+        return "TRANSIENT CONTEXT T1 - expanded same-location context"
+    if role == "transient_context_t2":
+        return "TRANSIENT CONTEXT T2 - expanded same-location context"
+    if role.startswith("building_rescue:"):
+        temporal = role.rsplit(":", 1)[-1]
+        if temporal == "t1":
+            return (
+                "T1 SAME-LOCATION VISUAL EVIDENCE - the thin marked box is the exact candidate ROI; "
+                "the pixels inside it are authoritative"
+            )
+        if temporal == "t2":
+            return (
+                "T2 SAME-LOCATION VISUAL EVIDENCE - the thin marked box is the exact same candidate ROI; "
+                "the pixels inside it are authoritative"
+            )
+    if ":" in role:
+        proposal_id, crop_role = role.split(":", 1)
+        if crop_role == "reference_t1_crop":
+            return f"CANDIDATE {proposal_id} - T1 reference crop - inspect the same location"
+        if crop_role in {"t2_registered_crop", "t2_raw_fallback_crop"}:
+            return f"CANDIDATE {proposal_id} - T2 comparison crop - inspect the same location"
+    return f"AUXILIARY {role} - attention evidence only"
+
+
+def _rescue_box_iou(first: Any, second: Any) -> float:
+    ax0, ay0, ax1, ay1 = first.box
+    bx0, by0, bx1, by1 = second.box
+    intersection = max(0, min(ax1, bx1) - max(ax0, bx0)) * max(
+        0, min(ay1, by1) - max(ay0, by0)
+    )
+    first_area = max(1, (ax1 - ax0) * (ay1 - ay0))
+    second_area = max(1, (bx1 - bx0) * (by1 - by0))
+    return intersection / max(1, first_area + second_area - intersection)
+
+
+def _rescue_candidates_are_near(first: Any, second: Any) -> bool:
+    if _rescue_box_iou(first, second) >= 0.5:
+        return True
+    ax0, ay0, ax1, ay1 = first.box
+    bx0, by0, bx1, by1 = second.box
+    acx, acy = (ax0 + ax1) / 2.0, (ay0 + ay1) / 2.0
+    bcx, bcy = (bx0 + bx1) / 2.0, (by0 + by1) / 2.0
+    distance_squared = (acx - bcx) ** 2 + (acy - bcy) ** 2
+    minimum_size = max(1.0, min(ax1 - ax0, ay1 - ay0, bx1 - bx0, by1 - by0))
+    return distance_squared <= (0.25 * minimum_size) ** 2
+
+
+def _select_building_rescue_candidates(
+    candidates: list[Any], *, limit: int
+) -> tuple[list[Any], list[dict[str, object]]]:
+    """Select a small, spatially diverse review set while retaining all diagnostics."""
+
+    if limit < 1:
+        raise ValueError("building rescue review limit must be positive")
+    if not candidates:
+        return [], []
+    indexed = list(enumerate(candidates))
+    score_order = sorted(
+        indexed,
+        key=lambda item: (
+            -float(item[1].score),
+            -int(item[1].area_px),
+            -len(item[1].edge_flags),
+            item[0],
+        ),
+    )
+    area_order = sorted(
+        indexed,
+        key=lambda item: (
+            -int(item[1].area_px),
+            -float(item[1].score),
+            -len(item[1].edge_flags),
+            item[0],
+        ),
+    )
+    selected: list[Any] = []
+    reasons: dict[str, str] = {}
+
+    def add(candidate: Any, reason: str) -> bool:
+        if len(selected) >= limit or candidate in selected:
+            return False
+        if any(_rescue_candidates_are_near(candidate, other) for other in selected):
+            return False
+        selected.append(candidate)
+        reasons[candidate.candidate_id] = reason
+        return True
+
+    add(score_order[0][1], "highest_score")
+    for _, candidate in area_order:
+        if len(selected) >= limit:
+            break
+        if add(candidate, "largest_area_spatially_distinct"):
+            break
+    for _, candidate in score_order:
+        if len(selected) >= limit:
+            break
+        add(candidate, "next_high_score_spatially_distinct")
+
+    selected_ids = {item.candidate_id for item in selected}
+    audit: list[dict[str, object]] = []
+    for index, candidate in indexed:
+        if candidate.candidate_id in selected_ids:
+            audit.append(
+                {
+                    "candidate_id": candidate.candidate_id,
+                    "review_selected": True,
+                    "review_selection_reason": reasons[candidate.candidate_id],
+                    "rank": index,
+                }
+            )
+            continue
+        overlap_with = next(
+            (other.candidate_id for other in selected if _rescue_candidates_are_near(candidate, other)),
+            None,
+        )
+        audit.append(
+            {
+                "candidate_id": candidate.candidate_id,
+                "review_selected": False,
+                "review_selection_reason": (
+                    f"spatial_duplicate_of:{overlap_with}"
+                    if overlap_with
+                    else "review_limit"
+                ),
+                "rank": index,
+            }
+        )
+    return selected, audit
 
 
 def _proposal_manifest_role(

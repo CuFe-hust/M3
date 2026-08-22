@@ -1,0 +1,32 @@
+{
+  "model": "segformer_mitb2_oem",
+  "num_classes": 9,
+  "id2name": {
+    "0": "background",
+    "1": "bareland",
+    "2": "rangeland",
+    "3": "developed_space",
+    "4": "road",
+    "5": "tree",
+    "6": "water",
+    "7": "agriculture_land",
+    "8": "building"
+  },
+  "name2id": {
+    "background": 0,
+    "bareland": 1,
+    "rangeland": 2,
+    "developed_space": 3,
+    "road": 4,
+    "tree": 5,
+    "water": 6,
+    "agriculture_land": 7,
+    "building": 8
+  },
+  "verification": {
+    "method": "exact label order confirmed by the user for the local OpenEarthMap checkpoint; matches models/segformer_mitb2_oem/config.json id2label",
+    "verified_date": "2026-08-20",
+    "checkpoint_sha256": "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab",
+    "source": "user-confirmed exact checkpoint mapping and local config.json"
+  }
+}

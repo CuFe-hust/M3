@@ -67,13 +67,23 @@ class CountingAgent:
         verify_empty_detection: bool = True,
         trust_empty_detection: bool = False,
         verify_empty_semantic: bool = False,
+        multi_detector_enabled: bool = True,
+        max_selected_detector_experts: int = 5,
+        min_successful_detector_experts: int = 1,
+        ensemble_iou_threshold: float = 0.45,
+        ensemble_center_distance_ratio: float = 0.60,
+        ensemble_singleton_high_confidence: float = 0.65,
+        unresolved_ensemble_policy: str = "retain_high_confidence",
         expert_catalog: ExpertCatalog | None = None,
     ) -> None:
         self._client = client
         self._target_resolver = target_resolver
         self._expert_catalog = expert_catalog
         self._selector = BackendSelector(
-            backend_registry, default_backend=default_backend
+            backend_registry,
+            default_backend=default_backend,
+            multi_detector_enabled=multi_detector_enabled,
+            max_selected_detector_experts=max_selected_detector_experts,
         )
         self._executor = CountingPlanExecutor(
             self._selector,
@@ -83,6 +93,11 @@ class CountingAgent:
                 verify_empty_detection=verify_empty_detection,
                 trust_empty_detection=trust_empty_detection,
                 verify_empty_semantic=verify_empty_semantic,
+                min_successful_detector_experts=min_successful_detector_experts,
+                ensemble_iou_threshold=ensemble_iou_threshold,
+                ensemble_center_distance_ratio=ensemble_center_distance_ratio,
+                ensemble_singleton_high_confidence=ensemble_singleton_high_confidence,
+                unresolved_ensemble_policy=unresolved_ensemble_policy,
             ),
         )
 
@@ -201,6 +216,16 @@ class CountingAgent:
                 entry.to_trace() for entry in state.fallback_history
             ],
             "selection_reason": list(plan.reason_codes),
+            "selected_detector_experts": [
+                {
+                    "backend_name": name,
+                    "kind": self._selector.backend_by_name(name).kind,
+                    "priority": self._selector.backend_by_name(name).priority,
+                }
+                for name in plan.selected_detector_expert_names
+            ],
+            "max_selected_detector_experts": self._selector.max_selected_detector_experts,
+            "fallback_backends": list(plan.fallback_backend_names),
             "target": resolution.target.canonical_label,
             "target_source": resolution.target_source,
             "planner_target": resolution.planner_target,
@@ -221,6 +246,60 @@ class CountingAgent:
         # overwrite agent-level fields. 后端 trace 位于独立命名空间，插件无法
         # 覆盖 Agent 级字段。
         trace["backend_trace"] = dict(state.outcome.trace or {})
+        ensemble_trace = trace["backend_trace"].get("ensemble")
+        if isinstance(ensemble_trace, dict):
+            trace["counting_ensemble"] = {
+                "enabled": True,
+                "selected_experts": list(ensemble_trace.get("selected_experts", [])),
+                "executed_experts": list(state.attempted_backends),
+                "successful_experts": list(ensemble_trace.get("successful_experts", [])),
+                "failed_experts": list(ensemble_trace.get("failed_experts", [])),
+                "clusters": {
+                    "consensus": ensemble_trace.get("merged_groups", 0),
+                    "singletons": None,
+                    "conflicts": len(ensemble_trace.get("unresolved_conflicts", [])),
+                },
+                "fused_count_before_review": ensemble_trace.get("fused_instance_count"),
+                "disagreement_review_triggered": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("disagreement_review_triggered", False),
+                "review_backend": ensemble_trace.get("disagreement_review", {}).get(
+                    "review_backend"
+                ),
+                "review_request_hash": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("review_request_hash"),
+                "requested_conflict_ids": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("requested_conflict_ids", []),
+                "reviewed_conflicts": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("reviewed_conflict_ids", []),
+                "truncated_conflict_ids": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("truncated_conflict_ids", []),
+                "review_decisions": ensemble_trace.get("disagreement_review", {}).get(
+                    "review_decisions", []
+                ),
+                "review_failure": ensemble_trace.get("disagreement_review", {}).get(
+                    "review_failure"
+                ),
+                "unresolved_ensemble_policy": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("unresolved_ensemble_policy"),
+                "unresolved_policy_applied": ensemble_trace.get(
+                    "disagreement_review", {}
+                ).get("unresolved_policy_applied", False),
+                "final_count": state.outcome.counting.final_count,
+            }
+        else:
+            trace["counting_ensemble"] = {
+                "enabled": False,
+                "selected_experts": list(plan.selected_detector_expert_names),
+                "executed_experts": list(state.attempted_backends),
+                "successful_experts": [],
+                "failed_experts": [],
+            }
         if state.yolo_trace is not None:
             yolo_trace = dict(state.yolo_trace)
             yolo_trace.update(

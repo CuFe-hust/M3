@@ -1,0 +1,23 @@
+schema_version: 1
+shadow:
+  require_exact_proposal_parity: true
+  require_score_map_allclose: true
+  score_map_atol: 0.0
+  score_map_rtol: 0.0
+critical_no_change:
+  max_new_false_positive_samples: 0
+  max_new_false_positive_components: 0
+  max_scene_fp_rate_increase: 0.0
+normal_changed:
+  max_proposal_recall_drop: 0.0
+  max_proposal_f1_drop: 0.0
+building_edge:
+  max_proposal_recall_drop: 0.0
+  allow_missing_subset: false
+residual_hard_cases:
+  require_net_improvement: true
+  min_net_improvement: 1
+  min_additional_rescued_samples: 1
+broad_validation:
+  max_proposal_f1_drop: 0.01
+  max_pixel_f1_drop: 0.01

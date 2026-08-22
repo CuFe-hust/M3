@@ -49,7 +49,6 @@
 |---|---|
 | `AGENTS.md` | 编码代理的长期行为规则 |
 | `DETAILS.md` | 当前有效的架构、接口、运行与评测事实 |
-| `architecture/implementation_status.json` | 当前实际实现状态 |
 | `architecture/import_rules.json` | 顶层包 import DAG 与 path-specific 依赖规则 |
 | `tests/fixtures/migration/` | 离线 Golden 行为基线 |
 | `docs/migration/` | `try_yolo` → 新架构的迁移基线与有意行为差异 |
@@ -79,12 +78,25 @@ git show ec962eb87c3ad0b8c1502efcbd08db0daec48868:<path>
 
 ---
 
-## 2. 文件范围与架构边界
+## 2. 新文件与模块边界
 
-### 2.1 新文件职责
+允许根据当前任务需要新增 Python 文件，不使用中央路径白名单或
+implementation-status 文件审批普通新文件。
 
-新增 Python 文件不再受逐路径白名单约束，但必须具有清晰、单一且符合顶层包职责的边界。
-不得为了临时复用或绕过现有包边界创建空壳或泛化：
+新增文件必须：
+
+- 位于职责正确的现有 package/domain 中；
+- 遵守 `architecture/import_rules.json` 定义的 import DAG；
+- 避免无明确职责的泛化模块；
+- 只创建当前任务确实需要的文件，不预建未来占位模块；
+- 配套更新受影响的测试与文档。
+
+普通新增 Python 文件无需单独 architecture approval，也无需登记到中央文件列表。
+
+如果任务需要新增顶层 package、改变现有 package 的职责，或改变 import DAG，
+则仍属于架构变更，应按现有架构变更规则处理。
+
+不得创建或泛化：
 
 ```text
 utils.py
@@ -184,7 +196,7 @@ Agent 依赖模型协议，而不是具体模型类。
 
 ### 3.5 `workflows`
 
-职责：TaskResolver、SampleRunner、DatasetRunner、预算、状态、run store、artifact writer、judge service 等编排。
+职责：VisualTaskPlanner、SampleRunner、DatasetRunner、预算、状态、run store、artifact writer、judge service 等编排。
 
 约束：
 
@@ -300,20 +312,25 @@ normalization
 
 ### 5.2 `SampleDraft`
 
-只有“样本本身没有明确 task，需要在物化前解析”的路径使用：
+需要在最终 task 与图像角色确定前物化的路径使用：
 
 ```text
 data.schema.SampleDraft
 ```
 
-正确流程：
+当前 fresh pre-task 流程：
 
 ```text
 SampleDraft
-  -> TaskResolver
+  -> VisualTaskPlanner
   -> materialize_sample(...)
   -> UnifiedSample
 ```
+
+dataset explicit/default 路径可以先产生带 source task 的 `UnifiedSample`，但 fresh execution
+仍必须经过同一个 `VisualTaskPlanner`；模型选定 task 对后续 materialization/rebuild、
+routing 与 execution 权威，source/adapter task 只保留为 run namespace / audit 输入，不得
+覆盖规划结果。
 
 `UnifiedSample.task` 始终必填。不得把 `task=None` 的半成品伪装成 UnifiedSample。
 
@@ -389,34 +406,34 @@ Ground Truth 是源标注的只读保留。
 
 ---
 
-## 6. TaskResolver 与 TaskRouter
+## 6. VisualTaskPlanner 与 TaskRouter
 
 这是新架构的核心职责分离，禁止重新合并。
 
-### 6.1 TaskResolver
+### 6.1 VisualTaskPlanner
 
-`workflows.task_resolver.TaskResolver` 回答：
+`workflows.visual_planner.VisualTaskPlanner` 回答：
 
-> “这是什么任务？”
+> “这是什么任务，以及是否需要已声明的视觉辅助？”
 
-解析优先级：
+每条 fresh manual `ask` 和 dataset（explicit/default/auto）样本都必须经过**恰好一次**
+`visual-task-plan-v4` 模型规划调用。第一次调用的 sample-specific 输入只包含：
 
 ```text
-explicit task
-  -> deterministic rule
-  -> model resolution
+ordered normalized image previews
++ raw question
 ```
 
-具体规则：
+规则：
 
-- 显式合法 task：直接使用，零模型调用，零 resolver budget；
-- 显式非法 task：稳定失败；
-- 空 question + 1 图：`caption`;
-- 空 question + 2 图：`change_caption`;
-- 其他空 question：稳定失败；
-- 只有缺少 task 且 question 非空时，才允许一次模型解析路径。
+- 显式 CLI/dataset/source task 只作审计或 run namespace，不发送给第一次规划调用；
+- 模型返回并通过 Schema/能力校验的 task 对 materialization/rebuild、routing 与 execution 权威；
+- dataset name、adapter task、source task 不得覆盖模型选定 task；
+- 空 question 的结构提示可以保留在冻结 planner prompt 中，但 post-validation 不得再根据图像数、dataset 或 source task 确定性改写模型返回的 task；
+- planner 失败应稳定 fail closed，不重试、不回退到历史 Resolver，也不猜 `general_vqa`；
+- 当前 v4 planner 不输出或消费 confidence / candidate task 列表。
 
-低置信度时 Resolver 只返回候选任务信息，不执行 Agent。
+历史 `TaskResolver` 只允许出现在迁移文档、旧产物解释和 parity 审计中，不得重新接回 fresh runtime。
 
 ### 6.2 TaskRouter
 
@@ -432,16 +449,19 @@ Router：
 - 不调用模型；
 - 不猜未知 task。
 
-### 6.3 候选任务 fallback
+### 6.3 Routing fallback
 
-低置信度候选的实际执行属于 `SampleRunner`，不属于 Resolver 或 Router。
+`SampleRunner` 可以按 `TaskRouter` 已声明的 fallback agent 执行**有限且有硬上限**的
+execution fallback；这发生在 task 已由 `VisualTaskPlanner` 确定之后，不属于 task discovery，
+也不是历史低置信度 candidate-task 路径。
 
 不得：
 
-- Resolver 自己跑 Agent；
+- VisualTaskPlanner 自己跑 Agent；
 - Router 自己跑模型；
 - Agent 自己重新分类任务；
 - dataset adapter 调 Qwen 决定业务 task；
+- source/adapter task 绕过或覆盖 fresh VisualTaskPlanner；
 - 无依据地“全部 Agent 都跑一遍”。
 
 ---
@@ -532,18 +552,22 @@ supported_tasks
 - detector 不得因为依赖缺失而让普通 import 崩溃；
 - seam / tile 几何与去重应保持确定性；
 - 新增 expert 以 `ExpertCatalog`、资产和 composition 配置为主，不在 `CountingAgent` 增加 model-specific 分支；
-- VLM 只解析 `CountTargetSpec`，不得选择 backend、checkpoint 或模型路径；
+- fresh counting 的语义 target 由 `VisualTaskPlanner` 的 `count_target` / `object_categories` 提供；
+  `CountTargetResolver` 只做确定性校验与 reconciliation，不再调用模型，也不得选择 backend、
+  checkpoint 或模型路径；
 - 启用的 SegFormer expert 必须使用已验证 class map，不得从 `LABEL_N` 占位标签猜语义。
 
-计数目标解析优先级：
+当前 fresh counting target 契约：
 
 ```text
-sample.normalization.count_target_hint
-  -> metadata["count_target_hint"] 兼容路径
-  -> Qwen target parser
+VisualTaskPlanner.count_target / object_categories
+  -> sample.normalization.count_target_hint（确定性 verifier）
+  -> metadata["count_target_hint"]（legacy 兼容 verifier）
+  -> CountTargetResolver（零模型调用）
 ```
 
-无效 hint 应明确失败，不得静默忽略后继续猜目标。
+没有 planner 的 direct 兼容路径可以使用结构化 normalization hint 或 legacy metadata hint；
+无 plan 且无 hint 时应稳定失败。无效 hint 应明确失败，不得静默忽略后继续猜目标。
 
 ---
 
@@ -612,7 +636,7 @@ Change pipeline 必须保持以下边界：
 - raw T1/T2 永远保留并作为最终语义 authority，派生图、mask 和 proposal 只是辅助证据；
 - 新的 semantic、change head 或其他模型能力必须通过 `models` protocol，并由
   `application` composition root 注入，Agent 不知道 checkpoint 路径或具体 backend；
-- `agents/` 不得 import `post_training/`，本轮不实现训练、loss、optimizer、Trainer 或 LoRA 代码；
+- `agents/` runtime 不得 import `training/` 或依赖训练入口；现有 ChangeHead 的 loss、optimizer、Trainer 属于离线 `training/change_head` / `scripts` 工具，runtime 只消费 `models` contract 与已验证 checkpoint，不得把 training stack 塞回 Agent；
 - core import 与 offline tests 不得强制安装或加载 torch/transformers 等可选重依赖。
 
 ---
@@ -771,7 +795,7 @@ routing
 
 不得在 SampleRunner 内实现 dataset 读取循环。
 
-低置信度候选最多按现有契约执行有限候选，不能扩成无界多 Agent 搜索。
+`SampleRunner` 只执行 `TaskRouter` 明确声明的有限 fallback agent，并受既有 attempt 硬上限约束；这不是 planner candidate-task 路径，不能扩成无界多 Agent 搜索。
 
 ### 13.2 DatasetRunner
 
@@ -799,16 +823,18 @@ routing
 
 ```text
 tasks=None
-    adapter 默认任务集合，不调用 TaskResolver
+    adapter 默认任务集合；每条 fresh sample 仍调用一次 VisualTaskPlanner
 
 tasks=(...)
-    显式任务模式
+    显式 run-task namespace；每条 fresh sample 仍调用一次 VisualTaskPlanner，
+    source task 只作审计，不覆盖模型结果
 
 auto_task=True + tasks=()
-    SampleDraft -> TaskResolver 模式
+    SampleDraft -> VisualTaskPlanner -> materialize_sample -> UnifiedSample
 ```
 
-不得把 `tasks=None` 偷偷解释成 auto-task。
+不得把 `tasks=None` 偷偷解释成 auto-task。三种模式的 sample selection / run namespace 可以不同，
+但 fresh task 决策统一由同一个 `VisualTaskPlanner` 完成。
 
 ---
 
@@ -1111,7 +1137,7 @@ huggingface/
 
 - `UnifiedSample` / `SampleDraft`;
 - dataset adapter；
-- Router / Resolver；
+- VisualTaskPlanner / Router；
 - Agent 输入输出；
 - counting backend / selector / executor；
 - model entry / model cache identity；
@@ -1129,7 +1155,7 @@ huggingface/
 修改跨模块依赖、文件布局或 `__init__.py` 时，应特别运行：
 
 ```text
-tests/architecture/test_implementation_status.py
+tests/architecture/test_repository_hygiene.py
 tests/architecture/test_import_boundaries.py
 tests/architecture/test_init_side_effects.py
 tests/architecture/test_package_discovery.py
@@ -1210,7 +1236,7 @@ docs/migration/
 - `UnifiedSample` / `SampleDraft`;
 - task 集合；
 - task → Agent 映射；
-- Router/Resolver 规则；
+- VisualTaskPlanner/Router 规则；
 - Agent 输入输出；
 - model entry；
 - run directory；
@@ -1272,6 +1298,7 @@ git rev-parse HEAD
 - 保持 diff 局部；
 - 不触碰用户已有无关修改；
 - 不修改 Golden fixture 逃避问题；
+- 新增文件时遵守现有 package 职责与 import DAG；
 - 不引入旧包回退。
 
 ### 修改后
@@ -1319,6 +1346,7 @@ git status --short
 
 ```text
 Router 读取 question 后直接调用 Qwen 决定 Agent
+Fresh dataset 以 source/adapter task 绕过或覆盖 VisualTaskPlanner
 Agent 直接读取 VRSBench/MME 原始 JSON
 Workflow import models.qwen_transformers
 每条样本 create_model(...)

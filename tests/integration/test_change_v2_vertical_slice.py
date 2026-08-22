@@ -17,6 +17,7 @@ from agents.change.harmonizer import HarmonizationCandidate, PairHarmonizer
 from agents.change.schema import HarmonizationDecision
 from agents.change.settings import (
     AgentChangeSettings,
+    ChangeEvidenceSettings,
     ChangeHarmonizationSettings,
     ChangeProposalSettings,
     ChangeSemanticSettings,
@@ -151,8 +152,11 @@ def _sample(root: Path, *, invalid: bool = False) -> UnifiedSample:
 
 def _settings(*, enabled: bool, policy: str = "fallback_legacy") -> AgentChangeSettings:
     return AgentChangeSettings(
+        evidence=ChangeEvidenceSettings(attach_harmonized_global=True),
         semantic=ChangeSemanticSettings(
             enabled=enabled,
+            feature_stages=(1,),
+            feature_stage_weights={1: 1.0},
             local_match_radius=0,
             min_pif_feature_cells=16,
             failure_policy=policy,
@@ -307,10 +311,9 @@ def test_enabled_vertical_slice_calls_two_dense_frames_and_one_qwen(tmp_path: Pa
     crop_roles = roles[5:]
     assert "change_000:reference_t1_crop" in crop_roles
     assert "change_000:t2_registered_crop" in crop_roles
-    assert "change_000:mask_overlay" in crop_roles
     assert crop_roles.index("change_000:reference_t1_crop") < crop_roles.index(
         "change_000:t2_registered_crop"
-    ) < crop_roles.index("change_000:mask_overlay")
+    )
     assert {
         "change_000:reference_t1_crop",
         "change_000:t2_registered_crop",
@@ -413,7 +416,11 @@ def test_v2_trace_records_calibrated_identity_and_algorithm_settings(
     tmp_path: Path,
 ) -> None:
     settings = AgentChangeSettings(
-        semantic=ChangeSemanticSettings(enabled=True),
+        semantic=ChangeSemanticSettings(
+            enabled=True,
+            feature_stages=(1,),
+            feature_stage_weights={1: 1.0},
+        ),
         proposals=ChangeProposalSettings(
             min_component_area_ratio=0.001,
             max_component_area_ratio=0.50,

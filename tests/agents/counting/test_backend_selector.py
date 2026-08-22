@@ -369,12 +369,62 @@ def test_same_kind_uses_priority_then_stable_name_tie_break() -> None:
 
     plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
 
-    assert (plan.primary_backend_name, *plan.fallback_backend_names) == (
-        "det-a",
-        "det-b",
-        "det-z",
-        "qwen_point",
+    assert plan.primary_backend_name == "det-a"
+    assert plan.ensemble_backend_names == ("det-b", "det-z")
+    assert plan.fallback_backend_names == ("qwen_point",)
+
+
+def test_shared_target_selects_multiple_detectors_as_co_primary() -> None:
+    selector = _selector(
+        _FakeQwenBackend(),
+        _FakeYoloBackend(name="det-a", priority=100),
+        _FakeYoloBackend(name="det-b", priority=200),
     )
+
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
+
+    assert plan is not None
+    assert plan.primary_backend_name == "det-b"
+    assert plan.ensemble_backend_names == ("det-a",)
+    assert plan.selected_detector_expert_names == ("det-b", "det-a")
+    assert plan.fallback_backend_names == ("qwen_point",)
+
+
+def test_detector_selection_is_bounded_to_five() -> None:
+    detectors = [
+        _FakeYoloBackend(name=f"det-{index}", priority=100 - index)
+        for index in range(6)
+    ]
+    selector = _selector(_FakeQwenBackend(), *detectors)
+
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
+
+    assert plan is not None
+    assert plan.selected_detector_expert_names == (
+        "det-0", "det-1", "det-2", "det-3", "det-4"
+    )
+    assert plan.ensemble_backend_names == (
+        "det-1", "det-2", "det-3", "det-4"
+    )
+    assert plan.fallback_backend_names == ("det-5", "qwen_point")
+
+
+def test_detector_selection_can_be_disabled_without_losing_fallbacks() -> None:
+    selector = BackendSelector(
+        _registry(
+            _FakeQwenBackend(),
+            _FakeYoloBackend(name="det-a", priority=200),
+            _FakeYoloBackend(name="det-b", priority=100),
+        ),
+        multi_detector_enabled=False,
+    )
+
+    plan = selector.plan(_TARGET, task="counting", executable_leaf_categories=("car",))
+
+    assert plan is not None
+    assert plan.selected_detector_expert_names == ("det-a",)
+    assert plan.ensemble_backend_names == ()
+    assert plan.fallback_backend_names == ("det-b", "qwen_point")
 
 
 def test_segmentation_is_primary_when_detection_has_no_label() -> None:

@@ -13,12 +13,15 @@ import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar
 from urllib.parse import urlparse
 
 from pydantic import BaseModel, ConfigDict
 
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+LEARNED_CHANGE_INPUT_CONTRACT_VERSION = "learned-change-input-v2"
+LEARNED_CHANGE_OUTPUT_CONTRACT_VERSION = "learned-change-output-v2"
 
 # Sensitive key names and high-risk value prefixes that must never appear in a
 # cache identity. Keys are matched after normalization; values after
@@ -71,6 +74,14 @@ def validate_logical_model_id(value: str, *, where: str) -> str:
     if is_local_model_path(normalized):
         raise ValueError(f"{where} must be a logical identifier, not a local path")
     return normalized
+
+
+def hash_class_names(class_names: Sequence[str]) -> str:
+    """Hash the canonical ordered semantic class-name list."""
+    payload = json.dumps(
+        list(class_names), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -398,6 +409,7 @@ class RequestMeta(BaseModel):
     tile_id: str | None = None
     image_sha256: str | None = None
     artifact_dir: Path | None = None
+    cache_policy: Literal["use", "bypass"] = "use"
 
 
 class VisionLanguageClient(Protocol):
@@ -459,16 +471,103 @@ class DenseSemanticPyramidOutput:
 
 
 @dataclass(frozen=True)
-class LearnedChangeOutput:
-    """Optional learned-change score output.
+class LearnedChangeExpertRequirement:
+    """The explicit semantic expert contract required by a ChangeHead."""
 
-    The contract intentionally carries only an inference score map and small
-    JSON-safe diagnostics.  A concrete future head owns its runtime and
-    weights; this shared module imports neither torch nor a training stack.
+    expert_id: str
+    logical_model_id: str
+    weights_sha256: str
+    class_names_sha256: str
+    feature_stages: tuple[int, ...]
+    required: bool = True
+    use_semantic_probabilities: bool = True
+    missing_policy: Literal["error", "zero_with_presence_mask"] = "error"
+
+
+@dataclass(frozen=True)
+class LearnedChangeInputSpec:
+    """Runtime input declaration published by a learned change client."""
+
+    contract_version: str
+    expert_requirements: tuple[LearnedChangeExpertRequirement, ...]
+    use_pif_mask: bool
+    use_rgb_pair: bool
+    optional_expert_dropout_supported: bool
+
+    def requirement_by_expert_id(self) -> Mapping[str, LearnedChangeExpertRequirement]:
+        """Return a fresh read-only mapping keyed by expert id."""
+        from types import MappingProxyType
+
+        return MappingProxyType({
+            requirement.expert_id: requirement
+            for requirement in self.expert_requirements
+        })
+
+
+@dataclass(frozen=True)
+class LearnedChangeExpertPair:
+    """One explicitly identified expert's T1/T2 dense outputs."""
+
+    expert_id: str
+    logical_model_id: str
+    weights_sha256: str
+    class_names_sha256: str
+    first: DenseSemanticPyramidOutput
+    second: DenseSemanticPyramidOutput
+    available: bool = True
+
+
+@dataclass(frozen=True)
+class LearnedChangeRequest:
+    """Stable multi-expert request passed from perception to ChangeHead."""
+
+    image_size: tuple[int, int]
+    experts: Mapping[str, LearnedChangeExpertPair]
+    valid_mask: Any
+    pif_mask: Any | None
+    pif_valid: bool
+    comparison_t1: Any | None = None
+    comparison_t2: Any | None = None
+
+
+@dataclass(frozen=True, init=False)
+class LearnedChangeOutput:
+    """Calibrated learned-change probability output.
+
+    ``probability_map`` is calibrated P(change); ``reliability`` describes
+    checkpoint/input trust and is intentionally separate from probability.
+    The shared module imports neither torch nor a training stack.
     """
 
-    score_map: Any
+    probability_map: Any
+    reliability: float
     diagnostics: Mapping[str, Any]
+    uncertainty_map: Any | None = None
+
+    def __init__(
+        self,
+        probability_map: Any | None = None,
+        reliability: float = 1.0,
+        diagnostics: Mapping[str, Any] | None = None,
+        uncertainty_map: Any | None = None,
+        *,
+        score_map: Any | None = None,
+    ) -> None:
+        # ``score_map`` is accepted only as a source-compatibility bridge for
+        # pre-v2 injected test clients; all new callers must use probability_map.
+        if probability_map is None:
+            probability_map = score_map
+        if probability_map is None:
+            raise TypeError("probability_map is required")
+        object.__setattr__(self, "probability_map", probability_map)
+        object.__setattr__(self, "reliability", reliability)
+        object.__setattr__(self, "diagnostics", diagnostics or {})
+        object.__setattr__(self, "uncertainty_map", uncertainty_map)
+
+    @property
+    def score_map(self) -> Any:
+        """Deprecated alias retained for one release during ABI migration."""
+        return self.probability_map
 
 
 class DenseSemanticClient(Protocol):
@@ -504,18 +603,15 @@ class DenseSemanticPyramidClient(Protocol):
 
 
 class LearnedChangeClient(Protocol):
-    """Optional frozen-feature change-head inference contract."""
+    """Optional explicit multi-expert ChangeHead inference contract."""
 
     @property
     def cache_identity(self) -> ModelCacheIdentity: ...
 
-    def infer(
-        self,
-        *,
-        first: DenseSemanticPyramidOutput,
-        second: DenseSemanticPyramidOutput,
-        valid_mask: Any,
-    ) -> LearnedChangeOutput: ...
+    @property
+    def input_spec(self) -> LearnedChangeInputSpec: ...
+
+    def infer(self, request: LearnedChangeRequest) -> LearnedChangeOutput: ...
 
 
 class SemanticSegmentationOutput(Protocol):
@@ -711,30 +807,45 @@ class RuntimeObjectDetectionClient:
             max_det=max_detections,
             verbose=False,
         )
-        if not results or getattr(results[0], "obb", None) is None:
+        if not results:
             return []
-        obb = results[0].obb
-        polygons, classes, confidences = obb.xyxyxyxy, obb.cls, obb.conf
+        result = results[0]
         names = _model_class_names(getattr(self._model, "names", {}))
         actual_size = getattr(self._model, "model_input_size", None)
         input_width, input_height = actual_size or (int(image_size), int(image_size))
         audit = self.provider_audit
         outputs: list[ObjectDetectionOutput] = []
-        for index in range(len(polygons)):
-            class_id = int(_as_float(classes[index]))
+        if getattr(result, "obb", None) is not None:
+            obb = result.obb
+            records = [
+                (int(_as_float(obb.cls[index])), float(_as_float(obb.conf[index])),
+                 tuple((float(_as_float(corner[0])), float(_as_float(corner[1]))) for corner in obb.xyxyxyxy[index]), None)
+                for index in range(len(obb.xyxyxyxy))
+            ]
+        elif getattr(result, "boxes", None) is not None:
+            boxes = result.boxes
+            records = [
+                (int(_as_float(boxes.cls[index])), float(_as_float(boxes.conf[index])), None,
+                 tuple(float(_as_float(value)) for value in boxes.xyxy[index]))
+                for index in range(len(boxes.xyxy))
+            ]
+        else:
+            return []
+        for class_id, confidence_value, polygon, xyxy in records:
             if class_id not in names:
                 raise ValueError(f"YOLO_CLASS_ID_UNKNOWN:{class_id}")
-            polygon = tuple(
-                (float(_as_float(corner[0])), float(_as_float(corner[1])))
-                for corner in polygons[index]
-            )
-            xs = [point[0] for point in polygon]
-            ys = [point[1] for point in polygon]
+            if polygon is not None:
+                xs = [point[0] for point in polygon]
+                ys = [point[1] for point in polygon]
+                envelope = (min(xs), min(ys), max(xs), max(ys))
+            else:
+                assert xyxy is not None
+                envelope = xyxy
             outputs.append(
                 ObjectDetectionOutput(
                     label=names[class_id],
-                    confidence=float(_as_float(confidences[index])),
-                    xyxy=(min(xs), min(ys), max(xs), max(ys)),
+                    confidence=confidence_value,
+                    xyxy=envelope,
                     polygon=polygon,
                     input_width=input_width,
                     input_height=input_height,

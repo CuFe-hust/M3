@@ -5,7 +5,6 @@
 它主要面向 AI 编码代理和需要理解系统内部结构的开发者。
 
 - 编码行为边界：见 `AGENTS.md`
-- 当前实现状态：见 `architecture/implementation_status.json`
 - import DAG：见 `architecture/import_rules.json`
 - 迁移历史：见 `docs/migration/`
 - 重要架构决策：见 `docs/architecture/`
@@ -30,8 +29,6 @@ legacy behavior reference:
 长期架构以仓库主线 `main` 为事实来源。`new_structure` 是迁移期的历史名称，不是
 当前公共分支，也不是运行时依赖。
 
-当前 `architecture/implementation_status.json` 中生产 Python 文件已全部实现，`pending_files` 为空。
-
 Doc 17 离线质量门记录：
 
 ```text
@@ -42,7 +39,7 @@ compileall: clean
 git diff --check: clean
 ```
 
-剩余失败来自 HTTP socket/超大请求传输、缺失可选依赖（如
+剩余失败来自 HTTP socket/超大请求传输、当时仍启用的重构期路径门禁漂移、缺失可选依赖（如
 `safetensors`/`peft`/`transformers`）及未参与本任务的模型测试；不能表述为全仓
 pytest 全绿。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按
 具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
@@ -99,7 +96,7 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 - 测试；
 - offline；
 - secret；
-- 文件布局与职责边界。
+- architecture tests。
 
 ### `DETAILS.md`
 
@@ -112,7 +109,6 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 机器约束：
 
 ```text
-implementation_status.json
 import_rules.json
 ```
 
@@ -291,8 +287,8 @@ M3/
 └── tests/
 ```
 
-完整 Python 路径不在本文档中重复维护；生产包的当前实现状态由
-`architecture/implementation_status.json` 记录。
+完整 Python 文件列表不在文档中重复维护。当前文件结构以仓库实际目录为准；
+模块间依赖边界以 `architecture/import_rules.json` 和 architecture tests 为机器约束。
 
 ---
 
@@ -492,7 +488,7 @@ change_caption
 
 其他 UnifiedSample task 要求非空问题。
 
-空问题的 `caption` / `change_caption` 规则现在由 v3 system prompt 约束，并在
+空问题的 `caption` / `change_caption` 规则现在由 v4 system prompt 约束，并在
 `materialize_sample(...)` 边界校验图像角色与数量。
 
 ## 7.3 Normalization 一致性
@@ -1009,7 +1005,7 @@ prompts.snapshot/
 涉及模型输出行为的 Prompt 修改必须被视为行为变化，而不只是文案修改。
 
 当前 active planner binding 为 `"visual_task_plan"` → 版本化
-`visual_task_plan_v3.md`（v3）。旧 resolver/gate/joint prompt 不在 active
+`visual_task_plan_v4.md`（v4）。旧 resolver/gate/joint prompt 不在 active
 catalog 中；历史 prompt 文件不参与新鲜规划。
 
 ---
@@ -3368,7 +3364,6 @@ tests/parity/
 保证：
 
 ```text
-implementation status
 import DAG
 __init__ no side effects
 package discovery
@@ -3421,21 +3416,20 @@ Golden fixture 不属于“修实现时可以跟着一起改”的普通测试�
 
 ---
 
-# 78. Architecture implementation status
+# 78. Architecture boundaries
 
-`architecture/implementation_status.json`：
+项目不使用 Python 文件路径白名单，也不维护中央 implemented/pending 文件清单。
 
-```text
-what is actually implemented now
-```
+新增模块是否合法由以下因素决定：
 
-当前：
+1. 文件所在 package 的职责；
+2. `architecture/import_rules.json`；
+3. architecture tests；
+4. `AGENTS.md` 的长期架构约束。
 
-```text
-pending_files = []
-```
+普通新增 Python 文件无需单独登记。
 
-新增 Python 路径不需要逐路径审批，但仍必须遵守 import DAG、包职责、测试和实现状态契约。
+新增顶层 package、改变既有 package 职责、改变 import DAG 等仍属于架构变更。
 
 ---
 
@@ -3515,11 +3509,9 @@ tile；它不等价于“对象不会跨 tile”或“不会产生重复检测�
 
 ### 79.7 OEM class labels
 
-迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`；`classes.json`
-的精确顺序由用户于 2026-08-20 针对本地 OpenEarthMap checkpoint 明确确认，
-不是从占位 `config.json` id2label 推导。counting 侧仍因缺少
-`connected_components` policy 不注册 OEM backend；VQA semantic-mask seam 的
-能力声明与实际启用仍分别受 catalog、class-map 校验和 runtime settings 约束。
+OEM 9-channel checkpoint 的分类头维度已核验，并以 OpenEarthMap 官方八类顺序
+（加 index 0 background）写入版本化 `classes.json`；runtime 只读取该映射，不再
+暴露旧的 `LABEL_0..8` 占位名。
 
 ### 79.8 Semantic connected-component counting
 
@@ -3714,7 +3706,8 @@ tests/integration/
 | dependency assembly | `application/bootstrap.py` |
 | 顶层命令参数 | `main.py` |
 
-新增文件必须落入上述职责边界，并补充任务相关测试。
+新增文件应优先放入职责对应的现有 package；如果需要新增顶层 package 或改变已有职责边界，
+再按架构变更处理。
 
 ---
 

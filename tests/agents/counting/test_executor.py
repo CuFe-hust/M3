@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -27,8 +28,17 @@ from agents.counting.executor import (
     CountingExecutionPolicy,
     CountingExecutionResult,
     CountingPlanExecutor,
+    _apply_disagreement_review,
+    resolve_unresolved_observations,
 )
-from agents.counting.schema import CountTargetSpec, CountingResult, TileCountResponse
+from agents.counting.schema import (
+    CountTargetSpec,
+    CountingResult,
+    DisagreementReview,
+    GlobalPointObservation,
+    PointProvenance,
+    TileCountResponse,
+)
 from agents.counting.settings import CountingSettings
 from agents.errors import (
     AgentExecutionError,
@@ -55,6 +65,48 @@ _SENSITIVE_ERROR_TEXT = (
     "Bearer abcdef "
     "data:image/png;base64,AAAA"
 )
+
+
+def _review_point(global_id: str, confidence: float) -> GlobalPointObservation:
+    return GlobalPointObservation(
+        global_id=global_id,
+        target="car",
+        source_tile_id="r000_c000",
+        local_id=global_id,
+        local_x_norm=500,
+        local_y_norm=500,
+        local_radius_norm=0,
+        global_x_px=32,
+        global_y_px=32,
+        global_x_norm=500,
+        global_y_norm=500,
+        radius_px=4.0,
+        confidence=confidence,
+        ownership_valid=True,
+        near_core_boundary=False,
+        accepted=True,
+        short_evidence="e",
+        provenance=PointProvenance(source="yolo_obb_center", source_class="car"),
+    )
+
+
+def _review_fixture() -> SimpleNamespace:
+    return SimpleNamespace(
+        points=[
+            _review_point("candidate-a", 0.99),
+            _review_point("candidate-b", 0.20),
+            _review_point("fused-consensus", 0.95),
+        ],
+        review_candidates=[
+            {
+                "conflict_id": "candidate-a|candidate-b",
+                "candidate_ids": ["candidate-a", "candidate-b"],
+                "candidate_points": [],
+            }
+        ],
+        unresolved_conflicts=["candidate-a|candidate-b"],
+        warnings=[],
+    )
 
 
 class _FakeBudget:
@@ -129,10 +181,12 @@ class _FakeYoloBackend:
         final_count: int = 1,
         *,
         available: bool = True,
+        point_confidence: float = 0.9,
     ) -> None:
         self._error = error
         self._final_count = final_count
         self._available = available
+        self._point_confidence = point_confidence
 
     def is_enabled(self) -> bool:
         return True
@@ -155,7 +209,7 @@ class _FakeYoloBackend:
         if self._final_count > 0:
             points = [
                 GlobalPointObservation(
-                    global_id=f"{request.sample.sample_id}:det:p{i}",
+                    global_id=f"{request.sample.sample_id}:{self.name}:p{i}",
                     target=request.target.canonical_label,
                     source_tile_id="r000_c000",
                     local_id=f"p{i}",
@@ -167,7 +221,7 @@ class _FakeYoloBackend:
                     global_x_norm=500,
                     global_y_norm=500,
                     radius_px=4.0,
-                    confidence=0.9,
+                    confidence=self._point_confidence,
                     ownership_valid=True,
                     near_core_boundary=False,
                     accepted=True,
@@ -191,6 +245,43 @@ class _FakeYoloBackend:
             ),
             trace={"detector_note": "fake"},
         )
+
+
+class _FakeDisagreementReviewer:
+    name = "qwen_point"
+    kind = "qwen_point"
+    priority = 0
+
+    def __init__(self, review: DisagreementReview) -> None:
+        self.review = review
+        self.calls = 0
+
+    def is_enabled(self) -> bool:
+        return True
+
+    def is_available(self) -> bool:
+        return True
+
+    def supports(self, target: CountTargetSpec, hints: Any | None = None) -> bool:
+        return True
+
+    async def count(self, request: CountingRequest, context: object) -> CountingBackendOutcome:
+        return CountingBackendOutcome(
+            counting=CountingResult(
+                sample_id=request.sample.sample_id,
+                target=request.target.canonical_label,
+                question=request.sample.question,
+                source_width=request.image.width,
+                source_height=request.image.height,
+                tile_count=1,
+                final_count=0,
+                status="completed",
+            )
+        )
+
+    async def review_disagreements(self, *, request, conflicts, context) -> DisagreementReview:
+        self.calls += 1
+        return self.review
 
 
 class _FakeQuantityProposalBackend:
@@ -417,6 +508,255 @@ def test_yolo_primary_executes_normally(tmp_path: Path) -> None:
     assert result.outcome.counting.final_count == 1
     assert [item.backend_name for item in result.attempt_audits] == ["det-a"]
     assert result.attempt_audits[0].status == "succeeded"
+
+
+def test_detector_ensemble_fuses_same_instance_once(tmp_path: Path) -> None:
+    first = _FakeYoloBackend(final_count=1)
+    second = _FakeYoloBackend(final_count=1)
+    second.name = "det-b"
+
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert result.outcome.counting.final_count == 1
+    assert result.outcome.counting.global_points[0].provenance is not None
+    assert result.outcome.counting.global_points[0].provenance.source == "fused"
+    assert result.outcome.counting.global_points[0].provenance.consensus_size == 2
+    assert result.attempted_backends == ("det-a", "det-b")
+
+
+def test_detector_ensemble_keeps_successful_peer_when_one_fails(tmp_path: Path) -> None:
+    failed = _FakeYoloBackend(error=RuntimeError("first failed"))
+    successful = _FakeYoloBackend(final_count=1)
+    successful.name = "det-b"
+
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), failed, successful),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert result.outcome.counting.final_count == 1
+    assert result.fallback_triggered is True
+    assert result.fallback_reason_code == "DETECTOR_ENSEMBLE_PARTIAL"
+    assert result.fallback_history[0].backend == "det-a"
+
+
+def test_detector_ensemble_calls_disagreement_reviewer_once_for_low_singleton(
+    tmp_path: Path,
+) -> None:
+    first = _FakeYoloBackend(final_count=1, point_confidence=0.4)
+    second = _FakeYoloBackend(final_count=0)
+    second.name = "det-b"
+    reviewer = _FakeDisagreementReviewer(
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "s1:det-a:p0",
+                    "decision": "reject_all",
+                    "instance_count": 0,
+                }
+            ]
+        )
+    )
+
+    result = _run(
+        _executor(reviewer, first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert reviewer.calls == 1
+    assert result.outcome.counting.final_count == 0
+    assert result.outcome.trace["ensemble"]["disagreement_review"]["disagreement_review_triggered"] is True
+
+
+def test_disagreement_accept_one_uses_exact_requested_candidate() -> None:
+    fused = _review_fixture()
+
+    points, unresolved, _warnings = _apply_disagreement_review(
+        fused,
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "candidate-a|candidate-b",
+                    "decision": "accept_one",
+                    "accepted_candidate_ids": ["candidate-b"],
+                    "instance_count": 1,
+                }
+            ]
+        ),
+    )
+
+    by_id = {point.global_id: point for point in points}
+    assert by_id["candidate-b"].accepted is True
+    assert by_id["candidate-a"].accepted is False
+    assert by_id["fused-consensus"].accepted is True
+    assert unresolved == []
+
+
+def test_disagreement_accept_multiple_preserves_exact_candidate_set() -> None:
+    fused = _review_fixture()
+    fused.review_candidates[0]["candidate_ids"] = [
+        "candidate-a",
+        "candidate-b",
+        "candidate-c",
+    ]
+    fused.points.append(_review_point("candidate-c", 0.10))
+
+    points, unresolved, _warnings = _apply_disagreement_review(
+        fused,
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "candidate-a|candidate-b",
+                    "decision": "accept_multiple",
+                    "accepted_candidate_ids": ["candidate-a", "candidate-c"],
+                    "instance_count": 2,
+                }
+            ]
+        ),
+    )
+
+    by_id = {point.global_id: point for point in points}
+    assert by_id["candidate-a"].accepted is True
+    assert by_id["candidate-b"].accepted is False
+    assert by_id["candidate-c"].accepted is True
+    assert by_id["fused-consensus"].accepted is True
+    assert unresolved == []
+
+
+@pytest.mark.parametrize(
+    ("decision", "accepted_candidate_ids", "instance_count"),
+    [
+        ("accept_one", ["candidate-a", "candidate-b"], 1),
+        ("accept_multiple", ["candidate-a"], 2),
+        ("accept_multiple", ["candidate-a", "candidate-a"], 2),
+        ("accept_one", ["unknown"], 1),
+        ("reject_all", ["candidate-a"], 0),
+    ],
+)
+def test_disagreement_invalid_decision_is_rejected(
+    decision: str,
+    accepted_candidate_ids: list[str],
+    instance_count: int,
+) -> None:
+    with pytest.raises(ValueError):
+        _apply_disagreement_review(
+            _review_fixture(),
+            DisagreementReview(
+                decisions=[
+                    {
+                        "conflict_id": "candidate-a|candidate-b",
+                        "decision": decision,
+                        "accepted_candidate_ids": accepted_candidate_ids,
+                        "instance_count": instance_count,
+                    }
+                ]
+            ),
+        )
+
+
+def test_disagreement_uncertain_defers_to_unresolved_policy() -> None:
+    fused = _review_fixture()
+
+    points, unresolved, warnings = _apply_disagreement_review(
+        fused,
+        DisagreementReview(
+            decisions=[
+                {
+                    "conflict_id": "candidate-a|candidate-b",
+                    "decision": "uncertain",
+                    "instance_count": 0,
+                }
+            ]
+        ),
+    )
+
+    assert all(point.accepted for point in points)
+    assert unresolved == ["candidate-a|candidate-b"]
+    assert warnings[-1].code == "DETECTOR_DISAGREEMENT_REVIEW_UNCERTAIN"
+
+
+@pytest.mark.parametrize(
+    ("policy", "expected_accepted"),
+    [
+        ("retain_high_confidence", {"candidate-a", "fused-consensus"}),
+        ("reject_unresolved", {"fused-consensus"}),
+    ],
+)
+def test_unresolved_ensemble_policy_is_central_and_deterministic(
+    policy: str, expected_accepted: set[str]
+) -> None:
+    points, unresolved, warnings = resolve_unresolved_observations(
+        _review_fixture().points,
+        policy,  # type: ignore[arg-type]
+        0.65,
+        unresolved_conflict_ids=["candidate-a|candidate-b"],
+    )
+
+    assert {point.global_id for point in points if point.accepted} == expected_accepted
+    assert unresolved == []
+    assert warnings[-1].code == "DETECTOR_ENSEMBLE_UNRESOLVED_POLICY_APPLIED"
+
+
+def test_detector_ensemble_does_not_review_consensus(tmp_path: Path) -> None:
+    first = _FakeYoloBackend(final_count=1)
+    second = _FakeYoloBackend(final_count=1)
+    second.name = "det-b"
+    reviewer = _FakeDisagreementReviewer(DisagreementReview())
+
+    result = _run(
+        _executor(reviewer, first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert reviewer.calls == 0
+    assert result.outcome.counting.final_count == 1
+
+
+def test_all_detector_experts_fail_then_use_fallback(tmp_path: Path) -> None:
+    first = _FakeYoloBackend(error=RuntimeError("first failed"))
+    second = _FakeYoloBackend(error=RuntimeError("second failed"))
+    second.name = "det-b"
+
+    result = _run(
+        _executor(_qwen_backend(_FakeClient()), first, second),
+        BackendPlan(
+            "det-a",
+            ("qwen_point",),
+            ensemble_backend_names=("det-b",),
+            selected_detector_expert_names=("det-a", "det-b"),
+        ),
+        tmp_path,
+    )
+
+    assert result.final_backend == "qwen_point"
+    assert result.attempted_backends == ("det-a", "det-b", "qwen_point")
 
 
 # ── 回退 / fallback ────────────────────────────────────────────────────────

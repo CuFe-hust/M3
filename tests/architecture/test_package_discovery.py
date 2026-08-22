@@ -1,8 +1,7 @@
-"""Package-discovery guards: the wheel must ship every implemented package.
+"""Package-discovery guards: the wheel must ship every architecture package.
 
-打包发现守卫：wheel 必须包含全部已实现顶层包（含 routing），CI 编译与
-wheel smoke 必须覆盖 routing，且 package discovery 与 implementation status
-保持一致。
+打包发现守卫：wheel 必须包含 import boundary 定义的全部顶层包（含
+routing），CI 编译与 wheel smoke 必须覆盖 routing。
 """
 
 from __future__ import annotations
@@ -12,6 +11,7 @@ import tomllib
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+IMPORT_RULES = REPO_ROOT / "architecture" / "import_rules.json"
 
 
 def _pyproject() -> dict:
@@ -25,21 +25,10 @@ def _workflow() -> str:
     ).read_text(encoding="utf-8")
 
 
-def _status() -> dict:
-    return json.loads(
-        (REPO_ROOT / "architecture" / "implementation_status.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-
-def _implemented_top_level_packages() -> set[str]:
-    packages: set[str] = set()
-    for rel in _status()["implemented_files"]:
-        top = rel.split("/", 1)[0]
-        if top not in {"scripts", "main.py"}:
-            packages.add(top)
-    return packages
+def _architecture_top_level_packages() -> set[str]:
+    """Return package roots from the import-boundary contract, not a file list."""
+    rules = json.loads(IMPORT_RULES.read_text(encoding="utf-8"))
+    return {package.split(".", 1)[0] for package in rules["internal_packages"]}
 
 
 def test_routing_is_in_package_discovery() -> None:
@@ -47,12 +36,10 @@ def test_routing_is_in_package_discovery() -> None:
     assert "routing*" in include, f"routing* missing from packages.find include: {include}"
 
 
-def test_every_implemented_package_is_discovered() -> None:
-    """Every implemented top-level package must appear in package discovery.
-    每个已实现顶层包都必须出现在 package discovery 中。"""
+def test_every_architecture_package_is_discovered() -> None:
+    """Every import-boundary package must appear in package discovery."""
     include = _pyproject()["tool"]["setuptools"]["packages"]["find"]["include"]
-    implemented = _implemented_top_level_packages()
-    for package in sorted(implemented):
+    for package in sorted(_architecture_top_level_packages()):
         assert f"{package}*" in include, f"{package}* missing from packages.find include"
 
 

@@ -256,11 +256,7 @@ result = runtime.predict(image)
 
 该 runtime 封装本地加载、processor、device/dtype、预处理、logits 上采样、
 argmax 和类别映射。iSAID 必须读取经训练 mask 验证的 `classes.json`；OEM
-class map 已于 2026-08-20 由用户针对本地 OpenEarthMap checkpoint 明确确认
-（9 类：background + bareland/rangeland/developed_space/road/tree/water/
-agriculture_land/building，见 `models/segformer_mitb2_oem/classes.json`）。OEM
-`config.json` 的 id2label 仍是 `LABEL_0..8` 占位，不能作为语义顺序证据；
-runtime 使用已确认的 `classes.json` 与 checkpoint digest 绑定。
+源资产只有 `LABEL_0..8` 占位标签，代码不会猜测另一套类别顺序。
 
 ---
 
@@ -309,35 +305,6 @@ OUTPUT_ROOT
 ```
 
 DeepSeek API key 的**值**不进入 AppSettings；配置只声明环境变量名，实际 secret 由 composition root 在需要 Judge 时读取并注入。
-
-`visual_planning` 组的用户可见示例（本地权重仍需 Git LFS/外部资产
-materialize，不自动下载；detector 只有三个 policy 字段完整时才启用 evidence，
-segmenter 默认关闭且必须显式启用）：
-
-```yaml
-visual_planning:
-  planner:
-    catalog_version: visual-evidence-catalog-v4   # 必须与 catalog 声明一致
-  detectors:
-    detector_obb_csl_001:
-      confidence_threshold: 0.20
-      nms_iou_threshold: 0.50
-      max_detections: 1000
-  segmenters:
-    segmenter_mitb2_001:
-      enabled: false
-      class_map_version: verified-2026-08-06
-    segmenter_oem_001:
-      enabled: false
-      class_map_version: verified-2026-08-20
-  preprocessing:
-    version: greedy-1024-stretch-v1   # 冻结 tile 语义；resume 身份来源
-    max_tile_concurrency: 4
-```
-
-OEM 与 iSAID 两份 SegFormer 的 class map 均已验证（见上文）；是否启用某个
-SegFormer binding 由配置显式决定。上例 detector policy 已完整校准，会发布与
-启用 detector labels 相交的 VQA leaves；两个 SegFormer binding 则保持关闭。
 
 ---
 
@@ -397,62 +364,6 @@ python main.py inspect-data \
 ```
 
 Adapter 对源数据保持只读。
-
-### 6.4 Visual Planner 标注扩展
-
-先离线审计源数据并查看当前 runtime 冻结结果（不会调用 API）：
-
-```bash
-python3 -m scripts.refine_visual_planner_dataset \
-  --source data/phase2-train-visualplanning-dedup \
-  --config configs/local.yaml
-```
-
-实际处理时可通过环境变量或终端无回显提示提供 key；DeepSeek 每次请求只接收 raw question，
-不接收图像、旧 target、答案或 provenance。它只返回 `task`、
-`object_categories`、`needs_visual_assistance`、`count_target` 四个授权字段，不生成完整
-target 或最终监督 token：
-
-```bash
-export DEEPSEEK_API_KEY='由使用者在本机设置'
-python3 -m scripts.refine_visual_planner_dataset \
-  --source data/phase2-train-visualplanning-dedup \
-  --output data/phase2-train-visualplanning-refined-v3 \
-  --config configs/local.yaml \
-  --use-api \
-  --concurrency 64
-```
-
-不希望写入环境变量时，使用终端无回显输入：
-
-```bash
-python3 -m scripts.refine_visual_planner_dataset \
-  --source data/phase2-train-visualplanning-dedup \
-  --output data/phase2-train-visualplanning-refined-v3 \
-  --config configs/local.yaml \
-  --use-api \
-  --prompt-api-key \
-  --concurrency 64
-```
-
-中断后使用完全相同的输入与参数增加 `--resume`。输出中的 `datasets/`
-保留 content reference，`training/` 则展开为与推理语义一致的
-system/user/assistant 消息，`training_images/` 使用生产 planner 的同一预览函数
-物化确定性 PNG。processor/tokenizer/chat-template 的逐 token 一致性仍须在
-真实训练 checkpoint 上完成门禁，脚本不会把未运行的验证标记为通过。
-
-在 refined-v3 基础上，可离线使用 VRSBench 和 LEVIR-CC 的结构化标注补充稀缺
-task。该步骤不调用 API，保留 LEVIR A/t1 → B/t2 顺序并排除源 test split：
-
-```bash
-python3 -m scripts.supplement_visual_planner_dataset \
-  --base data/phase2-train-visualplanning-refined-v3 \
-  --vrs-root data/VRSBench-full \
-  --levir-jsonl data/Levir-CC-dataset/LevirCCcaptions_readable.jsonl \
-  --output data/phase2-train-visualplanning-refined-v4 \
-  --train-per-task 800 \
-  --val-per-task 100
-```
 
 ---
 
@@ -528,10 +439,9 @@ normalized image previews + raw question
     -> deterministic TaskRouter
 ```
 
-规划输出版本为 `visual-task-plan-v5`。显式 CLI/dataset task 只作审计，不发送给
-第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域输出严格整数
-`0..999` `xyxy`，运行时按最长边向上量化到 1024 整数倍，再直接截断越界的理想正方形。
-最终裁片可以是长方形；direct、VQA evidence 与 Grounding 共享同一个实际裁片。
+规划输出版本为 `visual-task-plan-v4`。显式 CLI/dataset task 只作审计，不发送给
+第一次规划调用，也不覆盖规划结果。规划预览最长边为 1080；显式区域只在目标图像
+宽高都大于 1024 时生成一个固定 1024×1024 ROI。
 
 `SampleDraft` 路径也由同一规划调用物化，不再单独走文本任务解析路径。
 
@@ -1074,9 +984,7 @@ Detection > Semantic Segmentation > QuantityProposal > QwenPoint
 
 SegFormer 只在 verified class map 和 target-specific `connected_components` policy 同时
 成立时成为候选。它输出 semantic region 而不是 instance mask，相接对象可能合并成一个
-component 并造成 undercount。OEM class map 已确认，但 counting 未为其配置
-`connected_components` policy，因此 OEM 仍不注册 counting backend；OEM 的 VQA
-semantic-mask 可用性与 counting enablement 相互独立。
+component 并造成 undercount。OEM 当前没有 verified class map，因此默认不注册。
 
 Catalog 已明确声明 composite capability：`vehicle` 的链是 Detection → SegFormer →
 QuantityProposal → QwenPoint，`aircraft` 是 Detection → SegFormer → QwenPoint。Semantic
@@ -1089,7 +997,7 @@ review 都由 target/catalog hints 与显式 settings 驱动，不依赖 dataset
 目标来源与核验规则：
 
 ```text
-VisualTaskPlanner v5 count_target
+VisualTaskPlanner v4 count_target
     -> normalization.count_target_hint（确定性 verifier）
     -> legacy metadata count_target_hint（兼容 verifier）
     -> deterministic CountTargetResolver
@@ -1342,7 +1250,7 @@ predictions.jsonl.run_task
 tasks/<run_task>/
 ```
 
-当低置信度 candidate fallback 成功时，这三个值可能不完全相同。
+当 Router-declared execution fallback 成功时，这三个值可能不完全相同。
 
 Resume 和 Evaluation 不能把 resolved task 与 execution task 混为一谈。
 
@@ -1500,11 +1408,30 @@ DeepSeek audit
 
 ## 31. 开发与测试
 
-运行全部测试：
+### 轻量离线测试
+
+普通开发环境：
 
 ```bash
-python -m pytest
+python -m pip install -e ".[dev,change]"
 ```
+
+GitHub Actions 会在每次 push / pull request 上自动运行架构、领域契约、wheel smoke、
+Golden fixture 和 migration smoke 等轻量检查。
+
+### 全量离线测试
+
+仓库全量 pytest 还包含 Qwen3-VL Phase2 / ChangeHead 等可选重依赖测试。
+本地未安装对应重依赖时，这些测试模块会明确 skip，而不是在 collection 阶段失败。
+
+完整依赖准备后可运行：
+
+```bash
+python -m pytest -q
+```
+
+GitHub Actions 中的 Full offline tests 只通过 `workflow_dispatch` 手动触发，
+不在每次 push / pull request 时执行。
 
 架构测试：
 
@@ -1541,16 +1468,17 @@ live_dataset
 
 ## 32. 架构保护
 
-项目有机器可检查的架构控制文件：
+项目的机器可检查架构边界以以下规则和测试为主：
 
 ```text
-architecture/implementation_status.json
 architecture/import_rules.json
+tests/architecture/
 ```
 
 重要规则：
 
-- 新增 Python 文件必须具有清晰职责并遵守 import DAG；
+- Python 文件可以根据功能需要新增，不维护中央路径白名单；
+- 新文件必须符合所在 package 的职责和 import DAG；
 - `spacers_agent/**` 和 `eval/**` 永久禁止重新出现；
 - `main.py` 只 import `application`；
 - Router 不 import models；

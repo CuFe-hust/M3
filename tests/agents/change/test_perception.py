@@ -13,13 +13,16 @@ from agents.change.perception import (
     PERCEPTION_VERSION,
     ChangePerceptionError,
     ChangePerceptionPipeline,
+    SemanticExpertBinding,
+    _transition_evidence_type,
 )
 from agents.change.preprocess import ChangePreparedPair
-from agents.change.schema import HarmonizationDecision, PairValidationReport
+from agents.change.schema import HarmonizationDecision, PairValidationReport, SemanticTransition
 from agents.change.settings import (
     AgentChangeSettings,
     ChangeHarmonizationSettings,
     ChangeProposalSettings,
+    ChangeBuildingRescueSettings,
     ChangeLearnedChangeSettings,
     ChangeSemanticSettings,
 )
@@ -67,6 +70,8 @@ def _settings(*, policy: str = "fallback_legacy", enabled: bool = True) -> Agent
         harmonization=ChangeHarmonizationSettings(min_pif_pixels=32),
         semantic=ChangeSemanticSettings(
             enabled=enabled,
+            feature_stages=(1,),
+            feature_stage_weights={1: 1.0},
             local_match_radius=0,
             min_pif_feature_cells=16,
             failure_policy=policy,
@@ -107,6 +112,44 @@ def _outputs() -> tuple[DenseSemanticOutput, DenseSemanticOutput]:
         DenseSemanticOutput(
             probabilities=second_probabilities,
             features=second_features,
+            **common,
+        ),
+    )
+
+
+def _building_outputs(
+    *,
+    first_box: tuple[slice, slice] | None = None,
+    second_box: tuple[slice, slice] | None = None,
+) -> tuple[DenseSemanticOutput, DenseSemanticOutput]:
+    rng = np.random.default_rng(91)
+    first_probabilities = np.zeros((2, 16, 16), dtype=np.float32)
+    second_probabilities = np.zeros((2, 16, 16), dtype=np.float32)
+    first_probabilities[0] = 0.95
+    second_probabilities[0] = 0.95
+    if first_box is not None:
+        first_probabilities[0][first_box] = 0.05
+        first_probabilities[1][first_box] = 0.95
+    if second_box is not None:
+        second_probabilities[0][second_box] = 0.05
+        second_probabilities[1][second_box] = 0.95
+    common = {
+        "semantic_stride": (4.0, 4.0),
+        "feature_stride": (4.0, 4.0),
+        "original_size": (64, 64),
+        "class_names": ("background", "building"),
+        "diagnostics": {},
+        "weights_sha256": "b" * 64,
+    }
+    return (
+        DenseSemanticOutput(
+            probabilities=first_probabilities,
+            features=rng.normal(size=(8, 16, 16)).astype(np.float32),
+            **common,
+        ),
+        DenseSemanticOutput(
+            probabilities=second_probabilities,
+            features=rng.normal(size=(8, 16, 16)).astype(np.float32),
             **common,
         ),
     )
@@ -206,6 +249,521 @@ def test_enabled_pipeline_calls_two_frames_and_returns_v2_proposals() -> None:
     assert all(call["tile_size"] == 768 for call in client.calls)
     assert result.proposals
     assert all(proposal.source == "fused_change_v2" for proposal in result.proposals)
+
+
+def test_multiple_semantic_experts_run_independently_and_are_audited() -> None:
+    first_client = _DenseClient()
+    second_client = _DenseClient()
+    bindings = (
+        SemanticExpertBinding(
+            expert_id="segmenter-first",
+            logical_model_id="segformer-first",
+            priority=200,
+            role="object_semantic",
+            neutral_labels=frozenset({"background"}),
+            transient_labels=frozenset({"plane"}),
+            persistent_labels=frozenset({"storage_tank"}),
+            client=first_client,
+        ),
+        SemanticExpertBinding(
+            expert_id="segmenter-second",
+            logical_model_id="segformer-second",
+            priority=100,
+            role="generic",
+            neutral_labels=frozenset(),
+            transient_labels=frozenset(),
+            persistent_labels=frozenset(),
+            client=second_client,
+        ),
+    )
+    settings = _settings()
+    settings.semantic.multi_expert_enabled = True
+    settings.semantic.max_experts = 2
+
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=bindings,
+    ).run(_prepared())
+
+    assert len(first_client.calls) == 2
+    assert len(second_client.calls) == 2
+    assert [item["expert_id"] for item in result.diagnostics["semantic_experts"]] == [
+        "segmenter-first",
+        "segmenter-second",
+    ]
+    assert result.diagnostics["semantic_expert_failures"] == []
+
+
+
+def test_rescue_expert_is_excluded_from_core_fusion(monkeypatch) -> None:
+    monkeypatch.setattr(
+        perception_module,
+        "propose_changes",
+        lambda *args, **kwargs: (np.zeros((16, 16), dtype=np.float32), []),
+    )
+    core_client = _DenseClient()
+    rescue_client = _DenseClient()
+    core = SemanticExpertBinding(
+        expert_id="isaid-core",
+        logical_model_id="isaid-core",
+        priority=200,
+        role="object_semantic",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset(),
+        client=core_client,
+    )
+    rescue = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=rescue_client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+
+    settings = _settings()
+    settings.semantic.multi_expert_enabled = True
+    settings.semantic.max_experts = 2
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(core, rescue),
+    ).run(_prepared())
+
+    assert len(core_client.calls) == 2
+    assert rescue_client.calls == []
+    assert result.diagnostics["semantic_status"] in {"success", "fallback", "fallback_legacy"}
+
+
+def test_building_rescue_extracts_added_footprint_without_core_proposals() -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(4, 8), slice(4, 8))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+    settings = _settings()
+    settings.building_rescue = ChangeBuildingRescueSettings(
+        building_probability_threshold=0.85,
+        source_absence_probability_max=0.25,
+        min_component_area_ratio=0.001,
+        min_component_area_ratio_edge=0.0005,
+        edge_only=False,
+        registration_tolerance_min_px=0,
+        registration_tolerance_max_px=2,
+    )
+
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert diagnostics["candidate_count"] == 1
+    assert len(candidates) == 1
+    assert candidates[0].direction == "added"
+    assert candidates[0].label == "building"
+    assert candidates[0].box == (18, 18, 30, 30)
+    component = diagnostics["component_diagnostics"][0]
+    assert component["candidate_direction"] == "added"
+    assert component["accepted"] is True
+    assert component["rejection_reason"] is None
+    assert component["target_p50_building_probability"] >= 0.85
+    assert "source_p90_building_probability" in component
+    assert "source_p95_building_probability" in component
+
+
+@pytest.mark.parametrize(
+    ("area_setting", "expected_reason"),
+    [
+        ("small", "AREA_TOO_SMALL"),
+        ("large", "AREA_TOO_LARGE"),
+    ],
+)
+def test_building_rescue_records_area_rejection_diagnostics(
+    area_setting: str, expected_reason: str
+) -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(4, 8), slice(4, 8))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+    rescue_settings = {
+        "building_probability_threshold": 0.85,
+        "source_absence_probability_max": 0.25,
+        "min_component_area_ratio": 0.001,
+        "min_component_area_ratio_edge": 0.0005,
+        "edge_only": False,
+        "max_component_area_ratio": 0.50,
+        "registration_tolerance_min_px": 0,
+        "registration_tolerance_max_px": 2,
+    }
+    if area_setting == "small":
+        rescue_settings["min_component_area_ratio"] = 0.10
+    else:
+        rescue_settings["max_component_area_ratio"] = 0.01
+    settings = _settings()
+    settings.building_rescue = ChangeBuildingRescueSettings(**rescue_settings)
+
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+    component = diagnostics["component_diagnostics"][0]
+    assert component["direction"] == "added"
+    assert component["accepted"] is False
+    assert component["rejection_reason"] == expected_reason
+
+
+def test_building_rescue_disables_removed_direction_with_auditable_reason() -> None:
+    client = _DenseClient(
+        _building_outputs(
+            first_box=(slice(4, 8), slice(4, 8)),
+            second_box=(slice(4, 8), slice(5, 9)),
+        )
+    )
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+
+    settings = _settings()
+    settings.building_rescue.allowed_directions = ("removed",)
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+    added = [
+        row
+        for row in diagnostics["component_diagnostics"]
+        if row["candidate_direction"] == "added"
+    ]
+    assert added and added[0]["rejection_reason"] == "DIRECTION_DISABLED"
+
+
+def test_edge_only_rescue_rejects_interior_component_with_reason() -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(4, 8), slice(4, 8))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="edge_corner_building",
+    )
+    settings = _settings()
+    settings.building_rescue.edge_only = True
+
+    candidates, diagnostics = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+    assert diagnostics["component_diagnostics"][0]["rejection_reason"] == "EDGE_ONLY_DISABLED"
+
+
+def test_building_rescue_tolerance_suppresses_small_registration_shift() -> None:
+    client = _DenseClient(
+        _building_outputs(
+            first_box=(slice(4, 8), slice(4, 8)),
+            second_box=(slice(4, 8), slice(5, 9)),
+        )
+    )
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="building_footprint_delta",
+    )
+    settings = _settings()
+    settings.building_rescue.registration_tolerance_min_px = 4
+    settings.building_rescue.registration_tolerance_max_px = 4
+
+    candidates, _ = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert candidates == []
+
+
+def test_edge_rescue_keeps_partial_top_edge_component() -> None:
+    client = _DenseClient(_building_outputs(second_box=(slice(0, 2), slice(5, 9))))
+    binding = SemanticExpertBinding(
+        expert_id="oem-rescue",
+        logical_model_id="oem-rescue",
+        priority=100,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset({"building"}),
+        client=client,
+        participation="rescue",
+        rescue_model_labels=frozenset({"building"}),
+        rescue_strategy="edge_corner_building",
+    )
+    settings = _settings()
+    settings.building_rescue.min_component_area_ratio = 0.01
+    settings.building_rescue.min_component_area_ratio_edge = 0.001
+
+    candidates, _ = ChangePerceptionPipeline(
+        None, settings, semantic_experts=(binding,)
+    ).run_rescue_candidates(_prepared())
+
+    assert len(candidates) == 1
+    assert "top" in candidates[0].edge_flags
+
+
+
+def test_typed_semantic_transition_classes() -> None:
+    binding = SemanticExpertBinding(
+        expert_id="oem",
+        logical_model_id="oem",
+        priority=1,
+        role="persistent_landcover",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset(),
+        structural_labels=frozenset({"building", "road"}),
+        landcover_candidate_labels=frozenset(
+            {"bareland", "rangeland", "developed_space", "tree", "water", "agriculture_land"}
+        ),
+        client=_DenseClient(),
+    )
+
+    def transition(source: str, target: str) -> SemanticTransition:
+        return SemanticTransition(
+            from_class=source,
+            from_confidence=0.9,
+            to_class=target,
+            to_confidence=0.9,
+            support_ratio=1.0,
+            transition_confidence=0.9,
+            changed_class=target,
+        )
+
+    assert _transition_evidence_type(transition("tree", "building"), binding, confidence_floor=0.45) == "structural_candidate"
+    assert _transition_evidence_type(transition("rangeland", "road"), binding, confidence_floor=0.45) == "structural_candidate"
+    assert _transition_evidence_type(transition("rangeland", "tree"), binding, confidence_floor=0.45) == "landcover_candidate"
+    assert _transition_evidence_type(transition("bareland", "rangeland"), binding, confidence_floor=0.45) == "landcover_candidate"
+    assert _transition_evidence_type(transition("water", "rangeland"), binding, confidence_floor=0.45) == "landcover_candidate"
+    assert _transition_evidence_type(transition("water", "water"), binding, confidence_floor=0.45) == "neutral"
+
+
+def test_object_semantic_transient_and_structural_candidates() -> None:
+    binding = SemanticExpertBinding(
+        expert_id="isaid",
+        logical_model_id="isaid",
+        priority=1,
+        role="object_semantic",
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset({"Small_Vehicle"}),
+        persistent_labels=frozenset(),
+        structural_labels=frozenset({"Swimming_pool"}),
+        landcover_candidate_labels=frozenset(),
+        client=_DenseClient(),
+    )
+
+    def transition(source: str, target: str) -> SemanticTransition:
+        return SemanticTransition(
+            from_class=source,
+            from_confidence=0.9,
+            to_class=target,
+            to_confidence=0.9,
+            support_ratio=1.0,
+            transition_confidence=0.9,
+            changed_class=target,
+        )
+
+    assert _transition_evidence_type(transition("background", "Small_Vehicle"), binding, confidence_floor=0.45) == "transient"
+    assert _transition_evidence_type(transition("background", "Swimming_pool"), binding, confidence_floor=0.45) == "structural_candidate"
+    assert _transition_evidence_type(transition("background", "background"), binding, confidence_floor=0.45) == "neutral"
+
+
+def test_failed_semantic_expert_does_not_erase_successful_peer() -> None:
+    failed = _RaisingDenseClient(RuntimeError("peer unavailable"))
+    healthy = _DenseClient()
+    binding = lambda expert_id, client, priority: SemanticExpertBinding(
+        expert_id=expert_id,
+        logical_model_id=expert_id,
+        priority=priority,
+        role="generic",
+        neutral_labels=frozenset(),
+        transient_labels=frozenset(),
+        persistent_labels=frozenset(),
+        client=client,
+    )
+    settings = _settings()
+    settings.semantic.max_experts = 2
+
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(binding("failed", failed, 200), binding("healthy", healthy, 100)),
+    ).run(_prepared())
+
+    assert len(healthy.calls) == 2
+    assert result.diagnostics["semantic_experts"][0]["expert_id"] == "healthy"
+    assert result.diagnostics["semantic_expert_failures"] == [
+        {"expert_id": "failed", "error_type": "RuntimeError"}
+    ]
+
+
+def test_experts_with_different_class_counts_fuse_score_maps_only() -> None:
+    first, second = _outputs()
+    rng = np.random.default_rng(99)
+    three_first = replace(
+        first,
+        probabilities=np.stack(
+            [
+                np.full((16, 16), 0.90, dtype=np.float32),
+                np.full((16, 16), 0.05, dtype=np.float32),
+                np.full((16, 16), 0.05, dtype=np.float32),
+            ]
+        ),
+        class_names=("tree", "building", "road"),
+        features=rng.normal(size=(8, 16, 16)).astype(np.float32),
+    )
+    three_second = replace(
+        second,
+        probabilities=np.stack(
+            [
+                np.full((16, 16), 0.05, dtype=np.float32),
+                np.full((16, 16), 0.90, dtype=np.float32),
+                np.full((16, 16), 0.05, dtype=np.float32),
+            ]
+        ),
+        class_names=("tree", "building", "road"),
+        features=rng.normal(size=(8, 16, 16)).astype(np.float32),
+    )
+    first_client = _DenseClient((first, second))
+    second_client = _DenseClient((three_first, three_second))
+    make_binding = lambda name, client, role, persistent: SemanticExpertBinding(
+        expert_id=name,
+        logical_model_id=name,
+        priority=100,
+        role=role,
+        neutral_labels=frozenset({"background"}),
+        transient_labels=frozenset({"changed"}),
+        persistent_labels=frozenset(persistent),
+        client=client,
+    )
+    settings = _settings()
+    settings.semantic.max_experts = 2
+
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(
+            make_binding("isaid", first_client, "object_semantic", ()),
+            make_binding("oem", second_client, "persistent_landcover", ("building",)),
+        ),
+    ).run(_prepared())
+
+    assert result.diagnostics["semantic_fusion"]["expert_count"] == 2
+    assert result.diagnostics["semantic_status"] == "success"
+    assert any(proposal.semantic_transitions for proposal in result.proposals)
+    evidence = [
+        item
+        for proposal in result.proposals
+        for item in proposal.semantic_transitions
+    ]
+    assert any(item["evidence_type"] == "persistent" for item in evidence)
+    assert any(
+        proposal.semantic_transition is not None
+        and proposal.semantic_transition.to_class == "building"
+        for proposal in result.proposals
+    )
+
+
+def test_feature_failure_is_local_to_one_expert(monkeypatch) -> None:
+    calls = 0
+    original = perception_module.compute_feature_residual
+
+    def fail_first(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("FEATURE_RESIDUAL_FIRST_EXPERT_FAILED")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(perception_module, "compute_feature_residual", fail_first)
+    settings = _settings()
+    settings.semantic.max_experts = 2
+    result = ChangePerceptionPipeline(
+        None,
+        settings,
+        semantic_experts=(
+            SemanticExpertBinding(
+                expert_id="first",
+                logical_model_id="first",
+                priority=200,
+                role="generic",
+                neutral_labels=frozenset(),
+                transient_labels=frozenset(),
+                persistent_labels=frozenset(),
+                client=_DenseClient(),
+            ),
+            SemanticExpertBinding(
+                expert_id="second",
+                logical_model_id="second",
+                priority=100,
+                role="generic",
+                neutral_labels=frozenset(),
+                transient_labels=frozenset(),
+                persistent_labels=frozenset(),
+                client=_DenseClient(),
+            ),
+        ),
+    ).run(_prepared())
+
+    assert result.diagnostics["semantic_status"] == "success"
+    assert result.diagnostics["semantic_expert_failures"][0]["branch"] == "feature"
+    assert "semantic_difference_map" in result.component_maps
     assert result.diagnostics["semantic_status"] == "success"
     assert result.diagnostics["segformer_model"] == "segformer-logical-test"
     assert result.diagnostics["perception_version"] == PERCEPTION_VERSION
@@ -314,20 +872,89 @@ def test_enabled_learned_change_fail_policy_is_strict() -> None:
         ChangePerceptionPipeline(_DenseClient(), settings).run(_prepared())
 
 
-def test_invalid_pif_falls_back_before_dense_inference() -> None:
+class _RaisingLearnedClient(_LearnedClient):
+    def infer(self, **kwargs: Any) -> LearnedChangeOutput:
+        del kwargs
+        raise RuntimeError("learned runtime exploded")
+
+
+class _NaNLearnedClient(_LearnedClient):
+    def infer(self, **kwargs: Any) -> LearnedChangeOutput:
+        del kwargs
+        return LearnedChangeOutput(
+            probability_map=np.full((16, 16), np.nan, dtype=np.float32),
+            reliability=1.0,
+        )
+
+
+class _CalibrationLearnedClient(_LearnedClient):
+    def infer(self, **kwargs: Any) -> LearnedChangeOutput:
+        del kwargs
+        return LearnedChangeOutput(
+            probability_map=self.score_map,
+            reliability=0.9,
+            diagnostics={
+                "rescue_probability_threshold": 0.9,
+                "rescue_min_component_area_ratio": 0.01,
+            },
+        )
+
+
+@pytest.mark.parametrize("client", [_RaisingLearnedClient(), _NaNLearnedClient()])
+def test_learned_failure_keeps_deterministic_v2(
+    client: _LearnedClient,
+) -> None:
+    baseline = ChangePerceptionPipeline(_DenseClient(), _settings()).run(_prepared())
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(
+        enabled=True,
+        fusion_weight=0.2,
+        failure_policy="fallback_rule",
+    )
+    result = ChangePerceptionPipeline(
+        _DenseClient(), settings, learned_change_client=client
+    ).run(_prepared())
+    assert np.array_equal(result.score_map, baseline.score_map)
+    assert result.diagnostics["proposal_source"] == "fused_change_v2"
+    assert result.diagnostics["learned_change"]["status"] == "fallback"
+
+
+def test_calibration_error_keeps_deterministic_v2() -> None:
+    baseline = ChangePerceptionPipeline(_DenseClient(), _settings()).run(_prepared())
+    settings = _settings()
+    settings.learned_change = ChangeLearnedChangeSettings(
+        enabled=True,
+        fusion_weight=0.2,
+        failure_policy="fallback_rule",
+        strict_contract=True,
+        rescue={"probability_threshold_override": 0.5},
+    )
+    result = ChangePerceptionPipeline(
+        _DenseClient(), settings, learned_change_client=_CalibrationLearnedClient()
+    ).run(_prepared())
+    assert np.array_equal(result.score_map, baseline.score_map)
+    assert result.diagnostics["learned_change"]["reason_codes"] == [
+        "LEARNED_CHANGE_CALIBRATION_INVALID"
+    ]
+
+
+def test_invalid_pif_keeps_semantic_inference_and_skips_feature_residual() -> None:
     client = _DenseClient()
     prepared = replace(_prepared(), pif_valid=False)
 
     result = ChangePerceptionPipeline(client, _settings()).run(prepared)
 
-    assert client.calls == []
-    assert result.diagnostics["semantic_status"] == "fallback"
-    assert (
-        result.diagnostics["semantic_reason_code"]
-        == "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
-    )
-    assert result.diagnostics["proposal_source"] == "difference_map_v1"
+    assert len(client.calls) == 2
+    assert result.diagnostics["semantic_status"] == "success"
+    assert result.diagnostics["proposal_source"] == "fused_change_v2"
     assert result.diagnostics["pif_valid"] is False
+    assert result.diagnostics["pif_used_for_feature_alignment"] is False
+    assert result.diagnostics["feature_residual"]["alignment_status"] == "insufficient_pif"
+    assert "feature" not in result.diagnostics["score_maps"]
+    assert "semantic" in result.diagnostics["score_maps"]
+    assert result.diagnostics["fusion"]["fallback_reason"] == (
+        "FEATURE_RESIDUAL_INSUFFICIENT_PIF"
+    )
 
 
 def test_invalid_pif_fail_policy_raises_before_dense_inference() -> None:
@@ -522,7 +1149,6 @@ def _failure_matrix_case(
         ("torch_missing", "SEGFORMER_DEPENDENCY_MISSING"),
         ("checkpoint_missing", "SEGFORMER_CHECKPOINT_MISSING"),
         ("hidden_state_invalid", "SEGFORMER_FEATURE_GRID_UNRESOLVED"),
-        ("insufficient_pif", "FEATURE_RESIDUAL_INSUFFICIENT_PIF"),
         ("nan_feature", "FEATURE_RESIDUAL_NONFINITE"),
         ("grid_mismatch", "SEGFORMER_PAIR_GRID_MISMATCH"),
     ],

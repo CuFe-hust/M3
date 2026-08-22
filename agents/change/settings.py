@@ -115,17 +115,18 @@ class ChangeProposalSettings(BaseModel):
 
 
 class ChangeSemanticSettings(BaseModel):
-    """Optional Change V2 dense-semantic strategy; disabled by default."""
+    """Default Change dense-semantic strategy with audited legacy fallback."""
 
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = True
     feature_stage: int = 1
-    # The V2 default remains one stage.  Callers can opt into the V3 pyramid
-    # explicitly with ``feature_stages: [1, 2, 3]``; an empty tuple migrates
-    # the legacy ``feature_stage`` setting.
-    feature_stages: tuple[int, ...] = (1,)
-    feature_stage_weights: dict[int, float] = Field(default_factory=lambda: {1: 1.0})
+    # Full perception defaults to the V3 feature pyramid.  An empty tuple
+    # still migrates the legacy ``feature_stage`` setting.
+    feature_stages: tuple[int, ...] = (1, 2, 3)
+    feature_stage_weights: dict[int, float] = Field(
+        default_factory=lambda: {1: 1.0, 2: 1.0, 3: 1.0}
+    )
     tile_size: int = Field(default=768, ge=128)
     tile_overlap: int = Field(default=64, ge=0)
     local_match_radius: int = Field(default=1, ge=0, le=3)
@@ -134,6 +135,17 @@ class ChangeSemanticSettings(BaseModel):
     semantic_confidence_floor: float = Field(default=0.45, ge=0.0, le=1.0)
     js_epsilon: float = Field(default=1e-6, gt=0.0)
     failure_policy: Literal["fallback_legacy", "fail"] = "fallback_legacy"
+    multi_expert_enabled: bool = True
+    max_experts: int = Field(default=4, ge=1, le=5)
+    min_successful_experts: int = Field(default=1, ge=1)
+    semantic_consensus_weight: float = Field(default=0.65, ge=0.0, le=1.0)
+    semantic_union_weight: float = Field(default=0.35, ge=0.0, le=1.0)
+    # Diagnostic-only by default.  Thresholds are intentionally configurable
+    # and are not activated from the Test100 run alone.
+    temporal_stability_enabled: bool = False
+    temporal_stability_soft_flip_rate: float = Field(default=0.15, ge=0.0, le=1.0)
+    temporal_stability_hard_flip_rate: float = Field(default=0.50, ge=0.0, le=1.0)
+    temporal_stability_floor: float = Field(default=0.25, ge=0.0, le=1.0)
 
     def model_post_init(self, __context: Any) -> None:
         if self.tile_overlap >= self.tile_size:
@@ -175,6 +187,57 @@ class ChangeSemanticSettings(BaseModel):
             "feature_stage_weights",
             {stage: value / total for stage, value in selected_weights.items()},
         )
+        if self.min_successful_experts > self.max_experts:
+            raise ValueError("min_successful_experts cannot exceed max_experts")
+        if self.semantic_consensus_weight + self.semantic_union_weight <= 0.0:
+            raise ValueError("semantic ensemble weights must have a positive sum")
+        if self.temporal_stability_hard_flip_rate < self.temporal_stability_soft_flip_rate:
+            raise ValueError(
+                "temporal stability hard flip rate must not be below the soft rate"
+            )
+
+
+
+class ChangeBuildingRescueSettings(BaseModel):
+    """Conservative OEM building-footprint rescue candidate settings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    # Default inference profile: the validated edge-building rescue run.
+    shadow_only: bool = False
+    qwen_review_enabled: bool = True
+    allowed_directions: tuple[Literal["added", "removed"], ...] = ("added",)
+    edge_only: bool = True
+    building_probability_threshold: float = Field(default=0.85, ge=0.0, le=1.0)
+    source_absence_probability_max: float = Field(default=0.25, ge=0.0, le=1.0)
+    min_component_area_ratio: float = Field(default=0.0003, gt=0.0, le=1.0)
+    min_component_area_ratio_edge: float = Field(default=0.0001, gt=0.0, le=1.0)
+    max_component_area_ratio: float = Field(default=0.25, gt=0.0, le=1.0)
+    registration_tolerance_min_px: int = Field(default=1, ge=0, le=32)
+    registration_tolerance_max_px: int = Field(default=4, ge=0, le=64)
+    registration_tolerance_error_scale: float = Field(default=1.5, gt=0.0)
+    edge_margin_ratio: float = Field(default=0.06, ge=0.0, le=0.5)
+    interior_context_padding_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
+    edge_context_padding_ratio: float = Field(default=0.16, ge=0.0, le=1.0)
+    max_candidates: int = Field(default=6, ge=1, le=24)
+    min_review_pixel_size: int = Field(default=256, ge=32, le=2048)
+    edge_review_context_min_size_px: int = Field(default=112, ge=96, le=128)
+    edge_review_pixel_size: int = Field(default=448, ge=256, le=768)
+    max_review_candidates: int = Field(default=3, ge=1, le=3)
+    rescue_max_new_tokens: int = Field(default=512, ge=1, le=768)
+    cache_policy: Literal["use", "bypass"] = "bypass"
+
+    def model_post_init(self, __context: Any) -> None:
+        if not self.allowed_directions:
+            raise ValueError("building rescue must allow at least one direction")
+        if len(set(self.allowed_directions)) != len(self.allowed_directions):
+            raise ValueError("building rescue directions must be unique")
+        if self.min_component_area_ratio_edge > self.min_component_area_ratio:
+            raise ValueError("edge rescue area threshold cannot exceed interior threshold")
+        if self.registration_tolerance_min_px > self.registration_tolerance_max_px:
+            raise ValueError("registration tolerance minimum cannot exceed maximum")
+
 
 
 class ChangeReliabilitySettings(BaseModel):
@@ -189,18 +252,56 @@ class ChangeReliabilitySettings(BaseModel):
     feature_residual_scale: float = Field(default=1.0, gt=0.0)
 
 
-class ChangeLearnedChangeSettings(BaseModel):
-    """Optional inference hook for one future learned change head.
+class LearnedRescueSettings(BaseModel):
+    """High-confidence learned rescue gates, bounded by checkpoint calibration."""
 
-    This declaration contains no checkpoint path or training parameter.  A
-    concrete client is supplied by the application composition root.
-    """
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    min_reliability: float = Field(default=0.70, ge=0.0, le=1.0)
+    probability_threshold_override: float | None = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    min_component_area_ratio_override: float | None = Field(
+        default=None, gt=0.0, lt=1.0
+    )
+    max_rescue_proposals: int = Field(default=6, ge=1, le=12)
+
+
+class ChangeTrainingCaptureSettings(BaseModel):
+    """Opt-in sample-scoped training capture controls."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = False
+    save_dense_features: bool = False
+    capture_learned_inputs_only: bool = True
+
+
+class ChangeLearnedChangeSettings(BaseModel):
+    """Stable runtime configuration for the post-training ChangeHead."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    mode: Literal["shadow", "assist", "required"] = "shadow"
+    checkpoint_dir: Path | None = None
+    # Keep the disabled/default composition result byte-for-byte compatible;
+    # production overlays explicitly set the post-training weight.
     fusion_weight: float = Field(default=0.0, ge=0.0)
     failure_policy: Literal["fallback_rule", "fail"] = "fallback_rule"
+    strict_contract: bool = True
+    device: str = "auto"
+    rescue: LearnedRescueSettings = Field(default_factory=LearnedRescueSettings)
+
+    def model_post_init(self, __context: Any) -> None:
+        if self.mode == "required" and self.failure_policy != "fail":
+            raise ValueError("required learned change mode requires failure_policy=fail")
+
+    def validate_runtime_configuration(self) -> None:
+        """Reject an enabled config that cannot be auto-assembled."""
+        if self.enabled and self.checkpoint_dir is None:
+            raise ValueError("enabled learned change requires checkpoint_dir")
 
 
 class ChangeReviewSettings(BaseModel):
@@ -210,6 +311,32 @@ class ChangeReviewSettings(BaseModel):
 
     enabled: bool = True
     require_proposal_evidence: bool = True
+    no_change_conflict_min_score: float = Field(default=0.18, ge=0.0, le=1.0)
+    no_change_conflict_min_proposals: int = Field(default=2, ge=1)
+    no_change_conflict_min_total_area_ratio: float = Field(
+        default=0.01, ge=0.0, le=1.0
+    )
+    require_temporal_pair_evidence: bool = True
+    adjudication_enabled: bool = True
+    negative_strong_score: float = Field(default=0.35, ge=0.0, le=1.0)
+    negative_moderate_score: float = Field(default=0.24, ge=0.0, le=1.0)
+    negative_min_reliable_components: int = Field(default=2, ge=1)
+    negative_large_total_area_ratio: float = Field(default=0.08, ge=0.0, le=1.0)
+    negative_edge_score: float = Field(default=0.20, ge=0.0, le=1.0)
+    negative_edge_margin_ratio: float = Field(default=0.06, ge=0.0, le=0.5)
+
+
+class ChangeEvidenceSettings(BaseModel):
+    """Bounded, role-labelled visual evidence sent to the VLM."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    initial_max_proposals: int = Field(default=3, ge=0, le=6)
+    adjudication_max_proposals: int = Field(default=3, ge=1, le=6)
+    attach_proposal_overlay: bool = True
+    attach_registered_global: bool = False
+    attach_harmonized_global: bool = False
+    edge_margin_ratio: float = Field(default=0.06, ge=0.0, le=0.5)
 
 
 class AgentChangeSettings(BaseModel):
@@ -221,8 +348,15 @@ class AgentChangeSettings(BaseModel):
     registration: ChangeRegistrationSettings = Field(default_factory=ChangeRegistrationSettings)
     proposals: ChangeProposalSettings = Field(default_factory=ChangeProposalSettings)
     semantic: ChangeSemanticSettings = Field(default_factory=ChangeSemanticSettings)
+    building_rescue: ChangeBuildingRescueSettings = Field(
+        default_factory=ChangeBuildingRescueSettings
+    )
     reliability: ChangeReliabilitySettings = Field(default_factory=ChangeReliabilitySettings)
     learned_change: ChangeLearnedChangeSettings = Field(
         default_factory=ChangeLearnedChangeSettings
     )
+    training_capture: ChangeTrainingCaptureSettings = Field(
+        default_factory=ChangeTrainingCaptureSettings
+    )
+    evidence: ChangeEvidenceSettings = Field(default_factory=ChangeEvidenceSettings)
     review: ChangeReviewSettings = Field(default_factory=ChangeReviewSettings)

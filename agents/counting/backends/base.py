@@ -13,7 +13,7 @@ from typing import Any, Literal, Protocol
 
 from PIL import Image
 
-from agents.counting.schema import CountTargetSpec, CountingResult
+from agents.counting.schema import CountTargetSpec, CountingResult, DisagreementReview
 from agents.errors import CountingBackendUnavailableError
 from agents.schema import AgentResult
 from data.schema import UnifiedSample
@@ -29,6 +29,7 @@ BackendKind = Literal[
     "qwen_point",
     "quantity_proposal",
     "semantic_segmentation",
+    "yolo_detect",
     "yolo_obb",
 ]
 
@@ -66,6 +67,14 @@ class BackendPlan:
     fallback_backend_names: tuple[str, ...] = ()
     reason_codes: tuple[str, ...] = ()
     target_classes: tuple[str, ...] = ()
+    ensemble_backend_names: tuple[str, ...] = ()
+    selected_detector_expert_names: tuple[str, ...] = ()
+
+    @property
+    def selected_backend_names(self) -> tuple[str, ...]:
+        """Return co-primary experts in deterministic execution order."""
+
+        return (self.primary_backend_name, *self.ensemble_backend_names)
 
 
 @dataclass(frozen=True)
@@ -92,6 +101,18 @@ class CountingBackend(Protocol):
         """Return whether the backend is configured/enabled (plan-time).
         返回后端是否已配置/启用（计划期）。"""
         ...
+
+
+class CountingDisagreementReviewer(Protocol):
+    """Optional capability for one bounded detector-conflict review call."""
+
+    async def review_disagreements(
+        self,
+        *,
+        request: CountingRequest,
+        conflicts: list[dict[str, Any]],
+        context: object,
+    ) -> DisagreementReview: ...
 
     def is_available(self) -> bool:
         """Return whether the backend is ready (weights loaded, client alive);

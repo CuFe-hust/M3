@@ -22,6 +22,7 @@ import application.bootstrap as bootstrap_module
 from application.bootstrap import (
     RuntimeCompositionError,
     _build_backend_registry,
+    _build_change_semantic_bindings,
     _build_segformer_clients,
     _catalog_validated_yolo_detector,
     _enabled_counting_catalog_leaves,
@@ -56,8 +57,38 @@ CATALOG_PATH = REPO_ROOT / "agents" / "counting" / "expert_catalog.json"
 def test_bootstrap_does_not_access_catalog_private_storage() -> None:
     source = (REPO_ROOT / "application" / "bootstrap.py").read_text(encoding="utf-8")
 
-    assert "_experts" not in source
+    assert "catalog._experts" not in source
     assert "getattr(catalog" not in source
+
+
+def test_change_bindings_are_catalog_driven_and_deterministic() -> None:
+    settings = AppSettings()
+    catalog = ExpertCatalog.load(CATALOG_PATH)
+    client = object()
+
+    bindings = _build_change_semantic_bindings(
+        settings,
+        catalog,
+        {
+            "SegFormer-MiT-B2:iSAID:local": client,
+            "SegFormer-MiT-B2:OpenEarthMap:local": client,
+        },
+    )
+
+    assert [binding.expert_id for binding in bindings] == [
+        "segmenter_mitb2_001",
+        "segmenter_oem_001",
+    ]
+    assert bindings[0].client is client
+    assert bindings[0].persistent_labels == frozenset(
+        {"storage_tank", "Swimming_pool", "Harbor", "tennis_court", "Ground_Track_Field", "Soccer_ball_field", "baseball_diamond", "Bridge", "basketball_court", "Roundabout"}
+    )
+    assert bindings[1].role == "persistent_landcover"
+    assert bindings[1].participation == "rescue"
+    assert bindings[1].neutral_labels == frozenset({"background"})
+    assert bindings[1].persistent_labels == frozenset({"building"})
+    assert bindings[1].rescue_model_labels == frozenset({"building"})
+    assert bindings[1].rescue_strategy == "building_footprint_delta"
 
 
 def _settings(tmp_path: Path) -> AppSettings:
@@ -155,7 +186,7 @@ def test_bootstrap_registers_quantity_proposal_backend(tmp_path: Path) -> None:
     assert registry.get("quantity_proposal").kind == "quantity_proposal"
 
 
-def test_enabled_segformer_is_registered_lazily_and_oem_is_not(tmp_path: Path) -> None:
+def test_enabled_segformer_experts_are_registered_lazily(tmp_path: Path) -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
     registry = _build_backend_registry(
         _settings(tmp_path),
@@ -169,11 +200,14 @@ def test_enabled_segformer_is_registered_lazily_and_oem_is_not(tmp_path: Path) -
         "qwen_point",
         "quantity_proposal",
         "segmenter_mitb2_001",
+        "segmenter_oem_001",
     ]
     backend = registry.get("segmenter_mitb2_001")
     assert backend.kind == "semantic_segmentation"
     assert getattr(backend, "_client").loaded is False
-    assert "segmenter_oem_001" not in registry.all_names()
+    oem_backend = registry.get("segmenter_oem_001")
+    assert oem_backend.kind == "semantic_segmentation"
+    assert getattr(oem_backend, "_client").loaded is False
 
 
 def test_segformer_assembly_uses_verified_map_and_never_predicts(
@@ -194,8 +228,14 @@ def test_segformer_assembly_uses_verified_map_and_never_predicts(
         project_root=REPO_ROOT,
     )
 
-    assert clients == {"SegFormer-MiT-B2:iSAID:local": client}
-    assert [name for name, _ in calls] == ["segformer_transformers"]
+    assert clients == {
+        "SegFormer-MiT-B2:iSAID:local": client,
+        "SegFormer-MiT-B2:OpenEarthMap:local": client,
+    }
+    assert [name for name, _ in calls] == [
+        "segformer_transformers",
+        "segformer_transformers",
+    ]
     runtime = calls[0][1]["settings"]
     assert runtime.allow_download is False
     assert runtime.model_path == REPO_ROOT / "models" / "segformer_mitb2_isaid"
@@ -295,11 +335,12 @@ def test_multiple_segformer_backends_register_stably_and_reuse_client(
         project_root=REPO_ROOT,
     )
 
-    assert registry.all_names()[-2:] == [
+    assert registry.all_names()[-3:] == [
         "segmenter_mitb2_001",
         "segmenter_mitb2_002",
+        "segmenter_oem_001",
     ]
-    assert clients_created == ["segformer_transformers"]
+    assert clients_created == ["segformer_transformers", "segformer_transformers"]
     assert getattr(registry.get("segmenter_mitb2_001"), "_client") is getattr(
         registry.get("segmenter_mitb2_002"), "_client"
     )
@@ -441,6 +482,61 @@ def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> N
     assert validated.name == "detector_obb_csl_001"
 
 
+@pytest.mark.parametrize(
+    ("detector_index", "task", "expected_message"),
+    [
+        (0, "detect", "catalog declaration is not enabled"),
+        (1, "obb", "catalog declaration is not enabled"),
+    ],
+)
+def test_yolo_catalog_kind_matches_detector_task(
+    detector_index: int,
+    task: str,
+    expected_message: str,
+) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    detector = settings.backend.yolo.detectors[detector_index].model_copy(
+        update={"task": task}
+    )
+
+    with pytest.raises(RuntimeCompositionError, match=expected_message):
+        _catalog_validated_yolo_detector(
+            detector,
+            ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT),
+        )
+
+
+def test_yolo_catalog_rejects_unknown_detector_task() -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    detector = settings.backend.yolo.detectors[0].model_copy(
+        update={"task": "segment"}
+    )
+
+    with pytest.raises(RuntimeCompositionError, match="unsupported YOLO detector task"):
+        _catalog_validated_yolo_detector(
+            detector,
+            ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT),
+        )
+
+
+def test_both_configured_yolo_detectors_register_with_matching_catalog() -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    registry = _build_backend_registry(
+        settings,
+        PromptCatalog(REPO_ROOT / "prompts"),
+        _FakeQwenClient(),
+        expert_catalog=ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT),
+        project_root=REPO_ROOT,
+    )
+
+    assert registry.all_names()[:4] == [
+        "qwen_point",
+        "quantity_proposal",
+        "detector_obb_csl_001",
+        "detector_yolo_detect_001",
+    ]
+
+
 def test_route_coverage_after_assembly(tmp_path: Path) -> None:
     """Every routable task must resolve to a registered agent after assembly.
     组装后每个可路由任务都必须解析到已注册 Agent。"""
@@ -502,6 +598,7 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
         executable_leaf_categories=("small-vehicle", "large-vehicle"),
         hints=vehicle_hints,
     )
+    assert plan.ensemble_backend_names == ()
     assert vehicle_plan is not None
     assert vehicle_plan.primary_backend_name == "detector_obb_csl_001"
     assert vehicle_plan.fallback_backend_names == (
@@ -522,6 +619,53 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     assert aircraft_plan.fallback_backend_names == (
         "segmenter_mitb2_001", "qwen_point",
     )
+
+
+def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class(
+    tmp_path: Path,
+) -> None:
+    settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
+    settings = settings.model_copy(
+        update={"runs": settings.runs.model_copy(update={"root": tmp_path / "runs"})}
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=REPO_ROOT,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    agent = components.agent_registry.get("counting_agent")
+    selector = getattr(agent, "_selector")
+    catalog = getattr(agent, "_expert_catalog")
+
+    def plan_for(label: str, leaves: tuple[str, ...]):
+        target = CountTargetSpec(
+            canonical_label=label,
+            inclusion_rule="include the declared target",
+            exclusion_rule="exclude every other object",
+        )
+        return selector.plan(
+            target,
+            task="counting",
+            executable_leaf_categories=leaves,
+            hints={"quantity_estimation": True, **catalog.target_hints(target)},
+        )
+
+    shared = plan_for("plane", ("plane",))
+    assert shared is not None
+    assert shared.selected_detector_expert_names == (
+        "detector_yolo_detect_001",
+        "detector_obb_csl_001",
+    )
+    assert shared.fallback_backend_names == (
+        "segmenter_mitb2_001",
+        "qwen_point",
+    )
+
+    dota_only = plan_for("airport", ("airport",))
+    assert dota_only is not None
+    assert dota_only.selected_detector_expert_names == ("detector_obb_csl_001",)
+    assert dota_only.ensemble_backend_names == ()
 
 
 def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
@@ -586,12 +730,18 @@ def test_qwen_created_exactly_once(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr("application.bootstrap.create_model", fake_create_model)
     components = _assemble(tmp_path)
-    assert calls == ["qwen_transformers", "segformer_transformers"]
+    assert calls == [
+        "qwen_transformers",
+        "segformer_transformers",
+        "segformer_transformers",
+    ]
     assert components.qwen_client is not None
     # Injecting a client must never trigger creation. / 注入客户端绝不触发创建。
     _assemble(tmp_path, qwen_client=_FakeQwenClient())
     assert calls == [
         "qwen_transformers",
+        "segformer_transformers",
+        "segformer_transformers",
         "segformer_transformers",
         "segformer_transformers",
     ]
@@ -635,6 +785,7 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
     assert [name for name, _ in calls] == [
         "qwen_transformers",
         "segformer_transformers",
+        "segformer_transformers",
     ]
     assert calls[1][1].logical_model_id == settings.models.segformer_isaid.logical_model_id
     assert calls[1][1].model_path == REPO_ROOT / "models" / "segformer_mitb2_isaid"
@@ -644,9 +795,13 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
 
 def test_disabled_change_semantic_ignores_injected_dense_client(tmp_path: Path) -> None:
     injected = object()
+    settings = _settings(tmp_path)
+    settings.agents.change.semantic = ChangeSemanticSettings(enabled=False)
 
-    components = _assemble(
-        tmp_path,
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
         semantic_client=injected,
     )

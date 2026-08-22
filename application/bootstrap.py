@@ -20,6 +20,7 @@ from agents.base import CallBudget as _CallBudgetProtocol
 from agents.base import VisualPlanBindings
 from agents.caption import CaptionAgent
 from agents.change.agent import ChangeAgent
+from agents.change.perception import SemanticExpertBinding
 from agents.counting import (
     AgentCountingSettings,
     CountingAgent,
@@ -69,6 +70,8 @@ from models.base import (
     RuntimeObjectDetectionClient,
     SemanticMaskClient,
     VisionLanguageClient,
+    hash_class_names,
+    require_model_cache_identity,
 )
 from models.cache import JsonResponseCache
 from models.entry import create_model
@@ -187,15 +190,22 @@ def assemble_runtime(
         evidence_catalog=evidence_catalog,
         project_root=asset_root,
     )
-    if settings.agents.change.semantic.enabled and semantic_client is None:
-        semantic_client = segformer_clients.get(
-            settings.models.segformer_isaid.logical_model_id
+    change_semantic_experts = _build_change_semantic_bindings(
+        settings,
+        expert_catalog,
+        segformer_clients,
+        project_root=asset_root,
+    )
+    if learned_change_client is None:
+        learned_change_client = _build_learned_change_client(
+            settings=settings,
+            project_root=asset_root,
+            semantic_experts=change_semantic_experts,
         )
-        if semantic_client is None:
-            semantic_client = create_model(
-                "segformer_transformers",
-                settings=settings.models.segformer_isaid,
-            )
+    if settings.agents.change.semantic.enabled and semantic_client is None:
+        semantic_client = (
+            change_semantic_experts[0].client if change_semantic_experts else None
+        )
     if not settings.agents.change.semantic.enabled:
         semantic_client = None
     agent_registry = _build_agent_registry(
@@ -208,6 +218,7 @@ def assemble_runtime(
         segformer_clients=segformer_clients,
         project_root=asset_root,
         model_store=model_store,
+        semantic_experts=change_semantic_experts,
     )
     router = TaskRouter()
     judge_client = _build_judge_client(settings, catalog, api_key)
@@ -297,6 +308,7 @@ def _build_agent_registry(
     segformer_clients: dict[str, Any] | None = None,
     project_root: Path | None = None,
     model_store: YoloModelStore | None = None,
+    semantic_experts: tuple[SemanticExpertBinding, ...] = (),
 ) -> AgentRegistry:
     """Register every business agent in stable order; all routable tasks must
     be covered. 按稳定顺序注册全部业务 Agent；所有可路由任务必须有覆盖。"""
@@ -325,14 +337,26 @@ def _build_agent_registry(
         verify_empty_detection=settings.counting.verify_empty_detection,
         verify_empty_semantic=settings.counting.verify_empty_semantic,
         trust_empty_detection=settings.counting.trust_empty_detection,
+        multi_detector_enabled=settings.counting.multi_detector_enabled,
+        max_selected_detector_experts=settings.counting.max_selected_detector_experts,
+        min_successful_detector_experts=settings.counting.min_successful_detector_experts,
+        ensemble_iou_threshold=settings.counting.ensemble_iou_threshold,
+        ensemble_center_distance_ratio=settings.counting.ensemble_center_distance_ratio,
+        ensemble_singleton_high_confidence=settings.counting.ensemble_singleton_high_confidence,
+        unresolved_ensemble_policy=settings.counting.unresolved_ensemble_policy,
         expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(
         qwen_client,
         semantic_client=semantic_client,
         learned_change_client=learned_change_client,
+        semantic_experts=semantic_experts,
         prompt=PromptBinding(
             text=catalog["change"], version=catalog.version("change")
+        ),
+        building_rescue_prompt=PromptBinding(
+            text=catalog["change_building_rescue"],
+            version=catalog.version("change_building_rescue"),
         ),
         settings=settings.agents.change,
     )
@@ -379,6 +403,8 @@ def _build_backend_registry(
             empty_review_prompt_version=catalog.version("zero_review"),
             seam_prompt=catalog["seam"],
             seam_prompt_version=catalog.version("seam"),
+            disagreement_prompt=catalog["count_disagreement"],
+            disagreement_prompt_version=catalog.version("count_disagreement"),
             strategy_resolver=strategy_resolver,
         )
     )
@@ -483,6 +509,129 @@ def _enabled_semantic_specs(catalog: ExpertCatalog) -> tuple[ExpertSpec, ...]:
         kinds=frozenset({"semantic_segmentation"}),
         enabled_only=True,
     )
+
+
+def _build_change_semantic_bindings(
+    settings: AppSettings,
+    catalog: ExpertCatalog,
+    clients: dict[str, Any],
+    *,
+    project_root: Path | None = None,
+) -> tuple[SemanticExpertBinding, ...]:
+    """Bind only catalog-verified semantic experts into Change runtime."""
+
+    semantic_settings = settings.agents.change.semantic
+    if not semantic_settings.enabled:
+        return ()
+    candidates = sorted(
+        (
+            expert
+            for expert in _enabled_semantic_specs(catalog)
+            if expert.change_semantics is not None
+            and expert.change_semantics.enabled
+        ),
+        key=lambda expert: (-expert.priority, expert.backend_name),
+    )
+    if not semantic_settings.multi_expert_enabled:
+        candidates = candidates[:1]
+    else:
+        candidates = candidates[: semantic_settings.max_experts]
+    bindings: list[SemanticExpertBinding] = []
+    for expert in candidates:
+        semantic = expert.change_semantics
+        assert semantic is not None
+        try:
+            client = clients[expert.logical_model_id]
+        except KeyError:
+            raise RuntimeCompositionError(
+                "Change semantic expert client is unavailable"
+            ) from None
+        labels = (
+            _verified_class_map(expert, project_root)
+            if project_root is not None
+            else {}
+        )
+        bindings.append(
+            SemanticExpertBinding(
+                expert_id=expert.backend_name,
+                logical_model_id=expert.logical_model_id,
+                priority=expert.priority,
+                participation=semantic.participation,
+                role=semantic.role,
+                neutral_labels=frozenset(semantic.neutral_model_labels),
+                transient_labels=frozenset(semantic.transient_model_labels),
+                persistent_labels=frozenset(semantic.persistent_model_labels),
+                client=client,
+                structural_labels=frozenset(semantic.structural_model_labels),
+                landcover_candidate_labels=frozenset(
+                    semantic.landcover_candidate_model_labels
+                ),
+
+                rescue_model_labels=frozenset(semantic.rescue_model_labels),
+                rescue_strategy=semantic.rescue_strategy,
+                class_names=tuple(labels.values()),
+                class_names_sha256=hash_class_names(tuple(labels.values())),
+                weights_sha256=expert.asset.sha256,
+
+            )
+        )
+    return tuple(bindings)
+
+
+def _build_learned_change_client(
+    *,
+    settings: AppSettings,
+    project_root: Path,
+    semantic_experts: tuple[SemanticExpertBinding, ...],
+) -> LearnedChangeClient | None:
+    """Auto-assemble a ChangeHead only when the feature is explicitly enabled."""
+
+    learned_settings = settings.agents.change.learned_change
+    if not learned_settings.enabled:
+        return None
+    from models.change_head.checkpoint import (
+        ChangeHeadCheckpointError,
+        load_change_head_checkpoint,
+    )
+    from models.change_head.fingerprint import build_change_input_pipeline_fingerprint
+    from models.change_head.runtime import (
+        ChangeHeadRuntimeError,
+        TorchLearnedChangeClient,
+        validate_change_head_runtime_compatibility,
+    )
+    try:
+        learned_settings.validate_runtime_configuration()
+        checkpoint = load_change_head_checkpoint(
+            (learned_settings.checkpoint_dir
+             if learned_settings.checkpoint_dir is not None
+             and learned_settings.checkpoint_dir.is_absolute()
+             else project_root / learned_settings.checkpoint_dir)  # type: ignore[operator]
+        )
+        identities = {
+            binding.expert_id: require_model_cache_identity(
+                binding.client, component=f"change semantic expert {binding.expert_id}"
+            )
+            for binding in semantic_experts
+        }
+        fingerprint, _ = build_change_input_pipeline_fingerprint(
+            settings=settings.agents.change,
+            semantic_client_identities=identities,
+        )
+        validate_change_head_runtime_compatibility(
+            manifest=checkpoint.manifest,
+            semantic_experts=semantic_experts,
+            pipeline_fingerprint=fingerprint,
+            strict=learned_settings.strict_contract,
+        )
+        return TorchLearnedChangeClient(
+            checkpoint,
+            device=learned_settings.device,
+        )
+    except (ChangeHeadCheckpointError, ChangeHeadRuntimeError, ValueError) as error:
+        code = getattr(error, "code", None) or "LEARNED_CHANGE_INFERENCE_FAILED"
+        if learned_settings.mode == "required" or learned_settings.failure_policy == "fail":
+            raise RuntimeCompositionError(code) from None
+        return None
 
 
 def _expert_asset_root(project_root: Path) -> Path:
@@ -728,13 +877,21 @@ def _vqa_segformer_labels_for_binding(
 
 
 def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> Any:
+    expected_kinds = {
+        "obb": "yolo_obb",
+        "detect": "yolo_detect",
+    }
+    try:
+        expected_kind = expected_kinds[detector.task]
+    except (AttributeError, KeyError):
+        raise RuntimeCompositionError("unsupported YOLO detector task") from None
     try:
         expert = catalog.expert(detector.name)
     except KeyError:
         raise RuntimeCompositionError(
             "enabled YOLO detector is absent from expert catalog"
         ) from None
-    if expert.kind != "yolo_obb" or not expert.enabled:
+    if expert.kind != expected_kind or not expert.enabled:
         raise RuntimeCompositionError("YOLO detector catalog declaration is not enabled")
     if expert.logical_model_id != detector.model_id:
         raise RuntimeCompositionError("YOLO logical model id differs from expert catalog")
@@ -890,7 +1047,7 @@ def _enabled_counting_catalog_leaves(
         if settings.backend.yolo.enabled and detector.enabled
     )
     yolo_specs = expert_catalog.experts(
-        kinds=frozenset({"yolo_obb"}), enabled_only=True
+        kinds=frozenset({"yolo_obb", "yolo_detect"}), enabled_only=True
     )
     semantic_specs = expert_catalog.experts(
         kinds=frozenset({"semantic_segmentation"}), enabled_only=True
