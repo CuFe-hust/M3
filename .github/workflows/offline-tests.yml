@@ -54,7 +54,11 @@ jobs:
               names = archive.namelist()
 
           assert any(name.endswith("agents/counting/expert_catalog.json") for name in names)
+          assert any(name.endswith("agents/evidence_catalog.json") for name in names)
           assert any(name.endswith("models/segformer_mitb2_isaid/classes.json") for name in names)
+          assert any(name.endswith("models/segformer_mitb2_oem/classes.json") for name in names)
+          assert any(name.endswith("models/segformer_mitb2_oem/config.json") for name in names)
+          assert any(name.endswith("models/segformer_mitb2_oem/preprocessor_config.json") for name in names)
           assert any(name.endswith("prompts/count_tile_v4.md") for name in names)
           forbidden = (".onnx", ".pt", ".pth", ".safetensors", ".bin")
           assert not any(name.endswith(forbidden) for name in names)
@@ -173,16 +177,19 @@ jobs:
               priority=100,
               classes=["plane", "baseball diamond", "bridge", "ground track field", "small vehicle", "large vehicle", "ship", "tennis court", "basketball court", "storage tank", "soccer ball field", "roundabout", "harbor", "swimming pool", "helicopter", "container crane", "airport", "helipad"],
               aliases={"airplane": "plane", "aeroplane": "plane", "vessel": "ship", "boat": "ship", "storage-tank": "storage tank", "oil tank": "storage tank", "large-vehicle": "large vehicle", "small-vehicle": "small vehicle", "football field": "soccer ball field", "soccer field": "soccer ball field", "swimming-pool": "swimming pool"},
-              composite_targets={"vehicle": ["small vehicle", "large vehicle"], "aircraft": ["plane", "helicopter"]},
           )
           settings = AppSettings(
               backend=BackendSettings(
                   yolo=YoloCountingSettings(enabled=True, detectors=[detector])
               )
           )
+          application_path = Path(application.__file__).resolve()
+          environment_root = Path(sys.prefix).resolve()
+          assert environment_root in application_path.parents
+          package_root = application_path.parents[1]
           components = assemble_runtime(
               settings,
-              project_root=Path.cwd(),
+              project_root=package_root,
               qwen_client=FakeQwen(),
           )
           assert isinstance(components.prompt_catalog, PromptCatalog)
@@ -194,15 +201,13 @@ jobs:
               "quantity_proposal",
               "detector_obb_csl_001",
               "segmenter_mitb2_001",
+              "segmenter_oem_001",
           ]
           assert backend_registry.get("segmenter_mitb2_001")._client.loaded is False
           yolo_backend = backend_registry.get("detector_obb_csl_001")
           assert yolo_backend._detector.weights.is_absolute()
           assert yolo_backend._store._models == {}
           assert ExpertCatalog is not None
-          application_path = Path(application.__file__).resolve()
-          environment_root = Path(sys.prefix).resolve()
-          assert environment_root in application_path.parents
 
           print("wheel-import-contract: PASS")
           print("counting-wheel-runtime: PASS")
