@@ -18,4 +18,6 @@ class ChangeHeadCalibration(BaseModel):
     optional_expert_missing_reliability_factor: float = Field(
         default=0.90, gt=0.0, le=1.0
     )
-
+    metrics: dict[str, float] = Field(default_factory=dict)
+    validation_fingerprint: str = ""
+    created_from_checkpoint_sha256: str | None = None

@@ -73,6 +73,14 @@ def load_change_head_checkpoint(root: Path) -> LoadedChangeHeadCheckpoint:
         raise ChangeHeadCheckpointError("LEARNED_CHANGE_WEIGHT_HASH_MISMATCH", weights_path.name) from error
     except RuntimeError as error:
         raise ChangeHeadCheckpointError("LEARNED_CHANGE_WEIGHT_MISSING", weights_path.name) from error
+    if (
+        calibration.created_from_checkpoint_sha256 is not None
+        and calibration.created_from_checkpoint_sha256 != manifest.model_weights_sha256
+    ):
+        raise ChangeHeadCheckpointError(
+            "LEARNED_CHANGE_CALIBRATION_INVALID",
+            "calibration checkpoint SHA does not match manifest weights SHA",
+        )
     try:
         from safetensors.torch import load_file
     except ImportError as error:

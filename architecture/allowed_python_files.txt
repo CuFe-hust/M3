@@ -326,6 +326,18 @@ training/change_head/trainer.py
 tests/training/__init__.py
 tests/training/test_change_head_feature_cache.py
 tests/training/test_change_head_trainer.py
+tests/training/test_change_head_evaluation_calibration.py
+tests/agents/change/test_settings.py
+tests/test_qwen3vl_lora_cli.py
+tests/test_qwen3vl_lora_remote.py
+scripts/annotate_obb.py
+scripts/annotate_obb_1024.py
+scripts/prepare_vrsbench_phase2.py
+scripts/qwen3vl_lora_cli.py
+scripts/qwen3vl_lora_remote.py
+scripts/visualize_training_curves.py
+tools/build_phase1_audit.py
+tools/render_answer_only_report.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py
