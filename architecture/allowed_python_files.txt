@@ -306,6 +306,7 @@ scripts/finetune_qwen3vl_phase2.py
 scripts/export_qwen3vl_phase2_checkpoint.py
 scripts/build_change_head_manifest.py
 scripts/cache_change_head_features.py
+scripts/train_change_head.py
 scripts/calibrate_change_head.py
 scripts/eval_change_head.py
 scripts/eval_change_head_release.py
@@ -324,6 +325,7 @@ training/change_head/trainer.py
 # === ChangeHead training tests ===
 tests/training/__init__.py
 tests/training/test_change_head_feature_cache.py
+tests/training/test_change_head_trainer.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py
