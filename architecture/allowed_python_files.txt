@@ -327,6 +327,7 @@ tests/training/__init__.py
 tests/training/test_change_head_feature_cache.py
 tests/training/test_change_head_trainer.py
 tests/training/test_change_head_evaluation_calibration.py
+tests/scripts/test_train_change_head_pipeline.py
 tests/agents/change/test_settings.py
 tests/test_qwen3vl_lora_cli.py
 tests/test_qwen3vl_lora_remote.py

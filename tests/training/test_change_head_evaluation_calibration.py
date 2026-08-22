@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -12,6 +13,7 @@ from models.base import (
 )
 from models.change_head import checkpoint as checkpoint_module
 from models.change_head.calibration import ChangeHeadCalibration
+from scripts import calibrate_change_head as calibration_script
 from scripts.calibrate_change_head import fit_temperature, search_rescue_threshold
 from training.change_head.evaluator import evaluate_probability_maps
 from training.change_head.release_gate import evaluate_release_gates
@@ -136,6 +138,30 @@ def test_critical_nochange_new_fp_blocks_release() -> None:
     assert result["passed"] is False
 
 
+def test_nochange_fp_increase_blocks_release() -> None:
+    result = evaluate_release_gates(
+        shadow_parity=True,
+        baseline=_metrics(scene_nochange_fp_rate=0.0),
+        assist=_metrics(scene_nochange_fp_rate=0.1),
+        residual_hard_cases_rescued=1,
+        config=_gate_config(),
+    )
+    assert result["gate_details"]["nochange"]["increase"] == pytest.approx(0.1)
+    assert result["gates"]["nochange_scene_rate"] is False
+
+
+def test_nochange_fp_decrease_passes_release() -> None:
+    result = evaluate_release_gates(
+        shadow_parity=True,
+        baseline=_metrics(scene_nochange_fp_rate=0.1),
+        assist=_metrics(scene_nochange_fp_rate=0.0),
+        residual_hard_cases_rescued=1,
+        config=_gate_config(),
+    )
+    assert result["gate_details"]["nochange"]["increase"] == pytest.approx(-0.1)
+    assert result["gates"]["nochange_scene_rate"] is True
+
+
 def test_temperature_fit_ignores_invalid_pixels() -> None:
     logits = np.array([[[-3.0, 3.0], [100.0, -100.0]]])
     targets = np.array([[[0, 1], [1, 0]]])
@@ -165,6 +191,47 @@ def test_no_safe_threshold_marks_calibration_failed() -> None:
             [np.ones((1, 1), dtype=bool)],
             candidates=[0.5, 0.7],
         )
+
+
+def test_calibration_cli_consumes_raw_logits_and_exported_masks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    logits = np.array([[[-4.0, -4.0]], [[3.0, -1.0]]], dtype=np.float32)
+    targets = np.array([[[0, 0]], [[1, 0]]], dtype=np.float32)
+    valid = np.ones_like(targets, dtype=bool)
+    logits_path = tmp_path / "val_logits.npy"
+    targets_path = tmp_path / "val_targets.npy"
+    valid_path = tmp_path / "val_valid_masks.npy"
+    tags_path = tmp_path / "val_tags.json"
+    output_path = tmp_path / "calibration.json"
+    np.save(logits_path, logits)
+    np.save(targets_path, targets)
+    np.save(valid_path, valid)
+    tags_path.write_text(json.dumps([["no_change"], ["hard_case"]]), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "calibrate_change_head.py",
+            "--logits",
+            str(logits_path),
+            "--targets",
+            str(targets_path),
+            "--valid",
+            str(valid_path),
+            "--tags",
+            str(tags_path),
+            "--output",
+            str(output_path),
+        ],
+    )
+    assert calibration_script.main() == 0
+    artifact = json.loads(output_path.read_text(encoding="utf-8"))
+    assert artifact["temperature"] > 0.0
+    assert 0.5 <= artifact["rescue_probability_threshold"] <= 0.99
+    assert {"pre_nll", "post_nll", "pre_ece", "post_ece", "brier"} <= set(
+        artifact["metrics"]
+    )
 
 
 def _manifest_payload(weight_sha: str) -> dict[str, object]:

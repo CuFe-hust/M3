@@ -50,7 +50,10 @@ def evaluate_release_gates(
         residual_hard_cases_regressed=residual_hard_cases_regressed,
     )
     net = rescued - regressed
-    nochange_drop = _drop(baseline, assist, "scene_nochange_fp_rate")
+    nochange_fp_increase = (
+        float(assist.get("scene_nochange_fp_rate", 0.0))
+        - float(baseline.get("scene_nochange_fp_rate", 0.0))
+    )
     gates = {
         "shadow_parity": bool(shadow_parity),
         "critical_no_change": (
@@ -74,7 +77,7 @@ def evaluate_release_gates(
         <= float(broad.get("max_proposal_f1_drop", 0.01)),
         "broad_pixel_f1": _drop(baseline, assist, "pixel_f1")
         <= float(broad.get("max_pixel_f1_drop", 0.01)),
-        "nochange_scene_rate": nochange_drop
+        "nochange_scene_rate": nochange_fp_increase
         <= float(critical.get("max_scene_fp_rate_increase", 0.0)),
     }
     gates["broad_validation"] = bool(
@@ -93,6 +96,11 @@ def evaluate_release_gates(
             "rescued": rescued,
             "regressed": regressed,
             "net_improvement": net,
+        },
+        "nochange": {
+            "baseline_rate": float(baseline.get("scene_nochange_fp_rate", 0.0)),
+            "candidate_rate": float(assist.get("scene_nochange_fp_rate", 0.0)),
+            "increase": nochange_fp_increase,
         },
     }
     passed = all(bool(value) for value in gates.values())

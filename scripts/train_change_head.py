@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -42,13 +43,39 @@ _SECTION_KEYS = {
     "architecture": {"name", "hidden_dim", "semantic_dim", "decoder_dim", "use_pif_mask", "use_rgb_pair", "optional_expert_dropout_supported"},
     "data": {"mask_frame"},
     "experts": {"expert_id", "required", "feature_stages", "use_semantic_probabilities", "missing_policy"},
-    "optimization": {"epochs", "batch_size", "learning_rate", "weight_decay", "grad_clip_norm", "amp", "seed", "num_workers"},
+    "optimization": {"epochs", "batch_size", "learning_rate", "weight_decay", "grad_clip_norm", "amp", "seed"},
     "loss": {"bce_weight", "dice_weight", "boundary_weight", "swap_consistency_weight", "swap_consistency_every_n_steps", "max_pos_weight"},
     "optional_expert_dropout": {"enabled", "probability"},
     "selection": {"primary_metric", "early_stop_patience"},
     "sampling": {"default_weight", "tag_multipliers", "optional_expert_dropout"},
     "early_stopping": {"patience", "metric", "mode"},
 }
+_VALID_SELECTION_METRICS = {
+    "val_pixel_precision",
+    "val_pixel_recall",
+    "val_pixel_f1",
+    "val_pixel_iou",
+    "val_scene_nochange_fp_rate",
+    "val_true_positive",
+    "val_false_positive",
+    "val_false_negative",
+    "val_true_negative",
+}
+
+
+class TrainingConfigError(ValueError):
+    """Raised when the public training configuration is inconsistent."""
+
+
+@dataclass(frozen=True)
+class EvaluationArtifacts:
+    metrics: dict[str, float]
+    logits: list[np.ndarray]
+    probabilities: list[np.ndarray]
+    targets: list[np.ndarray]
+    valid_masks: list[np.ndarray]
+    tags: list[list[str]]
+    sample_ids: list[str]
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -112,8 +139,11 @@ def _tensor(value: Any, *, device: str, add_channel: bool = False) -> Any:
 
     array = np.asarray(value)
     tensor = torch.from_numpy(array.copy()).to(device=device, dtype=torch.float32)
-    if add_channel and tensor.ndim == 2:
-        tensor = tensor.unsqueeze(0).unsqueeze(0)
+    if add_channel:
+        if tensor.ndim == 2:
+            tensor = tensor.unsqueeze(0)
+        elif tensor.ndim != 3:
+            raise ValueError("spatial mask must have shape [H,W] or [1,H,W]")
     elif tensor.ndim == 3:
         tensor = tensor.unsqueeze(0)
     return tensor
@@ -139,7 +169,7 @@ def sample_to_batch(sample: CachedChangeTrainingSample, *, device: str) -> dict[
         "semantic_probabilities": semantic_probabilities,
         "expert_presence": expert_presence,
         "valid_mask": _tensor(sample.loss_valid_mask, device=device, add_channel=True),
-        "pif_mask": None if sample.pif_mask is None else _tensor(sample.pif_mask, device=device),
+        "pif_mask": None if sample.pif_mask is None else _tensor(sample.pif_mask, device=device, add_channel=True),
     }
     if sample.comparison_t1 is not None:
         network_inputs["rgb_t1"] = _tensor(sample.comparison_t1, device=device)
@@ -187,8 +217,8 @@ def _batches(
             converted = [sample_to_batch(sample, device=device) for sample in chunk]
             first = converted[0]
             inputs = dict(first["network_inputs"])
-            inputs["valid_mask"] = _stack([item["network_inputs"]["valid_mask"] for item in converted])
-            inputs["pif_mask"] = None if first["network_inputs"]["pif_mask"] is None else _stack([item["network_inputs"]["pif_mask"] for item in converted])
+            inputs["valid_mask"] = _stack_spatial_masks([item["network_inputs"]["valid_mask"] for item in converted])
+            inputs["pif_mask"] = None if first["network_inputs"]["pif_mask"] is None else _stack_spatial_masks([item["network_inputs"]["pif_mask"] for item in converted])
             inputs["expert_presence"] = {
                 expert_id: _stack([item["network_inputs"]["expert_presence"][expert_id] for item in converted])
                 for expert_id in first["network_inputs"]["expert_presence"]
@@ -209,8 +239,8 @@ def _batches(
             }
             batches.append({
                 "network_inputs": inputs,
-                "target_mask": _stack([item["target_mask"] for item in converted]),
-                "loss_valid_mask": _stack([item["loss_valid_mask"] for item in converted]),
+                "target_mask": _stack_spatial_masks([item["target_mask"] for item in converted]),
+                "loss_valid_mask": _stack_spatial_masks([item["loss_valid_mask"] for item in converted]),
                 "sample_id": [item["sample_id"] for item in converted],
             })
     return batches
@@ -220,6 +250,12 @@ def _stack(values: list[Any]) -> Any:
     import torch
 
     return torch.cat(values, dim=0)
+
+
+def _stack_spatial_masks(values: list[Any]) -> Any:
+    import torch
+
+    return torch.stack(values, dim=0)
 
 
 def _validate_manifest_config(config: dict[str, Any], manifest: ChangeHeadManifest) -> None:
@@ -239,6 +275,9 @@ def _config_to_training(config: dict[str, Any]) -> TrainingConfig:
     dropout = config.get("optional_expert_dropout", {})
     early = config.get("early_stopping", {})
     selection = config.get("selection", {})
+    selection_metric = str(early.get("metric", selection.get("primary_metric", "val_pixel_f1")))
+    if selection_metric not in _VALID_SELECTION_METRICS:
+        raise TrainingConfigError(f"Unknown selection metric: {selection_metric}")
     sampling_dropout = sampling.get("optional_expert_dropout", {})
     probability = float(
         sampling_dropout.get("probability", dropout.get("probability", 0.0))
@@ -253,7 +292,6 @@ def _config_to_training(config: dict[str, Any]) -> TrainingConfig:
         grad_clip_norm=float(optimization.get("grad_clip_norm", 1.0)),
         amp=bool(optimization.get("amp", True)),
         seed=int(optimization.get("seed", 42)),
-        num_workers=int(optimization.get("num_workers", 0)),
         bce_weight=float(loss.get("bce_weight", 1.0)),
         dice_weight=float(loss.get("dice_weight", 1.0)),
         boundary_weight=float(loss.get("boundary_weight", 0.25)),
@@ -261,9 +299,10 @@ def _config_to_training(config: dict[str, Any]) -> TrainingConfig:
         swap_consistency_every_n_steps=int(loss.get("swap_consistency_every_n_steps", 1)),
         max_pos_weight=float(loss.get("max_pos_weight", 8.0)),
         optional_expert_dropout=probability if bool(dropout.get("enabled", True)) else 0.0,
+        sampling_default_weight=float(sampling.get("default_weight", 1.0)),
         tag_multipliers={str(k): float(v) for k, v in sampling.get("tag_multipliers", {}).items()},
         early_stopping_patience=int(early.get("patience", selection.get("early_stop_patience", 6))),
-        early_stopping_metric=str(early.get("metric", selection.get("primary_metric", "val_pixel_f1"))),
+        early_stopping_metric=selection_metric,
         early_stopping_mode=str(early.get("mode", "max")),
     )
 
@@ -286,9 +325,15 @@ def _save_safetensors(network: Any, path: Path) -> str:
     return digest.hexdigest()
 
 
-def _evaluate(network: Any, samples: list[CachedChangeTrainingSample], *, device: str) -> tuple[dict[str, float], list[np.ndarray], list[np.ndarray]]:
+def _evaluate(
+    network: Any,
+    samples: list[CachedChangeTrainingSample],
+    *,
+    device: str,
+) -> EvaluationArtifacts:
     import torch
 
+    logits_values: list[np.ndarray] = []
     probabilities: list[np.ndarray] = []
     targets: list[np.ndarray] = []
     valid_masks: list[np.ndarray] = []
@@ -297,11 +342,83 @@ def _evaluate(network: Any, samples: list[CachedChangeTrainingSample], *, device
         for sample in samples:
             batch = sample_to_batch(sample, device=device)
             logits = network(**batch["network_inputs"])
+            raw_logits = logits[0, 0].detach().cpu().numpy().astype(np.float32)
             probability = torch.sigmoid(logits)[0, 0].detach().cpu().numpy().astype(np.float32)
+            logits_values.append(raw_logits)
             probabilities.append(probability)
             targets.append(np.asarray(sample.target_change_mask, dtype=np.float32))
             valid_masks.append(np.asarray(sample.loss_valid_mask, dtype=bool))
-    return evaluate_probability_maps(probabilities, targets, valid_masks), probabilities, targets
+    return EvaluationArtifacts(
+        metrics=evaluate_probability_maps(probabilities, targets, valid_masks),
+        logits=logits_values,
+        probabilities=probabilities,
+        targets=targets,
+        valid_masks=valid_masks,
+        tags=[list(sample.tags) for sample in samples],
+        sample_ids=[sample.sample_id for sample in samples],
+    )
+
+
+def _save_sample_array(path: Path, values: list[np.ndarray]) -> None:
+    try:
+        array: Any = np.stack(values, axis=0)
+    except ValueError:
+        array = np.asarray(values, dtype=object)
+    np.save(path, array, allow_pickle=array.dtype == object)
+
+
+def _save_validation_artifacts(directory: Path, evaluation: EvaluationArtifacts) -> None:
+    directory.mkdir(parents=True, exist_ok=True)
+    _save_sample_array(directory / "val_logits.npy", evaluation.logits)
+    _save_sample_array(directory / "val_probabilities.npy", evaluation.probabilities)
+    _save_sample_array(directory / "val_targets.npy", evaluation.targets)
+    _save_sample_array(directory / "val_valid_masks.npy", evaluation.valid_masks)
+    (directory / "val_tags.json").write_text(
+        json.dumps(evaluation.tags, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    (directory / "val_sample_ids.json").write_text(
+        json.dumps(evaluation.sample_ids, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+def _save_checkpoint_bundle(
+    *,
+    directory: Path,
+    network: Any,
+    manifest: ChangeHeadManifest,
+    row: dict[str, Any],
+    evaluation: EvaluationArtifacts,
+    epoch: int,
+) -> str:
+    directory.mkdir(parents=True, exist_ok=True)
+    weights_sha256 = _save_safetensors(network, directory / "model.safetensors")
+    locked_manifest = manifest.model_copy(update={"model_weights_sha256": weights_sha256})
+    (directory / "manifest.json").write_text(
+        json.dumps(locked_manifest.model_dump(mode="json"), indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    metrics_payload = {
+        **row,
+        "best_epoch": epoch,
+        "pixel_f1": float(evaluation.metrics["pixel_f1"]),
+        "pixel_iou": float(evaluation.metrics["pixel_iou"]),
+    }
+    (directory / "metrics.json").write_text(
+        json.dumps(metrics_payload, indent=2), encoding="utf-8"
+    )
+    _save_validation_artifacts(directory, evaluation)
+    (directory / "checkpoint_identity.json").write_text(
+        json.dumps(
+            {
+                "epoch": epoch,
+                "model_weights_sha256": weights_sha256,
+                "validation_sample_ids": evaluation.sample_ids,
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return weights_sha256
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -346,41 +463,50 @@ def main(argv: list[str] | None = None) -> int:
     for epoch in range(1, training_config.epochs + 1):
         order = weighted_sample_indices(
             train_samples,
+            default_weight=training_config.sampling_default_weight,
             tag_multipliers=training_config.tag_multipliers,
             seed=training_config.seed + epoch,
         )
         train_loss = trainer.train_epoch(
             _batches(train_samples, order, batch_size=training_config.batch_size, device=args.device)
         )
-        metrics, probabilities, targets = _evaluate(network, val_samples, device=args.device)
+        evaluation = _evaluate(network, val_samples, device=args.device)
+        metrics = evaluation.metrics
         row = {"epoch": epoch, "train_loss": train_loss, **{f"val_{key}": value for key, value in metrics.items()}}
         log_rows.append(row)
         log_path.write_text(
             "".join(json.dumps(item, sort_keys=True) + "\n" for item in log_rows), encoding="utf-8"
         )
-        metric = float(row.get(training_config.early_stopping_metric, metrics.get("pixel_f1", 0.0)))
+        if training_config.early_stopping_metric not in row:
+            raise TrainingConfigError(
+                f"Unknown selection metric: {training_config.early_stopping_metric}"
+            )
+        metric = float(row[training_config.early_stopping_metric])
         improved = metric > best_metric if training_config.early_stopping_mode == "max" else metric < best_metric
-        _save_safetensors(network, output_dir / "last" / "model.safetensors")
+        _save_checkpoint_bundle(
+            directory=output_dir / "last",
+            network=network,
+            manifest=manifest,
+            row=row,
+            evaluation=evaluation,
+            epoch=epoch,
+        )
         if improved:
             best_metric = metric
             best_epoch = epoch
             no_improvement = 0
-            weights_sha256 = _save_safetensors(
-                network, output_dir / "best" / "model.safetensors"
+            _save_checkpoint_bundle(
+                directory=output_dir / "best",
+                network=network,
+                manifest=manifest,
+                row=row,
+                evaluation=evaluation,
+                epoch=epoch,
             )
-            locked_manifest = manifest.model_copy(
-                update={"model_weights_sha256": weights_sha256}
-            )
-            (output_dir / "best" / "manifest.json").write_text(
-                json.dumps(locked_manifest.model_dump(mode="json"), indent=2, ensure_ascii=False), encoding="utf-8"
-            )
-            (output_dir / "best" / "metrics.json").write_text(json.dumps(row, indent=2), encoding="utf-8")
         else:
             no_improvement += 1
         if no_improvement >= training_config.early_stopping_patience:
             break
-    np.save(output_dir / "val_logits.npy", np.asarray(probabilities, dtype=object), allow_pickle=True)
-    np.save(output_dir / "val_targets.npy", np.asarray(targets, dtype=object), allow_pickle=True)
     summary = {
         "best_epoch": best_epoch,
         "best_metric": best_metric,

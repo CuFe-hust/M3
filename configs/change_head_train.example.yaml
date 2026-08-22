@@ -37,7 +37,7 @@ optional_expert_dropout:
   enabled: true
   probability: 0.20
 selection:
-  primary_metric: agent_proxy_score
+  primary_metric: val_pixel_f1
   early_stop_patience: 6
 sampling:
   default_weight: 1.0

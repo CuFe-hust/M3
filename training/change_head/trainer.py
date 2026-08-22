@@ -18,7 +18,6 @@ class TrainingConfig:
     grad_clip_norm: float = 1.0
     amp: bool = True
     seed: int = 42
-    num_workers: int = 0
     bce_weight: float = 1.0
     dice_weight: float = 1.0
     boundary_weight: float = 0.25
@@ -26,6 +25,7 @@ class TrainingConfig:
     swap_consistency_every_n_steps: int = 1
     max_pos_weight: float = 8.0
     optional_expert_dropout: float = 0.0
+    sampling_default_weight: float = 1.0
     tag_multipliers: Mapping[str, float] = field(default_factory=dict)
     early_stopping_patience: int = 6
     early_stopping_metric: str = "val_pixel_f1"
@@ -53,6 +53,7 @@ def seed_everything(seed: int) -> None:
 def weighted_sample_indices(
     samples: Sequence[Any],
     *,
+    default_weight: float = 1.0,
     tag_multipliers: Mapping[str, float],
     seed: int,
 ) -> list[int]:
@@ -61,10 +62,12 @@ def weighted_sample_indices(
     if not samples:
         return []
     rng = random.Random(seed)
+    if default_weight <= 0.0:
+        raise ValueError("default_weight must be positive")
     weights: list[float] = []
     for sample in samples:
         tags = getattr(sample, "tags", ())
-        weight = 1.0
+        weight = float(default_weight)
         for tag in tags:
             weight *= max(0.0, float(tag_multipliers.get(tag, 1.0)))
         weights.append(max(weight, 1e-6))
@@ -138,6 +141,16 @@ class ChangeHeadTrainer:
         return dropped
 
     @staticmethod
+    def _as_batched_mask(value: Any) -> Any:
+        """Convert single-sample [1,H,W] masks to training [B,1,H,W]."""
+
+        if value.ndim == 3:
+            return value.unsqueeze(0)
+        if value.ndim != 4:
+            raise ValueError("training masks must have shape [1,H,W] or [B,1,H,W]")
+        return value
+
+    @staticmethod
     def _pos_weight(target: Any, valid: Any, maximum: float) -> float:
         valid_mask = valid.bool()
         while valid_mask.ndim < target.ndim:
@@ -161,7 +174,8 @@ class ChangeHeadTrainer:
             loss_valid_mask = batch.get("loss_valid_mask", batch.get("valid_mask"))
             if loss_valid_mask is None:
                 raise ValueError("training batch requires loss_valid_mask")
-            target = batch["target_mask"]
+            loss_valid_mask = self._as_batched_mask(loss_valid_mask)
+            target = self._as_batched_mask(batch["target_mask"])
             do_swap = (
                 self.config.swap_consistency_weight > 0.0
                 and self._step % self.config.swap_consistency_every_n_steps == 0
