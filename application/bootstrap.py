@@ -9,8 +9,9 @@ DeepSeek 客户端仅在注入 api_key 时创建（无 key 即 judge 禁用，�
 from __future__ import annotations
 
 import json
+import re
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -42,16 +43,21 @@ from agents.general_vqa.evidence.executor import (
     EvidencePolicy,
     ObjectEvidenceExecutor,
 )
+from agents.general_vqa.evidence.schema import EvidencePreprocessing
 from agents.grounding import GroundingAgent
 from agents.grounding.evidence import (
     GroundingEvidenceExecutor,
     GroundingEvidencePolicy,
 )
 from agents.registry import AgentRegistry
-from agents.schema import COUNTING_TASKS
+from agents.schema import COUNTING_TASKS, GENERAL_VQA_AGENT_TASKS
 from agents.visual_base import PromptBinding
 from application.prompts import PromptCatalog
-from application.settings import AppSettings, VisualDetectorSettings
+from application.settings import (
+    AppSettings,
+    VisualDetectorSettings,
+    VisualEvidencePreprocessSettings,
+)
 from data.adapters.base import DatasetAdapter
 from data.registry import build_default_registry
 from evaluation.judges.deepseek import DeepSeekJudgeClient
@@ -61,6 +67,7 @@ from models.base import (
     ModelCacheIdentity,
     ObjectDetectionOutput,
     RuntimeObjectDetectionClient,
+    SemanticMaskClient,
     VisionLanguageClient,
 )
 from models.cache import JsonResponseCache
@@ -76,6 +83,7 @@ from workflows.dataset_runner import DatasetRunner
 from workflows.judge_service import JudgeService
 from workflows.run_store import RunStore
 from workflows.sample_runner import SampleRunner
+from workflows.schema import EvidencePreprocessingIdentity, VQA_ASSISTANCE_SCOPE
 from workflows.visual_planner import (
     VisualTaskPlanner,
 )
@@ -141,9 +149,23 @@ def assemble_runtime(
         )
     asset_root = _expert_asset_root(project_root)
     expert_catalog = _load_expert_catalog(asset_root)
+    evidence_catalog = _load_evidence_catalog(asset_root)
     segformer_clients = _build_segformer_clients(
         settings,
         expert_catalog,
+        project_root=asset_root,
+    )
+    # Verified semantic-mask clients for the VQA evidence service, keyed by
+    # stable settings binding; counting-enabled clients are reused so one
+    # runtime assembly creates one client per logical model id.
+    # 供 VQA evidence 服务使用的已验证 semantic-mask clients，按稳定 settings
+    # binding 键控；复用 counting 启用的 client，使一次 runtime assembly 每个
+    # 逻辑模型 id 只创建一个 client。
+    vqa_segmenter_clients = _build_vqa_segmenter_clients(
+        settings,
+        expert_catalog,
+        segformer_clients,
+        evidence_catalog=evidence_catalog,
         project_root=asset_root,
     )
     # One audited YOLO model store per runtime assembly, shared by the
@@ -161,6 +183,8 @@ def assemble_runtime(
         qwen_client,
         model_store,
         expert_catalog=expert_catalog,
+        segmenter_clients=vqa_segmenter_clients,
+        evidence_catalog=evidence_catalog,
         project_root=asset_root,
     )
     if settings.agents.change.semantic.enabled and semantic_client is None:
@@ -224,6 +248,8 @@ def assemble_runtime(
         judge_sample_rate: float | None = None,
         data_root: Path,
         planning_mode: str = "visual-task-plan-v5",
+        evidence_preprocessing: EvidencePreprocessingIdentity | None = None,
+        vqa_assistance_scope: str | None = None,
     ) -> DatasetRunner:
         return DatasetRunner(
             adapter,
@@ -236,6 +262,8 @@ def assemble_runtime(
             visual_task_planner=visual_task_planner,
             planning_mode=planning_mode,
             data_root=data_root,
+            evidence_preprocessing=evidence_preprocessing,
+            vqa_assistance_scope=vqa_assistance_scope,
         )
 
     components = RuntimeComponents(
@@ -500,6 +528,69 @@ def _build_segformer_clients(
     return clients
 
 
+def _build_vqa_segmenter_clients(
+    settings: AppSettings,
+    catalog: ExpertCatalog,
+    counting_clients: Mapping[str, Any],
+    *,
+    evidence_catalog: EvidenceCatalog,
+    project_root: Path,
+) -> dict[str, SemanticMaskClient]:
+    """Verified semantic-mask clients for the VQA evidence service, keyed by
+    the stable settings binding. The binding is a logical backend name, never
+    a checkpoint path: it must resolve to a verified semantic-segmentation
+    expert. Counting-enabled clients are reused by logical model id so one
+    runtime assembly creates one client per logical id; disabled bindings get
+    their own lazy client. Every declared binding fails closed at assembly
+    when the catalog or verification does not match.
+    供 VQA evidence 服务使用的已验证 semantic-mask clients，按稳定 settings
+    binding 键控。binding 是逻辑 backend 名而非 checkpoint 路径：必须解析到
+    已验证 semantic-segmentation expert。按逻辑模型 id 复用 counting 启用
+    client，使一次 runtime assembly 每个逻辑 id 只创建一个 client；禁用
+    binding 各自获得惰性 client。任何声明的 binding 在目录或验证不匹配时于
+    组装期严格失败。"""
+
+    clients: dict[str, SemanticMaskClient] = {}
+    created: dict[str, SemanticMaskClient] = {}
+    for binding in settings.visual_planning.segmenters:
+        try:
+            expert = catalog.expert(binding)
+        except KeyError:
+            raise RuntimeCompositionError(
+                "visual segmenter binding is absent from the expert catalog"
+            ) from None
+        if expert.kind != "semantic_segmentation":
+            raise RuntimeCompositionError(
+                "visual segmenter binding is not a semantic segmentation expert"
+            )
+        if expert.verification.class_map != "verified":
+            raise RuntimeCompositionError(
+                "visual segmenter binding has an unverified class map"
+            )
+        required_labels = _vqa_segformer_labels_for_binding(
+            evidence_catalog, binding
+        )
+        runtime = _segformer_runtime_settings(settings, expert, project_root)
+        labels = _verified_class_map(
+            expert,
+            project_root,
+            expected_version=settings.visual_planning.segmenters[binding].class_map_version,
+            required_labels=required_labels,
+        )
+        client = counting_clients.get(expert.logical_model_id)
+        if client is None:
+            client = created.get(expert.logical_model_id)
+            if client is None:
+                client = create_model(
+                    "segformer_transformers",
+                    settings=runtime,
+                    id_to_label=labels,
+                )
+                created[expert.logical_model_id] = client
+        clients[binding] = client
+    return clients
+
+
 def _segformer_runtime_settings(
     settings: AppSettings,
     expert: ExpertSpec,
@@ -556,15 +647,47 @@ def _safe_asset(project_root: Path, reference: str | None) -> Path:
     return candidate
 
 
-def _verified_class_map(expert: ExpertSpec, project_root: Path) -> dict[int, str]:
+def _verified_class_map(
+    expert: ExpertSpec,
+    project_root: Path,
+    *,
+    expected_version: str | None = None,
+    required_labels: frozenset[str] = frozenset(),
+) -> dict[int, str]:
+    """Validate the immutable class-map identity before any client is exposed.
+    在任何 client 暴露前校验不可变 class map 身份。
+
+    The catalog digest, the class-map verification metadata, and the VQA raw
+    labels must agree. This is intentionally composition-time validation; the
+    runtime remains responsible for hashing the actual weight file on load.
+    catalog digest、class map verification metadata 与 VQA raw labels 必须一致。
+    这是组合期校验；实际权重文件的哈希仍由 runtime 在加载时负责。
+    """
     path = _safe_asset(project_root, expert.asset.class_map)
     try:
         document = json.loads(path.read_text(encoding="utf-8"))
         raw = document["id2name"]
         count = document["num_classes"]
         inverse = document["name2id"]
+        verification = document["verification"]
+        verified_date = verification["verified_date"]
+        checkpoint_sha256 = verification["checkpoint_sha256"]
     except (OSError, UnicodeError, json.JSONDecodeError, KeyError, TypeError):
         raise RuntimeCompositionError("SegFormer class map is missing or invalid") from None
+    if (
+        not isinstance(verified_date, str)
+        or re.fullmatch(r"\d{4}-\d{2}-\d{2}", verified_date) is None
+    ):
+        raise RuntimeCompositionError("SegFormer class map verification version is invalid")
+    actual_version = f"verified-{verified_date}"
+    if expected_version is not None and expected_version != actual_version:
+        raise RuntimeCompositionError("SegFormer class map version differs from settings")
+    if (
+        not isinstance(checkpoint_sha256, str)
+        or checkpoint_sha256 != expert.asset.sha256
+        or re.fullmatch(r"[0-9a-f]{64}", checkpoint_sha256) is None
+    ):
+        raise RuntimeCompositionError("SegFormer class map checkpoint digest differs from asset")
     if not isinstance(raw, dict) or not raw or count != len(raw):
         raise RuntimeCompositionError("SegFormer class map is inconsistent")
     expected_keys = {str(index) for index in range(len(raw))}
@@ -575,6 +698,8 @@ def _verified_class_map(expert: ExpertSpec, project_root: Path) -> dict[int, str
         raise RuntimeCompositionError("SegFormer class labels must be non-empty strings")
     if inverse != {label: index for index, label in labels.items()}:
         raise RuntimeCompositionError("SegFormer class map inverse differs from id mapping")
+    if not required_labels.issubset(set(labels.values())):
+        raise RuntimeCompositionError("SegFormer VQA raw labels differ from verified class map")
     declared = {
         label
         for support in expert.supports.values()
@@ -583,6 +708,23 @@ def _verified_class_map(expert: ExpertSpec, project_root: Path) -> dict[int, str
     if not declared.issubset(set(labels.values())):
         raise RuntimeCompositionError("SegFormer catalog labels differ from verified class map")
     return labels
+
+
+def _vqa_segformer_labels_for_binding(
+    catalog: EvidenceCatalog,
+    binding: str,
+) -> frozenset[str]:
+    """Collect every VQA raw label owned by one stable segmenter binding.
+    收集一个稳定 segmenter binding 所拥有的全部 VQA 原始标签。"""
+
+    labels: set[str] = set()
+    for leaf in catalog.executable_leaves_for_task("general_vqa"):
+        if (
+            catalog.capability_enabled(leaf, "segformer")
+            and catalog.leaf_segformer_binding(leaf) == binding
+        ):
+            labels.update(catalog.leaf_segformer_labels(leaf) or ())
+    return frozenset(labels)
 
 
 def _catalog_validated_yolo_detector(detector: Any, catalog: ExpertCatalog) -> Any:
@@ -653,11 +795,12 @@ def _build_visual_task_planning(
     model_store: YoloModelStore,
     *,
     expert_catalog: ExpertCatalog,
+    segmenter_clients: Mapping[str, SemanticMaskClient],
+    evidence_catalog: EvidenceCatalog,
     project_root: Path,
 ) -> tuple[VisualTaskPlanner, VisualPlanBindings]:
     """Assemble the always-on v5 planner and shared evidence bindings.
     组装始终启用的 v5 规划器与共享证据绑定。"""
-    evidence_catalog = _load_evidence_catalog(project_root)
     planner_settings = settings.visual_planning.planner
     if planner_settings.catalog_version != evidence_catalog.catalog_version:
         raise RuntimeCompositionError(
@@ -673,6 +816,7 @@ def _build_visual_task_planning(
         evidence_catalog,
         qwen_client,
         model_store,
+        segmenter_clients=segmenter_clients,
         project_root=project_root,
     )
     # Runtime availability is task-specific. Counting specialists remain
@@ -687,14 +831,22 @@ def _build_visual_task_planning(
         expert_catalog,
         task="fine_grained_counting",
     )
+    # The four GeneralVQAAgent tasks share one immutable runtime capability
+    # set, computed once from the same availability filter. When the VQA
+    # evidence service is unavailable the filter already yields empty tuples
+    # for all four tasks. 四个 GeneralVQAAgent task 共享同一份不可变运行时能力
+    # 集合，由同一个可用性过滤器计算一次。VQA evidence 服务不可用时该过滤器
+    # 对四个 task 都产出空元组。
+    vqa_leaves = _vqa_executable_leaves(
+        settings,
+        evidence_catalog,
+        segmenter_clients,
+        project_root=project_root,
+    )
     executable_categories_by_task = {
         "counting": counting_leaves,
         "fine_grained_counting": fine_grained_counting_leaves,
-        "general_vqa": (
-            evidence_catalog.executable_leaves_for_task("general_vqa")
-            if bindings.vqa_evidence is not None
-            else ()
-        ),
+        **{task: vqa_leaves for task in GENERAL_VQA_AGENT_TASKS},
         "grounding": (
             evidence_catalog.executable_leaves_for_task("grounding")
             if bindings.grounding_evidence is not None
@@ -712,6 +864,7 @@ def _build_visual_task_planning(
         roi_coordinate_frame=planner_settings.roi_coordinate_frame,
         roi_materialization_policy=planner_settings.roi_materialization_policy,
         large_image_policy=planner_settings.large_image_policy,
+        vqa_assistance_scope=VQA_ASSISTANCE_SCOPE,
     )
     return planner, bindings
 
@@ -773,6 +926,7 @@ def _build_visual_bindings(
     qwen_client: VisionLanguageClient,
     model_store: YoloModelStore,
     *,
+    segmenter_clients: Mapping[str, SemanticMaskClient],
     project_root: Path,
 ) -> VisualPlanBindings:
     """Shared evidence bindings for the canonical visual planner: the VQA object
@@ -782,7 +936,11 @@ def _build_visual_bindings(
 
     return VisualPlanBindings(
         vqa_evidence=_build_vqa_evidence_service(
-            settings, evidence_catalog, model_store, project_root=project_root
+            settings,
+            evidence_catalog,
+            model_store,
+            segmenter_clients=segmenter_clients,
+            project_root=project_root,
         ),
         grounding_evidence=_build_grounding_evidence_service(
             settings,
@@ -872,46 +1030,81 @@ def _build_vqa_evidence_service(
     evidence_catalog: EvidenceCatalog,
     model_store: YoloModelStore,
     *,
+    segmenter_clients: Mapping[str, SemanticMaskClient],
     project_root: Path,
 ) -> ObjectEvidenceExecutor | None:
-    """Assemble the VQA object-evidence executor only when the settings
-    declare a fully calibrated global detector policy; otherwise the service
-    stays absent and object_evidence_vqa plans fail closed at runtime. An
-    enabled segmenter without a frozen model binding fails closed at
-    assembly — no production default is ever invented.
-    仅在 settings 声明完整校准的全局检测策略时组装 VQA object-evidence
-    执行器；否则服务保持缺失，object_evidence_vqa 计划在运行时严格失败。
-    已启用分割器但没有冻结的模型绑定时在组装时严格失败——绝不杜撰生产默认值。"""
+    """Assemble the VQA object-evidence executor from the frozen capability
+    settings. Three modes, each fail-closed:
 
-    if any(
-        entry.enabled for entry in settings.visual_planning.segmenters.values()
-    ):
-        raise RuntimeCompositionError(
-            "visual segmenter calibration is declared but its model binding is not frozen"
-        )
+    - no enabled capability            -> None (plans fail at runtime);
+    - detector only                    -> YOLO-only executor;
+    - segmenter(s) only                -> SegFormer-only executor;
+    - detector + segmenter(s)          -> combined executor.
+
+    The detector policy is assembled only when fully calibrated, and a
+    calibrated policy requires an enabled detector; an enabled segmenter
+    binding must resolve to a verified client from the runtime inventory —
+    no production default is ever invented.
+    按冻结的能力设置组装 VQA object-evidence 执行器，三种模式均严格失败：
+
+    - 无启用能力 -> None（计划在运行时失败）；
+    - 仅检测器 -> YOLO-only 执行器；
+    - 仅分割器 -> SegFormer-only 执行器；
+    - 检测器+分割器 -> 组合执行器。
+
+    检测器策略仅在完整校准时组装，且已校准策略必须有启用检测器；启用的
+    segmenter binding 必须解析到运行时清单中的已验证 client——绝不杜撰
+    生产默认值。"""
+
     policy = _resolved_evidence_policy(settings.visual_planning.detectors)
-    if policy is None:
-        return None
-    detector = _first_enabled_detector(settings, project_root)
-    if detector is None:
+    yolo_client = None
+    yolo_device = None
+    yolo_image_size = None
+    if policy is not None:
+        detector = _first_enabled_detector(settings, project_root)
+        if detector is None:
+            raise RuntimeCompositionError(
+                "calibrated VQA detector policy requires an enabled detector"
+            )
+        # The detector is wired lazily: composition never loads weights; the
+        # first inference goes through the shared audited store.
+        # 检测器惰性接线：组合期绝不加载权重；首次推理经共享审计 store。
+        yolo_client = _LazyObjectDetectionClient(model_store, detector)
+        yolo_device = detector.device
+        yolo_image_size = detector.image_size
+    enabled_segmenters = {
+        binding: entry
+        for binding, entry in settings.visual_planning.segmenters.items()
+        if entry.enabled
+    }
+    unresolved = sorted(
+        binding for binding in enabled_segmenters if binding not in segmenter_clients
+    )
+    if unresolved:
         raise RuntimeCompositionError(
-            "calibrated VQA detector policy requires an enabled detector"
+            "enabled visual segmenter binding has no verified runtime client: "
+            + ", ".join(unresolved)
         )
-    # The detector is wired lazily: composition never loads weights; the
-    # first inference goes through the shared audited store.
-    # 检测器惰性接线：组合期绝不加载权重；首次推理经共享审计 store。
-    yolo_client = _LazyObjectDetectionClient(model_store, detector)
+    if yolo_client is None and not enabled_segmenters:
+        return None
     return ObjectEvidenceExecutor(
         catalog=evidence_catalog,
-        policy=EvidencePolicy(
-            confidence_threshold=policy.confidence_threshold,
-            nms_iou_threshold=policy.nms_iou_threshold,
-            max_detections=policy.max_detections,
+        policy=(
+            None
+            if policy is None
+            else EvidencePolicy(
+                confidence_threshold=policy.confidence_threshold,
+                nms_iou_threshold=policy.nms_iou_threshold,
+                max_detections=policy.max_detections,
+            )
         ),
         yolo_client=yolo_client,
-        yolo_device=detector.device,
-        yolo_image_size=detector.image_size,
-        segformer_client=None,
+        yolo_device=yolo_device,
+        yolo_image_size=yolo_image_size,
+        segmenter_clients={
+            binding: segmenter_clients[binding] for binding in enabled_segmenters
+        },
+        preprocessing=_evidence_preprocessing(settings.visual_planning.preprocessing),
     )
 
 
@@ -1024,6 +1217,74 @@ def _first_enabled_detector(
     if not enabled:
         return None
     return _resolve_yolo_detector(enabled[0], project_root)
+
+
+def _evidence_preprocessing(
+    pre: VisualEvidencePreprocessSettings,
+) -> EvidencePreprocessing:
+    """Mirror the frozen settings identity into the agents-local contract;
+    agents never import application settings, so every value is injected
+    explicitly and verified by the shared Literal versions.
+    将冻结的 settings 身份镜像进 agents 局部契约；agents 绝不导入 application
+    settings，因此每个值都显式注入，并由共享 Literal 版本互相校验。"""
+
+    return EvidencePreprocessing(
+        version=pre.version,
+        tile_size=pre.tile_size,
+        partition_policy=pre.partition_policy,
+        remainder_resize=pre.remainder_resize,
+        rgb_interpolation=pre.rgb_interpolation,
+        mask_inverse_interpolation=pre.mask_inverse_interpolation,
+        max_tile_concurrency=pre.max_tile_concurrency,
+    )
+
+
+def _vqa_executable_leaves(
+    settings: AppSettings,
+    catalog: EvidenceCatalog,
+    segmenter_clients: Mapping[str, SemanticMaskClient],
+    *,
+    project_root: Path,
+) -> tuple[str, ...]:
+    """Deterministic runtime-availability filter over the catalog's
+    general_vqa leaves, keeping catalog order. A leaf is executable when a
+    calibrated detector's classes intersect its YOLO labels, or its frozen
+    segmenter binding is enabled with a verified runtime client. A non-None
+    service alone does not imply that all 26 categories are executable.
+    对目录 general_vqa 叶子做确定性的运行时能力过滤，保持目录顺序。叶子在
+    已校准检测器类别与其 YOLO 标签相交、或其冻结 segmenter binding 已启用且
+    存在已验证运行时 client 时才算可执行。服务非 None 本身不代表 26 类全部
+    可执行。"""
+
+    yolo_ready = _resolved_evidence_policy(settings.visual_planning.detectors) is not None
+    detector = _first_enabled_detector(settings, project_root) if yolo_ready else None
+    detector_labels = (
+        {label.casefold() for label in detector.classes} if detector is not None else set()
+    )
+    enabled_segmenters = {
+        binding for binding, entry in settings.visual_planning.segmenters.items() if entry.enabled
+    }
+    executable: list[str] = []
+    for leaf in catalog.executable_leaves_for_task("general_vqa"):
+        leaf_yolo_ready = (
+            yolo_ready
+            and detector is not None
+            and catalog.capability_enabled(leaf, "yolo")
+            and bool(
+                detector_labels
+                & {label.casefold() for label in catalog.leaf_yolo_labels(leaf)}
+            )
+        )
+        binding = catalog.leaf_segformer_binding(leaf)
+        leaf_segformer_ready = (
+            binding is not None
+            and binding in enabled_segmenters
+            and binding in segmenter_clients
+            and catalog.capability_enabled(leaf, "segformer")
+        )
+        if leaf_yolo_ready or leaf_segformer_ready:
+            executable.append(leaf)
+    return tuple(executable)
 
 
 def _routable_tasks() -> set[str]:

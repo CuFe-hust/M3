@@ -520,6 +520,26 @@ def test_invalid_json_repaired_once(tmp_path: Path) -> None:
     repair_user = json.loads(repair_messages[1]["content"])
     assert "raw_output" in repair_user and "validation_error" in repair_user
     assert repair_user["validation_error"] == "JSONDecodeError"
+    assert "original_payload" not in repair_user
+
+
+def test_schema_repair_can_preserve_original_text_payload() -> None:
+    transport = _QueuedTransport(
+        "{not json", '{"score": 0, "concise_rationale": "fixed"}'
+    )
+    client = _client(transport)
+    payload = _vqa_payload()
+
+    result = client.judge_json(
+        payload,
+        response_model=VQAAnswerJudgeResult,
+        request_meta=_request_meta(),
+        repair_with_original_payload=True,
+    )
+
+    assert result.score == 0
+    repair_user = json.loads(transport.calls[1]["messages"][1]["content"])
+    assert repair_user["original_payload"] == payload
 
 
 def test_invalid_json_twice_fails(tmp_path: Path) -> None:

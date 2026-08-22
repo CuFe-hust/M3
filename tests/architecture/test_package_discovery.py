@@ -99,6 +99,9 @@ def test_required_counting_metadata_is_packaged_without_large_weights() -> None:
         "segformer_mitb2_isaid/classes.json",
         "segformer_mitb2_isaid/config.json",
         "segformer_mitb2_isaid/preprocessor_config.json",
+        "segformer_mitb2_oem/classes.json",
+        "segformer_mitb2_oem/config.json",
+        "segformer_mitb2_oem/preprocessor_config.json",
     }
     assert "*.md" in package_data["prompts"]
     serialized = json.dumps(package_data)

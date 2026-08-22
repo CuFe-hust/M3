@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from agents.general_vqa.evidence.schema import (
     EvidenceState,
+    EvidenceTileRecord,
     LayerStateRecord,
     ModelCallAudit,
     RoiEvidenceRecord,
@@ -377,3 +378,118 @@ def test_bundle_json_is_free_of_unsafe_payloads() -> None:
     text = _bundle().model_dump_json()
     for token in ("data:image", "base64", "sk-", "secret", "C:\\", "/Users"):
         assert token not in text
+
+
+# ── Tile schema (14.7.1) / tile 契约 ─────────────────────────────────────
+
+
+def _tile(**overrides) -> EvidenceTileRecord:
+    data = {
+        "tile_id": "roi-1-r0-c1",
+        "roi_id": "roi-1",
+        "row": 0,
+        "column": 1,
+        "source_tile_xyxy": (1024, 0, 2000, 1024),
+        "source_tile_size": (976, 1024),
+        "scale_x": 1024 / 976,
+        "scale_y": 1.0,
+        "resize_applied": True,
+    }
+    data.update(overrides)
+    return EvidenceTileRecord(**data)
+
+
+def test_tile_record_holds_remainder_geometry_and_is_json_safe() -> None:
+    tile = _tile()
+    assert tile.model_input_size == (1024, 1024)
+    assert tile.scale_x == pytest.approx(1024 / 976)
+    assert tile.resize_applied is True
+    payload = tile.model_dump_json()
+    assert "tile_id" in payload
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        _tile(confidence=0.5)
+
+
+def test_tile_record_full_tile_keeps_scale_one_and_no_resize() -> None:
+    tile = _tile(
+        tile_id="roi-1-r0-c0",
+        column=0,
+        source_tile_xyxy=(0, 0, 1024, 1024),
+        source_tile_size=(1024, 1024),
+        scale_x=1.0,
+        scale_y=1.0,
+        resize_applied=False,
+    )
+    assert tile.model_input_size == (1024, 1024)
+    assert tile.resize_applied is False
+
+
+def test_tile_record_rejects_inconsistent_geometry() -> None:
+    with pytest.raises(ValidationError, match="non-degenerate"):
+        _tile(source_tile_xyxy=(10, 0, 10, 20))
+    with pytest.raises(ValidationError, match="must match"):
+        _tile(source_tile_xyxy=(1024, 0, 2001, 1024), source_tile_size=(976, 1024))
+    with pytest.raises(ValidationError, match="scale_x must equal"):
+        _tile(scale_x=1.5)
+    with pytest.raises(ValidationError, match="resize_applied must be true"):
+        _tile(resize_applied=False)
+    with pytest.raises(ValidationError, match="resize_applied must be true"):
+        _tile(
+            source_tile_xyxy=(0, 0, 1024, 1024),
+            source_tile_size=(1024, 1024),
+            scale_x=1.0,
+            scale_y=1.0,
+            resize_applied=True,
+        )
+    with pytest.raises(ValidationError, match="keep scale 1"):
+        _tile(
+            tile_id="roi-1-r0-c0",
+            column=0,
+            source_tile_xyxy=(0, 0, 1024, 1024),
+            source_tile_size=(1024, 1024),
+            scale_x=1.0,
+            scale_y=1.00000000001,
+            resize_applied=False,
+        )
+    with pytest.raises(ValidationError):
+        _tile(row=-1)
+    with pytest.raises(ValidationError):
+        _tile(tile_id="../roi-1-r0-c1")
+
+
+def test_model_call_audit_accepts_safe_tile_id() -> None:
+    ok = ModelCallAudit(
+        layer="segformer",
+        roi_id="roi-1",
+        tile_id="roi-1-r0-c0",
+        input_size=(1024, 1024),
+        logical_model_id="seg-a",
+    )
+    assert ok.tile_id == "roi-1-r0-c0"
+    with pytest.raises(ValidationError):
+        ModelCallAudit(
+            layer="segformer",
+            roi_id="roi-1",
+            tile_id="../roi-1-r0-c0",
+            input_size=(1024, 1024),
+            logical_model_id="seg-a",
+        )
+
+
+def test_bundle_accepts_legacy_artifacts_without_tile_fields() -> None:
+    """Old artifacts may lack preprocessing_version/tiles; fresh executors
+    must fill them. 旧 artifact 可以缺少 preprocessing_version/tiles；fresh
+    executor 必须填满。"""
+    legacy = _bundle()
+    assert legacy.preprocessing_version is None
+    assert legacy.tiles == []
+    filled = _bundle(
+        preprocessing_version="greedy-1024-stretch-v1",
+        tiles=[_tile(), _tile(tile_id="roi-1-r1-c0", row=1, column=0)],
+    )
+    assert filled.preprocessing_version == "greedy-1024-stretch-v1"
+    assert [tile.tile_id for tile in filled.tiles] == [
+        "roi-1-r0-c1",
+        "roi-1-r1-c0",
+    ]
+    filled.model_dump_json()  # fully JSON-safe / 完全 JSON 安全

@@ -48,7 +48,15 @@ _CATALOG_DATA = {
 }
 _EXECUTABLE_BY_TASK = {
     task: ("small-vehicle", "large-vehicle")
-    for task in ("counting", "fine_grained_counting", "general_vqa", "grounding")
+    for task in (
+        "counting",
+        "fine_grained_counting",
+        "general_vqa",
+        "scene_classification",
+        "multiple_choice_vqa",
+        "spatial_relation",
+        "grounding",
+    )
 }
 
 
@@ -548,6 +556,108 @@ def test_planner_binding_and_post_validation_are_leaf_only(tmp_path: Path) -> No
     assert "vehicle" not in binding["task_executable_categories"]["counting"]
     with pytest.raises(VisualTaskPlanError, match="SCHEMA_INVALID"):
         _run(planner, _sample(tmp_path), tmp_path)
+
+
+@pytest.mark.parametrize(
+    "task",
+    ["general_vqa", "scene_classification", "multiple_choice_vqa", "spatial_relation"],
+)
+def test_planner_binds_four_vqa_tasks_to_shared_capability_owner(
+    tmp_path: Path, task: str
+) -> None:
+    """The four GeneralVQAAgent tasks share one VQA capability owner: the
+    system binding exposes the identical runtime executable leaves for every
+    one of them, and a legal assistance plan passes post-validation for each.
+    四个 GeneralVQAAgent task 共享同一 VQA capability owner：system binding 对
+    它们暴露完全相同的运行时可执行叶子，且合法 assistance 计划在 post-validate
+    时对每个 task 都通过。"""
+    client = _FakeClient(identity=_identity(), response=_response())
+    planner = _planner(client)
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    shared = binding["task_executable_categories"]["general_vqa"]
+    for other in ("scene_classification", "multiple_choice_vqa", "spatial_relation"):
+        assert binding["task_executable_categories"][other] == shared
+    assert binding["task_executable_categories"]["grounding"] == list(
+        _EXECUTABLE_BY_TASK["grounding"]
+    )
+    plan_client = _FakeClient(
+        identity=_identity(),
+        response=_response(task=task, assistance=True, categories=("small-vehicle",)),
+    )
+    plan, _views = _run(_planner(plan_client), _sample(tmp_path), tmp_path)
+    assert plan.task == task
+    assert plan.needs_visual_assistance is True
+    assert plan.object_categories == ["small-vehicle"]
+
+
+@pytest.mark.parametrize(
+    "task",
+    ["general_vqa", "scene_classification", "multiple_choice_vqa", "spatial_relation"],
+)
+def test_planner_vqa_tasks_fail_closed_on_unknown_or_unavailable_leaf(
+    tmp_path: Path, task: str
+) -> None:
+    """Unknown, non-executable, or runtime-unavailable leaves fail closed for
+    every VQA task exactly like general_vqa. 未知、不可执行或运行时不可用叶子对
+    每个 VQA task 都与 general_vqa 一样严格失败。"""
+    # A non-canonical leaf fails schema validation. 非 canonical leaf 在 schema
+    # 校验失败。
+    unknown = _FakeClient(
+        identity=_identity(),
+        response=_response(task=task, assistance=True, categories=("not-a-leaf",)),
+    )
+    with pytest.raises(VisualTaskPlanError, match="SCHEMA_INVALID"):
+        _run(_planner(unknown), _sample(tmp_path), tmp_path)
+    # A canonical catalog leaf that is not in the runtime executable set.
+    # 属于 catalog 但不是运行时可执行集合的 canonical leaf。
+    not_executable = _FakeClient(
+        identity=_identity(),
+        response=_response(task=task, assistance=True, categories=("plane",)),
+    )
+    with pytest.raises(VisualTaskPlanError, match="CAPABILITY_UNAVAILABLE"):
+        _run(_planner(not_executable), _sample(tmp_path), tmp_path)
+    # A runtime-unavailable leaf: empty executable binding fails closed with
+    # CAPABILITY_UNAVAILABLE. 运行时不可用叶子：空可执行绑定以
+    # CAPABILITY_UNAVAILABLE 严格失败。
+    unavailable = _FakeClient(
+        identity=_identity(),
+        response=_response(task=task, assistance=True, categories=("small-vehicle",)),
+    )
+    with pytest.raises(VisualTaskPlanError, match="CAPABILITY_UNAVAILABLE"):
+        _run(
+            _planner(
+                unavailable,
+                executable_categories_by_task={
+                    key: () for key in _EXECUTABLE_BY_TASK
+                },
+            ),
+            _sample(tmp_path),
+            tmp_path,
+        )
+
+
+def test_planner_vqa_scope_is_frozen_into_planning_parameters() -> None:
+    """The frozen VQA assistance scope travels in planning_parameters (and
+    therefore the system prompt binding) when the composition root binds it.
+    组合根绑定 scope 时，冻结的 VQA assistance scope 进入 planning_parameters
+    （进而进入 system prompt binding）。"""
+    client = _FakeClient(identity=_identity(), response=_response())
+    scoped = _planner(
+        client,
+        vqa_assistance_scope="general-vqa-agent-tasks-v1",
+    )
+    assert (
+        scoped.planning_parameters["vqa_assistance_scope"]
+        == "general-vqa-agent-tasks-v1"
+    )
+    binding = json.loads(scoped.system_prompt.split("planner_binding=", 1)[1])
+    assert binding["vqa_assistance_scope"] == "general-vqa-agent-tasks-v1"
+    unscoped = _planner(client)
+    assert "vqa_assistance_scope" not in unscoped.planning_parameters
+    with pytest.raises(ValueError, match="scope"):
+        _planner(client, vqa_assistance_scope="../bad")
+    with pytest.raises(ValueError, match="scope"):
+        _planner(client, vqa_assistance_scope="bad scope with spaces")
 
 
 def test_planner_scope_has_no_subjective_gate() -> None:

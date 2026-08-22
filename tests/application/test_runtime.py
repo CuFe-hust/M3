@@ -31,14 +31,14 @@ from data.adapters.manifest import ManifestDraftAdapter
 from data.registry import DatasetRegistry
 from models.base import ModelCacheIdentity
 from workflows.run_store import RunManifest
-from workflows.schema import DatasetRunOptions
+from workflows.schema import DatasetRunOptions, EvidencePreprocessingIdentity
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 class _FakeQwenClient:
-    """Return v3 planner output once, then ordinary Agent output.
-    先返回 v3 规划结果一次，再返回普通 Agent 结果。"""
+    """Return v5 planner output once, then ordinary Agent output.
+    先返回 v5 规划结果一次，再返回普通 Agent 结果。"""
 
     def __init__(self, planned_task: str = "general_vqa") -> None:
         self.calls = 0
@@ -331,6 +331,134 @@ def test_normal_resume_preserves_manifest_identity(tmp_path: Path) -> None:
     assert manifest["split"] == "test"
 
 
+def test_fresh_run_round_trips_evidence_preprocessing_identity(tmp_path: Path) -> None:
+    """Fresh runs persist the frozen evidence preprocessing identity and resume
+    reconstructs exactly the same sub-object. 新鲜运行持久化冻结 evidence
+    预处理身份，resume 重建出完全相同的子对象。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    options = _options(root=data_root, run_id="v1-run")
+    assert _run(runtime, options)["auto"].succeeded == 1
+    request = json.loads(
+        (tmp_path / "runs" / "v1-run" / "run_request.json").read_text(encoding="utf-8")
+    )
+    identity = request["evidence_preprocessing"]
+    assert identity["version"] == "greedy-1024-stretch-v1"
+    assert identity["tile_size"] == 1024
+    assert identity["max_tile_concurrency"] == 4
+    assert identity["rgb_interpolation"] == "lanczos"
+    assert identity["mask_inverse_interpolation"] == "nearest"
+
+    resumed = _options(root=data_root, run_id="v1-run", resume=True)
+    assert _run(runtime, resumed)["auto"].run_id == "v1-run"
+
+
+def test_resume_evidence_preprocessing_conflict_fails_closed(tmp_path: Path) -> None:
+    """A resume invocation whose evidence preprocessing identity drifts from
+    the persisted run is rejected before any model execution.
+    resume 调用的 evidence 预处理身份与持久化运行偏离时，在模型执行前拒绝。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    _run(runtime, _options(root=data_root, run_id="v1-run"))
+    calls_after_fresh = runtime.components.qwen_client.calls
+    drifted = dataclasses.replace(
+        _options(root=data_root, run_id="v1-run", resume=True),
+        evidence_preprocessing=EvidencePreprocessingIdentity(max_tile_concurrency=8),
+    )
+    with pytest.raises(ValueError, match="evidence preprocessing mismatch"):
+        _run(runtime, drifted)
+    assert runtime.components.qwen_client.calls == calls_after_fresh
+
+
+def test_fresh_run_persists_and_resume_reconstructs_vqa_assistance_scope(
+    tmp_path: Path,
+) -> None:
+    """Fresh runs persist the frozen VQA assistance scope in run_request.json
+    and resume reconstructs exactly the same identity; the planner identity
+    comparison covers the scope so a drifted scope fails before models run.
+    新鲜运行把冻结的 VQA assistance scope 持久化进 run_request.json，resume
+    重建出完全相同的身份；planner identity 比较覆盖 scope，偏离的 scope 在模
+    型执行前失败。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    options = _options(root=data_root, run_id="scope-run")
+    assert _run(runtime, options)["auto"].succeeded == 1
+    request = json.loads(
+        (tmp_path / "runs" / "scope-run" / "run_request.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert request["vqa_assistance_scope"] == "general-vqa-agent-tasks-v1"
+    # Same-scope resume keeps succeeded samples model-free. 同 scope resume 使
+    # succeeded 样本保持零模型调用。
+    calls_after_fresh = runtime.components.qwen_client.calls
+    second = _run(runtime, _options(root=data_root, run_id="scope-run", resume=True))
+    assert second["auto"].succeeded == 1
+    assert runtime.components.qwen_client.calls == calls_after_fresh
+
+
+def test_resume_vqa_assistance_scope_conflict_fails_closed(tmp_path: Path) -> None:
+    """A caller-supplied scope that drifts from the persisted run is rejected
+    before any model execution; the scope is never silently overridden.
+    调用方提供的 scope 与持久化运行偏离时，在模型执行前拒绝；scope 绝不静默
+    覆盖。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    _run(runtime, _options(root=data_root, run_id="scope-run"))
+    calls_after_fresh = runtime.components.qwen_client.calls
+    drifted = dataclasses.replace(
+        _options(root=data_root, run_id="scope-run", resume=True),
+        vqa_assistance_scope="some-other-scope-v9",
+    )
+    with pytest.raises(ValueError, match="vqa assistance scope mismatch"):
+        _run(runtime, drifted)
+    assert runtime.components.qwen_client.calls == calls_after_fresh
+
+
+def test_legacy_missing_scope_resume_keeps_succeeded_supplement_model_free(
+    tmp_path: Path,
+) -> None:
+    """A historical run without the frozen scope (run_request edited to drop
+    the field) still resumes succeeded samples with zero model calls: only
+    missing post-processing artifacts are supplemented, never replanned.
+    缺少冻结 scope 的历史运行（run_request 去掉该字段）仍以零模型调用 resume
+    succeeded 样本：只补缺失的后处理产物，绝不重新规划。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    options = _options(root=data_root, run_id="legacy-scope-run")
+    assert _run(runtime, options)["auto"].succeeded == 1
+    request_path = tmp_path / "runs" / "legacy-scope-run" / "run_request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request.pop("vqa_assistance_scope")
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    from workflows.dataset_runner import storage_key
+
+    evaluation_path = (
+        tmp_path
+        / "runs"
+        / "legacy-scope-run"
+        / "tasks"
+        / "auto"
+        / "samples"
+        / storage_key("a1")
+        / "vqa_evaluation.json"
+    )
+    evaluation_path.unlink()
+    calls_before = runtime.components.qwen_client.calls
+    second = _run(
+        runtime,
+        _options(root=data_root, run_id="legacy-scope-run", resume=True),
+    )
+    assert second["auto"].succeeded == 1
+    assert runtime.components.qwen_client.calls == calls_before
+    assert evaluation_path.is_file()
+
+
 class _SampleAdapter:
     """Minimal DatasetAdapter yielding samples with an explicit task.
     产出显式 task 样本的最小 DatasetAdapter。"""
@@ -438,8 +566,8 @@ def _ask_runtime(
     client: _FakeQwenClient | None = None,
     agents: dict[str, _RecordingAgent] | None = None,
 ) -> Runtime:
-    """A Runtime with the real v3 planner/router and recording stub agents.
-    使用真实 v3 规划器、Router 与记录型 stub Agent 的 Runtime。"""
+    """A Runtime with the real v5 planner/router and recording stub agents.
+    使用真实 v5 规划器、Router 与记录型 stub Agent 的 Runtime。"""
     settings = AppSettings(runs=RunSettings(root=tmp_path / "runs"))
     client = client or _FakeQwenClient()
     components = assemble_runtime(
@@ -662,12 +790,12 @@ def test_ask_reuses_single_qwen_client(tmp_path: Path) -> None:
     assert first.request_id != second.request_id
 
 
-# ── v3 planner ask path / v3 规划器 ask 路径 ───────────────────────────────
+# ── v5 planner ask path / v5 规划器 ask 路径 ───────────────────────────────
 
 
-def test_ask_v3_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
-    """The manual path persists and injects one canonical v3 plan.
-    手动路径持久化并注入一份规范 v3 计划。"""
+def test_ask_v5_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
+    """The manual path persists and injects one canonical v5 plan.
+    手动路径持久化并注入一份规范 v5 计划。"""
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient()
     agent = _RecordingAgent("general_vqa_agent", "general_vqa")
@@ -692,8 +820,8 @@ def test_ask_v3_plan_reaches_agent_and_is_persisted(tmp_path: Path) -> None:
 
 
 def test_ask_planner_task_is_authoritative_over_source_task(tmp_path: Path) -> None:
-    """An explicit source task is audit-only; the v3 plan selects execution.
-    显式来源 task 仅用于审计；执行 task 由 v3 计划选择。"""
+    """An explicit source task is audit-only; the v5 plan selects execution.
+    显式来源 task 仅用于审计；执行 task 由 v5 计划选择。"""
     _make_images(tmp_path / "imgs", ["img.png"])
     client = _FakeQwenClient(planned_task="caption")
     agent = _RecordingAgent("caption_agent", "caption")

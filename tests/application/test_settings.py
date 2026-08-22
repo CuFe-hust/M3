@@ -284,9 +284,9 @@ def test_safe_snapshot_is_json_safe_and_secret_free(tmp_path: Path) -> None:
     snapshot = settings.safe_snapshot()
     serialized = json.dumps(snapshot)
     assert "sk-super-secret-value" not in serialized
-    # The v3 planner identity legitimately contains the substring "task-";
+    # The v5 planner identity legitimately contains the substring "task-";
     # only the secret value itself is forbidden here.
-    # v3 规划器身份合法包含 "task-" 子串；这里只禁止实际 secret value。
+    # v5 规划器身份合法包含 "task-" 子串；这里只禁止实际 secret value。
     assert "sk-super" not in serialized
     # The env var NAME is declarative metadata, never a secret value.
     # 环境变量名是声明性元数据，绝非密钥值。
@@ -398,7 +398,7 @@ def test_visual_planning_defaults_to_v5_planner_state() -> None:
     assert planner.task_prompt_version == "v5"
     assert (
         planner.catalog_version
-        == "visual-evidence-catalog-v3"
+        == "visual-evidence-catalog-v4"
     )
     assert not hasattr(planner, "confidence_threshold")
     assert planner.preview_max_side == 1080
@@ -407,6 +407,78 @@ def test_visual_planning_defaults_to_v5_planner_state() -> None:
     assert planner.roi_materialization_policy == "longest-side-ceil-quantum-center-clip"
     assert settings.visual_planning.detectors == {}
     assert settings.visual_planning.segmenters == {}
+
+
+def test_evidence_preprocessing_defaults_to_frozen_greedy_1024_identity() -> None:
+    """The preprocessing identity is typed and frozen, never free dict fields.
+    预处理身份是类型化且冻结的，绝不放进自由 dict。"""
+    preprocessing = AppSettings().visual_planning.preprocessing
+    assert preprocessing.version == "greedy-1024-stretch-v1"
+    assert preprocessing.tile_size == 1024
+    assert preprocessing.partition_policy == "greedy-row-major-no-overlap"
+    assert preprocessing.remainder_resize == "stretch"
+    assert preprocessing.rgb_interpolation == "lanczos"
+    assert preprocessing.mask_inverse_interpolation == "nearest"
+    assert preprocessing.max_tile_concurrency == 4
+
+
+def test_evidence_preprocessing_rejects_unknown_policies_and_extra_fields() -> None:
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"tile_size": 512},
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"remainder_resize": "crop"},
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"max_tile_concurrency": 0},
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"surprise": True},
+            }
+        )
+
+
+def test_segmenter_binding_keys_are_stable_logical_identifiers() -> None:
+    for key in ("segmenter_mitb2_001", "segmenter_oem_001"):
+        settings = AppSettings(
+            visual_planning={
+                "segmenters": {key: {"enabled": False}},
+            }
+        )
+        assert key in settings.visual_planning.segmenters
+    for key in ("../escape", "/etc/passwd", "SegFormer!Path", "", "a b"):
+        with pytest.raises(ValueError):
+            AppSettings(
+                visual_planning={
+                    "segmenters": {key: {"enabled": False}},
+                }
+            )
+
+
+def test_enabled_segmenter_requires_version_not_path() -> None:
+    for version in (None, "models/segformer_mitb2_oem", "/opt/weights/v1"):
+        with pytest.raises(ValueError):
+            AppSettings(
+                visual_planning={
+                    "segmenters": {
+                        "segmenter_oem_001": {
+                            "enabled": True,
+                            "class_map_version": version,
+                        }
+                    }
+                }
+            )
 
 
 def test_visual_planner_rejects_removed_confidence_threshold() -> None:

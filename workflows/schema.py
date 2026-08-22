@@ -27,6 +27,19 @@ SampleRunState = Literal[
 # 'unknown'——绝不猜测任务。
 RunTaskName = TaskName | Literal["unknown"]
 
+# Frozen identity for the VQA visual-assistance scope: which tasks may consume
+# the GeneralVQAAgent's shared evidence switch (GENERAL_VQA_AGENT_TASKS). New
+# runs freeze this string into planner planning_parameters, run_request.json
+# and the manual ask identity; legacy run requests without the field parse as
+# None and never masquerade as the new scope. It is an independent identity
+# from EvidencePreprocessingIdentity (tile preprocessing vs task scope).
+# 冻结的 VQA 视觉辅助范围身份：哪些 task 可使用 GeneralVQAAgent 的共享证据
+# 开关（GENERAL_VQA_AGENT_TASKS）。新运行把该字符串冻结进 planner
+# planning_parameters、run_request.json 与手动 ask 身份；历史 run request 缺
+# 失该字段时解析为 None，绝不伪装成新 scope。它与
+# EvidencePreprocessingIdentity（tile 预处理 vs task scope）是独立身份。
+VQA_ASSISTANCE_SCOPE = "general-vqa-agent-tasks-v1"
+
 
 class SampleRunStatus(BaseModel):
     """Durable machine-readable state for one dataset sample. task is typed
@@ -68,6 +81,30 @@ class SampleRunStatus(BaseModel):
         if len(text) >= 2 and text[0].isalpha() and text[1] == ":":
             raise ValueError("result_path must not carry a drive prefix")
         return Path(text)
+
+
+class EvidencePreprocessingIdentity(BaseModel):
+    """Frozen evidence-tile preprocessing identity persisted in the run
+    request. Fresh runs write ``greedy-1024-stretch-v1`` explicitly; legacy
+    runs without the field parse as None/legacy-unversioned and never
+    masquerade as the new version. A structured sub-object — never six loose
+    fields — so resume compares one identity instead of guessing parameters.
+    冻结的 evidence tile 预处理身份，持久化在 run request 中。新鲜运行显式
+    写入 ``greedy-1024-stretch-v1``；历史缺字段运行解析为 None/legacy-
+    unversioned，绝不伪装成新版本。使用结构化子对象——而非六个松散字段——
+    使 resume 比较一个身份而不是猜测参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    tile_size: Literal[1024] = 1024
+    partition_policy: Literal["greedy-row-major-no-overlap"] = (
+        "greedy-row-major-no-overlap"
+    )
+    remainder_resize: Literal["stretch"] = "stretch"
+    rgb_interpolation: Literal["lanczos"] = "lanczos"
+    mask_inverse_interpolation: Literal["nearest"] = "nearest"
+    max_tile_concurrency: int = Field(default=4, ge=1, le=32)
 
 
 class DatasetRunSummary(BaseModel):
@@ -148,6 +185,16 @@ class DatasetRunOptions:
     roi_quantum: int = 1024
     roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip"
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
+    # Frozen evidence preprocessing identity; None means legacy-unversioned
+    # and must never be treated as greedy-1024-stretch-v1.
+    # 冻结 evidence 预处理身份；None 表示 legacy-unversioned，绝不当作
+    # greedy-1024-stretch-v1。
+    evidence_preprocessing: EvidencePreprocessingIdentity | None = None
+    # Frozen VQA assistance scope identity; None means a legacy run created
+    # before the scope was frozen and must never adopt the new evidence
+    # behavior on resume. 冻结 VQA assistance scope 身份；None 表示该运行在
+    # scope 冻结前创建，resume 时绝不能采用新 evidence 行为。
+    vqa_assistance_scope: str | None = None
     auto_task: bool = False
 
     def __post_init__(self) -> None:
@@ -229,6 +276,16 @@ class RunRequest(BaseModel):
     roi_quantum: int = Field(default=1024, gt=0)
     roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip"
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024"
+    # Frozen evidence preprocessing identity; absent in legacy run requests
+    # (None), never rehydrated from current defaults.
+    # 冻结 evidence 预处理身份；历史 run request 缺失（None），绝不从当前
+    # 默认值回填。
+    evidence_preprocessing: EvidencePreprocessingIdentity | None = None
+    # Frozen VQA assistance scope identity; absent in legacy run requests
+    # (None), never rehydrated from current defaults.
+    # 冻结 VQA assistance scope 身份；历史 run request 缺失（None），绝不从
+    # 当前默认值回填。
+    vqa_assistance_scope: str | None = None
     # v4/v3 historical run requests used roi_size. Accept it for read-only
     # historical resume/reporting, but never serialize it for new runs.
     # v4/v3 历史 run request 使用 roi_size；仅为只读历史 resume/reporting 接受，

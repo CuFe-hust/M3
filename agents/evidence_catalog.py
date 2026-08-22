@@ -22,6 +22,7 @@ ModelCapability = Literal["yolo", "segformer"]
 
 _CATEGORY_PATTERN = r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$"
 _VERSION_PATTERN = r"^[a-z0-9][a-z0-9_.-]*$"
+_BINDING_PATTERN = r"^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$"
 _EXECUTABLE_TASKS = frozenset(
     {"counting", "fine_grained_counting", "general_vqa", "grounding"}
 )
@@ -61,6 +62,12 @@ class LeafCapabilities(BaseModel):
 
     yolo_labels: list[str] = Field(default_factory=list)
     segformer_labels: list[str] | None = None
+    # Stable logical segmenter binding (e.g. segmenter_mitb2_001) — never a
+    # checkpoint path, device, or backend. It expresses capability ownership
+    # only; the composition root maps it to a verified logical client.
+    # 稳定逻辑 segmenter binding（如 segmenter_mitb2_001）——绝不是 checkpoint
+    # 路径、设备或 backend。它只表达能力归属；由组合根映射到已验证逻辑客户端。
+    segformer_binding: str | None = None
     yolo_enabled: bool = False
     segformer_enabled: bool = False
 
@@ -77,6 +84,19 @@ class LeafCapabilities(BaseModel):
             raise ValueError("yolo_enabled requires verified yolo_labels")
         if self.segformer_enabled and not self.segformer_labels:
             raise ValueError("segformer_enabled requires verified segformer_labels")
+        # SegFormer labels and the stable binding must exist together or be
+        # absent together; a label without a binding cannot be routed to a
+        # verified client, and a binding without labels is a dead capability.
+        # SegFormer 标签与稳定 binding 必须同时存在或同时缺失；无 binding 的
+        # 标签无法路由到已验证客户端，无标签的 binding 是死能力。
+        if (self.segformer_labels is None) != (self.segformer_binding is None):
+            raise ValueError(
+                "segformer_labels and segformer_binding must be all-or-none"
+            )
+        if self.segformer_binding is not None:
+            _validate_model_label(self.segformer_binding, "segformer_binding")
+            if re.fullmatch(_BINDING_PATTERN, self.segformer_binding) is None:
+                raise ValueError("segformer_binding is not a stable binding identifier")
         return self
 
 
@@ -283,6 +303,12 @@ class EvidenceCatalog:
     def leaf_segformer_labels(self, leaf: str) -> tuple[str, ...] | None:
         labels = self._leaf(leaf).segformer_labels
         return None if labels is None else tuple(labels)
+
+    def leaf_segformer_binding(self, leaf: str) -> str | None:
+        """Return the stable logical segmenter binding of one leaf; unknown
+        leaves keep the stable catalog failure. 返回单个叶子的稳定逻辑
+        segmenter binding；未知叶子保持稳定 catalog 失败。"""
+        return self._leaf(leaf).segformer_binding
 
     def capability_enabled(self, leaf: str, capability: ModelCapability) -> bool:
         spec = self._leaf(leaf)

@@ -183,15 +183,15 @@
       "kind": "semantic_segmentation",
       "logical_model_id": "SegFormer-MiT-B2:OpenEarthMap:local",
       "enabled": false,
-      "status": "blocked_unverified_class_map",
+      "status": "active",
       "priority": 100,
       "asset": {
         "model_dir": "models/segformer_mitb2_oem",
-        "class_map": null,
+        "class_map": "models/segformer_mitb2_oem/classes.json",
         "weights": "models/segformer_mitb2_oem/model.safetensors",
         "sha256": "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
       },
-      "verification": {"class_map": "unverified"},
+      "verification": {"class_map": "verified"},
       "supports": {}
     }
   ]

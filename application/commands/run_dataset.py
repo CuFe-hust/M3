@@ -20,6 +20,7 @@ from pathlib import Path
 from application.runtime import (
     Runtime,
     build_dataset_run_options,
+    evidence_preprocessing_identity,
     preflight_dataset_resume,
 )
 from application.settings import load_settings
@@ -77,6 +78,11 @@ def run_run_dataset(args: argparse.Namespace) -> int:
             judge_sample_rate=args.judge_sample_rate,
             render_errors=args.render_errors,
             fail_fast=args.fail_fast,
+            # Fresh runs freeze the current evidence preprocessing identity
+            # explicitly; resume defers to the persisted run request.
+            # 新鲜运行显式冻结当前 evidence 预处理身份；resume 服从持久化
+            # run request。
+            evidence_preprocessing=evidence_preprocessing_identity(settings),
         )
         if options.resume:
             # Validate the resume invocation against the persisted run

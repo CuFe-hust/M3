@@ -22,6 +22,7 @@ from models.base import (
     DenseSemanticPyramidOutput,
     ModelAssetHashMismatchError,
     ModelAssetMissingError,
+    SemanticMaskOutput,
 )
 from models.segformer_transformers import (
     SegFormerDependencyError,
@@ -34,6 +35,7 @@ from models.segformer_transformers import (
     _load_transformers_runtime,
     _prepare_processor_inputs,
     _run_dense_transformers_tile,
+    _run_semantic_mask_tile,
     _run_transformers_inference,
     _tile_grid,
 )
@@ -773,3 +775,252 @@ def test_local_checkpoints_include_the_audited_mitb2_processor_contract() -> Non
     for directory in ("segformer_mitb2_isaid", "segformer_mitb2_oem"):
         path = _REPO_ROOT / "models" / directory / "preprocessor_config.json"
         assert json.loads(path.read_text(encoding="utf-8")) == expected
+
+
+class _LogitsTensor:
+    """Logits fake supporting shape and argmax(dim=1) -> index tensor.
+    logits fake：支持 shape 与 argmax(dim=1) -> index tensor。"""
+
+    def __init__(self, value: np.ndarray) -> None:
+        self.value = value
+
+    @property
+    def shape(self):
+        return self.value.shape
+
+    def argmax(self, dim: int):
+        assert dim == 1
+        indices = np.argmax(self.value, axis=1)
+        return _MaskIndexTensor(indices)
+
+
+class _MaskIndexTensor:
+    """Index-map fake supporting [0] indexing, .to() and .numpy().
+    index map fake：支持 [0] 索引、.to() 与 .numpy()。"""
+
+    def __init__(self, value: np.ndarray) -> None:
+        self.value = value
+
+    @property
+    def shape(self):
+        return self.value.shape
+
+    def __getitem__(self, index: Any) -> "_MaskIndexTensor":
+        return _MaskIndexTensor(self.value[index])
+
+    def to(self, device: str) -> "_MaskIndexTensor":
+        return self
+
+    def numpy(self) -> np.ndarray:
+        return self.value
+
+
+def _install_fake_mask_inference_modules(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    tile: tuple[int, int],
+    observed: dict[str, Any],
+) -> None:
+    """Fake torch so the real _run_semantic_mask_tile executes without torch.
+    伪装 torch，使真实 _run_semantic_mask_tile 可在无 torch 环境下执行。"""
+
+    torch_module = ModuleType("torch")
+    functional_module = ModuleType("torch.nn.functional")
+    nn_module = ModuleType("torch.nn")
+
+    def interpolate(value, *, size, mode: str, align_corners: bool):
+        observed["resize"] = (size, mode, align_corners)
+        return _LogitsTensor(np.zeros((1, 2, size[0], size[1]), dtype=np.float32))
+
+    torch_module.inference_mode = lambda: _InferenceContext()
+    functional_module.interpolate = interpolate
+    nn_module.functional = functional_module
+    torch_module.nn = nn_module
+    monkeypatch.setitem(sys.modules, "torch", torch_module)
+    monkeypatch.setitem(sys.modules, "torch.nn", nn_module)
+    monkeypatch.setitem(sys.modules, "torch.nn.functional", functional_module)
+
+
+def test_semantic_mask_runner_keeps_prepared_1024_tile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    _install_fake_mask_inference_modules(monkeypatch, tile=(1024, 1024), observed=observed)
+
+    class Processor:
+        def __call__(self, **kwargs: Any):
+            observed["processor"] = kwargs
+            return {
+                "pixel_values": _FakeTensor(
+                    np.zeros((1, 3, 1024, 1024), dtype=np.float32)
+                )
+            }
+
+    class Model:
+        def __call__(self, **kwargs: Any):
+            observed["model_inputs"] = kwargs
+            return SimpleNamespace(
+                logits=_FakeTensor(np.zeros((1, 2, 1, 1), dtype=np.float32))
+            )
+
+    mask = _run_semantic_mask_tile(
+        Model(), Processor(), Image.new("RGB", (1024, 1024)), "cpu", 2
+    )
+
+    assert observed["processor"]["do_resize"] is False
+    assert observed["resize"] == ((1024, 1024), "bilinear", False)
+    assert mask.shape == (1024, 1024)
+    assert set(np.unique(mask)) <= {0, 1}
+
+
+def test_semantic_mask_processor_silent_resize_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    _install_fake_mask_inference_modules(monkeypatch, tile=(1024, 1024), observed=observed)
+    processor = lambda **kwargs: {
+        "pixel_values": _FakeTensor(np.zeros((1, 3, 512, 512), dtype=np.float32))
+    }
+    model = lambda **kwargs: SimpleNamespace(
+        logits=_FakeTensor(np.zeros((1, 2, 1, 1), dtype=np.float32))
+    )
+
+    with pytest.raises(SegFormerInferenceError, match="resized the model tile"):
+        _run_semantic_mask_tile(
+            model, processor, Image.new("RGB", (1024, 1024)), "cpu", 2
+        )
+
+
+def test_semantic_mask_logits_channel_mismatch_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    _install_fake_mask_inference_modules(monkeypatch, tile=(1024, 1024), observed=observed)
+    processor = lambda **kwargs: {
+        "pixel_values": _FakeTensor(np.zeros((1, 3, 1024, 1024), dtype=np.float32))
+    }
+    model = lambda **kwargs: SimpleNamespace(
+        logits=_FakeTensor(np.zeros((1, 3, 1, 1), dtype=np.float32))
+    )
+
+    with pytest.raises(SegFormerInferenceError, match="class contract"):
+        _run_semantic_mask_tile(
+            model, processor, Image.new("RGB", (1024, 1024)), "cpu", 2
+        )
+
+
+def _mask_prediction(width: int = 1024, height: int = 1024) -> np.ndarray:
+    class_ids = np.zeros((height, width), dtype=np.int64)
+    class_ids[:, -1] = 1
+    return class_ids
+
+
+def test_segment_returns_aligned_identity_and_leaves_predict_unchanged(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path / "checkpoint")
+
+    def runner(model, processor, image, device, label_count):
+        # segment demands a 1024x1024 tile; predict follows the source size.
+        # segment 要求 1024x1024 tile；predict 跟随源图尺寸。
+        if image.size == (1024, 1024):
+            return _mask_prediction()
+        return _prediction(width=image.size[0], height=image.size[1])
+
+    client = SegFormerTransformersClient(
+        settings,
+        _CLASS_MAP,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        inference_runner=runner,
+    )
+
+    result = client.segment(Image.new("RGB", (1024, 1024)))
+
+    assert isinstance(result, SemanticMaskOutput)
+    assert result.class_id_map.shape == (1024, 1024)
+    assert set(np.unique(result.class_id_map)) <= {0, 1}
+    assert result.id_to_label == _CLASS_MAP
+    assert result.original_size == (1024, 1024)
+    assert result.weights_sha256 == settings.weights_sha256
+    assert result.diagnostics["logical_model_id"] == "segformer-test-local"
+    assert result.diagnostics["device"] == "cpu"
+    assert str(settings.model_path) not in str(result.diagnostics)
+
+    # The segment path must not alter the existing predict contract.
+    # segment 路径不得改变既有 predict 契约。
+    prediction = client.predict(Image.new("RGB", (4, 3)))
+    assert (prediction.width, prediction.height) == (4, 3)
+
+
+def test_segment_rejects_non_tile_inputs(tmp_path: Path) -> None:
+    client = SegFormerTransformersClient(
+        _settings(tmp_path / "checkpoint"),
+        _CLASS_MAP,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        inference_runner=lambda *args: _mask_prediction(),
+    )
+
+    with pytest.raises(TypeError):
+        client.segment(object())
+    with pytest.raises(SegFormerInferenceError, match="exact 1024x1024"):
+        client.segment(Image.new("RGB", (512, 512)))
+
+
+def test_segment_off_tile_mask_output_fails_closed(tmp_path: Path) -> None:
+    client = SegFormerTransformersClient(
+        _settings(tmp_path / "checkpoint"),
+        _CLASS_MAP,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        inference_runner=lambda *args: np.zeros((512, 512), dtype=np.int64),
+    )
+
+    with pytest.raises(SegFormerInferenceError, match="differ from the model tile"):
+        client.segment(Image.new("RGB", (1024, 1024)))
+
+
+def test_segment_out_of_range_class_ids_fail_closed(tmp_path: Path) -> None:
+    client = SegFormerTransformersClient(
+        _settings(tmp_path / "checkpoint"),
+        _CLASS_MAP,
+        loader=lambda settings: (_FakeModel(), object(), "cpu"),
+        inference_runner=lambda *args: np.full((1024, 1024), 7, dtype=np.int64),
+    )
+
+    with pytest.raises(SegFormerInferenceError, match="outside checkpoint metadata"):
+        client.segment(Image.new("RGB", (1024, 1024)))
+
+
+def test_segment_without_runner_uses_do_resize_false_tile_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed: dict[str, Any] = {}
+    _install_fake_mask_inference_modules(monkeypatch, tile=(1024, 1024), observed=observed)
+
+    class Processor:
+        def __call__(self, **kwargs: Any):
+            observed["processor"] = kwargs
+            return {
+                "pixel_values": _FakeTensor(
+                    np.zeros((1, 3, 1024, 1024), dtype=np.float32)
+                )
+            }
+
+    class Model:
+        def __call__(self, **kwargs: Any):
+            return SimpleNamespace(
+                logits=_FakeTensor(np.zeros((1, 2, 1, 1), dtype=np.float32))
+            )
+
+    client = SegFormerTransformersClient(
+        _settings(tmp_path / "checkpoint"),
+        _CLASS_MAP,
+        loader=lambda settings: (Model(), Processor(), "cpu"),
+    )
+
+    result = client.segment(Image.new("RGB", (1024, 1024)))
+
+    assert observed["processor"]["do_resize"] is False
+    assert observed["resize"] == ((1024, 1024), "bilinear", False)
+    assert result.class_id_map.shape == (1024, 1024)
+    assert set(np.unique(result.class_id_map)) <= {0, 1}

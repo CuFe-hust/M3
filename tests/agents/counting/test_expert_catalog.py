@@ -205,13 +205,18 @@ def test_enabled_semantic_expert_requires_verified_class_map(tmp_path: Path) -> 
         _load_payload(tmp_path, payload)
 
 
-def test_blocked_oem_expert_loads_but_is_not_a_candidate() -> None:
+def test_oem_expert_has_frozen_class_map_but_is_not_a_counting_candidate() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     oem = catalog.expert("segmenter_oem_001")
 
     assert oem.enabled is False
-    assert oem.status == "blocked_unverified_class_map"
+    assert oem.status == "active"
+    assert oem.verification.class_map == "verified"
+    assert oem.asset.class_map == "models/segformer_mitb2_oem/classes.json"
+    assert oem.asset.sha256 == (
+        "d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab"
+    )
     assert oem.supports == {}
     assert oem not in catalog.candidates(_target("small vehicle"), enabled_only=False)
 

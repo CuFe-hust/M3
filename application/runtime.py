@@ -43,7 +43,13 @@ from reporting.schema import Report
 from routing.schema import SampleCapabilities
 from workflows.artifact_writer import atomic_write_json
 from workflows.run_store import RunManifest, RunStore
-from workflows.schema import DatasetRunOptions, DatasetRunSummary, RunRequest
+from workflows.schema import (
+    DatasetRunOptions,
+    DatasetRunSummary,
+    EvidencePreprocessingIdentity,
+    RunRequest,
+    VQA_ASSISTANCE_SCOPE,
+)
 
 # Only the first level of a manual image directory is scanned. / 手动图片目录只扫描第一层。
 MAX_MANUAL_IMAGES = 8
@@ -85,6 +91,8 @@ def build_dataset_run_options(
     roi_quantum: int = 1024,
     roi_materialization_policy: str = "longest-side-ceil-quantum-center-clip",
     large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
+    evidence_preprocessing: EvidencePreprocessingIdentity | None = None,
+    vqa_assistance_scope: str | None = None,
 ) -> DatasetRunOptions:
     """Thin options construction for the public entry point: the architecture
     rule forbids main.py from importing workflows, so construction lives here.
@@ -120,6 +128,27 @@ def build_dataset_run_options(
         roi_quantum=roi_quantum,
         roi_materialization_policy=roi_materialization_policy,
         large_image_policy=large_image_policy,
+        evidence_preprocessing=evidence_preprocessing,
+        vqa_assistance_scope=vqa_assistance_scope,
+    )
+
+
+def evidence_preprocessing_identity(
+    settings: AppSettings,
+) -> EvidencePreprocessingIdentity:
+    """Freeze the settings-level preprocessing config into the persisted run
+    identity; fresh runs write this explicitly so resume never guesses.
+    把 settings 级预处理配置冻结为持久化运行身份；新鲜运行显式写入，使
+    resume 绝不猜测。"""
+    pre = settings.visual_planning.preprocessing
+    return EvidencePreprocessingIdentity(
+        version=pre.version,
+        tile_size=pre.tile_size,
+        partition_policy=pre.partition_policy,
+        remainder_resize=pre.remainder_resize,
+        rgb_interpolation=pre.rgb_interpolation,
+        mask_inverse_interpolation=pre.mask_inverse_interpolation,
+        max_tile_concurrency=pre.max_tile_concurrency,
     )
 
 
@@ -431,6 +460,8 @@ def reconstruct_dataset_resume_options(
         roi_quantum=request.roi_quantum,
         roi_materialization_policy=request.roi_materialization_policy,
         large_image_policy=request.large_image_policy,
+        evidence_preprocessing=request.evidence_preprocessing,
+        vqa_assistance_scope=request.vqa_assistance_scope,
     )
 
 
@@ -516,6 +547,31 @@ def _validate_resume_match(
             and supplied.large_image_policy != persisted.large_image_policy
         ):
             raise ValueError("resume large-image policy mismatch")
+        # Frozen evidence preprocessing identity: a caller-provided non-default
+        # identity is compared; omitted values defer to the persisted run
+        # request, exactly like the other planner knobs. Legacy persisted runs
+        # (None) are guarded by the DatasetRunner at rerun time.
+        # 冻结 evidence 预处理身份：调用方明确提供的非默认身份才比较，未提供
+        # 的默认值服从持久化 run request，与其他规划器几何参数一致。历史持久化
+        # 运行（None）在重跑时由 DatasetRunner 守卫。
+        if persisted.evidence_preprocessing is not None:
+            if (
+                supplied.evidence_preprocessing is not None
+                and supplied.evidence_preprocessing != persisted.evidence_preprocessing
+            ):
+                raise ValueError("resume evidence preprocessing mismatch")
+        # The VQA assistance scope is a frozen runtime identity, not a CLI
+        # knob: a caller-supplied non-default value is compared, omitted
+        # (None) defers to the persisted run request; legacy persisted runs
+        # (None) are guarded per-sample by the DatasetRunner.
+        # VQA assistance scope 是冻结的运行时身份而非 CLI 参数：调用方明确提供
+        # 的非默认值才比较，未提供（None）服从持久化 run request；历史持久化
+        # 运行（None）由 DatasetRunner 逐样本守卫。
+        if (
+            supplied.vqa_assistance_scope is not None
+            and supplied.vqa_assistance_scope != persisted.vqa_assistance_scope
+        ):
+            raise ValueError("resume vqa assistance scope mismatch")
 
 
 def _build_run_request(options: DatasetRunOptions) -> RunRequest:
@@ -559,6 +615,8 @@ def _build_run_request(options: DatasetRunOptions) -> RunRequest:
         roi_quantum=options.roi_quantum,
         roi_materialization_policy=options.roi_materialization_policy,
         large_image_policy=options.large_image_policy,
+        evidence_preprocessing=options.evidence_preprocessing,
+        vqa_assistance_scope=options.vqa_assistance_scope,
     )
 
 
@@ -640,6 +698,16 @@ class Runtime:
                 roi_quantum=planner_settings.roi_quantum,
                 roi_materialization_policy=planner_settings.roi_materialization_policy,
                 large_image_policy=planner_settings.large_image_policy,
+                # Fresh runs always freeze the current evidence preprocessing
+                # identity; a None identity is legacy-only, never a fresh run.
+                # 新鲜运行总是冻结当前 evidence 预处理身份；None 身份仅属于
+                # 历史运行，绝不用于新鲜运行。
+                evidence_preprocessing=evidence_preprocessing_identity(self.settings),
+                # Fresh runs always freeze the current VQA assistance scope;
+                # a None scope is legacy-only, never a fresh run.
+                # 新鲜运行总是冻结当前 VQA assistance scope；None 只属于历史
+                # 运行，绝不用于新鲜运行。
+                vqa_assistance_scope=VQA_ASSISTANCE_SCOPE,
             )
         if options.resume:
             if options.run_id is None:
@@ -664,7 +732,7 @@ class Runtime:
             self._validate_existing_run(run_dir, options, run_id)
         if options.planning_mode == "visual-task-plan-v5":
             planner = self.components.visual_task_planner
-            if planner is None or planner.planning_parameters != {
+            expected = {
                 "planning_mode": options.planning_mode,
                 "task_prompt_version": options.task_prompt_version,
                 "preview_max_side": options.preview_max_side,
@@ -672,7 +740,21 @@ class Runtime:
                 "roi_quantum": options.roi_quantum,
                 "roi_materialization_policy": options.roi_materialization_policy,
                 "large_image_policy": options.large_image_policy,
-            }:
+            }
+            planner_identity = (
+                dict(planner.planning_parameters) if planner is not None else None
+            )
+            if options.vqa_assistance_scope is not None:
+                # New-scope runs require the planner to be bound to the same
+                # scope. 新 scope 运行要求 planner 绑定同一 scope。
+                expected["vqa_assistance_scope"] = options.vqa_assistance_scope
+            elif planner_identity is not None:
+                # Historical runs without the frozen scope are guarded per
+                # sample by the DatasetRunner; the whole-run identity check
+                # must not reject them before that gate. 历史无 scope 运行由
+                # DatasetRunner 逐样本门禁处理；整轮身份检查不得在其之前拒绝。
+                planner_identity.pop("vqa_assistance_scope", None)
+            if planner is None or planner_identity != expected:
                 raise ValueError("visual task planner identity does not match run request")
         if not options.resume:
             manifest = self.components.run_store.create_run(
@@ -729,6 +811,8 @@ class Runtime:
                 judge_sample_rate=options.judge_sample_rate,
                 data_root=options.root,
                 planning_mode=options.planning_mode,
+                evidence_preprocessing=options.evidence_preprocessing,
+                vqa_assistance_scope=options.vqa_assistance_scope,
             )
             results[task or "auto"] = await runner.run(
                 root=options.root,
@@ -992,6 +1076,7 @@ class Runtime:
             "requested_task": task,
             "resolved_task": resolved_task,
             "planning_mode": "visual-task-plan-v5",
+            "vqa_assistance_scope": VQA_ASSISTANCE_SCOPE,
             "created_at": _utc_now(),
         }
         atomic_write_json(request_dir / "request.json", request_payload)

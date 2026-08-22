@@ -40,6 +40,7 @@
   "verification": {
     "method": "confusion matrix of the fine-tuned model against the local iSAID semantic masks (train split, images P0000/P0025/P0111); diagonal mapping idx <-> gt pixel value confirmed for classes 1,2,3,4,6,7,8,9,10,11,13; remaining classes follow the same mask pixel-value scheme",
     "verified_date": "2026-08-06",
+    "checkpoint_sha256": "f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a",
     "note": "This order matches the local iSAID_coco category ids and the train semantic masks. It differs from the iSAID official instance category order (1=ship etc.). The official val JSON category ids also differ from train and need re-mapping, see metrics.json note."
   }
 }

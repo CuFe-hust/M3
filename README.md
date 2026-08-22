@@ -256,7 +256,11 @@ result = runtime.predict(image)
 
 该 runtime 封装本地加载、processor、device/dtype、预处理、logits 上采样、
 argmax 和类别映射。iSAID 必须读取经训练 mask 验证的 `classes.json`；OEM
-源资产只有 `LABEL_0..8` 占位标签，代码不会猜测另一套类别顺序。
+class map 已于 2026-08-20 由用户针对本地 OpenEarthMap checkpoint 明确确认
+（9 类：background + bareland/rangeland/developed_space/road/tree/water/
+agriculture_land/building，见 `models/segformer_mitb2_oem/classes.json`）。OEM
+`config.json` 的 id2label 仍是 `LABEL_0..8` 占位，不能作为语义顺序证据；
+runtime 使用已确认的 `classes.json` 与 checkpoint digest 绑定。
 
 ---
 
@@ -305,6 +309,35 @@ OUTPUT_ROOT
 ```
 
 DeepSeek API key 的**值**不进入 AppSettings；配置只声明环境变量名，实际 secret 由 composition root 在需要 Judge 时读取并注入。
+
+`visual_planning` 组的用户可见示例（本地权重仍需 Git LFS/外部资产
+materialize，不自动下载；detector 只有三个 policy 字段完整时才启用 evidence，
+segmenter 默认关闭且必须显式启用）：
+
+```yaml
+visual_planning:
+  planner:
+    catalog_version: visual-evidence-catalog-v4   # 必须与 catalog 声明一致
+  detectors:
+    detector_obb_csl_001:
+      confidence_threshold: 0.20
+      nms_iou_threshold: 0.50
+      max_detections: 1000
+  segmenters:
+    segmenter_mitb2_001:
+      enabled: false
+      class_map_version: verified-2026-08-06
+    segmenter_oem_001:
+      enabled: false
+      class_map_version: verified-2026-08-20
+  preprocessing:
+    version: greedy-1024-stretch-v1   # 冻结 tile 语义；resume 身份来源
+    max_tile_concurrency: 4
+```
+
+OEM 与 iSAID 两份 SegFormer 的 class map 均已验证（见上文）；是否启用某个
+SegFormer binding 由配置显式决定。上例 detector policy 已完整校准，会发布与
+启用 detector labels 相交的 VQA leaves；两个 SegFormer binding 则保持关闭。
 
 ---
 
@@ -364,6 +397,62 @@ python main.py inspect-data \
 ```
 
 Adapter 对源数据保持只读。
+
+### 6.4 Visual Planner 标注扩展
+
+先离线审计源数据并查看当前 runtime 冻结结果（不会调用 API）：
+
+```bash
+python3 -m scripts.refine_visual_planner_dataset \
+  --source data/phase2-train-visualplanning-dedup \
+  --config configs/local.yaml
+```
+
+实际处理时可通过环境变量或终端无回显提示提供 key；DeepSeek 每次请求只接收 raw question，
+不接收图像、旧 target、答案或 provenance。它只返回 `task`、
+`object_categories`、`needs_visual_assistance`、`count_target` 四个授权字段，不生成完整
+target 或最终监督 token：
+
+```bash
+export DEEPSEEK_API_KEY='由使用者在本机设置'
+python3 -m scripts.refine_visual_planner_dataset \
+  --source data/phase2-train-visualplanning-dedup \
+  --output data/phase2-train-visualplanning-refined-v3 \
+  --config configs/local.yaml \
+  --use-api \
+  --concurrency 64
+```
+
+不希望写入环境变量时，使用终端无回显输入：
+
+```bash
+python3 -m scripts.refine_visual_planner_dataset \
+  --source data/phase2-train-visualplanning-dedup \
+  --output data/phase2-train-visualplanning-refined-v3 \
+  --config configs/local.yaml \
+  --use-api \
+  --prompt-api-key \
+  --concurrency 64
+```
+
+中断后使用完全相同的输入与参数增加 `--resume`。输出中的 `datasets/`
+保留 content reference，`training/` 则展开为与推理语义一致的
+system/user/assistant 消息，`training_images/` 使用生产 planner 的同一预览函数
+物化确定性 PNG。processor/tokenizer/chat-template 的逐 token 一致性仍须在
+真实训练 checkpoint 上完成门禁，脚本不会把未运行的验证标记为通过。
+
+在 refined-v3 基础上，可离线使用 VRSBench 和 LEVIR-CC 的结构化标注补充稀缺
+task。该步骤不调用 API，保留 LEVIR A/t1 → B/t2 顺序并排除源 test split：
+
+```bash
+python3 -m scripts.supplement_visual_planner_dataset \
+  --base data/phase2-train-visualplanning-refined-v3 \
+  --vrs-root data/VRSBench-full \
+  --levir-jsonl data/Levir-CC-dataset/LevirCCcaptions_readable.jsonl \
+  --output data/phase2-train-visualplanning-refined-v4 \
+  --train-per-task 800 \
+  --val-per-task 100
+```
 
 ---
 
@@ -985,7 +1074,9 @@ Detection > Semantic Segmentation > QuantityProposal > QwenPoint
 
 SegFormer 只在 verified class map 和 target-specific `connected_components` policy 同时
 成立时成为候选。它输出 semantic region 而不是 instance mask，相接对象可能合并成一个
-component 并造成 undercount。OEM 当前没有 verified class map，因此默认不注册。
+component 并造成 undercount。OEM class map 已确认，但 counting 未为其配置
+`connected_components` policy，因此 OEM 仍不注册 counting backend；OEM 的 VQA
+semantic-mask 可用性与 counting enablement 相互独立。
 
 Catalog 已明确声明 composite capability：`vehicle` 的链是 Detection → SegFormer →
 QuantityProposal → QwenPoint，`aircraft` 是 Detection → SegFormer → QwenPoint。Semantic
@@ -1453,16 +1544,13 @@ live_dataset
 项目有机器可检查的架构控制文件：
 
 ```text
-architecture/allowed_python_files.txt
 architecture/implementation_status.json
 architecture/import_rules.json
-architecture/ALLOWLIST_CHANGE_POLICY.md
 ```
 
 重要规则：
 
-- Python 文件路径需要在 allowlist 中；
-- 普通任务不直接扩白名单；
+- 新增 Python 文件必须具有清晰职责并遵守 import DAG；
 - `spacers_agent/**` 和 `eval/**` 永久禁止重新出现；
 - `main.py` 只 import `application`；
 - Router 不 import models；

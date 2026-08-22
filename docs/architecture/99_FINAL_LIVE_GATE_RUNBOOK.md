@@ -78,7 +78,7 @@ nvidia-smi --query-gpu=memory.used --format=csv   # 多次请求前后对比：�
 - `health qwen --live` / `smoke-qwen` / 手动 ask（VQA+变化）/ HTTP health+ask
   全部成功；
 - `count-image` 在大图（超过 max_pixels_without_tiling）上完成切片计数；
-- 每个可用内建数据集小切片运行成功（auto-task 切片走 v3 VisualTaskPlanner）；
+- 每个可用内建数据集小切片运行成功（auto-task 切片走 v5 VisualTaskPlanner）；
 - resume 从 run_request 权威重建成功；
 - evaluate-run/judge-vqa-run（授权时）/summarize 零 Qwen 成功；
 - Reporting 产物完整生成；

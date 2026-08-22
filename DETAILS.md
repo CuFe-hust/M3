@@ -5,7 +5,6 @@
 它主要面向 AI 编码代理和需要理解系统内部结构的开发者。
 
 - 编码行为边界：见 `AGENTS.md`
-- Python 文件最终批准范围：见 `architecture/allowed_python_files.txt`
 - 当前实现状态：见 `architecture/implementation_status.json`
 - import DAG：见 `architecture/import_rules.json`
 - 迁移历史：见 `docs/migration/`
@@ -43,7 +42,7 @@ compileall: clean
 git diff --check: clean
 ```
 
-剩余失败来自 HTTP socket/超大请求传输、既有 allowlist 漂移、缺失可选依赖（如
+剩余失败来自 HTTP socket/超大请求传输、缺失可选依赖（如
 `safetensors`/`peft`/`transformers`）及未参与本任务的模型测试；不能表述为全仓
 pytest 全绿。真实模型、真实数据集、云端 API 或目标 Spark/部署环境相关验证仍应按
 具体环境单独执行，不应把离线测试通过等同于所有 live gate 已通过。
@@ -51,8 +50,8 @@ pytest 全绿。真实模型、真实数据集、云端 API 或目标 Spark/部�
 ### Doc 20 当前执行事实
 
 Doc 20 离线验证：v5 planner/schema/geometry、direct/evidence、runtime/resume
-目标回归通过；HTTP harness 仍受当前沙箱禁止绑定 `127.0.0.1` 限制，架构 allowlist
-仍有 HEAD 既存的越界 Python 文件。真实模型、真实数据集、云端 API 或目标
+目标回归通过；HTTP harness 仍受当前沙箱禁止绑定 `127.0.0.1` 限制。真实模型、
+真实数据集、云端 API 或目标
 Spark/部署环境相关验证仍应按具体环境单独执行。
 
 新鲜的 manual `ask` 与 dataset（explicit/default/auto）入口统一使用
@@ -78,7 +77,9 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 `run_request.json` 保存 `planning_mode`、`task_prompt_version`、preview、坐标制式、
 `roi_quantum`、materialization policy 和兼容的 large-image policy；v5 succeeded resume
 不调用模型，v4 及更早成功样本同样只允许无模型补评测，v4 及更早需要重新推理时返回
-`LEGACY_PLANNING_RESUME_UNSUPPORTED`。
+`LEGACY_PLANNING_RESUME_UNSUPPORTED`。`run_request.json` 还保存两个独立冻结身份：
+`evidence_preprocessing`（tile 预处理，14.14）与 `vqa_assistance_scope`（VQA 辅助
+范围，doc 24）；二者缺失均表示历史运行，绝不从当前默认值回填。
 
 ---
 
@@ -98,7 +99,7 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 - 测试；
 - offline；
 - secret；
-- allowlist。
+- 文件布局与职责边界。
 
 ### `DETAILS.md`
 
@@ -111,10 +112,8 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 机器约束：
 
 ```text
-allowed_python_files.txt
 implementation_status.json
 import_rules.json
-ALLOWLIST_CHANGE_POLICY.md
 ```
 
 ### `docs/migration/`
@@ -292,13 +291,8 @@ M3/
 └── tests/
 ```
 
-完整 Python 路径不要复制维护在本文档中；以：
-
-```text
-architecture/allowed_python_files.txt
-```
-
-为唯一白名单来源。
+完整 Python 路径不在本文档中重复维护；生产包的当前实现状态由
+`architecture/implementation_status.json` 记录。
 
 ---
 
@@ -741,8 +735,11 @@ Qwen3-VL baseline wrapper。
 不会自动下载。
 
 iSAID 的 `classes.json` 是 checkpoint 权威类别映射；`config.json` 中的
-`LABEL_0..15` 只是占位。OEM 旧资产没有额外 classes metadata，因此保留其
-config 中的 `LABEL_0..8`，不猜测人类可读顺序。
+`LABEL_0..15` 只是占位。OEM 的 `classes.json` 已于 2026-08-20 由用户针对
+本地 OpenEarthMap checkpoint 明确确认（9 类：background + bareland/
+rangeland/developed_space/road/tree/water/agriculture_land/building）。OEM
+`config.json` 的 id2label 仍是 `LABEL_0..8` 占位，不能作为语义顺序的独立
+证据；runtime 只相信已确认的 `classes.json` 与 checkpoint digest 绑定。
 
 YOLO 的新版 Counting 实现已经是旧版的加强版，仍保持唯一实现：
 `YoloModelStore` 负责惰性单次加载和完整性校验，ONNX adapter 负责 provider、
@@ -757,7 +754,8 @@ pointer；没有新增第二套 YOLO loader。
 semantic instance approximation；相接对象会形成单一 component，可能低估数量，当前不做
 watershed 或隐式 instance splitting。composition root 已按 `ExpertCatalog` 将 enabled
 semantic expert 构造成 lazy client/backend，并接入固定优先级和 ordered fallback；OEM
-因缺少 verified class map 保持 disabled。
+当前仅因缺少 `connected_components` policy 保持 counting disabled，已确认的 class map
+可独立供 VQA semantic-mask 使用。
 
 ## 14.4 图像工具（`models/images.py`）
 
@@ -895,17 +893,22 @@ v5 视觉规划与可选证据能力配置组；新鲜规划没有 feature flag�
 ```text
 planning_mode = "visual-task-plan-v5"
 task_prompt_version = "v5"
-catalog_version = "visual-evidence-catalog-v3"
+catalog_version = "visual-evidence-catalog-v4"
 preview_max_side = 1080
 roi_coordinate_frame = "normalized_0_999_top_left"
 roi_quantum = 1024
 roi_materialization_policy = "longest-side-ceil-quantum-center-clip"
 large_image_policy = "both-dimensions-strictly-greater-than-1024"
-detectors: 每类别策略；None = 未校准 = 能力关闭
-segmenters: 同上；启用必须携带已验证 class map
+detectors: detector policy 映射；阈值全为 None = 未校准 = YOLO evidence 关闭
+segmenters: 按稳定 binding 配置；默认 enabled=false，启用必须携带已验证 class map
 ```
 
-- 未校准能力（None）视为关闭，绝不带默认值参与推理；
+- detector policy 为零条校准项时关闭 YOLO evidence；存在校准项时三个阈值必须
+  完整，且当前实现只接受一个全局校准项；
+- segmenter 是否可执行由 `enabled`、`class_map_version` 和已验证 runtime client
+  三者共同决定，不能仅因 catalog 中存在 leaf 就宣布可执行；
+- planner 的可执行类别是 catalog task capability 与本次 runtime 实际能力的
+  task-specific 交集，不等同于 catalog 全量 leaves；
 - catalog/prompt 版本绑定规划 prompt 与封闭证据目录为单一版本对，进入 request hash。
 
 主要分组：
@@ -1039,7 +1042,7 @@ call_budget
 data_root
 judge_client
 request_context
-visual_task_plan     # v3 VisualTaskPlan；fresh Agent execution 必须有 materialized views
+visual_task_plan     # v5 VisualTaskPlan；fresh Agent execution 必须有 materialized views
 visual_views         # tuple[MaterializedVisualView, ...]
 visual_bindings      # 轻量 evidence service bindings
 ```
@@ -1100,18 +1103,51 @@ spatial_relation
 
 多选题 postprocess 会约束最终答案落在 choices 合法范围。
 
-v3 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 且 task 为
-`general_vqa` 时，GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
-`VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜），按 14B §10 契约
-组装唯一一次 final Qwen 调用：clean ROI 图在前、逐 ROI 掩膜 overlay 按
-`roi_id` 序在后，文本证据含 question、answer constraints、图像尺寸、
-ROI 裁切几何、YOLO 文本记录（ROI 局部 `0..999` 整数 `xyxy` JSON）与 SegFormer 颜色叶子
-图例；绝不携带 confidence、绝不使用画框图。`vqa_evidence.json` 作为
-additional result 持久化 bundle（严格 JSON-safe，无掩膜数组/无 secret）。
+v5 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
+GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
+`VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜 + 内存调色表），按冻结
+三分支协议（14.12.3）组装唯一一次 final Qwen 调用。逐 ROI 稳定输出：
+
+```text
+仅 YOLO      -> 标注 ROI
+仅 SegFormer -> 纯色 mask + clean ROI
+两者都有     -> YOLO-on-pure-mask + clean ROI
+均无         -> clean ROI
+```
+
+每个 ROI 的图像顺序固定为 mask first、clean ROI second；文本 payload 的
+`visual_inputs` 以 `content_image_index`、`roi_id` 和角色描述每个 image block，
+视觉内容协议版本为 `v2`。所有 final-Qwen 图像最长边超过 1080 才缩小、小图绝不
+放大（掩膜 NEAREST、照片 LANCZOS）。YOLO 框为黑色 5px 外描边 + 品红 3px 内描边，
+标签为黑底、品红边框、白色叶子文字，confidence 绝不写入。SegFormer 调色表按 catalog
+segformer 叶子顺序确定性生成（与品红 ≥128、与黑底 ≥96、彼此 ≥48 的 RGB
+距离约束，`sha256(leaf|attempt)` 重采样），仅存内存、绝不持久化。文本证据
+含 question、answer constraints、图像尺寸、ROI 裁切几何、
+requested/rendered_yolo/rendered_segformer/missing leaves、mask legend、
+`visual_inputs` 与 `evidence_identity{catalog_version, preprocessing_version,
+palette_version, visual_content_version}`；渲染图像摘要（包括 mask 与 clean ROI
+的实际 PNG digest）与 evidence_identity 共同覆盖 request hash（14.13）。两类图像
+只以内存 PNG 传输，不新增磁盘 artifact。
+`vqa_evidence.json` 作为 additional result 持久化 bundle（严格 JSON-safe，
+含 preprocessing version、tiles 与逐 tile call audit，无掩膜数组/无 secret）。
 `needs_visual_assistance == false` 或未注入计划时走 direct 路径。模型侧框统一使用
 `0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
-禁止组合（如 scene_classification + object evidence）以
-`object_evidence_plan_forbidden_for_task` 稳定失败；兼容矩阵见 14A2 §4.4。
+
+Doc 24：GeneralVQAAgent 的四个 supported task（`general_vqa`、
+`scene_classification`、`multiple_choice_vqa`、`spatial_relation`）统一由
+`VisualTaskPlan.needs_visual_assistance` 决定 direct/evidence 路径，Agent 内部
+不再存在 `sample.task == "general_vqa"` 的二次否决；`sample.task` 仍用于路由、
+Prompt/answer constraint（选择题 postprocess）、结果语义与评测 dispatch。四
+个 task 共享同一个 `general_vqa` catalog capability owner（`agents/schema.py`
+的 `GENERAL_VQA_AGENT_TASKS` 单一来源），planner 的
+`task_executable_categories` 按四个真实 task 分别列出同一份运行时可执行类别；
+组合根（`application/bootstrap.py`）只计算一次 `_vqa_executable_leaves` 并注入
+四个 task，VQA evidence 服务不可用时四个 task 的可执行类别一致为空。`counting`
+/`fine_grained_counting` 仍由 CountingAgent 拥有，`grounding` 仍由
+GroundingAgent 拥有，`caption`/`change_caption`/`change_qa` 不借此接入 VQA
+evidence；routing fallback 不得改写 persisted resolved task 或评测 task。该
+运行语义变化由 `vqa_assistance_scope = "general-vqa-agent-tasks-v1"` 冻结身份
+保护（见 §Resume 的 VQA assistance scope）。
 
 ## 21.2 CaptionAgent
 
@@ -1131,7 +1167,7 @@ grounding
 
 completed 结果需要合法定位证据。
 
-v3 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
+v5 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
 GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
 唯一一次 final Grounding Qwen 调用（evidence 管线在 Agent 外执行），
 返回确定性整图框 `WholeImageBox`。`AgentResult.answer` 为
@@ -1323,7 +1359,7 @@ reason_codes
 doc 16 的 fresh dataset 与 manual ask 不走本历史解析路径：单次
 `VisualTaskPlanner` 调用同时产出 task 与视觉辅助意图，模型选定 task 对
 routing/materialization/execution 权威，源 task 只做审计。历史 v2 计划曾将低置信度
-作为稳定失败；当前 v3 不输出或评估 planner confidence，也不回退到另一个规划模型。
+作为稳定失败；当前 v5 不输出或评估 planner confidence，也不回退到另一个规划模型。
 
 ---
 
@@ -1338,7 +1374,7 @@ routing/materialization/execution 权威，源 task 只做审计。历史 v2 计
 - 真正执行由 SampleRunner 完成。
 
 该节只解释旧 run 的候选审计；doc 16 历史 v2 `VisualTaskPlanner` 的低置信度曾直接
-稳定失败，当前 v3 不再输出该分数，也不启动旧候选路径。候选 fallback 不等于“多
+稳定失败，当前 v5 不再输出该分数，也不启动旧候选路径。候选 fallback 不等于“多
 Agent 全跑”。
 
 SampleRunner 会按 AgentName 稳定去重，避免多个 candidate task 实际映射同一 Agent 时重复执行。
@@ -2089,7 +2125,7 @@ dataset_probe.json
 `visual_task_plan.json` 只存已验证 `VisualTaskPlan` 与
 `MaterializedVisualView` 几何（原子写入），绝不存原始模型正文。对象证据路径的证据 bundle 作为 Agent additional
 result 持久化（`vqa_evidence.json` / grounding candidate JSON），严格
-JSON-safe；clean ROI 图像与 SegFormer overlay 目前仅内存传输，持久化
+JSON-safe；clean ROI 图像与 SegFormer 纯色 mask 目前仅内存传输，持久化
 格式/质量参数未批准（14A2 §5.1 语义占位）。ROI 图像文件、目录结构等
 后续阶段冻结前不采用。
 
@@ -2137,7 +2173,7 @@ outputs/runs/<run_id>/
                 └── optional model/judge artifacts
 ```
 
-当前 v3 证据路径（规划请求视觉辅助时）可能另存 additional result：
+当前 v5 证据路径（规划请求视觉辅助时）可能另存 additional result：
 
 ```text
 vqa_evidence.json     # object_evidence_vqa bundle (JSON-safe)
@@ -2287,6 +2323,39 @@ run_request.json
 为权威。
 
 新的 CLI 默认值或 config 漂移不得静默改变原 run 行为。
+
+### VQA evidence 预处理身份（14.14）
+
+- 新身份（`greedy-1024-stretch-v1`）succeeded 样本 resume 零模型调用，绝不
+  修复或重写推理期证据产物（含 `vqa_evidence.json`）；
+- 新身份 failed/partial 重跑沿用持久化 preprocessing 身份；调用方显式提供
+  的不同身份（含篡改的 tile policy）以 `resume evidence preprocessing
+  mismatch` 稳定拒绝；
+- 历史无身份（None）运行的 VQA evidence 非成功重跑以
+  `LEGACY_VQA_EVIDENCE_PREPROCESSING_UNSUPPORTED` 稳定失败，绝不静默切换
+  成新语义；历史 succeeded 样本 resume 仅补评测、零模型调用。
+
+### VQA assistance scope（doc 24）
+
+`vqa_assistance_scope` 是独立于 tile 预处理身份的第二个冻结运行身份，值为
+`general-vqa-agent-tasks-v1`：它冻结“哪些 task 可消费 GeneralVQAAgent 的
+共享 evidence 开关”（四个 GeneralVQAAgent task）。规则：
+
+- 新鲜运行把 scope 写入 planner `planning_parameters`（进而进入 system
+  prompt 绑定与 prompt snapshot）、`run_request.json` 与手动 ask 的
+  `request.json`；planner identity 比较覆盖该字段；
+- 历史 run request 缺该字段时解析为 None，绝不从当前默认值回填；
+- 历史 succeeded VQA 样本 resume 仍只补缺失的确定性评测/Judge/report，零
+  模型调用；
+- 历史非终态 VQA 样本需要重新规划/重跑 evidence 时以
+  `LEGACY_VQA_ASSISTANCE_SCOPE_UNSUPPORTED` 稳定失败，绝不静默采用新
+  scope；两个 legacy 门禁都以持久化 `status.json` 的 execution task 为权威
+  （planner 可能改写 adapter 的 source task），仅当没有任何持久化状态时才
+  回退 source task；持久化 execution task 为 `unknown` 哨兵（预 task 失败）
+  时无法证明重规划留在 VQA 族之外，同样 fail-closed；counting、grounding、
+  caption/change 的 resume 行为不受影响；
+- 不复用或污染 `EvidencePreprocessingIdentity`：task scope 与 tile
+  preprocessing 是两个独立身份。
 
 ---
 
@@ -3006,7 +3075,7 @@ POST /ask
 
 `--task auto` 时：
 
-- 空问题规则由 v3 VisualTaskPlanner 的冻结 system prompt 处理；
+- 空问题规则由 v5 VisualTaskPlanner 的冻结 system prompt 处理；
 - 显式 task 也先经过同一个 VisualTaskPlanner，requested task 只作审计；
 - 规划 task 后才物化 UnifiedSample；
 - 一次手动请求只执行一个主业务路径；
@@ -3299,7 +3368,6 @@ tests/parity/
 保证：
 
 ```text
-allowlist
 implementation status
 import DAG
 __init__ no side effects
@@ -3353,13 +3421,7 @@ Golden fixture 不属于“修实现时可以跟着一起改”的普通测试�
 
 ---
 
-# 78. Architecture allowlist
-
-`architecture/allowed_python_files.txt`：
-
-```text
-final approved paths
-```
+# 78. Architecture implementation status
 
 `architecture/implementation_status.json`：
 
@@ -3373,7 +3435,7 @@ what is actually implemented now
 pending_files = []
 ```
 
-以后新增 Python 路径必须遵循独立架构批准流程。
+新增 Python 路径不需要逐路径审批，但仍必须遵守 import DAG、包职责、测试和实现状态契约。
 
 ---
 
@@ -3395,34 +3457,45 @@ source pixel / polygon 等需要 official evaluator 或显式转换。
 
 当前工作流 JSONL 并发安全承诺局限于同一 Python 进程。
 
-### 79.4 Doc 16 visual-only planner; runtime evidence remains fail-closed
+### 79.4 v5 visual-only planner；runtime evidence 按 task 严格发布
 
-`VisualTaskPlanner` 对所有 fresh manual/dataset 入口始终启用；旧的
-当前配置不再提供 `visual_planning.enabled` 开关；所有 fresh 入口都先经过 v5
-规划器。
-`first-qwen-evidence-catalog-v2` 已根据当前 DOTA-v2 YOLO 与经验证的 iSAID
-SegFormer class map 声明以下类别映射：
-
-```text
-vehicle
-aircraft
-watercraft
-sports_facility
-transport_infrastructure
-industrial_facility
-aviation_infrastructure
-```
-
-其中机场、停机坪、集装箱起重机只有 YOLO 映射；其余叶子类别同时具有 YOLO
-与 iSAID SegFormer 映射。OEM SegFormer 仍因 class map 未验证而禁用。类别映射
-已验证不等于运行策略已校准：detector threshold/NMS/max detections 与视觉证据
-SegFormer 的运行绑定仍默认关闭（None）。没有完整校准的对象证据服务时，planner
-binding 不声明可执行类别；模型请求视觉辅助会稳定失败，绝不静默回退 direct。
-Grounding 的未校准 seam 仍可作为显式能力边界，但不会使 planner 宣布对象辅助
-可执行。检测器一律惰性接线，组合期绝不加载 YOLO 权重。新 v3 ROI 只按规范化
-EXIF/RGB 源尺寸生成一个固定 1024×1024 视图，禁止旧 multi-ROI 与 halo 语义；
-历史 `visual_plan.json` / `joint_visual_plan.json` 仅供 reporting 只读展示。
-真实 Qwen3-VL live gate 与校准策略仍需单独验证。
+`VisualTaskPlanner` 对所有 fresh manual/dataset 入口始终启用；当前配置不再
+提供 `visual_planning.enabled` 开关，所有 fresh 入口都先经过 v5 规划器。
+`visual-evidence-catalog-v4` 已根据当前 DOTA-v2 YOLO、经验证的 iSAID
+SegFormer 与 2026-08-20 确认的 OEM class map 声明 26 个 General VQA 叶子：
+15 个叶子同时具有 YOLO 与 iSAID SegFormer（`segmenter_mitb2_001`）绑定；
+`container-crane`、`airport`、`helipad` 只有 YOLO；`bareland`、`rangeland`、
+`developed-space`、`road`、`tree`、`water`、`agriculture-land`、`building`
+只有 OEM SegFormer（`segmenter_oem_001`）绑定。OEM class map 由用户针对本地
+OpenEarthMap checkpoint 明确确认（`classes.json` 9 类：background + bareland/
+rangeland/developed_space/road/tree/water/agriculture_land/building；checkpoint
+SHA256 `d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab`）。
+其 `config.json` id2label 仍是 `LABEL_0..8`，只说明 channel 数，不能独立证明
+语义顺序。
+composition root 在发布 VQA binding 前严格匹配 settings 的
+`class_map_version`、`classes.json` 的 checkpoint digest 与 evidence catalog 的全部
+SegFormer raw labels；不一致时不会发布对应 planner leaves。
+类别映射已验证不等于运行能力已启用。当前 `configs/local.yaml` 已完整校准并启用
+DOTA-v2 YOLO detector policy、iSAID SegFormer 与 OEM SegFormer binding，因此
+General VQA planner binding 发布 catalog 中全部 26 个 leaves；Counting、
+Fine-grained Counting 与 Grounding 各发布 18 个 leaves。这里的数量是当前配置经
+composition root 实际组装后的结果，不是仅凭 catalog 声明推断。VQA 没有匹配的
+已启用能力时对应 executable leaf 集合为空；模型仍
+请求不可用 leaf 会以 `CAPABILITY_UNAVAILABLE` 失败，绝不静默回退 direct。
+Grounding 与 VQA 的发布条件不同：Grounding executor 始终组装并使 catalog 中的
+18 个 grounding leaves 可规划；detector policy 未校准时只关闭其 YOLO phase，最终
+Grounding Qwen 的定位 seam 仍存在。Counting 的可执行 leaves 则由独立的 enabled
+expert inventory 决定。检测器一律惰性接线，组合期绝不加载 YOLO 权重。
+证据预处理身份冻结为 `greedy-1024-stretch-v1`：每个 ROI 按确定性贪心
+row-major 无重叠切 1024×1024 tile，余块 LANCZOS 拉伸，掩膜逆变换 NEAREST；
+tile 并发有界（默认 ≤4，`max_tile_concurrency` 可配置），单次执行生命周期
+使用单一 worker pool。无重叠 partition 只保证每个 ROI 像素属于一个 source
+tile；它不等价于“对象不会跨 tile”或“不会产生重复检测”。YOLO 候选逆映射到
+整图后另做基于 IoU 的全局去重，但边界目标仍可能被切开或漏检；余块拉伸也会
+改变纵横比。v5 显式 ROI 在源图上生成 1024 整数倍边长的理想正方形后直接与
+图像求交，不平移、不缩小；边界裁切后的实际视图可以是长方形，也不保证宽高为
+1024 的整数倍。历史 `visual_plan.json` / `joint_visual_plan.json` 仅供 reporting
+只读展示。真实 Qwen3-VL、YOLO 和 SegFormer live gate 仍需单独验证。
 
 ### 79.5 Live validation
 
@@ -3442,8 +3515,11 @@ EXIF/RGB 源尺寸生成一个固定 1024×1024 视图，禁止旧 multi-ROI 与
 
 ### 79.7 OEM class labels
 
-迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`，没有经训练
-语义验证的 `classes.json`。当前 runtime 保留该事实，不用网络资料猜测类别顺序。
+迁移来源只提供 OEM 9-channel checkpoint 和占位 `LABEL_0..8`；`classes.json`
+的精确顺序由用户于 2026-08-20 针对本地 OpenEarthMap checkpoint 明确确认，
+不是从占位 `config.json` id2label 推导。counting 侧仍因缺少
+`connected_components` policy 不注册 OEM backend；VQA semantic-mask seam 的
+能力声明与实际启用仍分别受 catalog、class-map 校验和 runtime settings 约束。
 
 ### 79.8 Semantic connected-component counting
 
@@ -3452,8 +3528,9 @@ SegFormer 输出 semantic region 而非 instance mask。相接实例可能形成
 
 ### 79.9 Historical joint task + visual planning（doc 15，仅只读）
 
-doc 15 的单次 Qwen 联合调用已被 doc 17 的 `visual-task-plan-v2` 替代，现役 fresh
-链路再由 doc 18 升级为 `visual-task-plan-v3`。
+doc 15 的单次 Qwen 联合调用先被 doc 17 的 `visual-task-plan-v2` 替代，随后
+doc 18 移除 confidence 并升级为 v3、doc 19 增加精确 `count_target` 和 leaf-only
+类别并升级为 v4、doc 20 冻结量化 ROI 后升级为当前 `visual-task-plan-v5`。
 本节只保留旧 artifact、旧 trace 与迁移结果的只读解释；不得重新接线为
 fresh execution fallback。
 
@@ -3637,7 +3714,7 @@ tests/integration/
 | dependency assembly | `application/bootstrap.py` |
 | 顶层命令参数 | `main.py` |
 
-如果目标文件不在 allowlist，先做架构批准，不直接新建。
+新增文件必须落入上述职责边界，并补充任务相关测试。
 
 ---
 
@@ -3802,6 +3879,52 @@ GeoChat `[refer]`→target 框、`[identify]`→input 框 + 文本、普通对�
 保序，坐标统一 `round(c*999/100)` 转换且转换前后校验，拒绝记录以稳定
 错误码进 `rejected.jsonl`（含闭合计数）。episode_id 全局唯一；输出无
 机器绝对路径；同输入同 seed 字节级稳定。
+
+```text
+scripts/refine_visual_planner_dataset.py
+```
+
+Visual Planner SFT 标注扩展器。源数据只读，默认只做输入审计和当前 runtime
+protocol 组装；只有显式 `--use-api` 且从环境变量或无回显终端提示取得
+key 时才调用 DeepSeek。
+teacher 的每条 sample payload 严格为 `{"question": raw_question}`，不发送图像、
+旧 target、答案、数据集信息、provenance 或路径；response schema 也只允许
+`task`、`object_categories`、`needs_visual_assistance`、`count_target` 四个用户授权
+字段，禁止 teacher 生成完整 target、ROI、reason code 或最终监督 token。
+teacher system message 同时嵌入版本化 text-only task taxonomy/assistance rubric、精确
+四字段 JSON Schema、完整 runtime v5 prompt 和当前 planner binding；JSON repair
+可显式保留原始 question payload。脚本按精确 question 去重并发
+请求，使用内容寻址 cache 和可复现 resume identity。text-teacher v6.1 数据标注
+策略按全局可调用子模型 leaf 并集选择证据，不采用当前 runtime 的 task-specific
+开关；scene classification、spatial relation 等 task 只要能识别出相关 callable
+类别即可启用，限定计数也可调用基础类别子模型。证据始终是交给最终 VLM 的非
+权威辅助信息。整图或明确 ROI/局部区域的开放式描述归入 `caption`；框内类别、
+颜色、朝向或运动状态等封闭问题仍归入 `general_vqa`。本地确定性层负责 answer
+leakage、alias/parent expansion、八类
+上限和 `VisualTaskPlan` schema 门控。输出使用带显式 annotation evidence policy
+的 content-addressed protocol；`datasets/` 保留紧凑引用，`training/` 展开
+为准确的 system、image+raw-question user、compact JSON assistant 消息，
+`training_images/` 通过生产 `preview_from_path` seam 物化与推理 planner 完全相同
+的确定性 PNG bytes。
+`audit/training_contract.json` 区分已验证的消息语义和尚未在真实 processor 上验证的
+token/chat-template 一致性。
+DeepSeek V4 JSON 请求显式使用 non-thinking 模式，避免把隐藏推理引入标注产物；
+复标 identity 同时冻结 timeout、retry 和 concurrency，运行参数漂移时拒绝 resume。
+
+```text
+scripts/supplement_visual_planner_dataset.py
+```
+
+Visual Planner 稀缺 task 的离线结构化补充编译器。它以 refined-v3 为只读基线，
+从 VRSBench 的 caption、object box、QA 与 LEVIR-CC 有序 A/t1、B/t2 图对构造
+`caption`、`grounding`、`fine_grained_counting`、`multiple_choice_vqa`、
+`change_caption`、`change_qa`。默认每类选择 train 800、val 100，排除 test；
+LEVIR 变化与未变化样本等量。VRS 同一图复用为四种 planner episode，LEVIR
+同一图对复用为两个 change episode；图片按内容摘要硬链接并用生产 preview seam
+生成训练图。MC 仅允许数值计数、Yes/No 存在性和颜色三种同语义答案空间，且不
+持久化答案键。输出保持 `visual-planner-compiled-chat-v1`，双图 user content 按
+image、image、raw question 排列。选择 seed、源摘要、配额、split 排除和逐条来源
+均写入 audit；编译过程不联网、不修改源数据、不改变 `VisualTaskPlan` schema。
 
 ```text
 scripts/qwen3vl_phase2_data.py

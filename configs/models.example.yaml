@@ -15,7 +15,7 @@ models:
     logical_model_id: SegFormer-MiT-B2:OpenEarthMap:local
     weights_filename: model.safetensors
     weights_sha256: d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab
-    classes_filename: null  # OEM has no authoritative class names
+    classes_filename: classes.json  # verified OEM class map (2026-08-20)
     device: auto
     dtype: auto
     allow_download: false

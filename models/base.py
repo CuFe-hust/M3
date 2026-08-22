@@ -548,6 +548,47 @@ class SemanticSegmentationClient(Protocol):
 
 
 @dataclass(frozen=True)
+class SemanticMaskOutput:
+    """Discrete class-id mask aligned to the model input tile, returned by the
+    VQA evidence ``segment(...)`` path. ``class_id_map`` is an in-memory only
+    array (never a JSON field); ``id_to_label`` is the authoritative model
+    label mapping; ``original_size`` is the model input tile size the map is
+    aligned to; ``diagnostics`` holds only JSON-safe scalars. The record
+    deliberately carries no absolute checkpoint path or backend object.
+    VQA evidence ``segment(...)`` 路径返回的、与模型输入 tile 对齐的离散
+    class-id mask。``class_id_map`` 仅为内存数组（绝不是 JSON 字段）；
+    ``id_to_label`` 是权威模型标签映射；``original_size`` 是 map 对齐的模型
+    输入 tile 尺寸；``diagnostics`` 只放 JSON 安全标量。记录刻意不携带绝对
+    checkpoint 路径或 backend 对象。"""
+
+    class_id_map: Any
+    id_to_label: Mapping[int, str]
+    original_size: tuple[int, int]
+    weights_sha256: str | None
+    diagnostics: Mapping[str, Any]
+
+
+class SemanticMaskClient(Protocol):
+    """Model-independent semantic-mask seam for VQA evidence: the caller
+    prepares an exact model tile (1024x1024 RGB) and receives a discrete
+    class-id map aligned to that tile. Never an image-resizing seam — the
+    caller owns tile geometry; this client only runs the model.
+    面向 VQA evidence 的模型无关语义 mask seam：调用方准备精确模型 tile
+    （1024x1024 RGB），得到与该 tile 对齐的离散 class-id map。绝不是图像缩放
+    seam——tile 几何由调用方负责；本客户端只运行模型。"""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity: ...
+
+    def segment(self, image: Any) -> SemanticMaskOutput:
+        """Run one inference on an exact model tile and return the discrete
+        class-id map aligned to it. Exceptions from the underlying runtime
+        propagate unchanged so callers keep their stable error semantics.
+        对精确模型 tile 运行一次推理，返回与其对齐的离散 class-id map。
+        底层运行时异常原样传播，保持调用方稳定错误语义。"""
+
+
+@dataclass(frozen=True)
 class ObjectDetectionOutput:
     """One retained detection in the input-image pixel frame, with the
     model's actual input size and a stable audit trail. Coordinates are

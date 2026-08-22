@@ -15,9 +15,20 @@ checkpoint paths are supplied by application configuration.
 
 The iSAID `classes.json` mapping is the only authoritative class-name source;
 placeholder `LABEL_*` values in `config.json` must never replace it. The OEM
-asset has no equivalent authoritative class file, so its class names are
-unknown (`None`/empty) even though its output-channel dimension remains usable.
-Placeholder labels must not be published as semantic metadata.
+`classes.json` (its exact order was confirmed by the user on 2026-08-20 for
+the local OpenEarthMap checkpoint, checkpoint SHA256
+`d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab`) declares
+the 9-class mapping `background` + bareland / rangeland / developed_space /
+road / tree / water / agriculture_land / building. The OEM `config.json`
+still contains placeholder `LABEL_0..8` values, so it is not independent
+semantic evidence and placeholder labels must not be published as metadata.
+
+Both SegFormer checkpoints (`SegFormer-MiT-B2:iSAID:local` and
+`SegFormer-MiT-B2:OpenEarthMap:local`) are addressable by the VQA semantic-mask
+catalog. A checkpoint becomes executable in that seam only when its stable
+binding is enabled and composition injects the verified client. Availability
+to counting is a separate decision (`connected_components` policies in the
+counting expert catalog) and must not be conflated with VQA enablement.
 
 Both SegFormer directories include the canonical NVIDIA MiT-B2
 `preprocessor_config.json` pinned from upstream revision

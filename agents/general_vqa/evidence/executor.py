@@ -9,10 +9,11 @@ inference 消费同一组精确物化视图。
 Frozen state machine / 冻结状态机：
 
     expand requested composite categories to ordered leaf categories
-    for each ROI: run YOLO once, then filter all requested leaves
+    partition every ROI crop into deterministic 1024x1024 tiles (14.7)
+    for each tile: run YOLO once, then filter all requested leaves
     for each still-missing leaf:
         if catalog has approved SegFormer capability:
-            run SegFormer inference once per ROI, then filter
+            run SegFormer inference once per (binding, tile), then filter
         if still missing:
             leave the leaf for the single final-Qwen visual fallback
     preserve all successful evidence from other leaves
@@ -20,13 +21,20 @@ Frozen state machine / 冻结状态机：
 States / 状态：hit / missing / unsupported / unavailable / error / not_run；
 不存在 valid_empty（成功但筛选为空 = missing）。已 hit 的叶子绝不重跑或覆盖。
 
+Bounded scheduling / 有界调度：一次 execution 生命周期内单个
+``ThreadPoolExecutor(max_workers=max_tile_concurrency)``；全部 ROI tile
+records/images 在调用模型前同步确定性生成；YOLO 与 SegFormer jobs 均按稳定
+job index 提交，主线程按稳定 tile 顺序聚合，绝不按完成顺序。
+
 VQA-only constraints / VQA 专属约束：
 
-- YOLO/SegFormer 调用次数按 ROI，不按类别增长；模型输入只有 ROI 裁切图；
+- YOLO/SegFormer 调用次数按 tile，不按类别增长；模型输入永远是 1024×1024
+  tile，剩余部分 LANCZOS 拉伸；
 - 只保留目录请求标签，未请求输出全部丢弃；
 - YOLO confidence 仅供阈值/去重/冲突裁决，绝不进入最终 bundle 或公共 trace；
 - SegFormer 只保留 mask/存在性证据，不转 box、不生成 instance count；mask
-  在各 ROI 内独立保留，绝不跨 ROI 像素融合或比较置信度；
+  在各 ROI 内独立保留，绝不跨 ROI 像素融合或比较置信度；输出 class map 与
+  catalog raw labels 不一致时严格失败；
 - 跨 ROI 重复 YOLO 目标在 whole-image 坐标去重，内部置信度高者胜出；
 - 最终 bundle 按 roi_id 和稳定 leaf order 组装，绝不按并发完成顺序；
 - 不记录 raw exception、tensor、完整 raw response、Base64、secret 或物理模型路径。
@@ -43,19 +51,34 @@ the user freezes it. 未冻结参数（仅注入；任何位置不填写生产�
 
 from __future__ import annotations
 
+import array
 import math
 from collections.abc import Mapping
-from dataclasses import dataclass
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Any
 
 from PIL import Image
 
 from agents.evidence_catalog import EvidenceCatalog
-from agents.general_vqa.evidence.geometry import local_to_global
-from agents.general_vqa.evidence.rendering import render_roi_crop
+from agents.general_vqa.evidence.geometry import (
+    MODEL_INPUT_SIZE,
+    local_to_global,
+    model_xyxy_to_roi_xyxy,
+    partition_roi,
+)
+from agents.general_vqa.evidence.rendering import (
+    prepare_model_tile,
+    render_roi_crop,
+    restore_class_id_mask,
+    segformer_palette,
+    stitch_class_id_masks,
+)
 from agents.general_vqa.evidence.schema import (
     EvidenceLayer,
+    EvidencePreprocessing,
     EvidenceState,
+    EvidenceTileRecord,
     LayerStateRecord,
     ModelCallAudit,
     RoiEvidenceRecord,
@@ -65,16 +88,62 @@ from agents.general_vqa.evidence.schema import (
 )
 from agents.schema import MaterializedVisualView, VisualTaskPlan
 from models.base import (
-    DenseSemanticClient,
     ObjectDetectionClient,
     ObjectDetectionOutput,
+    SemanticMaskClient,
+    SemanticMaskOutput,
 )
 
-# Stable error code for an approved SegFormer label absent from the client's
-# class map; the approved mapping itself is wrong and must never be guessed.
-# 已批准 SegFormer 标签不在客户端类别映射中的稳定错误码；已批准映射本身
-# 错误，绝不猜测。
-SEGFORMER_CLASS_MAP_MISMATCH = "SEGFORMER_CLASS_MAP_MISMATCH"
+
+def _to_class_grid(class_id_map: Any) -> Image.Image:
+    """Convert any two-dimensional integer class-id structure into an in-memory
+    "I" grid without importing NumPy or torch: either a shape-bearing array or
+    a list of equal-width rows. Non-integer values fail closed.
+    在不导入 NumPy 或 torch 的情况下，把任意二维整数 class-id 结构转换为内存
+    "I" 网格：支持带 shape 的数组或等宽行 list。非整数值严格失败。"""
+
+    shape = getattr(class_id_map, "shape", None)
+    if shape is not None:
+        if len(shape) != 2:
+            raise ValueError("class_id_map must be two-dimensional")
+        height, width = int(shape[0]), int(shape[1])
+        flattened = class_id_map.reshape(-1)
+        values = (
+            flattened.tolist() if hasattr(flattened, "tolist") else list(flattened)
+        )
+    elif isinstance(class_id_map, (list, tuple)) and class_id_map:
+        height = len(class_id_map)
+        width = len(class_id_map[0])
+        if any(
+            not isinstance(row, (list, tuple)) or len(row) != width
+            for row in class_id_map
+        ):
+            raise ValueError("class_id_map rows must have equal width")
+        values = [value for row in class_id_map for value in row]
+    else:
+        raise ValueError("class_id_map must be a two-dimensional integer grid")
+    if width <= 0 or height <= 0:
+        raise ValueError("class_id_map dimensions must be positive")
+    for value in values:
+        integer = int(value)
+        if integer != value:
+            raise ValueError("class_id_map contains a non-integer class ID")
+    data = array.array("i", (int(value) for value in values))
+    return Image.frombytes("I", (width, height), data.tobytes())
+
+
+def _leaf_boolean_grid(grid: Image.Image, class_ids: frozenset[int]) -> Image.Image:
+    """Boolean presence grid of one leaf over an integer class-id grid: pixels
+    whose class id belongs to the leaf become 255. Unrequested classes stay 0
+    (background) and never reach the segments/legend. PIL's point() with a
+    callable is a no-op on I-mode images, so the grid is scanned via raw bytes
+    instead. 一张整数 class-id grid 上某叶子的布尔存在网格：类别 id 属于该叶子
+    的像素为 255。未请求类别保持 0（背景），绝不进入 segments/legend。PIL
+    的 point() 在 I 模式下对 callable 是空操作，因此改为扫描原始字节。"""
+
+    values = array.array("i", grid.tobytes())
+    present = bytes(255 if class_id in class_ids else 0 for class_id in values)
+    return Image.frombytes("L", grid.size, present)
 
 
 def _pixel_xyxy_to_999(
@@ -151,6 +220,14 @@ class EvidenceExecution:
     layer_states: tuple[LayerStateRecord, ...]
     outcomes: tuple[RoiLeafOutcome, ...]
     masks: Mapping[tuple[str, str], Any]
+    # Deterministic SegFormer mask palette (frozen 14.12.2), computed once per
+    # executor from catalog segformer-capable leaves in catalog order. It is
+    # in-memory-only: never persisted, but folded into the final-Qwen request
+    # hash through the rendered mask image digests and evidence_identity.
+    # 确定性 SegFormer mask 调色表（冻结 14.12.2），按 catalog 中启用 segformer
+    # 的叶子顺序每执行器计算一次。仅存内存：绝不持久化，但通过渲染 mask 图像
+    # 摘要与 evidence_identity 折叠进最终 Qwen 请求 hash。
+    palette: Mapping[str, tuple[int, int, int]] = field(default_factory=dict)
 
 
 def _iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
@@ -191,29 +268,22 @@ def _audit_identity(
     return "unknown", digest
 
 
-def _mask_presence(probabilities: Any, class_indices: list[int], threshold: float) -> Any:
-    """Duck-typed boolean presence mask: pixels whose argmax class is ANY of
-    the leaf's class indices (OR, not AND — a pixel has exactly one argmax
-    class, so consecutive ANDs of mutually exclusive classes would always be
-    empty) with max probability at least the threshold. No box, no count, no
-    runtime import — operates on the client's arrays through their own
-    methods only. 鸭子类型布尔存在掩膜：argmax 类别属于叶子类别索引中任意一
-    个（OR 而非 AND——像素只有一个 argmax 类别，对互斥类别连续 AND 必然为空）
-    且最大概率不低于阈值的像素。不转框、不计数、不导入运行时——只通过客户端
-    数组自身的方法操作。"""
-    max_prob = probabilities.max(axis=0)
-    best = probabilities.argmax(axis=0)
-    present = max_prob >= threshold
-    if not class_indices:
-        # No approved labels: the leaf cannot be present anywhere; keep the
-        # presence honest instead of treating every pixel as the leaf.
-        # 无已批准标签：叶子任何位置都不可能存在；保持存在性诚实，而不是把
-        # 每个像素都当成该叶子。
-        return present & (best != best)
-    class_mask = best == class_indices[0]
-    for index in class_indices[1:]:
-        class_mask = class_mask | (best == index)
-    return present & class_mask
+def _segformer_audit_identity(
+    output: SemanticMaskOutput | None,
+    client: SemanticMaskClient,
+) -> tuple[str, str | None]:
+    """Stable audit identity of one segment call: the logical model id comes
+    from the call's own diagnostics when available, otherwise from the client
+    cache identity; the weights digest likewise. Never a physical path.
+    一次 segment 调用的稳定审计身份：逻辑模型 id 优先取调用自身 diagnostics，
+    否则取客户端缓存身份；权重摘要同理。绝不出现物理路径。"""
+    if output is not None:
+        diagnostics = getattr(output, "diagnostics", None)
+        if isinstance(diagnostics, Mapping):
+            model_id = diagnostics.get("logical_model_id")
+            if isinstance(model_id, str) and model_id:
+                return model_id, output.weights_sha256
+    return _audit_identity([], client)
 
 
 class ObjectEvidenceExecutor:
@@ -226,47 +296,59 @@ class ObjectEvidenceExecutor:
         self,
         *,
         catalog: EvidenceCatalog,
-        policy: EvidencePolicy,
+        policy: EvidencePolicy | None,
         yolo_client: ObjectDetectionClient | None,
-        yolo_device: str,
-        yolo_image_size: int,
-        segformer_client: DenseSemanticClient | None,
-        segformer_tile_size: int | None = None,
-        segformer_tile_overlap: int | None = None,
-        segformer_feature_stage: int | None = None,
+        yolo_device: str | None,
+        yolo_image_size: int | None,
+        segmenter_clients: Mapping[str, SemanticMaskClient],
+        preprocessing: EvidencePreprocessing,
     ) -> None:
-        if yolo_image_size <= 0:
-            raise ValueError("yolo_image_size must be positive")
-        # Tile policy is inject-only: no production default exists, so the
-        # values are required exactly when a SegFormer client is present and
-        # otherwise stay None. 切片策略仅注入：无生产默认值，因此仅当存在
-        # SegFormer client 时才必须提供，否则保持 None。
-        if segformer_tile_size is not None and segformer_tile_size <= 0:
-            raise ValueError("segformer_tile_size must be positive")
-        if segformer_tile_overlap is not None and (
-            segformer_tile_size is None
-            or not 0 <= segformer_tile_overlap < segformer_tile_size
-        ):
-            raise ValueError("segformer_tile_overlap must be within [0, tile_size)")
-        if segformer_feature_stage is not None and segformer_feature_stage < 0:
-            raise ValueError("segformer_feature_stage must be non-negative")
-        if segformer_client is not None and (
-            segformer_tile_size is None
-            or segformer_tile_overlap is None
-            or segformer_feature_stage is None
-        ):
+        # The YOLO client and its device/image-size policy are all-or-none;
+        # the detector policy is inject-only and required exactly when a
+        # YOLO client is present. The frozen tile protocol fixes the model
+        # reference size at 1024 square, so any other injected size fails
+        # closed instead of silently letterboxing to the wrong resolution.
+        #  YOLO client 与 device/image-size 策略全有或全无；detector 策略仅
+        # 注入，且仅在存在 YOLO client 时必须提供。冻结 tile 协议固定模型
+        # 参考尺寸为 1024 方形，因此注入任何其他尺寸都严格失败，而不是悄悄
+        # letterbox 到错误分辨率。
+        if (yolo_client is None) != (yolo_device is None):
+            raise ValueError("yolo_device is required exactly when a yolo client is present")
+        if (yolo_client is None) != (yolo_image_size is None):
             raise ValueError(
-                "SegFormer tile policy is required when a segformer client is present"
+                "yolo_image_size is required exactly when a yolo client is present"
             )
+        if yolo_client is not None:
+            if yolo_image_size is None or yolo_image_size <= 0:
+                raise ValueError("yolo_image_size must be positive")
+            if yolo_image_size != MODEL_INPUT_SIZE:
+                raise ValueError(
+                    "the frozen evidence tile protocol requires yolo_image_size 1024"
+                )
+            if policy is None:
+                raise ValueError("a yolo client requires the inject-only detector policy")
+        if not isinstance(segmenter_clients, Mapping) or any(
+            not isinstance(binding, str) or not binding for binding in segmenter_clients
+        ):
+            raise ValueError("segmenter_clients must map non-empty binding ids to clients")
         self._catalog = catalog
         self._policy = policy
         self._yolo_client = yolo_client
         self._yolo_device = yolo_device
         self._yolo_image_size = yolo_image_size
-        self._segformer_client = segformer_client
-        self._segformer_tile_size = segformer_tile_size
-        self._segformer_tile_overlap = segformer_tile_overlap
-        self._segformer_feature_stage = segformer_feature_stage
+        self._segmenter_clients = segmenter_clients
+        self._preprocessing = preprocessing
+        # One deterministic palette per executor over the catalog's segformer
+        # leaf order; rendering and the final Qwen content both draw from it.
+        # 每执行器一份按 catalog segformer 叶子顺序的确定性调色表；渲染与
+        # 最终 Qwen content 都取自它。
+        self._palette = segformer_palette(
+            [
+                leaf
+                for leaf in catalog.leaf_categories
+                if catalog.capability_enabled(leaf, "segformer")
+            ]
+        )
 
     def execute(
         self,
@@ -297,10 +379,12 @@ class ObjectEvidenceExecutor:
         object_evidence_vqa family with a validated evidence request; the
         bundle is assembled by roi_id and stable leaf order. All accumulation
         state is re-created per call, so one executor serves many plans without
-        any cross-plan leakage. 对一个计划运行冻结状态机。计划必须是
-        object_evidence_vqa 家族且携带已校验证据请求；bundle 按 roi_id 与稳定
-        leaf order 组装。所有累积状态在每次调用时重新创建，一个执行器可服务
-        多个计划而无跨计划泄漏。"""
+        any cross-plan leakage. A single bounded worker pool serves one
+        execution lifecycle and is closed before the bundle is assembled.
+        对一个计划运行冻结状态机。计划必须是 object_evidence_vqa 家族且携带
+        已校验证据请求；bundle 按 roi_id 与稳定 leaf order 组装。所有累积状态
+        在每次调用时重新创建，一个执行器可服务多个计划而无跨计划泄漏。一次
+        execution 生命周期使用单个有界 worker pool，在组装 bundle 前关闭。"""
         self._audits: list[ModelCallAudit] = []
         self._outcomes: list[RoiLeafOutcome] = []
         self._masks: dict[tuple[str, str], Any] = {}
@@ -314,12 +398,22 @@ class ObjectEvidenceExecutor:
             task="general_vqa",
         )
         records = self._materialized_regions(materialized_views, images)
+        tile_plan = self._materialize_tiles(records, images)
 
-        hit_leaves, detections = self._yolo_phase(images, records, leaves)
-        segments = self._segformer_phase(images, records, leaves, hit_leaves)
+        with ThreadPoolExecutor(
+            max_workers=self._preprocessing.max_tile_concurrency
+        ) as pool:
+            hit_leaves, detections = self._yolo_phase(
+                pool, tile_plan, records, leaves, images
+            )
+            segments = self._segformer_phase(
+                pool, tile_plan, records, leaves, hit_leaves
+            )
         layer_states, final_states, missing = self._aggregate(leaves)
         bundle = VqaEvidenceBundle(
             catalog_version=self._catalog.catalog_version,
+            preprocessing_version=self._preprocessing.version,
+            tiles=[tile_record for tile_record, _, _ in tile_plan],
             rois=[record for record in records],
             detections=detections,
             segments=segments,
@@ -332,6 +426,7 @@ class ObjectEvidenceExecutor:
             layer_states=tuple(layer_states),
             outcomes=tuple(self._outcomes),
             masks=dict(self._masks),
+            palette=dict(self._palette),
         )
 
     def _materialized_regions(
@@ -366,99 +461,206 @@ class ObjectEvidenceExecutor:
             )
         return records
 
+    def _materialize_tiles(
+        self,
+        records: list[RoiEvidenceRecord],
+        images: Mapping[str, Image.Image],
+    ) -> list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]]:
+        """Synchronously materialize every ROI crop and its deterministic
+        1024x1024 tiles before any model call; this stable plan order is the
+        only merge order, never completion order. 在任何模型调用前同步物化每
+        个 ROI 裁切及其确定性 1024x1024 tiles；这份稳定 plan 顺序是唯一合并
+        顺序，绝不使用完成顺序。"""
+        plan: list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]] = []
+        for record in records:
+            crop = render_roi_crop(images[record.image_id], record)
+            for tile_record in partition_roi(
+                record, tile_size=self._preprocessing.tile_size
+            ):
+                plan.append((tile_record, prepare_model_tile(crop, tile_record), record))
+        return plan
+
+    # ── worker jobs / worker 任务 ───────────────────────────────────────
+
+    def _call_yolo_tile(
+        self,
+        tile_image: Image.Image,
+    ) -> tuple[list[ObjectDetectionOutput] | None, str | None]:
+        """One YOLO call on one prepared 1024x1024 tile, isolated in this
+        worker: exceptions become a stable type-name code, and every returned
+        detection must reference the strict 1024-square model input or the
+        tile call fails closed. 对一张已准备的 1024x1024 tile 执行一次 YOLO
+        调用，并在 worker 内隔离：异常转稳定类型名；所有返回检测必须引用严格
+        1024 方形模型输入，否则该 tile 调用严格失败。"""
+        try:
+            outputs = self._yolo_client.detect(
+                tile_image,
+                confidence=self._policy.confidence_threshold,
+                iou=self._policy.nms_iou_threshold,
+                image_size=self._yolo_image_size,
+                device=self._yolo_device,
+                max_detections=self._policy.max_detections,
+            )
+        except Exception as exc:
+            return None, type(exc).__name__
+        if not outputs:
+            return [], None
+        for output in outputs:
+            if (
+                output.input_width != MODEL_INPUT_SIZE
+                or output.input_height != MODEL_INPUT_SIZE
+            ):
+                return None, "unexpected_model_input_size"
+        return outputs, None
+
+    def _call_segformer_tile(
+        self,
+        client: SemanticMaskClient,
+        tile_image: Image.Image,
+    ) -> tuple[SemanticMaskOutput | None, str | None]:
+        """One segment call on one prepared 1024x1024 tile, isolated in this
+        worker: exceptions become a stable type-name code, and the returned
+        map must stay aligned to the 1024-square model tile or the tile call
+        fails closed. 对一张已准备的 1024x1024 tile 执行一次 segment 调用，并
+        在 worker 内隔离：异常转稳定类型名；返回 map 必须保持与 1024 方形模型
+        tile 对齐，否则该 tile 调用严格失败。"""
+        try:
+            output = client.segment(tile_image)
+        except Exception as exc:
+            return None, type(exc).__name__
+        if output.original_size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+            return None, "unexpected_model_input_size"
+        return output, None
+
     # ── helpers / 辅助 ─────────────────────────────────────────────────
 
     def _yolo_phase(
         self,
-        images: Mapping[str, Image.Image],
+        pool: ThreadPoolExecutor,
+        tile_plan: list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]],
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
+        images: Mapping[str, Image.Image],
     ) -> tuple[set[str], list[YoloDetectionRecord]]:
-        """YOLO once per ROI, filter every requested leaf from one output.
-        Confidence is consumed internally only: thresholding, top-k retention,
-        and the cross-ROI greedy dedup in whole-image coordinates.
-        每个 ROI 运行一次 YOLO，从一次输出过滤全部请求叶子。confidence 仅在
-        内部消费：阈值、top-k 保留与 whole-image 坐标下的跨 ROI 贪心去重。"""
-        hit_leaves: set[str] = set()
-        detected: list[tuple[float, YoloDetectionRecord]] = []
+        """One detector call per prepared tile, dispatched into the shared
+        bounded pool and merged in stable tile order. A leaf with no YOLO
+        capability never triggers a call; requests with no YOLO-capable leaf
+        at all make zero calls. Confidence stays internal: thresholding,
+        per-(roi, leaf) top-k retention, and the cross-ROI dedup in
+        whole-image coordinates. 对每个已准备 tile 各调用一次 detector，派发到
+        共享有界 pool 并按稳定 tile 顺序合并。无 YOLO 能力的叶子绝不触发调用；
+        请求中完全没有 YOLO 能力叶子时零调用。confidence 仅内部消费：阈值、
+        逐（ROI，叶子）top-k 保留与 whole-image 坐标下的跨 ROI 去重。"""
+        yolo_leaves = [
+            leaf for leaf in leaves if self._catalog.capability_enabled(leaf, "yolo")
+        ]
         for record in records:
-            crop = render_roi_crop(images[record.image_id], record)
-            outputs: list[ObjectDetectionOutput] | None = None
-            failed_code: str | None = None
-            if self._yolo_client is not None:
-                try:
-                    outputs = self._yolo_client.detect(
-                        crop,
-                        confidence=self._policy.confidence_threshold,
-                        iou=self._policy.nms_iou_threshold,
-                        image_size=self._yolo_image_size,
-                        device=self._yolo_device,
-                        max_detections=self._policy.max_detections,
-                    )
-                except Exception as exc:
-                    failed_code = type(exc).__name__
-            if outputs is not None or failed_code is not None:
-                logical_model_id, digest = _audit_identity(
-                    outputs or [], self._yolo_client
-                )
-                self._audits.append(
-                    ModelCallAudit(
-                        layer="yolo",
-                        roi_id=record.roi_id,
-                        input_size=crop.size,
-                        logical_model_id=logical_model_id,
-                        weights_sha256=digest,
-                        status="failed" if failed_code is not None else "succeeded",
-                        error_code=failed_code,
-                    )
-                )
             for leaf in leaves:
-                if not self._catalog.capability_enabled(leaf, "yolo"):
+                if leaf not in yolo_leaves:
                     self._outcomes.append(
                         RoiLeafOutcome(record.roi_id, leaf, "yolo", "unsupported")
                     )
-                    continue
-                if self._yolo_client is None:
+        if self._yolo_client is None:
+            for record in records:
+                for leaf in yolo_leaves:
                     self._outcomes.append(
                         RoiLeafOutcome(record.roi_id, leaf, "yolo", "unavailable")
                     )
+            return set(), []
+        if not yolo_leaves:
+            return set(), []
+        futures = [
+            pool.submit(self._call_yolo_tile, tile_image)
+            for _, tile_image, _ in tile_plan
+        ]
+        results = [future.result() for future in futures]
+        candidates: dict[
+            tuple[str, str], list[tuple[float, ObjectDetectionOutput, int]]
+        ] = {}
+        failed_tiles: dict[tuple[str, str], str] = {}
+        for index, (tile_record, _, record) in enumerate(tile_plan):
+            outputs, failed_code = results[index]
+            logical_model_id, digest = _audit_identity(
+                outputs or [], self._yolo_client
+            )
+            self._audits.append(
+                ModelCallAudit(
+                    layer="yolo",
+                    roi_id=record.roi_id,
+                    tile_id=tile_record.tile_id,
+                    input_size=(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+                    logical_model_id=logical_model_id,
+                    weights_sha256=digest,
+                    status="failed" if failed_code is not None else "succeeded",
+                    error_code=failed_code,
+                )
+            )
+            if failed_code is not None:
+                for leaf in yolo_leaves:
+                    failed_tiles.setdefault((record.roi_id, leaf), failed_code)
+                continue
+            for leaf in yolo_leaves:
+                leaf_labels = set(self._catalog.leaf_yolo_labels(leaf))
+                for output in outputs:
+                    if output.label in leaf_labels:
+                        candidates.setdefault((record.roi_id, leaf), []).append(
+                            (output.confidence, output, index)
+                        )
+        detected: list[tuple[float, YoloDetectionRecord]] = []
+        degenerate: set[tuple[str, str]] = set()
+        hits: set[tuple[str, str]] = set()
+        for (roi_id, leaf), items in candidates.items():
+            retained = sorted(items, key=lambda item: item[0], reverse=True)[
+                : self._policy.max_detections
+            ]
+            for confidence, output, index in retained:
+                tile_record, _, record = tile_plan[index]
+                try:
+                    local_box = model_xyxy_to_roi_xyxy(output.xyxy, tile_record)
+                except ValueError:
+                    # Clipped-away degenerate boxes are dropped; a minimum box
+                    # is never fabricated. 裁剪后退化的框直接丢弃；绝不伪造最小框。
+                    degenerate.add((roi_id, leaf))
                     continue
-                if failed_code is not None:
+                detected.append(
+                    (
+                        confidence,
+                        YoloDetectionRecord(
+                            leaf_category=leaf,
+                            roi_id=roi_id,
+                            local_xyxy=local_box,
+                            local_roi_size=record.crop_size,
+                            global_xyxy=local_to_global(local_box, record),
+                            global_image_size=images[record.image_id].size,
+                        ),
+                    )
+                )
+                hits.add((roi_id, leaf))
+        hit_leaves: set[str] = set()
+        for record in records:
+            for leaf in yolo_leaves:
+                key = (record.roi_id, leaf)
+                if key in hits:
+                    hit_leaves.add(leaf)
+                    self._outcomes.append(
+                        RoiLeafOutcome(record.roi_id, leaf, "yolo", "hit")
+                    )
+                elif key in failed_tiles:
                     self._outcomes.append(
                         RoiLeafOutcome(
-                            record.roi_id, leaf, "yolo", "error", failed_code
+                            record.roi_id, leaf, "yolo", "error", failed_tiles[key]
                         )
                     )
-                    continue
-                assert outputs is not None
-                leaf_labels = set(self._catalog.leaf_yolo_labels(leaf))
-                leaf_outputs = [o for o in outputs if o.label in leaf_labels]
-                if not leaf_outputs:
+                elif key in degenerate:
+                    self._outcomes.append(
+                        RoiLeafOutcome(
+                            record.roi_id, leaf, "yolo", "missing", "degenerate_box"
+                        )
+                    )
+                else:
                     self._outcomes.append(
                         RoiLeafOutcome(record.roi_id, leaf, "yolo", "missing")
                     )
-                    continue
-                retained = sorted(
-                    leaf_outputs, key=lambda o: o.confidence, reverse=True
-                )[: self._policy.max_detections]
-                for detection in retained:
-                    detected.append(
-                        (
-                            detection.confidence,
-                            YoloDetectionRecord(
-                                leaf_category=leaf,
-                                roi_id=record.roi_id,
-                                local_xyxy=detection.xyxy,
-                                local_roi_size=crop.size,
-                                global_xyxy=local_to_global(detection.xyxy, record),
-                                global_image_size=images[record.image_id].size,
-                            ),
-                        )
-                    )
-                hit_leaves.add(leaf)
-                self._outcomes.append(
-                    RoiLeafOutcome(record.roi_id, leaf, "yolo", "hit")
-                )
         return hit_leaves, self._dedup_global(detected)
 
     def _dedup_global(
@@ -488,54 +690,27 @@ class ObjectEvidenceExecutor:
 
     def _segformer_phase(
         self,
-        images: Mapping[str, Image.Image],
+        pool: ThreadPoolExecutor,
+        tile_plan: list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]],
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
         hit_leaves: set[str],
     ) -> list[SegFormerEvidenceRecord]:
-        """SegFormer once per ROI while any still-missing leaf has an approved
-        capability; a leaf that hits in one ROI is not_run in later ROIs and
-        never re-filtered. Masks stay per-ROI in memory; only (leaf, roi)
-        presence records are persisted. 只要仍有缺失且具备批准能力的叶子，每个
-        ROI 运行一次 SegFormer；在某 ROI 命中的叶子在后续 ROI 为 not_run 且
-        绝不重筛。mask 只在内存中按 ROI 保留；持久化只有（叶子，ROI）存在性
-        记录。"""
-        segments: list[SegFormerEvidenceRecord] = []
+        """Resolve each still-missing leaf through its verified segmenter
+        binding: one call per (binding, ROI tile) into the shared bounded
+        pool, merged in roi order -> binding order -> row -> column. Only
+        requested leaves become evidence — unrequested classes stay
+        background, no box/count is derived, no cross-checkpoint comparison
+        happens, and a YOLO hit is never re-run or overwritten. The output
+        class map must match the catalog raw labels or the leaf fails closed.
+        通过已验证 segmenter binding 解析每个仍缺失叶子：每个（binding，ROI
+        tile）调用一次（共享有界 pool），按 roi order -> binding order ->
+        row -> column 合并。只有请求叶子成为证据——未请求类别保持背景，不派生
+        框/计数，不做跨 checkpoint 比较，YOLO 命中绝不重跑或覆盖。输出 class
+        map 必须与 catalog raw labels 一致，否则叶子严格失败。"""
+        binding_leaves: dict[str, dict[str, list[str]]] = {}
+        binding_order: list[str] = []
         for record in records:
-            crop = render_roi_crop(images[record.image_id], record)
-            still_missing = [
-                leaf
-                for leaf in leaves
-                if leaf not in hit_leaves
-                and self._catalog.capability_enabled(leaf, "segformer")
-            ]
-            output = None
-            failed_code: str | None = None
-            if still_missing and self._segformer_client is not None:
-                try:
-                    output = self._segformer_client.infer(
-                        crop,
-                        tile_size=self._segformer_tile_size,
-                        tile_overlap=self._segformer_tile_overlap,
-                        feature_stage=self._segformer_feature_stage,
-                    )
-                except Exception as exc:
-                    failed_code = type(exc).__name__
-            if output is not None or failed_code is not None:
-                logical_model_id, digest = _audit_identity([], self._segformer_client)
-                if output is not None and output.weights_sha256:
-                    digest = output.weights_sha256
-                self._audits.append(
-                    ModelCallAudit(
-                        layer="segformer",
-                        roi_id=record.roi_id,
-                        input_size=crop.size,
-                        logical_model_id=logical_model_id,
-                        weights_sha256=digest,
-                        status="failed" if failed_code is not None else "succeeded",
-                        error_code=failed_code,
-                    )
-                )
             for leaf in leaves:
                 if leaf in hit_leaves:
                     if self._catalog.capability_enabled(leaf, "segformer"):
@@ -548,57 +723,175 @@ class ObjectEvidenceExecutor:
                         RoiLeafOutcome(record.roi_id, leaf, "segformer", "unsupported")
                     )
                     continue
-                if self._segformer_client is None:
+                binding = self._catalog.leaf_segformer_binding(leaf)
+                if binding is None or binding not in self._segmenter_clients:
                     self._outcomes.append(
-                    RoiLeafOutcome(record.roi_id, leaf, "segformer", "unavailable")
+                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "unavailable")
                     )
                     continue
-                if failed_code is not None:
-                    self._outcomes.append(
-                        RoiLeafOutcome(
-                            record.roi_id, leaf, "segformer", "error", failed_code
+                if binding not in binding_order:
+                    binding_order.append(binding)
+                binding_leaves.setdefault(binding, {}).setdefault(
+                    record.roi_id, []
+                ).append(leaf)
+        if not binding_order:
+            return []
+        # Per (binding, ROI) dispatch over that ROI's tiles into the shared
+        # pool; results are merged by stable tile index afterwards.
+        # 按（binding，ROI）把该 ROI 的 tiles 派发到共享 pool；之后按稳定
+        # tile index 合并。
+        group_results: dict[
+            tuple[str, str], list[tuple[SemanticMaskOutput | None, str | None]]
+        ] = {}
+        for binding in binding_order:
+            client = self._segmenter_clients[binding]
+            for roi_id in binding_leaves[binding]:
+                indexes = [
+                    index
+                    for index, (_, _, record) in enumerate(tile_plan)
+                    if record.roi_id == roi_id
+                ]
+                futures = [
+                    pool.submit(self._call_segformer_tile, client, tile_plan[index][1])
+                    for index in indexes
+                ]
+                group_results[(binding, roi_id)] = [
+                    future.result() for future in futures
+                ]
+        segments: list[SegFormerEvidenceRecord] = []
+        for record in records:
+            for binding in binding_order:
+                roi_leaves = binding_leaves[binding].get(record.roi_id)
+                if not roi_leaves:
+                    continue
+                results = group_results[(binding, record.roi_id)]
+                indexes = [
+                    index
+                    for index, (_, _, item) in enumerate(tile_plan)
+                    if item.roi_id == record.roi_id
+                ]
+                id_to_label: Mapping[int, str] | None = None
+                for position, (output, failed_code) in enumerate(results):
+                    tile_record = tile_plan[indexes[position]][0]
+                    logical_model_id, digest = _segformer_audit_identity(
+                        output, self._segmenter_clients[binding]
+                    )
+                    self._audits.append(
+                        ModelCallAudit(
+                            layer="segformer",
+                            roi_id=record.roi_id,
+                            tile_id=tile_record.tile_id,
+                            input_size=(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+                            logical_model_id=logical_model_id,
+                            weights_sha256=digest,
+                            status="failed" if failed_code is not None else "succeeded",
+                            error_code=failed_code,
                         )
                     )
-                    continue
-                if output is None:
-                    # No call happened for this ROI (every capable leaf was
-                    # already hit at an upper layer); a still missing leaf
-                    # without a call keeps its prior decision.
-                    # 本 ROI 未发生调用（全部具备能力的叶子已在更上层命中）；仍
-                    # 缺失且无调用的叶子保持先前决策。
-                    continue
-                labels = self._catalog.leaf_segformer_labels(leaf) or ()
-                try:
-                    indices = [output.class_names.index(label) for label in labels]
-                except ValueError:
+                    if id_to_label is None and output is not None:
+                        id_to_label = output.id_to_label
+                # Strict class-map verification: every requested leaf's raw
+                # labels must exist in the model's authoritative label map.
+                # 严格 class map 校验：每个请求叶子的 raw labels 必须存在于
+                # 模型权威标签映射中。
+                label_map = id_to_label if isinstance(id_to_label, Mapping) else {}
+                leaf_class_ids: dict[str, frozenset[int]] = {}
+                mismatched: set[str] = set()
+                for leaf in roi_leaves:
+                    labels = set(self._catalog.leaf_segformer_labels(leaf) or ())
+                    class_ids = frozenset(
+                        class_id
+                        for class_id, label in label_map.items()
+                        if label in labels
+                    )
+                    if class_ids:
+                        leaf_class_ids[leaf] = class_ids
+                    else:
+                        mismatched.add(leaf)
+                for leaf in mismatched:
                     self._outcomes.append(
                         RoiLeafOutcome(
                             record.roi_id,
                             leaf,
                             "segformer",
                             "error",
-                            SEGFORMER_CLASS_MAP_MISMATCH,
+                            "class_map_mismatch",
                         )
                     )
+                if id_to_label is None:
+                    # Every tile call failed; nothing can be extracted.
+                    # 所有 tile 调用失败；无任何可提取内容。
+                    first_failed = next(
+                        code for _, code in results if code is not None
+                    )
+                    for leaf in roi_leaves:
+                        if leaf not in mismatched:
+                            self._outcomes.append(
+                                RoiLeafOutcome(
+                                    record.roi_id,
+                                    leaf,
+                                    "segformer",
+                                    "error",
+                                    first_failed,
+                                )
+                            )
                     continue
-                presence = _mask_presence(
-                    output.probabilities, indices, self._policy.confidence_threshold
-                )
-                if bool(presence.any()):
-                    segments.append(
-                        SegFormerEvidenceRecord(
-                            leaf_category=leaf, roi_id=record.roi_id
+                # Per-leaf extraction: boolean grid -> NEAREST restore -> ROI
+                # stitch; only a non-empty mask becomes a hit record.
+                # 逐叶子提取：布尔网格 -> NEAREST 恢复 -> ROI 拼接；只有非空
+                # mask 才产生 hit 记录。
+                for leaf in roi_leaves:
+                    if leaf in mismatched:
+                        continue
+                    grouped: list[tuple[EvidenceTileRecord, Image.Image]] = []
+                    tile_failed: str | None = None
+                    for position, (output, failed_code) in enumerate(results):
+                        tile_record = tile_plan[indexes[position]][0]
+                        if failed_code is not None:
+                            tile_failed = tile_failed or failed_code
+                            continue
+                        assert output is not None
+                        try:
+                            grid = _to_class_grid(output.class_id_map)
+                            boolean = _leaf_boolean_grid(grid, leaf_class_ids[leaf])
+                            restored = restore_class_id_mask(boolean, tile_record)
+                        except ValueError:
+                            tile_failed = tile_failed or "mask_geometry"
+                            continue
+                        grouped.append((tile_record, restored))
+                    if tile_failed is not None:
+                        # Incomplete evidence: a failed tile leaves a hole in
+                        # the ROI mask, and the no-hole stitch contract refuses
+                        # to guess background for it. One leaf's tile failure
+                        # must not crash the execution or corrupt other leaves.
+                        # 证据不完整：失败的 tile 在 ROI mask 上留下洞，无洞
+                        # 拼接契约拒绝为它猜测背景。单个叶子的 tile 失败不得使
+                        # 执行崩溃或污染其他叶子。
+                        self._outcomes.append(
+                            RoiLeafOutcome(
+                                record.roi_id,
+                                leaf,
+                                "segformer",
+                                "error",
+                                tile_failed,
+                            )
                         )
-                    )
-                    self._masks[(record.roi_id, leaf)] = presence
-                    hit_leaves.add(leaf)
-                    self._outcomes.append(
-                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "hit")
-                    )
-                else:
-                    self._outcomes.append(
-                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "missing")
-                    )
+                        continue
+                    canvas = stitch_class_id_masks(grouped, record.crop_size)
+                    if canvas.getextrema()[1] > 0:
+                        segments.append(
+                            SegFormerEvidenceRecord(
+                                leaf_category=leaf, roi_id=record.roi_id
+                            )
+                        )
+                        self._masks[(record.roi_id, leaf)] = canvas.convert("L")
+                        self._outcomes.append(
+                            RoiLeafOutcome(record.roi_id, leaf, "segformer", "hit")
+                        )
+                    else:
+                        self._outcomes.append(
+                            RoiLeafOutcome(record.roi_id, leaf, "segformer", "missing")
+                        )
         return segments
 
     def _aggregate(
