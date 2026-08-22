@@ -79,10 +79,16 @@ class PreparedChangeTrainingDataset:
             artifact_dir,
             data_root=self.data_root,
         )
-        mask = np.asarray(Image.open(self._resolve(record.mask_path)).convert("L")) > 0
+        mask_image = Image.open(self._resolve(record.mask_path)).convert("L")
+        target_size = (int(prepared.raw_t1.shape[1]), int(prepared.raw_t1.shape[0]))
+        if mask_image.size != target_size:
+            mask_image = mask_image.resize(target_size, Image.Resampling.NEAREST)
+        mask = np.asarray(mask_image) > 0
         if mask.shape != prepared.raw_t1.shape[:2]:
             raise ValueError("training mask does not match t1 canvas")
         valid = np.asarray(prepared.registration_valid_mask, dtype=bool)
+        if valid.shape != mask.shape:
+            raise ValueError("registration validity mask does not match t1 canvas")
         return PreparedChangeTrainingExample(
             record=record,
             sample=sample,
@@ -90,4 +96,3 @@ class PreparedChangeTrainingDataset:
             target_mask=mask.astype(np.float32),
             loss_valid_mask=valid,
         )
-

@@ -1310,6 +1310,34 @@ def _as_pyramid_output(
     )
 
 
+def infer_semantic_expert_pair(
+    binding: SemanticExpertBinding,
+    prepared: ChangePreparedPair,
+    settings: Any,
+    *,
+    requested_stages: tuple[int, ...],
+) -> SemanticExpertRun:
+    """Run one verified production expert pair for offline consumers.
+
+    Training cache construction uses this narrow public adapter so it shares
+    the exact T1/T2 validation, preprocessing, feature-stage, and client
+    execution path used by online perception.
+    """
+
+    np = _require_numpy()
+    if prepared.raw_t1 is None or prepared.raw_t2 is None:
+        raise ChangePerceptionError("INVALID_CHANGE_PAIR")
+    expected_size = (prepared.raw_t1.shape[1], prepared.raw_t1.shape[0])
+    return _infer_semantic_expert_pair(
+        binding,
+        prepared,
+        settings,
+        expected_size=expected_size,
+        requested_stages=requested_stages,
+        np=np,
+    )
+
+
 def _build_learned_change_request(
     *,
     input_spec: LearnedChangeInputSpec,
@@ -2108,4 +2136,5 @@ __all__ = [
     "SemanticExpertBinding",
     "SemanticExpertEvidence",
     "SemanticExpertRun",
+    "infer_semantic_expert_pair",
 ]

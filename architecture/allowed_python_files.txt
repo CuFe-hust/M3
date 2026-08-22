@@ -289,6 +289,8 @@ tests/models/test_response_cache.py
 tests/models/test_segformer_runtime.py
 tests/models/test_segformer_transformers.py
 tests/models/test_change_head_manifest.py
+tests/models/test_change_head_network.py
+tests/models/test_change_head_runtime.py
 
 # === Migration tooling ===
 scripts/generate_migration_fixtures.py
@@ -318,6 +320,10 @@ training/change_head/losses.py
 training/change_head/release_gate.py
 training/change_head/schema.py
 training/change_head/trainer.py
+
+# === ChangeHead training tests ===
+tests/training/__init__.py
+tests/training/test_change_head_feature_cache.py
 
 # === Reporting tests ===
 tests/reporting/__init__.py
