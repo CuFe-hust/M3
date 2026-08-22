@@ -54,10 +54,13 @@ class ChangeHeadTrainer:
         for batch in batches:
             self.optimizer.zero_grad(set_to_none=True)
             logits = self.network(**batch["network_inputs"])
+            loss_valid_mask = batch.get("loss_valid_mask", batch.get("valid_mask"))
+            if loss_valid_mask is None:
+                raise ValueError("training batch requires loss_valid_mask")
             loss = change_head_loss(
                 logits,
                 batch["target_mask"],
-                batch["valid_mask"],
+                loss_valid_mask,
                 pos_weight=float(batch.get("pos_weight", 1.0)),
             )
             loss.backward()
@@ -67,4 +70,3 @@ class ChangeHeadTrainer:
             total += float(loss.detach().cpu())
             count += 1
         return total / max(1, count)
-

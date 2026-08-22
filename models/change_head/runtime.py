@@ -174,6 +174,7 @@ class TorchLearnedChangeClient:
         valid = self._tensor(request.valid_mask, device=self._device, name="valid_mask")
         if valid.ndim != 2:
             raise ChangeHeadRuntimeError("LEARNED_CHANGE_OUTPUT_INVALID", "valid mask")
+        valid = valid > 0.5
         target_hw = tuple(valid.shape)
         for manifest_expert in self._manifest.experts:
             requirement = requirements[manifest_expert.expert_id]
@@ -206,8 +207,23 @@ class TorchLearnedChangeClient:
                 semantic_probabilities[requirement.expert_id] = (first_sem.unsqueeze(0), second_sem.unsqueeze(0))
             presence[requirement.expert_id] = torch.ones(1, device=self._device)
         pif = None
-        if request.pif_mask is not None:
+        if self._manifest.architecture.use_pif_mask:
+            if request.pif_mask is None:
+                raise ChangeHeadRuntimeError(
+                    "LEARNED_CHANGE_CONTRACT_MISMATCH",
+                    "manifest requires pif_mask",
+                )
             pif = self._tensor(request.pif_mask, device=self._device, name="pif_mask")
+            if pif.ndim != 2 or tuple(pif.shape) != target_hw:
+                raise ChangeHeadRuntimeError(
+                    "LEARNED_CHANGE_OUTPUT_INVALID",
+                    "pif mask shape",
+                )
+        elif request.pif_mask is not None:
+            raise ChangeHeadRuntimeError(
+                "LEARNED_CHANGE_CONTRACT_MISMATCH",
+                "pif_mask supplied to a manifest that disables it",
+            )
         try:
             with torch.no_grad():
                 logits = self._network(
@@ -217,7 +233,11 @@ class TorchLearnedChangeClient:
                     valid_mask=valid.unsqueeze(0),
                     pif_mask=pif.unsqueeze(0) if pif is not None else None,
                 )
-                probability = torch.sigmoid(logits / self._calibration.temperature)[0, 0]
+                probability = torch.sigmoid(logits / self._calibration.temperature)
+                probability = probability * valid.unsqueeze(0).unsqueeze(0).to(
+                    dtype=probability.dtype
+                )
+                probability = probability.clamp(0.0, 1.0)[0, 0]
         except ChangeHeadRuntimeError:
             raise
         except Exception as error:
@@ -227,6 +247,7 @@ class TorchLearnedChangeClient:
         for _ in missing_optional:
             reliability *= self._calibration.optional_expert_missing_reliability_factor
         uncertainty = -(probability * torch.log(probability.clamp_min(1e-6)) + (1 - probability) * torch.log((1 - probability).clamp_min(1e-6)))
+        uncertainty = uncertainty * valid.to(dtype=uncertainty.dtype)
         return LearnedChangeOutput(
             probability_map=probability_array,
             reliability=float(max(0.0, min(1.0, reliability))),

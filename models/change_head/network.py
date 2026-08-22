@@ -21,7 +21,13 @@ except ImportError:  # pragma: no cover - default lightweight environment
 if nn is not None:
 
     class MultiExpertSiameseChangeHead(nn.Module):
-        """Small stable ABI network, replaceable internally by Phase F."""
+        """Small ChangeHead network with explicit mask semantics.
+
+        ``valid_mask`` only establishes the output canvas here.  It is not
+        applied to logits: validity is a post-sigmoid runtime concern and
+        training losses mask invalid pixels explicitly.  A PIF mask is an
+        optional context signal, never a change-validity gate.
+        """
 
         def __init__(self, manifest: ChangeHeadManifest) -> None:
             super().__init__()
@@ -33,6 +39,12 @@ if nn is not None:
                 for expert in manifest.experts
                 for stage in expert.feature_stages
             })
+            self.use_pif_mask = bool(manifest.architecture.use_pif_mask)
+            self.pif_fusion = (
+                nn.Conv2d(1, 1, kernel_size=1)
+                if self.use_pif_mask
+                else None
+            )
             self.logit_bias = nn.Parameter(torch.zeros(1))
 
         def forward(
@@ -41,12 +53,25 @@ if nn is not None:
             expert_features: Mapping[str, tuple[Tensor, Tensor]],
             semantic_probabilities: Mapping[str, tuple[Tensor, Tensor]],
             expert_presence: Mapping[str, Tensor],
-            valid_mask: Tensor,
+            valid_mask: Tensor | None,
             pif_mask: Tensor | None,
             rgb_t1: Tensor | None = None,
             rgb_t2: Tensor | None = None,
         ) -> Tensor:
-            target_size = tuple(valid_mask.shape[-2:])
+            target_size: tuple[int, int] | None = None
+            if valid_mask is not None:
+                target_size = tuple(valid_mask.shape[-2:])
+            if target_size is None:
+                for features in expert_features.values():
+                    if features[0]:
+                        target_size = tuple(features[0][0].shape[-2:])
+                        break
+            if target_size is None:
+                for semantics in semantic_probabilities.values():
+                    target_size = tuple(semantics[0].shape[-2:])
+                    break
+            if target_size is None:
+                raise ValueError("ChangeHead requires a target spatial size")
             pieces: list[Tensor] = []
             for expert in self.manifest.experts:
                 presence = expert_presence[expert.expert_id].reshape(-1, 1, 1, 1)
@@ -62,13 +87,27 @@ if nn is not None:
                     first, second = semantics
                     diff = (first - second).abs().mean(dim=1, keepdim=True)
                     pieces.append(F.interpolate(diff, size=target_size, mode="bilinear", align_corners=False) * presence)
+            if self.use_pif_mask and pif_mask is not None:
+                if pif_mask.ndim == 2:
+                    pif_mask = pif_mask.unsqueeze(0).unsqueeze(0)
+                elif pif_mask.ndim == 3:
+                    pif_mask = pif_mask.unsqueeze(1)
+                if pif_mask.ndim != 4 or pif_mask.shape[1] != 1:
+                    raise ValueError("pif_mask must be [B,H,W] or [B,1,H,W]")
+                if tuple(pif_mask.shape[-2:]) != target_size:
+                    raise ValueError("pif_mask spatial shape must match target")
+                assert self.pif_fusion is not None
+                # PIF contributes context; it is deliberately not multiplied
+                # into logits or interpreted as a change-validity mask.
+                pieces.append(self.pif_fusion(pif_mask.to(dtype=torch.float32)))
             if not pieces:
-                logits = self.logit_bias.expand(valid_mask.shape[0], 1, *target_size)
+                batch_size = 1
+                if valid_mask is not None:
+                    batch_size = int(valid_mask.shape[0]) if valid_mask.ndim >= 3 else 1
+                logits = self.logit_bias.expand(batch_size, 1, *target_size)
             else:
                 logits = torch.stack(pieces, dim=0).mean(dim=0) + self.logit_bias
-            if pif_mask is not None:
-                logits = logits * pif_mask.to(dtype=logits.dtype).reshape(logits.shape[0], 1, *target_size)
-            return logits * valid_mask.to(dtype=logits.dtype).reshape(logits.shape[0], 1, *target_size)
+            return logits
 
 else:
 
