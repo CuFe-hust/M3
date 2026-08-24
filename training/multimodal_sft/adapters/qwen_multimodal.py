@@ -109,7 +109,7 @@ def probe_processor(processor: Any) -> tuple[set[str], list[str], dict[str, Any]
 
         images = [Image.new("RGB", (8, 8), (255, 0, 0)), Image.new("RGB", (8, 8), (0, 255, 0))]
         messages = [
-            {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "probe"}]},
+            {"role": "user", "content": [{"type": "image"}, {"type": "image"}, {"type": "text", "text": "probe"}]},
             {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
         ]
         feature = _legacy().encode_multimodal_episode(
