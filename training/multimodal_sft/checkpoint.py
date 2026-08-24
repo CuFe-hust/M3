@@ -151,6 +151,7 @@ def checkpoint_complete(
         TRAINER_STATE_FILENAME,
         OPTIMIZER_FILENAME,
         SCHEDULER_FILENAME,
+        RNG_STATE_FILENAME,
         "model_trainable_state.safetensors",
         COMPLETION_MARKER_FILENAME,
         "training_log.jsonl",
@@ -174,6 +175,7 @@ def checkpoint_complete(
         marker.get("complete") is True
         and marker.get("manifest_sha256") == file_sha256(root / TRAINING_MANIFEST_FILENAME)
         and marker.get("parameter_plan_sha256") == file_sha256(root / PARAMETER_PLAN_FILENAME)
+        and marker.get("rng_state_sha256") == file_sha256(root / RNG_STATE_FILENAME)
         and manifest.get("parameter_plan_sha256") == identity_fingerprint(plan)
     )
 
@@ -202,6 +204,7 @@ def write_completion_marker(
         "complete": True,
         "manifest_sha256": file_sha256(manifest),
         "parameter_plan_sha256": file_sha256(plan),
+        "rng_state_sha256": file_sha256(root / RNG_STATE_FILENAME),
     }
     temp = target.with_suffix(target.suffix + ".tmp")
     temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")

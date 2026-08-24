@@ -52,6 +52,9 @@ class GenericHFAdapter:
     def validate_trainable_parameters(self, model: Any, parameter_plan: Any) -> None:
         _hf.validate_trainable_parameters(model, parameter_plan)
 
+    def validate_optimizer_parameters(self, model: Any, parameter_plan: Any, groups: Any) -> None:
+        _hf.validate_optimizer_parameters(model, parameter_plan, groups)
+
     def save_trainable_state(self, model: Any, output_path: str | Path, parameter_plan: Any) -> None:
         _hf.save_trainable_state(model, output_path, parameter_plan)
 
@@ -60,6 +63,9 @@ class GenericHFAdapter:
 
     def validate_checkpoint_state(self, checkpoint_dir: str | Path, parameter_plan: Any) -> dict[str, Any]:
         return _hf.validate_checkpoint_state(checkpoint_dir, parameter_plan)
+
+    def validate_checkpoint_ownership(self, model: Any, checkpoint_dir: str | Path, parameter_plan: Any) -> dict[str, Any]:
+        return _hf.validate_checkpoint_ownership(model, checkpoint_dir, parameter_plan)
 
     def export_checkpoint(self, **kwargs: Any) -> dict[str, Any]:
         raise AdapterContractError("generic exporter requires an adapter-specific checkpoint implementation")

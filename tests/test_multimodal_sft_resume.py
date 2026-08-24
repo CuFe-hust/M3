@@ -165,3 +165,12 @@ def test_batching_is_fail_closed(tmp_path: Path) -> None:
     trainer = GenericTrainerCore(adapter=_TinyAdapter(), data_profile=JsonlDataProfile("phase2"))
     with pytest.raises(ValueError, match="GENERIC_BATCHING_NOT_YET_AVAILABLE"):
         trainer.fit(model=_TinyModel(), processor=object(), episodes=_episodes(1), config=TrainingConfig(output_dir=tmp_path, batch_size=2), policy="lora_plus_projector")
+
+
+def test_canonical_checkpoint_requires_rng_state(tmp_path: Path) -> None:
+    _run(tmp_path, count=3, max_steps=1)
+    assert checkpoint_complete(tmp_path)
+    (tmp_path / "rng_state.pt").unlink()
+    assert not checkpoint_complete(tmp_path)
+    with pytest.raises(ValueError, match="incomplete"):
+        _run(tmp_path, count=3, max_steps=1, resume_from=tmp_path)

@@ -145,10 +145,13 @@ def apply_tuning_policy(model: Any, parameter_plan: Any, policy: Any) -> Any:
             modules_to_save=None,
         )
         model = get_peft_model(model, config)
+    lora_names = collect_lora_parameter_names(model)
+    full_parameters = resolve_full_train_parameters(model, parameter_plan)
     for name, parameter in model.named_parameters():
-        dotted = "." + name + "."
-        if any(("." + path + ".") in dotted for path in (*parameter_plan.lora_module_paths, *parameter_plan.full_train_module_paths)):
-            parameter.requires_grad = True
+        parameter.requires_grad = name in lora_names
+    for _canonical, (_actual, parameter) in full_parameters.items():
+        parameter.requires_grad = True
+    validate_trainable_parameters(model, parameter_plan)
     return model
 
 
@@ -163,34 +166,121 @@ def save_checkpoint(model: Any, processor: Any, output_dir: str | Path) -> None:
     save_processor(processor, root / "processor")
 
 
-def validate_trainable_parameters(model: Any, parameter_plan: Any) -> None:
-    """Ensure adapter application did not leak unrelated trainable weights."""
+def canonicalize_model_parameter_name(name: str) -> str:
+    """Map PEFT-wrapped parameter names back to pre-PEFT semantic names."""
 
-    selected = tuple(getattr(parameter_plan, "lora_module_paths", ())) + tuple(
-        getattr(parameter_plan, "full_train_module_paths", ())
-    )
-    trainable = [
-        name for name, parameter in model.named_parameters()
-        if bool(getattr(parameter, "requires_grad", False))
-    ]
-    if not trainable:
-        raise AdapterContractError("parameter plan produced no trainable parameters")
-    unexpected = [
-        name for name in trainable
-        if "lora" not in name.lower()
-        and not any(("." + path + ".") in ("." + name + ".") for path in selected)
-    ]
-    if unexpected:
-        raise AdapterContractError("unexpected trainable parameters: " + ", ".join(unexpected[:8]))
+    value = str(name)
+    while value.startswith("base_model.model.") or value.startswith("base_model."):
+        for prefix in ("base_model.model.", "base_model."):
+            if value.startswith(prefix):
+                value = value[len(prefix):]
+                break
+    value = value.replace(".modules_to_save.default", "")
+    value = value.replace(".lora_A.default.", ".lora_A.")
+    value = value.replace(".lora_B.default.", ".lora_B.")
+    value = value.replace(".lora_embedding_A.default.", ".lora_embedding_A.")
+    value = value.replace(".lora_embedding_B.default.", ".lora_embedding_B.")
+    return value
 
 
 def _canonical_parameter_name(name: str) -> str:
-    value = str(name)
-    for prefix in ("base_model.model.", "base_model."):
-        if value.startswith(prefix):
-            value = value[len(prefix):]
-    value = value.replace(".modules_to_save.default", "")
-    return value
+    return canonicalize_model_parameter_name(name)
+
+
+def _is_lora_parameter_name(name: str) -> bool:
+    segments = canonicalize_model_parameter_name(name).lower().split(".")
+    return any(segment.startswith("lora_") for segment in segments)
+
+
+def collect_lora_parameter_names(model: Any, *, trainable_only: bool = False) -> set[str]:
+    """Return actual PEFT LoRA parameter names, not target-module parents."""
+
+    return {
+        name
+        for name, parameter in model.named_parameters()
+        if _is_lora_parameter_name(name)
+        and (not trainable_only or bool(getattr(parameter, "requires_grad", False)))
+    }
+
+
+def _canonical_parameter_map(model: Any) -> dict[str, tuple[str, Any]]:
+    result: dict[str, tuple[str, Any]] = {}
+    for actual, parameter in model.named_parameters():
+        canonical = canonicalize_model_parameter_name(actual)
+        if canonical in result and result[canonical][0] != actual:
+            raise AdapterContractError(f"ambiguous canonical parameter name: {canonical}")
+        result[canonical] = (actual, parameter)
+    return result
+
+
+def resolve_full_train_parameters(model: Any, parameter_plan: Any) -> dict[str, tuple[str, Any]]:
+    """Resolve exact pre-PEFT full-train names to one post-PEFT parameter."""
+
+    by_canonical = _canonical_parameter_map(model)
+    resolved: dict[str, tuple[str, Any]] = {}
+    for planned in getattr(parameter_plan, "full_train_parameter_names", ()):
+        canonical = canonicalize_model_parameter_name(planned)
+        match = by_canonical.get(canonical)
+        if match is None:
+            raise AdapterContractError(f"full-train parameter cannot be resolved: {planned}")
+        resolved[canonical] = match
+    return resolved
+
+
+def _expected_trainable_names(model: Any, parameter_plan: Any) -> tuple[set[str], set[str]]:
+    lora = collect_lora_parameter_names(model)
+    full = {actual for actual, _parameter in resolve_full_train_parameters(model, parameter_plan).values()}
+    if lora & full:
+        raise AdapterContractError("LoRA/full-train trainable sets overlap")
+    return lora, full
+
+
+def validate_trainable_parameters(model: Any, parameter_plan: Any) -> dict[str, Any]:
+    """Require exactly LoRA tensors plus exact planned full-train tensors."""
+
+    expected_lora, expected_full = _expected_trainable_names(model, parameter_plan)
+    actual = {
+        name
+        for name, parameter in model.named_parameters()
+        if bool(getattr(parameter, "requires_grad", False))
+    }
+    expected = expected_lora | expected_full
+    leakage = sorted(
+        name for name in actual - expected
+        if ".base_layer." in ("." + name + ".") or not _is_lora_parameter_name(name)
+    )
+    if leakage:
+        raise AdapterContractError("base_weight_trainable_leakage: " + ", ".join(leakage[:8]))
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unexpected = sorted(actual - expected)
+        raise AdapterContractError(
+            f"trainable-set mismatch: missing={missing[:8]} unexpected={unexpected[:8]}"
+        )
+    if not actual:
+        raise AdapterContractError("parameter plan produced no trainable parameters")
+    return {
+        "lora_parameter_names": sorted(expected_lora),
+        "full_train_parameter_names": sorted(expected_full),
+        "base_layer_trainable_leakage": 0,
+    }
+
+
+def validate_optimizer_parameters(model: Any, parameter_plan: Any, groups: Any) -> None:
+    """Ensure optimizer groups contain exactly the adapter-owned trainables."""
+
+    expected_lora, expected_full = _expected_trainable_names(model, parameter_plan)
+    expected_ids = {
+        id(parameter)
+        for name, parameter in model.named_parameters()
+        if name in expected_lora or name in expected_full
+    }
+    optimizer_ids = {id(parameter) for group in groups for parameter in group.get("params", ())}
+    if optimizer_ids != expected_ids:
+        raise AdapterContractError("optimizer trainable-set mismatch")
+    for name, parameter in model.named_parameters():
+        if id(parameter) in optimizer_ids and ".base_layer." in ("." + name + "."):
+            raise AdapterContractError("base_weight_trainable_leakage in optimizer")
 
 
 def _load_tensor_file(path: Path) -> dict[str, Any]:
@@ -248,12 +338,9 @@ def validate_checkpoint_state(checkpoint_dir: str | Path, parameter_plan: Any) -
 def save_trainable_state(model: Any, output_path: str | Path, parameter_plan: Any) -> None:
     """Persist only full-train connector tensors with stable semantic names."""
 
-    full_paths = tuple(getattr(parameter_plan, "full_train_module_paths", ()))
     state = {
-        _canonical_parameter_name(name): value.detach().cpu()
-        for name, value in model.named_parameters()
-        if bool(getattr(value, "requires_grad", False))
-        and any(("." + path + ".") in ("." + name + ".") for path in full_paths)
+        canonical: parameter.detach().cpu()
+        for canonical, (_actual, parameter) in resolve_full_train_parameters(model, parameter_plan).items()
     }
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -264,6 +351,26 @@ def save_trainable_state(model: Any, output_path: str | Path, parameter_plan: An
         torch.save(state, target)
     else:
         save_file(state, str(target))
+
+
+def validate_checkpoint_ownership(model: Any, checkpoint_dir: str | Path, parameter_plan: Any) -> dict[str, Any]:
+    """Verify every actual trainable tensor has a persisted owner."""
+
+    audit = validate_checkpoint_state(checkpoint_dir, parameter_plan)
+    adapter_state = set(audit["adapter_keys"])
+    full_state = set(audit["full_train_keys"])
+    owned = adapter_state | full_state
+    actual = {
+        canonicalize_model_parameter_name(name)
+        for name, parameter in model.named_parameters()
+        if bool(getattr(parameter, "requires_grad", False))
+    }
+    if actual != owned:
+        raise AdapterContractError(
+            "checkpoint-owned trainable mismatch: "
+            f"missing={sorted(actual - owned)[:8]} unexpected={sorted(owned - actual)[:8]}"
+        )
+    return audit
 
 
 def restore_trainable_state(
@@ -277,7 +384,12 @@ def restore_trainable_state(
 
     root = Path(checkpoint_dir)
     model_state = model.state_dict()
-    actual_by_canonical = {_canonical_parameter_name(name): name for name in model_state}
+    actual_by_canonical: dict[str, str] = {}
+    for name in model_state:
+        canonical = canonicalize_model_parameter_name(name)
+        if canonical in actual_by_canonical and actual_by_canonical[canonical] != name:
+            raise AdapterContractError(f"ambiguous canonical model state name: {canonical}")
+        actual_by_canonical[canonical] = name
 
     adapter_path = root / "adapter" / "adapter_model.safetensors"
     if not adapter_path.is_file():

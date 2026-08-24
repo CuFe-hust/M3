@@ -175,6 +175,9 @@ class MultimodalModelAdapter(Protocol):
     def validate_trainable_parameters(self, model: Any, parameter_plan: Any) -> None:
         ...
 
+    def validate_optimizer_parameters(self, model: Any, parameter_plan: Any, groups: Any) -> None:
+        ...
+
     def save_trainable_state(self, model: Any, output_path: str | Path, parameter_plan: Any) -> None:
         ...
 
@@ -189,6 +192,9 @@ class MultimodalModelAdapter(Protocol):
         ...
 
     def validate_checkpoint_state(self, checkpoint_dir: str | Path, parameter_plan: Any) -> Mapping[str, Any]:
+        ...
+
+    def validate_checkpoint_ownership(self, model: Any, checkpoint_dir: str | Path, parameter_plan: Any) -> Mapping[str, Any]:
         ...
 
     def export_checkpoint(

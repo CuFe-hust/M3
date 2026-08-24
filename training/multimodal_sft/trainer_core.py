@@ -311,6 +311,9 @@ class GenericTrainerCore:
         self._write_log(target, {"event": "checkpoint", "step": global_step, "epoch": epoch_index, "next_micro_batch_index": next_micro_batch_index})
         write_manifest(target, manifest)
         validate_checkpoint_state(target, plan)
+        validate_checkpoint_ownership = getattr(self.adapter, "validate_checkpoint_ownership", None)
+        if callable(validate_checkpoint_ownership):
+            validate_checkpoint_ownership(model, target, plan)
         write_completion_marker(target, global_step=global_step)
         if not checkpoint_complete(target):
             raise ValueError(f"checkpoint completeness validation failed: {target}")
@@ -393,6 +396,9 @@ class GenericTrainerCore:
                 validate_trainable(model, plan)
 
         groups, optimizer_stats = build_optimizer_groups(model, plan, OptimizerConfig(lora_lr=config.lora_lr, connector_lr=config.connector_lr, weight_decay=config.weight_decay, warmup_ratio=config.warmup_ratio, max_grad_norm=config.max_grad_norm, mixed_precision=config.mixed_precision))
+        validate_optimizer = getattr(self.adapter, "validate_optimizer_parameters", None)
+        if callable(validate_optimizer):
+            validate_optimizer(model, plan, groups)
         optimizer = torch.optim.AdamW(groups)
         scheduler = build_cosine_scheduler(optimizer, planned_total_steps, config.warmup_ratio)
         if resume_root is not None:

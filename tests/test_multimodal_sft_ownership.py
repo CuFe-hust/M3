@@ -63,8 +63,11 @@ def test_lora_config_does_not_assign_full_train_modules(monkeypatch) -> None:
         requires_grad = True
 
     class _Model:
+        def __init__(self):
+            self._parameters = (("language.layer.weight", _Parameter()), ("connector.weight", _Parameter()))
+
         def named_parameters(self):
-            return iter((("language.layer.weight", _Parameter()), ("connector.weight", _Parameter())))
+            return iter(self._parameters)
 
     _hf.apply_tuning_policy(_Model(), _plan(), SimpleNamespace(rank=1, alpha=2, dropout=0.0))
     assert captured["modules_to_save"] is None
