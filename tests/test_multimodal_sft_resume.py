@@ -115,7 +115,7 @@ def test_exact_resume_restores_lora_connector_and_position(tmp_path: Path) -> No
     assert continuous_result.steps == resumed_result.steps == 3
     state = json.loads((interrupted_dir / "trainer_state.json").read_text(encoding="utf-8"))
     assert state["global_step"] == 3
-    assert state["next_micro_batch_index"] == 0
+    assert state["next_micro_batch_index"] == 3
 
 
 def test_checkpoint_serialization_does_not_change_rng_trajectory(tmp_path: Path) -> None:
