@@ -241,7 +241,7 @@ class GenericTrainerCore:
         state_path = root / TRAINER_STATE_FILENAME
         if not state_path.is_file():
             raise ValueError("resume checkpoint is missing trainer_state.json")
-        state = json.loads(state_path.read_text(encoding="utf-8"))
+        trainer_state = json.loads(state_path.read_text(encoding="utf-8"))
         try:
             optimizer_state = torch.load(root / OPTIMIZER_FILENAME, map_location="cpu", weights_only=False)
             scheduler_state = torch.load(root / SCHEDULER_FILENAME, map_location="cpu", weights_only=False)
@@ -252,11 +252,11 @@ class GenericTrainerCore:
         scheduler.load_state_dict(scheduler_state)
         for group in optimizer.param_groups:
             for parameter in group.get("params", ()):
-                state = optimizer.state.get(parameter, {})
-                for key, value in list(state.items()):
+                parameter_state = optimizer.state.get(parameter, {})
+                for key, value in list(parameter_state.items()):
                     if hasattr(value, "to"):
-                        state[key] = value.to(device=parameter.device)
-        return state
+                        parameter_state[key] = value.to(device=parameter.device)
+        return trainer_state
 
     @staticmethod
     def _training_plan(config: TrainingConfig, planned_total_steps: int) -> dict[str, Any]:
