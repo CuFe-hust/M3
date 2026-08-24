@@ -4,9 +4,7 @@
 >
 > 适用范围：`change_head` 多专家 Siamese ChangeHead 的后训练流程。本文不包含 Qwen/VQA 阶段。
 
-## 1. 当前结论
-
-当前数据可以进入后训练准备阶段，但不能把当前 manifest 当作已训练模型使用。
+## 1
 
 - 最终 Gate：`PASS_WITH_EXCLUSIONS`
 - `ready_for_training=true`
@@ -21,8 +19,6 @@
 [LEVIR-MCI 数据集问题说明](../changes/LEVIR_MCI_DATASET_ISSUES_FOR_EVENT_ORGANIZER.md)
 
 ## 2. 产物位置
-
-以下路径位于 Spark 机器，不是本机路径。
 
 ### 2.1 Spark 数据根目录
 
