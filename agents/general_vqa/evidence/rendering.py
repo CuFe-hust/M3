@@ -1,26 +1,39 @@
-"""VQA evidence rendering: ROI crops, previews, and mask overlays.
+"""VQA evidence rendering: ROI crops, previews, and the three-branch protocol.
 
-VQA 证据渲染：ROI 裁切、预览与掩膜 overlay。任务无关的 EXIF/RGB 与裁切
-复用 models/images.py 的 crop_image_region，不复制实现。证据以文本记录提供，
-clean ROI 不画检测框；SegFormer 证据以每个 ROI 的独立半透明 overlay 提供，
-掩膜不转框、不计数。调色表为纯内存确定性哈希色（同叶子类别跨 ROI/样本
-稳定）；具体图片格式/质量等持久化参数尚未批准，本模块不写任何文件、不
-自行选择 JPEG/PNG 参数。
+VQA 证据渲染：ROI 裁切、预览与三分支最终图像协议。任务无关的 EXIF/RGB 与
+裁切复用 models/images.py 的 crop_image_region，不复制实现。
+
+Frozen protocol (14.12) / 冻结协议（14.12）：
+
+- 每个 ROI 按证据分支稳定输出：仅 YOLO -> 标注 ROI；仅 SegFormer -> 纯色
+  mask；两者都有 -> YOLO-on-pure-mask + clean ROI；均无 -> clean ROI；
+- YOLO 高对比标注：黑色外描边 5px、亮品红内描边 3px（均为 <=1080 输出尺寸），
+  标签为黑底、品红边框、白色叶子文字，confidence 绝不写入；
+- SegFormer 调色表按调用方稳定叶子顺序确定性生成，颜色满足冻结距离约束
+  （与品红 >= 128、与黑色背景 >= 96、彼此 >= 48），sha256(leaf|attempt)
+  重采样，有限尝试预算耗尽时稳定失败；
+- 所有 final-Qwen 图像最长边超过 1080 才缩小，小图绝不放大；掩膜类图像用
+  NEAREST 保持纯色；
+- 具体图片格式/质量等持久化参数尚未批准，本模块不写任何文件、不自行选择
+  JPEG/PNG 参数。
 """
 
 from __future__ import annotations
 
 import hashlib
 import io
+import math
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-from PIL import Image, ImageOps
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from agents.general_vqa.evidence.geometry import (
     MAX_MODEL_SIDE,
+    MODEL_INPUT_SIZE,
     compute_preview_size,
 )
-from agents.general_vqa.evidence.schema import RoiEvidenceRecord
+from agents.general_vqa.evidence.schema import EvidenceTileRecord, RoiEvidenceRecord
 from models.images import (
     crop_image_box,
     image_to_data_url,
@@ -30,11 +43,30 @@ from models.images import (
     QuantizedRoi,
 )
 
-# Internal overlay transparency; the frozen palette/persistence parameters are
-# not yet approved, so these defaults are in-memory seams only and never
-# persisted. 内部 overlay 透明度；冻结调色表/持久化参数尚未批准，因此这些
-# 默认值只是内存 seam，绝不持久化。
-_OVERLAY_ALPHA = 0.40
+# Frozen annotation palette (14.12.2): stroke widths are specified at <=1080
+# output, so annotation always draws on the shrunk preview.
+# 冻结标注调色（14.12.2）：描边宽度按 <=1080 输出指定，因此标注始终画在
+# 已缩小的预览上。
+_YOLO_MAGENTA = (255, 0, 255)
+_MASK_BACKGROUND = (0, 0, 0)
+_YOLO_OUTER_STROKE = (0, 0, 0)
+_YOLO_INNER_STROKE = (255, 0, 255)
+_YOLO_OUTER_WIDTH = 5
+_YOLO_INNER_WIDTH = 3
+
+# Deterministic SegFormer mask palette budget and distance constraints. The
+# version is public: it pins the palette identity inside evidence_identity so
+# any palette change alters the final-Qwen request hash (14.13).
+# 确定性 SegFormer mask 调色表预算与距离约束。版本为公开常量：它通过
+# evidence_identity 固定调色表身份，使任何调色表变化都会改变最终 Qwen 请求
+# hash（14.13）。
+PALETTE_VERSION = "v1"
+_PALETTE_MAX_ATTEMPTS = 256
+_PALETTE_MIN_DIST_MAGENTA = 128.0
+_PALETTE_MIN_DIST_BACKGROUND = 96.0
+_PALETTE_MIN_DIST_PAIRWISE = 48.0
+_LABEL_FONT_SIZE = 18
+_LABEL_PLATE_PADDING = 3
 
 
 def normalized_image_size(path: Path) -> tuple[int, int]:
@@ -74,16 +106,125 @@ def render_roi_crop(
     return crop
 
 
+def prepare_model_tile(
+    roi_image: Image.Image,
+    tile_record: EvidenceTileRecord,
+) -> Image.Image:
+    """Materialize one strict 1024×1024 RGB model tile from the ROI-local
+    crop: exact crop of source_tile_xyxy, full tiles pass through untouched,
+    remainders stretch with LANCZOS. A new image is always returned; the ROI
+    source is never modified. 从 ROI 局部裁切物化一个严格 1024×1024 RGB model
+    tile：精确裁切 source_tile_xyxy，完整 tile 原样通过，余块用 LANCZOS 拉伸。
+    始终返回新图像；绝不修改 ROI 源。"""
+
+    x0, y0, x1, y1 = tile_record.source_tile_xyxy
+    if x1 > roi_image.width or y1 > roi_image.height:
+        raise ValueError(
+            f"tile box {tile_record.source_tile_xyxy!r} exceeds ROI image size {roi_image.size!r}"
+        )
+    tile = crop_image_box(roi_image, (x0, y0, x1, y1)).convert("RGB")
+    if tile.size != tile_record.source_tile_size:
+        raise ValueError(
+            f"tile crop drift: geometry predicts {tile_record.source_tile_size!r} "
+            f"but pixel crop rendered {tile.size!r}"
+        )
+    if tile.size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        return tile
+    return tile.resize(
+        (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+        resample=Image.Resampling.LANCZOS,
+    )
+
+
+def restore_class_id_mask(
+    model_mask: Image.Image,
+    tile_record: EvidenceTileRecord,
+) -> Image.Image:
+    """Restore one 1024×1024 integer class-id model mask to the source tile
+    size with NEAREST interpolation — never bilinear/LANCZOS, which could
+    fabricate class ids. The input must be a strict 1024 square integer grid
+    ("L" or "I" mode); continuous probability images are rejected here so the
+    class-id NEAREST helper never sees them. 将一个 1024×1024 整数 class-id
+    model mask 用 NEAREST 插值恢复到源 tile 尺寸——绝不用 bilinear/LANCZOS，
+    以免杜撰出不存在的 class id。输入必须是严格 1024 方形整数网格（"L" 或
+    "I" 模式）；此处拒绝连续概率图，使 class-id NEAREST helper 绝不收到它们。"""
+
+    if model_mask.mode not in ("L", "I"):
+        raise ValueError(
+            f"model mask mode {model_mask.mode!r} must be an integer class-id grid"
+        )
+    if model_mask.size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        raise ValueError(
+            "model mask must be a strict 1024x1024 model tile"
+        )
+    if tile_record.source_tile_size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        return model_mask.copy()
+    return model_mask.resize(
+        tile_record.source_tile_size,
+        resample=Image.Resampling.NEAREST,
+    )
+
+
+def stitch_class_id_masks(
+    restored_tiles: Sequence[tuple[EvidenceTileRecord, Image.Image]],
+    roi_size: tuple[int, int],
+) -> Image.Image:
+    """Stitch restored per-tile class-id masks back into one ROI-local canvas.
+    Partitions are overlap-free by construction, so every ROI pixel must be
+    written exactly once: a hole, duplicate write, size drift, or out-of-bounds
+    placement fails closed instead of being guessed. The returned canvas is an
+    integer class-id grid ("I" mode) starting from class 0. 将恢复后的逐 tile
+    class-id mask 拼接回一个 ROI 局部 canvas。partition 构造上无重叠，因此每
+    个 ROI 像素必须恰好写入一次：hole、重复写入、尺寸漂移或越界放置都严格
+    失败，绝不猜测修复。返回的 canvas 是以 class 0 为底色的整数 class-id
+    网格（"I" 模式）。"""
+
+    width, height = roi_size
+    if width <= 0 or height <= 0:
+        raise ValueError(f"roi_size must be positive, got {roi_size!r}")
+    canvas = Image.new("I", roi_size, 0)
+    coverage = bytearray(width * height)
+    for tile_record, mask in restored_tiles:
+        x0, y0, x1, y1 = tile_record.source_tile_xyxy
+        if x1 > width or y1 > height:
+            raise ValueError(
+                f"tile box {tile_record.source_tile_xyxy!r} exceeds ROI canvas {roi_size!r}"
+            )
+        if mask.size != tile_record.source_tile_size:
+            raise ValueError(
+                f"restored mask size {mask.size!r} must match tile record {tile_record.source_tile_size!r}"
+            )
+        if mask.mode not in ("L", "I"):
+            raise ValueError(f"restored mask mode {mask.mode!r} must be an integer class-id grid")
+        for y in range(y0, y1):
+            start = y * width + x0
+            region = coverage[start : start + (x1 - x0)]
+            if any(region):
+                raise ValueError(
+                    f"overlapping tile placement for {tile_record.tile_id!r}"
+                )
+        canvas.paste(mask, (x0, y0))
+        for y in range(y0, y1):
+            start = y * width + x0
+            coverage[start : start + (x1 - x0)] = b"\x01" * (x1 - x0)
+    if not all(coverage):
+        missing = sum(1 for value in coverage if value == 0)
+        raise ValueError(f"tile coverage leaves {missing} ROI pixels unwritten")
+    return canvas
+
+
 def make_preview(
     image: Image.Image,
     *,
     max_side: int = MAX_MODEL_SIDE,
+    resample: Image.Resampling = Image.Resampling.LANCZOS,
 ) -> Image.Image:
     """EXIF/RGB-normalize an in-memory image (same semantics as
     read_normalized_image) and shrink it only when the longest side exceeds
-    max_side; never upscale. 对内存图像做 EXIF/RGB 归一化（与
-    read_normalized_image 语义一致），仅当最长边超过 max_side 时缩小；
-    绝不放大。"""
+    max_side; never upscale. Mask-class images pass NEAREST so flat palette
+    colors stay exact. 对内存图像做 EXIF/RGB 归一化（与 read_normalized_image
+    语义一致），仅当最长边超过 max_side 时缩小；绝不放大。掩膜类图像用
+    NEAREST 保持平坦调色色精确。"""
     normalized = ImageOps.exif_transpose(image).convert("RGB")
     target = compute_preview_size(normalized.size, max_side=max_side)
     if target == normalized.size:
@@ -91,7 +232,7 @@ def make_preview(
     # In-memory deterministic resize; persistence format/quality parameters
     # are not approved and are deliberately never chosen here.
     # 内存内确定性缩放；持久化格式/质量参数尚未批准，此处刻意不选择。
-    return normalized.resize(target, resample=Image.Resampling.LANCZOS)
+    return normalized.resize(target, resample=resample)
 
 
 def preview_from_path(
@@ -116,40 +257,138 @@ def preview_from_path(
     return image_to_data_url(data, "image/png"), image_sha256(data)
 
 
-def stable_palette_color(leaf_category: str) -> tuple[int, int, int]:
-    """Deterministic per-leaf RGB color: the same leaf category maps to the
-    same color across ROIs and samples, with no mutable global palette state.
-    每叶子类别确定性 RGB 颜色：同一叶子类别跨 ROI/样本映射到同一颜色，
-    不依赖任何可变全局调色表状态。"""
-    digest = hashlib.sha256(leaf_category.encode("utf-8")).digest()
-    return (int(digest[0]), int(digest[1]), int(digest[2]))
+def _color_distance(
+    a: tuple[int, int, int], b: tuple[int, int, int]
+) -> float:
+    """RGB Euclidean distance. RGB 欧氏距离。"""
+    return math.sqrt(sum((x - y) ** 2 for x, y in zip(a, b)))
 
 
-def overlay_mask(
-    source: Image.Image,
-    mask: Image.Image,
-    *,
-    color: tuple[int, int, int],
-    alpha: float = _OVERLAY_ALPHA,
+def segformer_palette(leaves: Sequence[str]) -> dict[str, tuple[int, int, int]]:
+    """Deterministic SegFormer mask palette over an ordered leaf list: colors
+    satisfy the frozen distance constraints against the YOLO magenta and the
+    black background and pairwise among themselves, resampled via
+    sha256(leaf|attempt) with a bounded attempt budget; exhaustion fails
+    stably. Same ordered leaves -> same colors, no RNG or process state.
+    按有序叶子列表确定性生成 SegFormer mask 调色表：颜色满足与 YOLO 品红及
+    黑色背景、以及彼此间的冻结距离约束，用 sha256(leaf|attempt) 有限预算
+    重采样；预算耗尽稳定失败。相同有序叶子 -> 相同颜色，无 RNG 或进程状态。"""
+    palette: dict[str, tuple[int, int, int]] = {}
+    for leaf in leaves:
+        palette[leaf] = _resample_palette_color(leaf, tuple(palette.values()))
+    return palette
+
+
+def _resample_palette_color(
+    leaf: str,
+    previous: tuple[tuple[int, int, int], ...],
+) -> tuple[int, int, int]:
+    for attempt in range(_PALETTE_MAX_ATTEMPTS):
+        digest = hashlib.sha256(f"{leaf}|{attempt}".encode("utf-8")).digest()
+        color = (int(digest[0]), int(digest[1]), int(digest[2]))
+        if _color_distance(color, _YOLO_MAGENTA) < _PALETTE_MIN_DIST_MAGENTA:
+            continue
+        if _color_distance(color, _MASK_BACKGROUND) < _PALETTE_MIN_DIST_BACKGROUND:
+            continue
+        if any(
+            _color_distance(color, other) < _PALETTE_MIN_DIST_PAIRWISE
+            for other in previous
+        ):
+            continue
+        return color
+    raise ValueError(f"segformer palette exhausted for leaf {leaf!r}")
+
+
+def render_pure_mask(
+    size: tuple[int, int],
+    leaf_masks: Sequence[tuple[str, Image.Image]],
+    palette: Mapping[str, tuple[int, int, int]],
 ) -> Image.Image:
-    """Return a NEW composite of source with one independent semi-transparent
-    mask overlay; neither input is modified, masks never blend across ROIs,
-    and no box or count is ever derived here (mask evidence stays a mask).
-    返回 source 与一个独立半透明掩膜 overlay 合成的新图像；两个输入都不被
-    修改，掩膜跨 ROI 绝不融合，此处绝不导出框或计数（掩膜证据保持为掩膜）。"""
-    if mask.size != source.size:
-        raise ValueError(
-            f"mask size {mask.size!r} must match source {source.size!r}"
+    """Compose per-leaf presence masks into one flat pure-color mask on the
+    black background; later leaves overwrite earlier ones on overlap, so the
+    caller's stable leaf order decides deterministic precedence. No box or
+    count is ever derived here (mask evidence stays a mask).
+    将逐叶子 presence 掩膜合成到黑色背景上的纯色 mask；重叠处靠后叶子覆盖
+    靠前叶子，由调用方稳定叶子顺序决定确定性优先级。此处绝不派生框或计数
+    （掩膜证据保持为掩膜）。"""
+    canvas = Image.new("RGBA", size, (*_MASK_BACKGROUND, 255))
+    for leaf, mask in leaf_masks:
+        if mask.size != size:
+            raise ValueError(
+                f"mask size {mask.size!r} must match canvas {size!r}"
+            )
+        layer = Image.new("RGBA", size, (*palette[leaf], 255))
+        layer.putalpha(mask.convert("L"))
+        canvas = Image.alpha_composite(canvas, layer)
+    return canvas.convert("RGB")
+
+
+def render_yolo_annotation(
+    image: Image.Image,
+    boxes: Sequence[tuple[str, tuple[float, float, float, float]]],
+    *,
+    resample: Image.Resampling = Image.Resampling.LANCZOS,
+) -> Image.Image:
+    """Annotate one image with the frozen high-contrast YOLO boxes: shrink
+    only to <=1080 first (never upscale), then a black 5px outer stroke, a
+    magenta 3px inner stroke, and a black label plate with a magenta border
+    and white leaf text — confidence never appears. Boxes are given in the
+    input image's pixel frame and scale with the preview. A new image is
+    always returned; the source is never modified. 用冻结高对比 YOLO 框标注
+    一张图像：先只缩到 <=1080（绝不放大），再画黑色 5px 外描边、品红 3px
+    内描边，以及黑底、品红边框、白色叶子文字的标签底板——confidence 绝不
+    出现。框以输入图像像素帧给出，随预览等比缩放。始终返回新图像；绝不
+    修改源。"""
+    preview = make_preview(image, resample=resample)
+    if preview.size == image.size:
+        scale_x = scale_y = 1.0
+    else:
+        scale_x = preview.width / image.width
+        scale_y = preview.height / image.height
+    draw = ImageDraw.Draw(preview)
+    font = ImageFont.load_default(size=_LABEL_FONT_SIZE)
+    for leaf, (x0, y0, x1, y1) in boxes:
+        scaled = (
+            x0 * scale_x,
+            y0 * scale_y,
+            x1 * scale_x,
+            y1 * scale_y,
         )
-    base = source.convert("RGBA")
-    overlay = Image.new("RGBA", source.size, (*color, 0))
-    # Presence masks are boolean (0/1), so any nonzero pixel is fully present;
-    # scale the presence by alpha instead of treating the value as 0..255
-    # gray, which would make boolean-true pixels invisible.
-    # presence 掩膜是布尔（0/1）的，因此任何非零像素都是“存在”；直接用 alpha
-    # 缩放存在性，而不是把值当作 0..255 灰度，否则布尔 true 像素会不可见。
-    opacity = mask.convert("L").point(
-        lambda value: round((255.0 if value else 0.0) * alpha)
+        draw.rectangle(scaled, outline=_YOLO_OUTER_STROKE, width=_YOLO_OUTER_WIDTH)
+        draw.rectangle(scaled, outline=_YOLO_INNER_STROKE, width=_YOLO_INNER_WIDTH)
+        _draw_label_plate(draw, font, leaf, scaled)
+    return preview
+
+
+def _draw_label_plate(
+    draw: ImageDraw.ImageDraw,
+    font: ImageFont.ImageFont,
+    leaf: str,
+    box: tuple[float, float, float, float],
+) -> None:
+    """Draw the leaf label plate just above the box (inside it when the box
+    touches the top edge); the plate is black with a magenta border and white
+    text. 在框上方绘制叶子标签底板（框贴顶时画在框内）；底板为黑色、品红
+    边框、白色文字。"""
+    left, top, right, _ = box
+    plate_left = int(left)
+    plate_top = int(top)
+    text_width, text_height = draw.textbbox((0, 0), leaf, font=font)[2:4]
+    plate_width = text_width + 2 * _LABEL_PLATE_PADDING
+    plate_height = text_height + 2 * _LABEL_PLATE_PADDING
+    if plate_top - plate_height - 2 >= 0:
+        plate_top = plate_top - plate_height - 2
+    plate_right = min(draw.im.size[0] - 1, plate_left + plate_width)
+    plate_bottom = min(draw.im.size[1] - 1, plate_top + plate_height)
+    draw.rectangle(
+        (plate_left, plate_top, plate_right, plate_bottom),
+        fill=_MASK_BACKGROUND,
+        outline=_YOLO_INNER_STROKE,
+        width=1,
     )
-    overlay.putalpha(opacity)
-    return Image.alpha_composite(base, overlay).convert("RGB")
+    draw.text(
+        (plate_left + _LABEL_PLATE_PADDING, plate_top + _LABEL_PLATE_PADDING),
+        leaf,
+        font=font,
+        fill=(255, 255, 255),
+    )

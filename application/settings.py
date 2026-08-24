@@ -26,6 +26,20 @@ from agents.counting.settings import (
 )
 from models.settings import ModelSettings
 
+_BINDING_KEY_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$")
+
+
+def _looks_path_like(value: str) -> bool:
+    """A version string must never smuggle a physical path.
+    版本字符串绝不携带物理路径。"""
+    return (
+        value.startswith(("/", ".", "~"))
+        or "\\" in value
+        or "/" in value
+        or ":" in value
+        or value in {".", ".."}
+    )
+
 
 class RunSettings(BaseModel):
     """Run output directory and artifact-saving switches.
@@ -85,7 +99,7 @@ class VisualPlannerSettings(BaseModel):
     # Must equal the version declared by agents/evidence_catalog.json; the
     # composition root verifies this binding for every fresh runtime.
     # 必须等于 agents/evidence_catalog.json 声明的版本；每次新鲜运行均由组合根校验。
-    catalog_version: str = "visual-evidence-catalog-v3"
+    catalog_version: str = "visual-evidence-catalog-v4"
     task_prompt_version: str = "v5"
     planning_mode: Literal["visual-task-plan-v5"] = "visual-task-plan-v5"
     preview_max_side: int = Field(default=1080, gt=0)
@@ -146,7 +160,14 @@ class VisualDetectorSettings(BaseModel):
 class VisualSegmenterSettings(BaseModel):
     """Per-label segmenter policy (C7, 14A2): disabled until explicitly
     calibrated with an approved class map version. 逐标签分割器策略（C7，
-    14A2）：显式以已批准 class map 版本校准前保持禁用。"""
+    14A2）：显式以已批准 class map 版本校准前保持禁用。
+
+    The dict key in ``visual_planning.segmenters`` is the stable logical
+    binding (e.g. ``segmenter_mitb2_001``) that the composition root maps to
+    one verified logical client; it is never a checkpoint path or device.
+    ``visual_planning.segmenters`` 的 dict key 是稳定逻辑 binding（如
+    ``segmenter_mitb2_001``），由组合根映射到一个已验证逻辑客户端；绝不
+    是 checkpoint 路径或设备。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -161,7 +182,33 @@ class VisualSegmenterSettings(BaseModel):
 
         if self.enabled and not self.class_map_version:
             raise ValueError("enabled segmenter requires a class_map_version")
+        if self.class_map_version is not None and _looks_path_like(self.class_map_version):
+            raise ValueError("class_map_version must be a version, not a path")
         return self
+
+
+class VisualEvidencePreprocessSettings(BaseModel):
+    """Frozen evidence-tile preprocessing identity shared by VQA evidence
+    phases. One deterministic identity for every model call made inside the
+    planner ROI pipeline. 冻结的 evidence tile 预处理身份，由 VQA evidence
+    各阶段共享；planner ROI 管线内的每次模型调用使用同一个确定性身份。
+
+    Identifiers of the form ``*_v1`` are a typed capability contract: when the
+    pipeline semantics change, a new version must be declared instead of
+    silently mutating this one. 形如 ``*_v1`` 的标识是类型化能力契约：管线
+    语义变化时必须声明新版本，而不是悄悄改动本版本。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    tile_size: Literal[1024] = 1024
+    partition_policy: Literal["greedy-row-major-no-overlap"] = (
+        "greedy-row-major-no-overlap"
+    )
+    remainder_resize: Literal["stretch"] = "stretch"
+    rgb_interpolation: Literal["lanczos"] = "lanczos"
+    mask_inverse_interpolation: Literal["nearest"] = "nearest"
+    max_tile_concurrency: int = Field(default=4, ge=1, le=32)
 
 
 class VisualPlanningSettings(BaseModel):
@@ -176,6 +223,23 @@ class VisualPlanningSettings(BaseModel):
     planner: VisualPlannerSettings = Field(default_factory=VisualPlannerSettings)
     detectors: dict[str, VisualDetectorSettings] = Field(default_factory=dict)
     segmenters: dict[str, VisualSegmenterSettings] = Field(default_factory=dict)
+    preprocessing: VisualEvidencePreprocessSettings = Field(
+        default_factory=VisualEvidencePreprocessSettings
+    )
+
+    @model_validator(mode="after")
+    def validate_segmenter_binding_keys(self) -> "VisualPlanningSettings":
+        """Segmenter dict keys are stable logical bindings: non-empty, safe,
+        and never path-like. 组合根负责把 binding 映射到已验证逻辑客户端。
+        Segmenter dict key 是稳定逻辑 binding：非空、安全且绝不路径化；
+        映射到已验证逻辑客户端由组合根完成。"""
+        for key in self.segmenters:
+            if re.fullmatch(_BINDING_KEY_PATTERN, key) is None:
+                raise ValueError(
+                    f"invalid segmenter binding key {key!r}: must be a stable "
+                    "logical binding identifier, not a path or free text"
+                )
+        return self
 
 
 class AppSettings(BaseModel):

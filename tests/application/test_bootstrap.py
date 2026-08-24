@@ -863,7 +863,11 @@ def _visual_settings(
     return AppSettings(**payload)
 
 
-def _calibrated_detector(tmp_path: Path, name: str = "fake-det") -> YoloDetectorSettings:
+def _calibrated_detector(
+    tmp_path: Path,
+    name: str = "fake-det",
+    classes: list[str] | None = None,
+) -> YoloDetectorSettings:
     """A structurally valid detector whose weights file does not exist, so
     the shared store fails closed at assembly. 结构合法但权重文件不存在的检测
     器，使共享 store 在组装时严格失败。"""
@@ -873,26 +877,47 @@ def _calibrated_detector(tmp_path: Path, name: str = "fake-det") -> YoloDetector
         weights=tmp_path / f"{name}.onnx",
         model_id=f"fake:{name}:v1",
         sha256="0" * 64,
-        classes=["plane"],
+        classes=classes or ["plane"],
         require_cuda=False,
         device="cpu",
     )
 
 
-def test_visual_planning_is_always_v4_and_injected(tmp_path: Path) -> None:
-    """Fresh composition always injects the v4 planner bindings.
-    新鲜组合始终注入 v4 规划器绑定。"""
+class _FakeSegmenterClient:
+    """Marker semantic-mask client; composition must never call it.
+    标记 semantic-mask client；组装期绝不调用它。"""
+
+
+def _record_segmenter_creations(monkeypatch) -> list[tuple[str, dict[str, Any]]]:
+    """Replace bootstrap create_model with a recorder returning marker
+    clients, proving composition creates no real model and no weights load.
+    用记录器替换 bootstrap create_model 并返回标记 client，证明组装期不创建
+    真实模型、不加载任何权重。"""
+
+    created: list[tuple[str, dict[str, Any]]] = []
+
+    def _create(name: str, **kwargs: Any) -> Any:
+        created.append((name, kwargs))
+        return _FakeSegmenterClient()
+
+    monkeypatch.setattr("application.bootstrap.create_model", _create)
+    return created
+
+
+def test_visual_planning_is_always_v5_and_injected(tmp_path: Path) -> None:
+    """Fresh composition always injects the v5 planner bindings.
+    新鲜组合始终注入 v5 规划器绑定。"""
     components = _assemble(tmp_path, qwen_client=_FakeQwenClient())
     runner = components.sample_runner_factory(data_root=tmp_path)
     assert components.visual_task_planner is not None
     assert runner.visual_bindings is components.visual_bindings
 
 
-def test_visual_planning_uses_v4_with_uncalibrated_bindings(
+def test_visual_planning_uses_v5_with_uncalibrated_bindings(
     tmp_path: Path,
 ) -> None:
-    """The v4 planner is always assembled; uncalibrated evidence stays closed.
-    v4 规划器始终组装；未校准的证据能力保持关闭。"""
+    """The v5 planner is always assembled; uncalibrated evidence stays closed.
+    v5 规划器始终组装；未校准的证据能力保持关闭。"""
     settings = _visual_settings(tmp_path, visual_planning={})
     components = assemble_runtime(
         settings,
@@ -911,7 +936,7 @@ def test_visual_planning_uses_v4_with_uncalibrated_bindings(
         settings.visual_planning.planner.catalog_version
     )
     binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
-    assert len(binding["canonical_leaf_categories"]) == 18
+    assert len(binding["canonical_leaf_categories"]) == 26
     assert "vehicle" not in binding["canonical_leaf_categories"]
     assert binding["parent_expansions"]["vehicle"] == [
         "small-vehicle", "large-vehicle"
@@ -926,6 +951,93 @@ def test_visual_planning_uses_v4_with_uncalibrated_bindings(
     # so nothing is ever loaded for it. 未校准即 YOLO 阶段关闭：完全不接线检测
     # 器，因此永远不会为它加载任何东西。
     assert grounding._yolo_client is None
+
+
+def test_visual_planning_uncalibrated_binding_fails_closed_for_all_four_vqa_tasks(
+    tmp_path: Path,
+) -> None:
+    """With the VQA evidence service unavailable, every GeneralVQAAgent task
+    publishes an empty executable binding — the planner fails closed for all
+    four tasks, not just general_vqa. VQA evidence 服务不可用时，每个
+    GeneralVQAAgent task 都发布空可执行绑定——planner 对全部四个 task 严格
+    fail closed，而非只对 general_vqa。"""
+    settings = _visual_settings(tmp_path, visual_planning={})
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    assert components.visual_bindings.vqa_evidence is None
+    binding = json.loads(
+        components.visual_task_planner.system_prompt.split("planner_binding=", 1)[1]
+    )
+    for task in (
+        "general_vqa",
+        "scene_classification",
+        "multiple_choice_vqa",
+        "spatial_relation",
+    ):
+        assert binding["task_executable_categories"][task] == []
+
+
+def test_visual_planning_binds_four_vqa_tasks_to_shared_capabilities(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """With a full runtime profile, the four GeneralVQAAgent tasks expose the
+    identical executable leaves from one shared immutable capability set, and
+    the frozen VQA assistance scope is bound into the planner identity.
+    完整 runtime profile 下，四个 GeneralVQAAgent task 暴露同一份共享不可变
+    能力集合的可执行叶子，且冻结的 VQA assistance scope 进入 planner 身份。"""
+    _record_segmenter_creations(monkeypatch)
+
+    class _FakeStore:
+        def get(self, detector: YoloDetectorSettings) -> Any:
+            raise AssertionError("composition must not load weights")
+
+    monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
+    catalog = EvidenceCatalog.from_file(REPO_ROOT / "agents" / "evidence_catalog.json")
+    yolo_labels = [
+        label
+        for leaf in catalog.executable_leaves_for_task("general_vqa")
+        for label in catalog.leaf_yolo_labels(leaf)
+    ]
+    detector = _calibrated_detector(tmp_path, classes=yolo_labels)
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "detectors": {
+                "detector_obb_csl_001": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                },
+            },
+            "segmenters": {
+                "segmenter_oem_001": {
+                    "enabled": True,
+                    "class_map_version": "verified-2026-08-20",
+                },
+            },
+        },
+        yolo={"enabled": False, "detectors": [detector]},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    planner = components.visual_task_planner
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    shared = binding["task_executable_categories"]["general_vqa"]
+    assert len(shared) == len(catalog.executable_leaves_for_task("general_vqa"))
+    for task in ("scene_classification", "multiple_choice_vqa", "spatial_relation"):
+        assert binding["task_executable_categories"][task] == shared
+    assert (
+        planner.planning_parameters["vqa_assistance_scope"]
+        == "general-vqa-agent-tasks-v1"
+    )
 
 
 def test_counting_planner_leaves_require_real_specialist_support(tmp_path: Path) -> None:
@@ -1150,6 +1262,318 @@ def test_visual_planning_enabled_segmenter_fails_closed(tmp_path: Path) -> None:
             prompts_root=REPO_ROOT / "prompts",
             qwen_client=_FakeQwenClient(),
         )
+
+
+def test_visual_planning_segmenter_only_composes_segformer_only_executor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A VQA-enabled segmenter binding (the OEM expert is disabled for
+    counting) composes a SegFormer-only executor: no YOLO client, no detector
+    policy, the missing client created lazily by the composition root, and
+    the planner publishes only the eight OEM leaves.
+    仅启用 segmenter（OEM expert 在 counting 中禁用）时组装 SegFormer-only
+    执行器：无 YOLO client、无检测策略，缺失 client 由组合根惰性创建，
+    planner 只发布 8 个 OEM 叶子。"""
+    created = _record_segmenter_creations(monkeypatch)
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "segmenters": {
+                "segmenter_oem_001": {
+                    "enabled": True,
+                    "class_map_version": "verified-2026-08-20",
+                },
+            },
+            "preprocessing": {"max_tile_concurrency": 2},
+        },
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    vqa = components.visual_bindings.vqa_evidence
+    assert vqa is not None
+    assert vqa._yolo_client is None
+    assert vqa._policy is None
+    assert set(vqa._segmenter_clients) == {"segmenter_oem_001"}
+    # The frozen preprocessing identity is mirrored into the agents-local
+    # contract, including the overridden concurrency bound.
+    # 冻结预处理身份镜像进 agents 局部契约，包括被覆盖的并发上限。
+    assert vqa._preprocessing.version == "greedy-1024-stretch-v1"
+    assert vqa._preprocessing.tile_size == 1024
+    assert vqa._preprocessing.max_tile_concurrency == 2
+    # The counting-disabled OEM expert gets its own lazy client; no real
+    # model was constructed and nothing was loaded.
+    # counting 中禁用的 OEM expert 获得独立惰性 client；未构造真实模型、
+    # 未加载任何权重。
+    assert any(
+        name == "segformer_transformers"
+        and kwargs["settings"].logical_model_id
+        == "SegFormer-MiT-B2:OpenEarthMap:local"
+        for name, kwargs in created
+    )
+    planner = components.visual_task_planner
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    assert binding["task_executable_categories"]["general_vqa"] == [
+        "bareland",
+        "rangeland",
+        "developed-space",
+        "road",
+        "tree",
+        "water",
+        "agriculture-land",
+        "building",
+    ]
+
+
+def test_visual_planning_oem_class_map_version_is_consumed_at_composition(
+    tmp_path: Path,
+) -> None:
+    """A stale OEM class-map version fails before planner publication.
+    过期的 OEM class-map 版本必须在 planner 发布前于组合期失败。"""
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "segmenters": {
+                "segmenter_oem_001": {
+                    "enabled": True,
+                    "class_map_version": "verified-2026-08-06",
+                },
+            },
+        },
+    )
+    with pytest.raises(RuntimeCompositionError, match="class map version"):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_visual_planning_oem_raw_labels_are_checked_at_composition(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """VQA catalog labels are checked even when counting supports are empty.
+    即使 counting supports 为空，也必须在组合期校验 VQA catalog 原始标签。"""
+    data = json.loads(
+        (REPO_ROOT / "agents" / "evidence_catalog.json").read_text(encoding="utf-8")
+    )
+    data["catalog_version"] = "oem-raw-label-check-v1"
+    data["leaves"]["building"]["segformer_labels"] = ["not-a-class-map-label"]
+    monkeypatch.setattr(
+        bootstrap_module,
+        "_load_evidence_catalog",
+        lambda _root: EvidenceCatalog(data),
+    )
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "planner": {"catalog_version": "oem-raw-label-check-v1"},
+            "segmenters": {
+                "segmenter_oem_001": {
+                    "enabled": True,
+                    "class_map_version": "verified-2026-08-20",
+                },
+            },
+        },
+    )
+    with pytest.raises(RuntimeCompositionError, match="VQA raw labels"):
+        assemble_runtime(
+            settings,
+            project_root=tmp_path,
+            prompts_root=REPO_ROOT / "prompts",
+            qwen_client=_FakeQwenClient(),
+        )
+
+
+def test_segformer_class_map_checkpoint_digest_is_verified_before_client_creation(
+    tmp_path: Path,
+) -> None:
+    """Class-map metadata cannot declare a different checkpoint digest.
+    class-map metadata 不得声明与 expert asset 不同的 checkpoint digest。"""
+    expert = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT).expert(
+        "segmenter_oem_001"
+    )
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    class_map = json.loads(
+        (REPO_ROOT / "models" / "segformer_mitb2_oem" / "classes.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    class_map["verification"]["checkpoint_sha256"] = "0" * 64
+    (model_dir / "classes.json").write_text(
+        json.dumps(class_map), encoding="utf-8"
+    )
+    local_expert = expert.model_copy(
+        update={
+            "asset": expert.asset.model_copy(
+                update={
+                    "model_dir": "model",
+                    "class_map": "model/classes.json",
+                    "weights": "model/model.safetensors",
+                }
+            )
+        }
+    )
+    with pytest.raises(RuntimeCompositionError, match="checkpoint digest"):
+        bootstrap_module._verified_class_map(local_expert, tmp_path)
+
+
+def test_visual_planning_detector_plus_segmenter_composes_combined_executor(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A calibrated detector plus an enabled segmenter composes the combined
+    executor, and the planner publishes exactly the intersect-checked YOLO
+    leaf plus the eight OEM leaves, without publishing unavailable leaves.
+    已校准检测器加启用 segmenter 组装组合执行器，planner 恰好发布经标签相交
+    校验的 YOLO 叶子加 8 个 OEM 叶子，不发布当前不可用的其他叶子。"""
+    _record_segmenter_creations(monkeypatch)
+
+    class _FakeStore:
+        def get(self, detector: YoloDetectorSettings) -> Any:
+            raise AssertionError("composition must not load weights")
+
+    monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
+    detector = _calibrated_detector(tmp_path, classes=["plane"])
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "detectors": {
+                "small_vehicle": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                },
+            },
+            "segmenters": {
+                "segmenter_oem_001": {
+                    "enabled": True,
+                    "class_map_version": "verified-2026-08-20",
+                },
+            },
+        },
+        yolo={"enabled": False, "detectors": [detector]},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    vqa = components.visual_bindings.vqa_evidence
+    assert vqa is not None
+    assert vqa._yolo_client is not None
+    assert vqa._policy is not None
+    assert vqa._policy.confidence_threshold == 0.5
+    assert vqa._policy.nms_iou_threshold == 0.5
+    assert vqa._policy.max_detections == 5
+    assert set(vqa._segmenter_clients) == {"segmenter_oem_001"}
+    planner = components.visual_task_planner
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    assert binding["task_executable_categories"]["general_vqa"] == [
+        "plane",
+        "bareland",
+        "rangeland",
+        "developed-space",
+        "road",
+        "tree",
+        "water",
+        "agriculture-land",
+        "building",
+    ]
+
+
+def test_visual_planning_full_runtime_capabilities_publish_all_catalog_leaves(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """All 26 leaves are published when, and only because, the injected
+    runtime profile really covers all 18 YOLO leaves plus all eight OEM
+    leaves. A non-None service alone is not the capability assertion.
+    只有注入的 runtime profile 实际覆盖 18 个 YOLO 叶子和 8 个 OEM 叶子时，
+    才发布全部 26 类；service 非空本身不是能力断言。"""
+    _record_segmenter_creations(monkeypatch)
+
+    class _FakeStore:
+        def get(self, detector: YoloDetectorSettings) -> Any:
+            raise AssertionError("composition must not load weights")
+
+    monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
+    catalog = EvidenceCatalog.from_file(REPO_ROOT / "agents" / "evidence_catalog.json")
+    yolo_labels = [
+        label
+        for leaf in catalog.executable_leaves_for_task("general_vqa")
+        for label in catalog.leaf_yolo_labels(leaf)
+    ]
+    detector = _calibrated_detector(tmp_path, classes=yolo_labels)
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "detectors": {
+                "detector_obb_csl_001": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                },
+            },
+            "segmenters": {
+                "segmenter_oem_001": {
+                    "enabled": True,
+                    "class_map_version": "verified-2026-08-20",
+                },
+            },
+        },
+        yolo={"enabled": False, "detectors": [detector]},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    binding = json.loads(
+        components.visual_task_planner.system_prompt.split("planner_binding=", 1)[1]
+    )
+    assert binding["task_executable_categories"]["general_vqa"] == list(
+        catalog.executable_leaves_for_task("general_vqa")
+    )
+
+
+def test_visual_planning_yolo_service_never_publishes_unmatched_leaves(
+    tmp_path: Path,
+) -> None:
+    """A calibrated detector whose classes intersect no catalog leaf still
+    composes a YOLO-only service, but the planner publishes no executable
+    leaves: a non-None service never means all 26 categories are runnable.
+    已校准检测器类别不匹配任何目录叶子时仍组装 YOLO-only 服务，但 planner 不
+    发布任何可执行叶子：服务非 None 绝不意味着 26 类全部可运行。"""
+    detector = _calibrated_detector(tmp_path, classes=["zzz-not-in-catalog"])
+    settings = _visual_settings(
+        tmp_path,
+        visual_planning={
+            "detectors": {
+                "small_vehicle": {
+                    "confidence_threshold": 0.5,
+                    "nms_iou_threshold": 0.5,
+                    "max_detections": 5,
+                },
+            },
+        },
+        yolo={"enabled": False, "detectors": [detector]},
+    )
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=_FakeQwenClient(),
+    )
+    assert components.visual_bindings.vqa_evidence is not None
+    planner = components.visual_task_planner
+    binding = json.loads(planner.system_prompt.split("planner_binding=", 1)[1])
+    assert binding["task_executable_categories"]["general_vqa"] == []
 
 
 def test_visual_planning_yolo_stays_lazy_until_first_inference(

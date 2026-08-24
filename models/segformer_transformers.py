@@ -22,6 +22,7 @@ from models.base import (
     DenseSemanticOutput,
     DenseSemanticPyramidOutput,
     ModelCacheIdentity,
+    SemanticMaskOutput,
     validate_local_model_asset,
 )
 from models.images import read_normalized_image
@@ -358,6 +359,79 @@ class SegFormerRuntime:
             cpu_fallback_used=self._cpu_fallback_used,
         )
 
+    def segment(self, image: Image.Image) -> SemanticMaskOutput:
+        """Segment one exact RGB 1024x1024 model tile and return the discrete
+        class-id map aligned to that tile. The caller owns tile geometry; this
+        method only runs the model with a strict tile contract: a non-1024
+        input, a processor that resized the tile, or an off-tile output all
+        fail closed. It never changes predict/infer/infer_pyramid behavior.
+        分割一张精确 RGB 1024x1024 模型 tile，返回与该 tile 对齐的离散
+        class-id map。调用方负责 tile 几何；本方法只以严格 tile 契约运行模型：
+        非 1024 输入、processor 缩放 tile 或输出偏离 tile 尺寸均严格失败。
+        绝不改变 predict/infer/infer_pyramid 行为。"""
+
+        if not isinstance(image, Image.Image):
+            raise TypeError("segment requires a PIL image")
+        normalized = image.convert("RGB")
+        if normalized.size != (1024, 1024):
+            raise SegFormerInferenceError(
+                "SegFormer segment requires an exact 1024x1024 model tile"
+            )
+        self.load()
+        assert self._model is not None
+        assert self._processor is not None
+        assert self._metadata is not None
+        assert self._resolved_device is not None
+        assert self._actual_weights_sha256 is not None
+        runner = self._inference_runner or _run_semantic_mask_tile
+        try:
+            prediction = runner(
+                self._model,
+                self._processor,
+                normalized,
+                self._resolved_device,
+                len(self._metadata.labels),
+            )
+            if isinstance(prediction, tuple) and len(prediction) == 2:
+                mask = prediction[0]
+            else:
+                mask = prediction
+            height, width, class_ids = _inspect_mask(mask)
+        except SegFormerError:
+            raise
+        except Exception as error:
+            raise SegFormerInferenceError(
+                f"SegFormer mask tile inference failed: {type(error).__name__}"
+            ) from None
+        if (width, height) != normalized.size:
+            raise SegFormerInferenceError(
+                "SegFormer mask tile dimensions differ from the model tile"
+            )
+        invalid = [
+            class_id
+            for class_id in class_ids
+            if class_id < 0 or class_id >= len(self._metadata.labels)
+        ]
+        if invalid:
+            raise SegFormerInferenceError(
+                "SegFormer mask tile contains a class ID outside checkpoint metadata"
+            )
+        return SemanticMaskOutput(
+            class_id_map=mask,
+            id_to_label={
+                class_id: label
+                for class_id, label in enumerate(self._metadata.labels)
+            },
+            original_size=(1024, 1024),
+            weights_sha256=self._actual_weights_sha256,
+            diagnostics={
+                "logical_model_id": self.settings.logical_model_id,
+                "device": self._resolved_device,
+                "dtype": self.settings.dtype,
+                "cpu_fallback_used": self._cpu_fallback_used,
+            },
+        )
+
 
 def _verified_external_labels(id_to_label: Mapping[int, str]) -> tuple[str, ...]:
     """Validate a caller-supplied authoritative, contiguous class map.
@@ -614,6 +688,62 @@ def _run_transformers_inference(
             class_ids[0].to("cpu").numpy(),
             confidence[0].to("cpu").numpy(),
         )
+
+
+def _run_semantic_mask_tile(
+    model: Any,
+    processor: Any,
+    image: Image.Image,
+    device: str,
+    label_count: int,
+) -> Any:
+    """Segment one exact model tile for the VQA evidence path. The processor
+    must keep the spatial size (do_resize=False); if it resized the prepared
+    tile back to the preprocessor-declared size, this fails closed instead of
+    silently segmenting the wrong resolution. Logits are upsampled to the
+    model tile and argmax produces the discrete class-id map.
+    为 VQA evidence 路径分割一张精确模型 tile。processor 必须保持空间尺寸
+    （do_resize=False）；若它把已准备好的 tile 悄悄缩回 preprocessor 声明尺寸，
+    这里严格失败，而不是悄悄分割错误分辨率。logits 上采样到模型 tile，
+    argmax 得到离散 class-id map。"""
+
+    try:
+        import torch
+        import torch.nn.functional as functional
+    except ImportError as error:
+        raise SegFormerDependencyError("SegFormer inference requires torch") from error
+    inputs = processor(images=image, return_tensors="pt", do_resize=False)
+    pixel_values = getattr(inputs, "pixel_values", None)
+    if isinstance(inputs, Mapping):
+        pixel_values = inputs.get("pixel_values", pixel_values)
+    spatial = tuple(getattr(pixel_values, "shape", ()))[-2:]
+    if spatial != (image.height, image.width):
+        raise SegFormerInferenceError(
+            "SegFormer processor resized the model tile; do_resize=False required"
+        )
+    if hasattr(inputs, "to"):
+        inputs = inputs.to(device)
+    elif isinstance(inputs, Mapping):
+        inputs = {
+            key: value.to(device) if hasattr(value, "to") else value
+            for key, value in inputs.items()
+        }
+    with torch.inference_mode():
+        outputs = model(**inputs)
+        logits = getattr(outputs, "logits", None)
+        shape = getattr(logits, "shape", ())
+        if len(shape) != 4 or int(shape[0]) != 1 or int(shape[1]) != label_count:
+            raise SegFormerInferenceError(
+                "SegFormer logits do not match the checkpoint class contract"
+            )
+        upsampled = functional.interpolate(
+            logits,
+            size=(image.height, image.width),
+            mode="bilinear",
+            align_corners=False,
+        )
+        class_ids = upsampled.argmax(dim=1)
+        return class_ids[0].to("cpu").numpy()
 
 
 def _inspect_mask(mask: Any) -> tuple[int, int, tuple[int, ...]]:

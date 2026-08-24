@@ -37,6 +37,17 @@ data/XLRS-Bench/
 data/vrsbench-phase1-train/
 data/phase2-train/
 data/phase2-train-processed/
+# Local visual-planning SFT artifacts with embedded image payloads.
+# 含内嵌图像载荷的本地视觉规划 SFT 产物。
+data/phase2-train-visualplanning/
+data/phase2-train-visualplanning-dedup/
+data/phase2-train-visualplanning-refined-v2/
+data/phase2-train-visualplanning-refined-v3/
+data/phase2-train-visualplanning-refined-v4/
+data/superRS/
+data/LRS-VQA_sample10/
+data/LRS ,no red circle-100/
+data/LRS ,no red circle-100.zip
 
 # Firecrawl crawl cache
 .firecrawl/

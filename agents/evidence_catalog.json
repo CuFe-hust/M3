@@ -1,5 +1,5 @@
 {
-  "catalog_version": "visual-evidence-catalog-v3",
+  "catalog_version": "visual-evidence-catalog-v4",
   "aliases": {
     "airplane": "plane",
     "aeroplane": "plane",
@@ -33,91 +33,106 @@
       "yolo_labels": ["plane"],
       "segformer_labels": ["plane"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "baseball-diamond": {
       "yolo_labels": ["baseball diamond"],
       "segformer_labels": ["baseball_diamond"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "bridge": {
       "yolo_labels": ["bridge"],
       "segformer_labels": ["Bridge"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "ground-track-field": {
       "yolo_labels": ["ground track field"],
       "segformer_labels": ["Ground_Track_Field"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "small-vehicle": {
       "yolo_labels": ["small vehicle"],
       "segformer_labels": ["Small_Vehicle"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "large-vehicle": {
       "yolo_labels": ["large vehicle"],
       "segformer_labels": ["Large_Vehicle"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "ship": {
       "yolo_labels": ["ship"],
       "segformer_labels": ["ship"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "tennis-court": {
       "yolo_labels": ["tennis court"],
       "segformer_labels": ["tennis_court"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "basketball-court": {
       "yolo_labels": ["basketball court"],
       "segformer_labels": ["basketball_court"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "storage-tank": {
       "yolo_labels": ["storage tank"],
       "segformer_labels": ["storage_tank"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "soccer-ball-field": {
       "yolo_labels": ["soccer ball field"],
       "segformer_labels": ["Soccer_ball_field"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "roundabout": {
       "yolo_labels": ["roundabout"],
       "segformer_labels": ["Roundabout"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "harbor": {
       "yolo_labels": ["harbor"],
       "segformer_labels": ["Harbor"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "swimming-pool": {
       "yolo_labels": ["swimming pool"],
       "segformer_labels": ["Swimming_pool"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "helicopter": {
       "yolo_labels": ["helicopter"],
       "segformer_labels": ["Helicopter"],
       "yolo_enabled": true,
-      "segformer_enabled": true
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_mitb2_001"
     },
     "container-crane": {
       "yolo_labels": ["container crane"],
@@ -136,6 +151,62 @@
       "segformer_labels": null,
       "yolo_enabled": true,
       "segformer_enabled": false
+    },
+    "bareland": {
+      "yolo_labels": [],
+      "segformer_labels": ["bareland"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "rangeland": {
+      "yolo_labels": [],
+      "segformer_labels": ["rangeland"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "developed-space": {
+      "yolo_labels": [],
+      "segformer_labels": ["developed_space"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "road": {
+      "yolo_labels": [],
+      "segformer_labels": ["road"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "tree": {
+      "yolo_labels": [],
+      "segformer_labels": ["tree"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "water": {
+      "yolo_labels": [],
+      "segformer_labels": ["water"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "agriculture-land": {
+      "yolo_labels": [],
+      "segformer_labels": ["agriculture_land"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
+    },
+    "building": {
+      "yolo_labels": [],
+      "segformer_labels": ["building"],
+      "yolo_enabled": false,
+      "segformer_enabled": true,
+      "segformer_binding": "segmenter_oem_001"
     }
   },
   "task_capabilities": {
@@ -158,7 +229,9 @@
       "small-vehicle", "large-vehicle", "ship", "tennis-court",
       "basketball-court", "storage-tank", "soccer-ball-field", "roundabout",
       "harbor", "swimming-pool", "helicopter", "container-crane", "airport",
-      "helipad"
+      "helipad",
+      "bareland", "rangeland", "developed-space", "road",
+      "tree", "water", "agriculture-land", "building"
     ],
     "grounding": [
       "plane", "baseball-diamond", "bridge", "ground-track-field",

@@ -29,14 +29,17 @@ from agents.general_vqa.evidence.executor import (
     _pixel_xyxy_to_999,
 )
 from agents.general_vqa.evidence.rendering import (
-    overlay_mask,
+    PALETTE_VERSION,
+    make_preview,
+    render_pure_mask,
     render_roi_crop,
-    stable_palette_color,
+    render_yolo_annotation,
 )
-from agents.general_vqa.evidence.schema import RoiEvidenceRecord, VqaEvidenceBundle
+from agents.general_vqa.evidence.schema import RoiEvidenceRecord
 from agents.schema import (
     AgentName,
     AgentResult,
+    GENERAL_VQA_AGENT_TASKS,
     VisualTaskPlan,
 )
 from agents.visual_base import PromptBinding, VisualAgentBase
@@ -70,24 +73,24 @@ _DEFAULT_PROMPT_TEXT = (
 
 _DEFAULT_PROMPT_VERSION = "general_vqa_v3"
 
-# Compatibility matrix (14A2 gate 1): only general_vqa may run the
-# object_evidence_vqa family; the other VQA-family tasks are direct_vqa only
-# and any object_evidence_vqa plan for them is a forbidden combination that
-# fails stably without ever touching sample.task.
-# 兼容矩阵（14A2 门禁 1）：只有 general_vqa 可运行 object_evidence_vqa 家族；
-# 其余 VQA 家族任务只走 direct_vqa，为它们出现 object_evidence_vqa 计划属于
-# 禁止组合，稳定失败且绝不触碰 sample.task。
-_DIRECT_ONLY_TASKS = frozenset({
-    "scene_classification",
-    "multiple_choice_vqa",
-    "spatial_relation",
-})
-
 # Semantic placeholder for the persisted VQA evidence bundle (C7, 14A2 §4.3);
 # the final owned basename set is frozen by C8 §5.1.
 # VQA 证据包持久化的语义占位 basename（C7，14A2 §4.3）；最终 owned basename
 # 集合由 C8 §5.1 冻结。
 _VQA_EVIDENCE_FILENAME = "vqa_evidence.json"
+
+# Closed final-content roles keep the image/text contract explicit and
+# auditable; they do not participate in capability selection.
+# 封闭的最终内容角色集合用于明确、可审计的图文契约；不参与能力选择。
+VISUAL_INPUT_ROLES = frozenset(
+    {
+        "annotated_roi",
+        "segformer_pure_mask",
+        "yolo_on_segformer_pure_mask",
+        "clean_roi",
+    }
+)
+VISUAL_CONTENT_VERSION = "v2"
 
 
 class GeneralVQAAgent(VisualAgentBase):
@@ -95,12 +98,7 @@ class GeneralVQAAgent(VisualAgentBase):
     开放/闭集词汇视觉问答 Agent。"""
 
     name: AgentName = "general_vqa_agent"
-    supported_tasks: frozenset[str] = frozenset({
-        "general_vqa",
-        "scene_classification",
-        "multiple_choice_vqa",
-        "spatial_relation",
-    })
+    supported_tasks: frozenset[str] = GENERAL_VQA_AGENT_TASKS
 
     def __init__(
         self,
@@ -173,12 +171,6 @@ class GeneralVQAAgent(VisualAgentBase):
         if task_plan is not None:
             if not task_plan.needs_visual_assistance:
                 return await super().run(sample, context)
-            if sample.task != "general_vqa":
-                raise AgentExecutionError(
-                    self.name,
-                    sample.sample_id,
-                    cause=f"visual_assistance_forbidden_for_task:{sample.task}",
-                )
             if context.visual_bindings is None or context.visual_bindings.vqa_evidence is None:
                 raise AgentExecutionError(
                     self.name,
@@ -230,7 +222,7 @@ class GeneralVQAAgent(VisualAgentBase):
                 materialized_views=context.visual_views,
             )
             content, final_hashes = self._build_evidence_content(
-                sample, plan, execution.bundle, execution.masks, images
+                sample, plan, execution, images
             )
         except Exception as exc:
             raise AgentExecutionError(
@@ -288,6 +280,7 @@ class GeneralVQAAgent(VisualAgentBase):
             result_filename=self.result_filename(sample),
             trace={
                 "workflow": "object_evidence_vqa",
+                "visual_content_version": VISUAL_CONTENT_VERSION,
                 "prompt_version": prompt_sel.version,
                 "request_hash": request_hash,
                 "image_sha256": final_hashes,
@@ -302,24 +295,86 @@ class GeneralVQAAgent(VisualAgentBase):
         self,
         sample: UnifiedSample,
         plan: VisualTaskPlan,
-        bundle: VqaEvidenceBundle,
-        masks: Mapping[tuple[str, str], Any],
+        execution: EvidenceExecution,
         images: Mapping[str, Image.Image],
     ) -> tuple[list[dict[str, Any]], list[str]]:
-        """Assemble the single final-Qwen user content per 14B §10: clean ROI
-        images first, then per-ROI mask overlays, then text evidence (question,
-        answer constraints, image sizes, ROI crop geometry, YOLO text records,
-        SegFormer legend). Confidence never appears and no detection box is
-        ever drawn.
-        按 14B §10 组装唯一最终 Qwen 用户内容：先干净 ROI 图像、再逐 ROI 掩膜
-        overlay、后文本证据（问题、答案约束、图像尺寸、ROI 裁切几何、YOLO
-        文本记录、SegFormer 图例）。confidence 绝不出现，绝不绘制检测框。"""
+        """Assemble the single final-Qwen user content per the frozen
+        three-branch protocol (14.12-14.13). Per ROI: YOLO-only -> annotated
+        ROI; SegFormer-only -> pure mask plus clean ROI; YOLO + SegFormer ->
+        YOLO-on-pure-mask plus clean ROI; neither -> clean ROI. Only the executor's finished
+        bundle/masks/palette are consumed — models are never rerun and
+        capabilities are never re-decided here. Confidence never appears and
+        the palette is carried in-memory only; both the rendered digests and
+        evidence_identity fold the protocol identity into the request hash.
+        按冻结三分支协议（14.12-14.13）组装唯一最终 Qwen 用户内容。逐 ROI：
+        仅 YOLO -> 标注 ROI；仅 SegFormer -> 纯色 mask 加干净 ROI；YOLO + SegFormer ->
+        YOLO-on-pure-mask 加干净 ROI；均无 -> 干净 ROI。只消费 executor 已完成
+        bundle/masks/palette——此处绝不重跑模型或重新决定 capability。confidence
+        绝不出现，调色表仅存内存；渲染摘要与 evidence_identity 共同把协议身份
+        折叠进请求 hash。"""
+        bundle = execution.bundle
         content: list[dict[str, Any]] = []
         final_hashes: list[str] = []
+        visual_inputs: list[dict[str, Any]] = []
         roi_geometry: list[dict[str, Any]] = []
+        yolo_detections: list[dict[str, Any]] = []
+        segformer_hits: list[dict[str, Any]] = []
+
+        yolo_by_roi: dict[str, list[tuple[str, tuple[float, float, float, float]]]] = {}
+        for record in bundle.detections:
+            yolo_by_roi.setdefault(record.roi_id, []).append(
+                (record.leaf_category, tuple(record.local_xyxy))
+            )
+            yolo_detections.append(
+                {
+                    "leaf_category": record.leaf_category,
+                    "roi_id": record.roi_id,
+                    # The final Qwen sees an ROI crop, so expose only its local
+                    # geometry in the same integer 0..999 JSON frame as SFT.
+                    # 最终 Qwen 看到的是 ROI 裁切图，因此只暴露局部几何，并统一
+                    # 为与 SFT 相同的 0..999 整数 JSON 坐标。
+                    "xyxy": _pixel_xyxy_to_999(
+                        record.local_xyxy, record.local_roi_size
+                    ),
+                }
+            )
+        seg_by_roi: dict[str, list[str]] = {}
+        for record in bundle.segments:
+            seg_by_roi.setdefault(record.roi_id, []).append(record.leaf_category)
+            segformer_hits.append(
+                {"roi_id": record.roi_id, "leaf_category": record.leaf_category}
+            )
+        # Rendered sets follow the stable leaf order (14.12.1): the executor
+        # already filtered hits to the requested plan categories and emitted
+        # detections in plan leaf order, so deduplicating the detection list
+        # preserves that order without the agent re-deciding capabilities.
+        # rendered 集合遵循稳定 leaf 顺序（14.12.1）：executor 已把命中过滤到
+        # 请求的 plan 类别并按 plan leaf 顺序输出检测，因此对检测列表去重即可
+        # 保持该顺序，无需 agent 重新决定 capability。
+        rendered_yolo_leaves = list(
+            dict.fromkeys(record.leaf_category for record in bundle.detections)
+        )
+        rendered_segformer_leaves = [
+            leaf for leaf in bundle.leaf_states
+            if any((record.roi_id, leaf) in execution.masks
+                   for record in bundle.rois)
+        ]
+
+        def append_visual(image: Image.Image, *, roi_id: str, role: str) -> None:
+            if role not in VISUAL_INPUT_ROLES:
+                raise ValueError(f"unsupported visual input role: {role}")
+            content.append(self._image_block(image, final_hashes))
+            visual_inputs.append(
+                {
+                    "content_image_index": len(visual_inputs),
+                    "roi_id": roi_id,
+                    "role": role,
+                }
+            )
+
         for record in bundle.rois:
-            clean = render_roi_crop(images[record.image_id], record)
-            content.append(self._image_block(clean, final_hashes))
+            raw_crop = render_roi_crop(images[record.image_id], record)
+            clean = make_preview(raw_crop)
             roi_geometry.append(
                 {
                     "roi_id": record.roi_id,
@@ -329,20 +384,56 @@ class GeneralVQAAgent(VisualAgentBase):
                     "crop_size": list(record.crop_size),
                 }
             )
-            # Per-ROI overlays follow the clean image, in catalog leaf order
-            # (14B §10.2); masks never blend across ROIs.
-            # 逐 ROI overlay 紧跟干净图，按目录叶子顺序（14B §10.2）；掩膜跨
-            # ROI 绝不融合。
-            for leaf in bundle.leaf_states:
-                mask = masks.get((record.roi_id, leaf))
-                if mask is None:
-                    continue
-                overlay = overlay_mask(
-                    clean,
-                    self._mask_to_image(mask, clean.size),
-                    color=stable_palette_color(leaf),
+            yolo_boxes = yolo_by_roi.get(record.roi_id, [])
+            seg_leaves = seg_by_roi.get(record.roi_id, [])
+            if yolo_boxes and not seg_leaves:
+                # YOLO only: annotated ROI. 仅 YOLO：标注 ROI。
+                append_visual(
+                    render_yolo_annotation(raw_crop, yolo_boxes),
+                    roi_id=record.roi_id,
+                    role="annotated_roi",
                 )
-                content.append(self._image_block(overlay, final_hashes))
+            elif seg_leaves and not yolo_boxes:
+                # SegFormer only: pure mask plus the matching clean ROI.
+                # 仅 SegFormer：纯色 mask 加同一 ROI 的干净原图。
+                append_visual(
+                    make_preview(
+                        self._pure_mask(record, seg_leaves, execution),
+                        resample=Image.Resampling.NEAREST,
+                    ),
+                    roi_id=record.roi_id,
+                    role="segformer_pure_mask",
+                )
+                append_visual(
+                    clean,
+                    roi_id=record.roi_id,
+                    role="clean_roi",
+                )
+            elif yolo_boxes and seg_leaves:
+                # Both: YOLO-on-pure-mask plus the clean ROI (14.12.3).
+                # 两者：YOLO-on-pure-mask 加干净 ROI（14.12.3）。
+                append_visual(
+                    render_yolo_annotation(
+                        make_preview(
+                            self._pure_mask(record, seg_leaves, execution),
+                            resample=Image.Resampling.NEAREST,
+                        ),
+                        yolo_boxes,
+                        # The pure mask is already shrunk with NEAREST;
+                        # keep that discrete palette while drawing YOLO.
+                        # 纯色 mask 已经用 NEAREST 缩小；绘制 YOLO 框时继续
+                        # 保持离散调色表，禁止 LANCZOS 重新采样。
+                        resample=Image.Resampling.NEAREST,
+                    ),
+                    roi_id=record.roi_id,
+                    role="yolo_on_segformer_pure_mask",
+                )
+                append_visual(clean, roi_id=record.roi_id, role="clean_roi")
+            else:
+                # Neither branch: the clean ROI keeps visual context.
+                # 均无分支：干净 ROI 保持视觉上下文。
+                append_visual(clean, roi_id=record.roi_id, role="clean_roi")
+
         payload = dict(self.build_user_payload(sample))
         # The final Qwen receives ROI crops, so detection geometry is local to
         # those crops while retaining the SFT integer 0..999 JSON convention.
@@ -359,33 +450,47 @@ class GeneralVQAAgent(VisualAgentBase):
             for image_ref in sample.images
         ]
         payload["rois"] = roi_geometry
-        payload["yolo_detections"] = [
-            {
-                "leaf_category": record.leaf_category,
-                "roi_id": record.roi_id,
-                # The final Qwen sees an ROI crop, so expose only its local
-                # geometry in the same integer 0..999 JSON frame as SFT.
-                # 最终 Qwen 看到的是 ROI 裁切图，因此只暴露局部几何，并统一为
-                # 与 SFT 相同的 0..999 整数 JSON 坐标。
-                "xyxy": _pixel_xyxy_to_999(
-                    record.local_xyxy, record.local_roi_size
-                ),
-            }
-            for record in bundle.detections
-        ]
-        payload["segformer_hits"] = [
-            {"roi_id": record.roi_id, "leaf_category": record.leaf_category}
-            for record in bundle.segments
-        ]
-        payload["segformer_legend"] = [
-            {"leaf_category": leaf, "color_rgb": list(stable_palette_color(leaf))}
-            for leaf in sorted({leaf for (_, leaf) in masks})
-        ]
+        payload["requested_leaves"] = list(plan.object_categories)
+        payload["rendered_yolo_leaves"] = rendered_yolo_leaves
+        payload["rendered_segformer_leaves"] = rendered_segformer_leaves
         payload["missing_leaves"] = list(bundle.missing_leaves)
+        payload["yolo_detections"] = yolo_detections
+        payload["segformer_hits"] = segformer_hits
+        payload["visual_inputs"] = visual_inputs
+        payload["mask_legend"] = [
+            {"leaf_category": leaf, "color_rgb": list(execution.palette[leaf])}
+            for leaf in rendered_segformer_leaves
+        ]
+        # Frozen protocol identity: any palette/catalog/preprocessing change
+        # must alter the request hash (14.13). 冻结协议身份：调色表/catalog/
+        # 预处理的任何变化都必须改变请求 hash（14.13）。
+        payload["evidence_identity"] = {
+            "catalog_version": bundle.catalog_version,
+            "preprocessing_version": bundle.preprocessing_version,
+            "palette_version": PALETTE_VERSION,
+            "visual_content_version": VISUAL_CONTENT_VERSION,
+        }
         content.append(
             {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
         )
         return content, final_hashes
+
+    def _pure_mask(
+        self,
+        record: RoiEvidenceRecord,
+        seg_leaves: list[str],
+        execution: EvidenceExecution,
+    ) -> Image.Image:
+        """Compose the per-ROI SegFormer pure mask in stable hit order.
+        按稳定命中顺序合成逐 ROI SegFormer 纯色 mask。"""
+        return render_pure_mask(
+            record.crop_size,
+            [
+                (leaf, execution.masks[(record.roi_id, leaf)])
+                for leaf in seg_leaves
+            ],
+            execution.palette,
+        )
 
     @staticmethod
     def _image_block(image: Image.Image, hashes: list[str]) -> dict[str, Any]:
@@ -402,25 +507,6 @@ class GeneralVQAAgent(VisualAgentBase):
             "type": "image_url",
             "image_url": {"url": image_to_data_url(data, "image/png")},
         }
-
-    @staticmethod
-    def _mask_to_image(mask: Any, size: tuple[int, int]) -> Image.Image:
-        """Convert an in-memory presence mask (duck-typed boolean array) into
-        a grayscale image sized to the preview; NEAREST keeps presence pixels
-        boolean-shaped when the preview shrank the crop. 将内存存在掩膜（鸭子
-        类型布尔数组）转换为匹配预览尺寸的灰度图像；预览缩小裁切时用 NEAREST
-        保持存在性像素接近布尔。"""
-        shape = getattr(mask, "shape", None)
-        if not isinstance(shape, tuple) or len(shape) != 2:
-            raise ValueError("presence mask must expose a 2-D shape")
-        height, width = shape
-        raw = mask.tobytes()
-        if len(raw) != width * height:
-            raise ValueError("presence mask bytes do not match its shape")
-        image = Image.frombytes("L", (width, height), raw)
-        if image.size != size:
-            image = image.resize(size, Image.Resampling.NEAREST)
-        return image
 
 
 def _structured_prompt(prompt: PromptBinding, agent_name: str) -> str:

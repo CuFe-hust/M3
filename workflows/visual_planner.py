@@ -10,6 +10,7 @@ views. v5 规划器是所有新鲜推理唯一的规划 seam：执行一次 sche
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 from typing import get_args
@@ -23,7 +24,12 @@ from agents.general_vqa.evidence.rendering import (
     normalized_image_size,
     preview_from_path,
 )
-from agents.schema import COUNTING_TASKS, MaterializedVisualView, VisualTaskPlan
+from agents.schema import (
+    COUNTING_TASKS,
+    GENERAL_VQA_AGENT_TASKS,
+    MaterializedVisualView,
+    VisualTaskPlan,
+)
 from data.schema import SampleDraft, TaskName, UnifiedSample
 from models.base import (
     MissingModelCacheIdentityError,
@@ -34,14 +40,44 @@ from models.base import (
 )
 
 _ALL_TASK_NAMES = frozenset(get_args(TaskName))
+# Tasks whose plans may request the shared VQA evidence capability. The four
+# GeneralVQAAgent tasks map to one catalog capability owner below; this list
+# only declares that these tasks participate in VQA capability planning.
+# 可以请求共享 VQA evidence 能力的 task 集合。四个 GeneralVQAAgent task 在
+# 下方映射到同一个 catalog capability owner；本列表只声明这些 task 参与 VQA
+# 能力规划。
 _VISUAL_CAPABILITY_TASKS = (
     "counting",
     "fine_grained_counting",
-    "general_vqa",
+    *sorted(GENERAL_VQA_AGENT_TASKS),
     "grounding",
 )
+# Single shared capability owner for the GeneralVQAAgent tasks: the catalog
+# declares one VQA capability family (general_vqa) and the planner resolves
+# every GeneralVQAAgent task to it for leaf validation. This is a catalog
+# lookup mapping only — never an assistance true/false decision table.
+# GeneralVQAAgent task 共享的单一 capability owner：目录只声明一个 VQA 能力
+# 族（general_vqa），planner 把所有 GeneralVQAAgent task 解析到它做 leaf 校验。
+# 这仅仅是目录查找映射——绝不是 assistance true/false 决策表。
+_VQA_CAPABILITY_OWNER = "general_vqa"
 _ROI_COORDINATE_FRAME = "normalized_0_999_top_left"
 _ROI_MATERIALIZATION_POLICY = "longest-side-ceil-quantum-center-clip"
+# Stable scope identifiers use the same conservative pattern as frozen
+# catalog versions. / 稳定 scope 标识符与冻结 catalog 版本使用同一保守模式。
+_SCOPE_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_.-]*$")
+
+
+def _vqa_capability_owner(task: str) -> str:
+    """Resolve the catalog capability owner for one task: every GeneralVQAAgent
+    task shares the single VQA capability family; other tasks keep their own
+    catalog entry. This is a catalog lookup mapping only — it never decides
+    whether assistance is needed.
+    解析一个 task 的 catalog capability owner：全部 GeneralVQAAgent task 共享
+    唯一 VQA 能力族；其他 task 使用自己的目录条目。这只是目录查找映射——
+    绝不决定是否需要辅助。"""
+    if task in GENERAL_VQA_AGENT_TASKS:
+        return _VQA_CAPABILITY_OWNER
+    return task
 
 
 class VisualTaskPlanError(ValueError):
@@ -70,6 +106,7 @@ class VisualTaskPlanner:
         roi_coordinate_frame: str = _ROI_COORDINATE_FRAME,
         roi_materialization_policy: str = _ROI_MATERIALIZATION_POLICY,
         large_image_policy: str = "both-dimensions-strictly-greater-than-1024",
+        vqa_assistance_scope: str | None = None,
     ) -> None:
         if max_side <= 0 or roi_quantum <= 0:
             raise ValueError("preview and ROI sizes must be positive")
@@ -83,6 +120,11 @@ class VisualTaskPlanner:
             raise ValueError("unsupported ROI materialization policy")
         if not large_image_policy:
             raise ValueError("large_image_policy must not be empty")
+        if vqa_assistance_scope is not None and (
+            not isinstance(vqa_assistance_scope, str)
+            or re.fullmatch(_SCOPE_PATTERN, vqa_assistance_scope) is None
+        ):
+            raise ValueError("vqa_assistance_scope is not a stable scope string")
         self._client = client
         self._system_prompt = system_prompt
         self._prompt_version = prompt_version
@@ -91,7 +133,7 @@ class VisualTaskPlanner:
             task: frozenset(
                 executable_categories_by_task[task]
                 if executable_categories_by_task is not None
-                else catalog.executable_leaves_for_task(task)
+                else catalog.executable_leaves_for_task(_vqa_capability_owner(task))
             )
             for task in _VISUAL_CAPABILITY_TASKS
         }
@@ -100,6 +142,7 @@ class VisualTaskPlanner:
         self._roi_coordinate_frame = roi_coordinate_frame
         self._roi_materialization_policy = roi_materialization_policy
         self._large_image_policy = large_image_policy
+        self._vqa_assistance_scope = vqa_assistance_scope
 
     @property
     def prompt_version(self) -> str:
@@ -110,7 +153,7 @@ class VisualTaskPlanner:
     def planning_parameters(self) -> dict[str, object]:
         """Return JSON-safe parameters frozen into run identity.
         返回写入运行身份的 JSON 安全冻结参数。"""
-        return {
+        parameters: dict[str, object] = {
             "planning_mode": "visual-task-plan-v5",
             "task_prompt_version": self._prompt_version,
             "preview_max_side": self._max_side,
@@ -119,6 +162,9 @@ class VisualTaskPlanner:
             "roi_materialization_policy": self._roi_materialization_policy,
             "large_image_policy": self._large_image_policy,
         }
+        if self._vqa_assistance_scope is not None:
+            parameters["vqa_assistance_scope"] = self._vqa_assistance_scope
+        return parameters
 
     @property
     def prompt_snapshot_filename(self) -> str:
@@ -142,7 +188,9 @@ class VisualTaskPlanner:
             "task_executable_categories": {
                 task: [
                     leaf
-                    for leaf in self._catalog.executable_leaves_for_task(task)
+                    for leaf in self._catalog.executable_leaves_for_task(
+                        _vqa_capability_owner(task)
+                    )
                     if leaf in self._runtime_executable_by_task[task]
                 ]
                 for task in _VISUAL_CAPABILITY_TASKS
@@ -364,7 +412,7 @@ class VisualTaskPlanner:
             try:
                 self._catalog.validate_plan_leaves(
                     plan.object_categories,
-                    task=plan.task,
+                    task=_vqa_capability_owner(plan.task),
                 )
             except CatalogCategoryError as exc:
                 raise VisualTaskPlanError("SCHEMA_INVALID") from exc

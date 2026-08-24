@@ -107,7 +107,8 @@ legacy.py
 common.py
 ```
 
-除非用户明确批准新的职责边界。
+确需新增文件时，应同步补充任务相关测试；生产包状态变化时同步更新
+`architecture/implementation_status.json`。不得为“结构看起来完整”提前创建空壳。
 
 ### 2.2 永久禁止旧包
 

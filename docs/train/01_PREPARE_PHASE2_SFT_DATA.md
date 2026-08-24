@@ -31,8 +31,7 @@ training episodes。后续数据集、在线增强和训练脚本只消费这里
 2. 执行 `git status --short` 和 `git rev-parse HEAD`；
 3. 阅读 `data/phase2-train/VRSBench/README.md`、`manifest.json` 和少量真实记录；
 4. 抽样检查 GeoChat 的普通对话、`[refer]`、`[identify]` 和多轮记录；
-5. 确认目标 Python 路径已经过架构白名单批准；如果尚未批准，停止创建 Python
-   文件，先提交独立的 allowlist 变更请求；
+5. 确认目标 Python 文件职责清晰、符合 import DAG，并为新增行为准备对应测试；
 6. 保留工作树中已有的未跟踪文件和用户修改，不顺带修改它们。
 
 现有 `docs/training/VQA_STAGE_DATA_REQUIREMENTS.md` 包含旧的探索性口径，其中

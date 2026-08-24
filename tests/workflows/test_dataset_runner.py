@@ -148,20 +148,12 @@ class _StubSampleRunner:
 
 
 def _sample(sample_id: str, task: str = "general_vqa") -> UnifiedSample:
-    images = (
-        [
-            ImageRef(image_id="i0", path="t1.png", role="t1"),
-            ImageRef(image_id="i1", path="t2.png", role="t2"),
-        ]
-        if task in {"change_caption", "change_qa"}
-        else [ImageRef(image_id="i0", path="img.png", role="image")]
-    )
     return UnifiedSample(
         sample_id=sample_id,
         dataset="fake",
         split="test",
         task=task,  # type: ignore[arg-type]
-        images=images,
+        images=[ImageRef(image_id="i0", path="img.png", role="image")],
         question="Is there a road?",
         ground_truth=GroundTruth(answers=["yes"]),
     )
@@ -183,8 +175,8 @@ def _create_run(tmp_path: Path, run_id: str = "runner-run") -> tuple[Path, RunSt
 
 
 class _FakeVisualPlanner:
-    """Return a strict v4 plan and record each planning call.
-    返回严格的 v4 计划并记录每次规划调用。"""
+    """Return a strict v5 plan and record each planning call.
+    返回严格的 v5 计划并记录每次规划调用。"""
 
     def __init__(
         self,
@@ -199,8 +191,6 @@ class _FakeVisualPlanner:
         self.calls.append((sample, data_root, artifact_dir, budget))
         if self.error is not None:
             raise self.error
-        if budget is not None:
-            budget.reserve_qwen()
         task = self.task
         if task is None:
             task = getattr(sample, "task", None) or getattr(sample, "explicit_task", None)
@@ -629,8 +619,8 @@ def test_dataset_run_options_auto_task_contract() -> None:
 
 def test_dataset_runner_task_none_is_internal_auto_task_mode(tmp_path: Path) -> None:
     """task=None is the explicit internal auto-task mode, never a user
-    default; without the v4 planner it fails at configuration time.
-    task=None 是内部显式 auto-task 模式而非用户缺省；缺少 v4 规划器时在
+    default; without the v5 planner it fails at configuration time.
+    task=None 是内部显式 auto-task 模式而非用户缺省；缺少 v5 规划器时在
     配置期失败。"""
     run_dir, _ = _create_run(tmp_path)
     runner = _runner(
@@ -796,8 +786,8 @@ def _draft(sample_id: str) -> SampleDraft:
 
 
 def test_visual_plan_explicit_entry_one_planner_call(tmp_path: Path) -> None:
-    """An explicit sample gets one v4 planner call and one execution.
-    显式样本获得一次 v4 规划调用与一次执行。"""
+    """An explicit sample gets one v5 planner call and one execution.
+    显式样本获得一次 v5 规划调用与一次执行。"""
     samples = [_sample("s0"), _sample("s1")]
     run_dir, _ = _create_run(tmp_path, run_id="visual-sample")
     planner = _FakeVisualPlanner(task="caption")
@@ -806,8 +796,8 @@ def test_visual_plan_explicit_entry_one_planner_call(tmp_path: Path) -> None:
     summary = _run(runner)
     assert len(planner.calls) == 2  # one per sample / 每条样本一次
     assert [call[0].sample_id for call in planner.calls] == ["s0", "s1"]
-    # run_one got the rebuilt sample and the same v4 plan / run_one 收到
-    # 重建样本与同一 v4 计划
+    # run_one got the rebuilt sample and the same v5 plan / run_one 收到
+    # 重建样本与同一 v5 计划
     assert [call[0].task for call in stub.calls] == ["caption", "caption"]
     assert all(plan.task == "caption" for _sid, plan, _views, _budget in stub.visual_plans)
     planned_budget = planner.calls[0][3]
@@ -843,45 +833,6 @@ def test_visual_plan_incompatible_rebuild_fails_closed(tmp_path: Path) -> None:
     assert summary.failed == 1
 
 
-@pytest.mark.parametrize("task", ["change_caption", "change_qa"])
-def test_explicit_change_task_still_calls_reclassification_planner(
-    tmp_path: Path, task: str
-) -> None:
-    """An explicit Change source task still receives one planner call."""
-    run_dir, _ = _create_run(tmp_path, run_id=f"planned-{task}")
-    planner = _FakeVisualPlanner(task=task)
-    stub = _StubSampleRunner()
-    runner = _runner(
-        _FakeAdapter([_sample("s0", task=task)]),
-        stub,
-        run_dir,
-        visual_task_planner=planner,
-    )
-    summary = _run(runner)
-    assert summary.succeeded == 1
-    assert len(planner.calls) == 1
-    assert planner.calls[0][3].qwen_calls_used == 1
-    assert [sample.task for sample, *_ in stub.calls] == [task]
-
-
-def test_model_selected_task_overrides_change_source_task(tmp_path: Path) -> None:
-    """The planner task, not the dataset source task, is execution authority."""
-    run_dir, _ = _create_run(tmp_path, run_id="model-task-authority")
-    planner = _FakeVisualPlanner(task="general_vqa")
-    stub = _StubSampleRunner()
-    runner = _runner(
-        _FakeAdapter([_sample("s0", task="change_caption")]),
-        stub,
-        run_dir,
-        visual_task_planner=planner,
-    )
-    summary = _run(runner, task="change_caption")
-    assert summary.succeeded == 1
-    assert len(planner.calls) == 1
-    assert stub.calls[0][0].task == "general_vqa"
-    assert stub.visual_plans[0][1].task == "general_vqa"
-
-
 def test_visual_planner_error_is_stable_failure(tmp_path: Path) -> None:
     """A VisualTaskPlanError collapses to a failed status with the stable code,
     no agent execution, and honest 'unknown' task label.
@@ -910,10 +861,10 @@ def test_visual_planner_error_is_stable_failure(tmp_path: Path) -> None:
 
 
 def test_visual_plan_draft_entry_one_planner_call(tmp_path: Path) -> None:
-    """The auto-task entry drafts through the v4 planner: one planner call
+    """The auto-task entry drafts through the v5 planner: one planner call
     per draft, materialization under the model-selected task, run_one with
-    the v4 plan. auto-task 入口的 draft 经 v4 规划器处理：每条 draft 一次
-    规划调用、按模型选定 task 物化、run_one 携带 v4 计划。"""
+    the v5 plan. auto-task 入口的 draft 经 v5 规划器处理：每条 draft 一次
+    规划调用、按模型选定 task 物化、run_one 携带 v5 计划。"""
     run_dir, _ = _create_run(tmp_path, run_id="visual-draft")
     planner = _FakeVisualPlanner(task="caption")
     stub = _StubSampleRunner()

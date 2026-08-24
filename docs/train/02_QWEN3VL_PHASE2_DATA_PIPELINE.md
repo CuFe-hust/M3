@@ -32,7 +32,7 @@ tests/test_qwen3vl_phase2_data.py
    `docs/train/01_PREPARE_PHASE2_SFT_DATA.md`；
 2. 执行 `git status --short`、`git rev-parse HEAD`；
 3. 检查第一轮输出 schema 和测试，不靠本文示例猜字段；
-4. 确认目标 Python 路径已经在架构白名单中；
+4. 确认目标 Python 文件职责清晰并符合 import DAG；
 5. 检查当前固定 Transformers 版本下 Qwen3-VL processor 的真实返回键；
 6. 不修改第一轮已经冻结的数据语义和 40% 选择结果。
 

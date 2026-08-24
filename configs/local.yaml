@@ -51,3 +51,29 @@ backend:
         allow_cpu_fallback: false
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
+
+# VQA visual evidence calibration: bindings are stable logical identities;
+# the composition root maps them to verified clients, never to raw paths.
+# VQA 视觉证据校准：binding 是稳定逻辑身份；组合根把它们映射到已验证客户端，
+# 绝不映射到裸路径。
+visual_planning:
+  detectors:
+    detector_obb_csl_001:
+      confidence_threshold: 0.20
+      nms_iou_threshold: 0.50
+      max_detections: 1000
+  segmenters:
+    segmenter_mitb2_001:
+      enabled: true
+      class_map_version: verified-2026-08-06
+    segmenter_oem_001:
+      enabled: true
+      class_map_version: verified-2026-08-20
+  preprocessing:
+    version: greedy-1024-stretch-v1
+    tile_size: 1024
+    partition_policy: greedy-row-major-no-overlap
+    remainder_resize: stretch
+    rgb_interpolation: lanczos
+    mask_inverse_interpolation: nearest
+    max_tile_concurrency: 4

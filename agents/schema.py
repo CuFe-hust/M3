@@ -257,6 +257,24 @@ def _repair_severity(normalizations: list[str]) -> str:
 VISUAL_TASK_PLAN_SCHEMA_VERSION = "visual-task-plan-v5"
 COUNTING_TASKS = frozenset({"counting", "fine_grained_counting"})
 
+# Tasks owned by the GeneralVQAAgent and its shared VQA evidence protocol. The
+# set expresses capability ownership — which agent/evidence protocol answers
+# these tasks — never that evidence must be enabled; the planner's
+# needs_visual_assistance stays the only switch. Planner, composition root and
+# the Agent reuse this single set so the four-task list cannot drift.
+# GeneralVQAAgent 及其共享 VQA 证据协议拥有的 task 集合。该集合只表达能力归属
+# ——由哪个 Agent/证据协议回答这些 task——绝不表达必须启用证据；planner 的
+# needs_visual_assistance 仍是唯一开关。planner、组合根与 Agent 复用同一集合，
+# 避免四处维护的四个 task 列表发生漂移。
+GENERAL_VQA_AGENT_TASKS = frozenset(
+    {
+        "general_vqa",
+        "scene_classification",
+        "multiple_choice_vqa",
+        "spatial_relation",
+    }
+)
+
 
 class RegionRequest(BaseModel):
     """Optional explicit attention rectangle in 0..999 image space.

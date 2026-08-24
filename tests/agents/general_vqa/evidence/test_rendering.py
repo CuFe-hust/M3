@@ -1,11 +1,13 @@
 """Tests for v2 evidence rendering.
 
-v2 证据渲染测试：裁切只接受已物化的源像素框，预览只缩小，mask overlay
-保持纯内存且不推导框或计数。
+v2 证据渲染测试：裁切只接受已物化的源像素框，预览只缩小；冻结三分支协议
+（14.12）的 SegFormer 调色表、纯色 mask 合成与 YOLO 高对比标注保持确定性，
+绝不推导框或计数。
 """
 
 from __future__ import annotations
 
+import array
 import base64
 import hashlib
 import io
@@ -14,14 +16,20 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
+import agents.general_vqa.evidence.rendering as rendering_module
+from agents.general_vqa.evidence.geometry import partition_roi
 from agents.general_vqa.evidence.rendering import (
     make_preview,
-    overlay_mask,
+    prepare_model_tile,
     preview_from_path,
+    render_pure_mask,
     render_roi_crop,
-    stable_palette_color,
+    render_yolo_annotation,
+    restore_class_id_mask,
+    segformer_palette,
+    stitch_class_id_masks,
 )
-from agents.general_vqa.evidence.schema import RoiEvidenceRecord
+from agents.general_vqa.evidence.schema import EvidenceTileRecord, RoiEvidenceRecord
 from models.images import crop_image_box
 
 
@@ -77,26 +85,341 @@ def test_preview_and_preview_transport_are_shrink_only(tmp_path: Path) -> None:
     assert Image.open(io.BytesIO(payload)).size == (1080, 540)
 
 
+def test_final_pure_mask_shrinks_with_nearest_and_keeps_palette() -> None:
+    """Final semantic masks are <=1080 and contain only palette colors.
+    最终语义 mask 最长边不超过 1080，且只包含调色表颜色。"""
+    size = (2000, 1200)
+    mask = Image.new("L", size, 0)
+    mask.paste(255, (300, 300, 1700, 900))
+    palette = {"building": (100, 150, 200)}
+    pure = render_pure_mask(size, [("building", mask)], palette)
+
+    preview = make_preview(pure, resample=Image.Resampling.NEAREST)
+    assert preview.size == (1080, 648)
+    assert set(preview.getdata()) <= {(0, 0, 0), palette["building"]}
+
+    # The combined branch uses the same nearest shrink before drawing boxes;
+    # with no boxes this isolates the mask resampling contract.
+    # combined 分支在绘框前使用同一 NEAREST 缩放；无框时可单独验证 mask
+    # 的缩放契约。
+    combined_mask = render_yolo_annotation(
+        pure, [], resample=Image.Resampling.NEAREST
+    )
+    assert combined_mask.size == preview.size
+    assert set(combined_mask.getdata()) <= {(0, 0, 0), palette["building"]}
+
+
 def test_preview_missing_file_fails(tmp_path: Path) -> None:
     with pytest.raises(OSError):
         preview_from_path(tmp_path / "missing.png")
 
 
-def test_overlay_mask_is_pure_and_deterministic() -> None:
-    source = _image((100, 100), fill=10)
-    mask = Image.new("L", (100, 100), 0)
-    mask.putpixel((50, 50), 255)
-    before = source.tobytes()
-    first = overlay_mask(source, mask, color=(255, 0, 0))
-    second = overlay_mask(source, mask, color=(255, 0, 0))
-    assert source.tobytes() == before
-    assert first.tobytes() == second.tobytes()
-    assert first.getpixel((50, 50)) != source.getpixel((50, 50))
-    assert first.getpixel((0, 0)) == source.getpixel((0, 0))
+def _rgb_distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
 
 
-def test_overlay_mask_rejects_size_mismatch_and_has_no_geometry_api() -> None:
+def _scan(image: Image.Image, window: tuple[int, int, int, int], color) -> bool:
+    """True when any pixel of `color` exists inside the window (clamped to the
+    image). 窗口（按图像裁剪）内是否存在任意 `color` 像素。"""
+    pixels = image.load()
+    x0, y0, x1, y1 = window
+    for y in range(y0, min(y1, image.height)):
+        for x in range(x0, min(x1, image.width)):
+            if pixels[x, y] == color:
+                return True
+    return False
+
+
+def test_segformer_palette_is_deterministic_and_obeys_distance_constraints() -> None:
+    leaves = ["small_vehicle", "building", "water"]
+    first = segformer_palette(leaves)
+    second = segformer_palette(leaves)
+    assert first == second
+    assert set(first) == set(leaves)
+    colors = list(first.values())
+    for color in colors:
+        assert _rgb_distance(color, (255, 0, 255)) >= 128.0
+        assert _rgb_distance(color, (0, 0, 0)) >= 96.0
+    for i in range(len(colors)):
+        for j in range(i + 1, len(colors)):
+            assert _rgb_distance(colors[i], colors[j]) >= 48.0
+
+
+def test_segformer_palette_reorders_leaves_deterministically() -> None:
+    leaves = ["small_vehicle", "building", "water"]
+    assert segformer_palette(leaves) == segformer_palette(leaves)
+    # Same leaf in the same position always maps to the same color.
+    # 同一叶子在同一位置永远映射到同一颜色。
+    assert segformer_palette(leaves)["building"] == segformer_palette(leaves)["building"]
+
+
+def test_segformer_palette_fails_stably_when_budget_exhausted(monkeypatch) -> None:
+    monkeypatch.setattr(rendering_module, "_PALETTE_MAX_ATTEMPTS", 4)
+    monkeypatch.setattr(rendering_module, "_PALETTE_MIN_DIST_MAGENTA", 1000.0)
+    with pytest.raises(ValueError, match="exhausted"):
+        segformer_palette(["small_vehicle"])
+
+
+def test_render_pure_mask_composes_later_leaf_wins_deterministically() -> None:
+    size = (100, 100)
+    mask_a = Image.new("L", size, 0)
+    mask_a.putpixel((10, 10), 255)
+    mask_b = Image.new("L", size, 0)
+    mask_b.putpixel((10, 10), 255)  # same pixel: later leaf wins
+    mask_b.putpixel((80, 80), 255)
+    palette = {"a": (255, 0, 0), "b": (0, 255, 0)}
+    composed = render_pure_mask(size, [("a", mask_a), ("b", mask_b)], palette)
+    assert composed.mode == "RGB"
+    assert composed.getpixel((10, 10)) == (0, 255, 0)  # b overwrites a
+    assert composed.getpixel((80, 80)) == (0, 255, 0)
+    assert composed.getpixel((50, 50)) == (0, 0, 0)
+    assert composed.getpixel((0, 0)) == (0, 0, 0)
+    again = render_pure_mask(size, [("a", mask_a), ("b", mask_b)], palette)
+    assert again.tobytes() == composed.tobytes()
+
+
+def test_render_pure_mask_rejects_size_mismatch() -> None:
     with pytest.raises(ValueError, match="must match"):
-        overlay_mask(_image((100, 100)), Image.new("L", (50, 50)), color=(0, 255, 0))
-    assert stable_palette_color("small_vehicle") == stable_palette_color("small_vehicle")
-    assert stable_palette_color("small_vehicle") != stable_palette_color("building")
+        render_pure_mask(
+            (100, 100),
+            [("a", Image.new("L", (50, 50), 0))],
+            {"a": (255, 0, 0)},
+        )
+
+
+def test_render_yolo_annotation_unscaled_draws_strokes_and_plate() -> None:
+    source = _image((200, 100))
+    before = source.tobytes()
+    annotated = render_yolo_annotation(source, [("small_vehicle", (10, 10, 190, 90))])
+    assert annotated.size == source.size  # never upscales
+    assert source.tobytes() == before  # source untouched
+    # Pillow draws both strokes inward from the boundary: the magenta width-3
+    # line covers [10, 12], the black width-5 outline shows at [13, 14].
+    # Pillow 从边界向内绘制描边：品红 width-3 覆盖 [10, 12]，黑色 width-5
+    # 轮廓在 [13, 14] 可见。
+    assert _scan(annotated, (10, 40, 13, 60), (255, 0, 255))
+    assert _scan(annotated, (13, 40, 15, 60), (0, 0, 0))
+    assert not _scan(annotated, (15, 40, 19, 60), (255, 0, 255))
+    assert not _scan(annotated, (15, 40, 19, 60), (0, 0, 0))
+    assert annotated.getpixel((100, 50)) == (7, 8, 9)  # interior untouched
+    assert _scan(annotated, (10, 0, 70, 26), (255, 255, 255))  # white plate text
+
+
+def test_render_yolo_annotation_shrinks_first_then_scales_boxes() -> None:
+    source = _image((2160, 1080))
+    annotated = render_yolo_annotation(source, [("building", (0, 0, 2000, 1000))])
+    assert annotated.size == (1080, 540)  # 2160x1080 -> 1080x540, scale 0.5
+    # The box scales to (0, 0, 1000, 500); strokes land on the scaled boundary.
+    # 框缩放到 (0, 0, 1000, 500)；描边落在缩放后的边界上。
+    assert _scan(annotated, (0, 240, 6, 260), (255, 0, 255))
+    assert _scan(annotated, (0, 240, 6, 260), (0, 0, 0))
+    assert annotated.getpixel((500, 300)) == (7, 8, 9)
+    assert _scan(annotated, (0, 0, 130, 30), (255, 255, 255))  # plate inside top box
+
+
+def test_render_yolo_annotation_is_deterministic() -> None:
+    source = _image((200, 100))
+    boxes = [("a", (10, 10, 90, 50)), ("b", (120, 20, 180, 80))]
+    first = render_yolo_annotation(source, boxes)
+    second = render_yolo_annotation(source, boxes)
+    assert first.tobytes() == second.tobytes()
+
+
+def test_legacy_overlay_api_is_removed() -> None:
+    # The semi-transparent overlay and the order-free stable palette were
+    # replaced by the frozen three-branch protocol; keep them from creeping
+    # back. 半透明 overlay 与无顺序 stable palette 已被冻结三分支协议取代；
+    # 防止其回归。
+    assert not hasattr(rendering_module, "overlay_mask")
+    assert not hasattr(rendering_module, "stable_palette_color")
+
+
+# ── 1024×1024 tile materialization and mask restoration (14.8) ───────────
+
+
+def _roi(size: tuple[int, int], roi_id: str = "roi-0") -> RoiEvidenceRecord:
+    width, height = size
+    return RoiEvidenceRecord(
+        roi_id=roi_id,
+        image_id="img1",
+        source_size=size,
+        core_xyxy=(0, 0, width, height),
+        expanded_xyxy=(0, 0, width, height),
+        crop_size=size,
+    )
+
+
+def _ramp_image(size: tuple[int, int]) -> Image.Image:
+    """Coordinate-encoded RGB ramp: R = x & 255, G = y & 255 (locally linear
+    everywhere except wrap points), B = 0. 坐标编码 RGB 渐变：R = x & 255、
+    G = y & 255（除回绕点外处处局部线性）、B = 0。"""
+    width, height = size
+    row = bytes(range(256)) * (width // 256) + bytes(range(width % 256))
+    red = row * height
+    green = b"".join(bytes([y & 255]) * width for y in range(height))
+    return Image.merge(
+        "RGB",
+        [
+            Image.frombytes("L", (width, height), red),
+            Image.frombytes("L", (width, height), green),
+            Image.new("L", (width, height), 0),
+        ],
+    )
+
+
+def _coord_mask(
+    size: tuple[int, int],
+    *,
+    roi_width: int,
+    x0: int = 0,
+    y0: int = 0,
+) -> Image.Image:
+    """Integer class-id mask whose pixel value encodes the ROI-local position:
+    value = y * roi_width + x. 像素值编码 ROI 局部位置的整数 class-id mask：
+    value = y * roi_width + x。"""
+    width, height = size
+    values = array.array(
+        "i",
+        (
+            (y0 + y) * roi_width + (x0 + x)
+            for y in range(height)
+            for x in range(width)
+        ),
+    )
+    return Image.frombytes("I", (width, height), values.tobytes())
+
+
+def test_prepare_model_tile_passes_full_tile_through_unchanged() -> None:
+    roi = _ramp_image((2048, 1536))
+    full = partition_roi(_roi((2048, 1536)))[0]
+    assert full.source_tile_size == (1024, 1024)
+    tile_image = prepare_model_tile(roi, full)
+    assert tile_image.size == (1024, 1024)
+    assert tile_image.tobytes() == roi.crop((0, 0, 1024, 1024)).tobytes()
+    assert roi.tobytes() == _ramp_image((2048, 1536)).tobytes()  # source untouched
+
+
+def test_prepare_model_tile_stretches_remainder_with_lanczos_ramp() -> None:
+    roi = _ramp_image((2048, 1536))
+    remainder = partition_roi(_roi((2048, 1536)))[2]  # (0, 1024, 1024, 1536)
+    assert remainder.source_tile_size == (1024, 512)
+    tile_image = prepare_model_tile(roi, remainder)
+    assert tile_image.size == (1024, 1024)
+    # scale_y = 2: model (x, y) maps to source (x, 1024 + y / 2); the ramp is
+    # linear at these sample points, so LANCZOS reproduces it within rounding.
+    # scale_y = 2：model (x, y) 映射到源 (x, 1024 + y / 2)；这些采样点处渐变
+    # 线性，因此 LANCZOS 在取整误差内精确复现。
+    for model_x, model_y, expected_r, expected_g in (
+        (100, 200, 100, 100),
+        (900, 200, 132, 100),
+        (100, 700, 100, 94),
+    ):
+        pixel = tile_image.getpixel((model_x, model_y))
+        assert abs(pixel[0] - expected_r) <= 2, (model_x, model_y, pixel)
+        assert abs(pixel[1] - expected_g) <= 2, (model_x, model_y, pixel)
+        assert pixel[2] == 0
+
+
+def test_prepare_model_tile_1x1_tile_stretches_to_uniform_model_tile() -> None:
+    roi = _image((1, 1), fill=5)
+    single = partition_roi(_roi((1, 1)))[0]
+    tile_image = prepare_model_tile(roi, single)
+    assert tile_image.size == (1024, 1024)
+    assert tile_image.getextrema() == ((5, 5), (6, 6), (7, 7))
+
+
+def test_prepare_model_tile_rejects_box_drift_outside_roi() -> None:
+    roi = _ramp_image((2000, 1024))
+    foreign = partition_roi(_roi((2048, 2048)))[3]  # (1024,1024,2048,2048)
+    with pytest.raises(ValueError, match="exceeds ROI image size"):
+        prepare_model_tile(roi, foreign)
+
+
+def test_restore_class_id_mask_full_tile_is_a_copy() -> None:
+    model_mask = _coord_mask((1024, 1024), roi_width=2000)
+    full = partition_roi(_roi((2000, 1024)))[0]
+    restored = restore_class_id_mask(model_mask, full)
+    assert restored is not model_mask
+    assert restored.size == (1024, 1024)
+    assert restored.tobytes() == model_mask.tobytes()
+
+
+def test_restore_class_id_mask_downscales_remainder_with_nearest() -> None:
+    roi_size = (2000, 1024)
+    remainder = partition_roi(_roi(roi_size))[1]  # (1024, 0, 2000, 1024)
+    assert remainder.source_tile_size == (976, 1024)
+    source_mask = _coord_mask((976, 1024), roi_width=2000, x0=1024)
+    model_mask = source_mask.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+    restored = restore_class_id_mask(model_mask, remainder)
+    assert restored.size == (976, 1024)
+    for x, y in ((200, 500), (488, 0), (975, 1023), (0, 511)):
+        value = restored.getpixel((x, y))
+        # NEAREST keeps exact class ids: the decoded ROI x stays within ±2 of
+        # the scaled source position and the row decodes exactly.
+        # NEAREST 保持精确 class id：解码 ROI x 与缩放后的源位置偏差不超过 ±2，
+        # 行坐标精确解码。
+        assert value // 2000 == y, (x, y, value)
+        assert 1024 + x - 2 <= value % 2000 <= 1024 + x + 2, (x, y, value)
+
+
+def test_restore_class_id_mask_rejects_non_integer_or_off_tile_inputs() -> None:
+    full = partition_roi(_roi((1024, 1024)))[0]
+    with pytest.raises(ValueError, match="integer class-id grid"):
+        restore_class_id_mask(Image.new("F", (1024, 1024), 0.5), full)
+    with pytest.raises(ValueError, match="strict 1024x1024"):
+        restore_class_id_mask(_coord_mask((512, 512), roi_width=1024), full)
+
+
+def test_stitch_class_id_masks_places_each_roi_pixel_exactly_once() -> None:
+    roi_size = (2000, 1024)
+    tiles = partition_roi(_roi(roi_size))
+    full, remainder = tiles[0], tiles[1]
+    full_mask = _coord_mask((1024, 1024), roi_width=2000)
+    source_mask = _coord_mask((976, 1024), roi_width=2000, x0=1024)
+    model_mask = source_mask.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+    canvas = stitch_class_id_masks(
+        [
+            (full, full_mask),
+            (remainder, restore_class_id_mask(model_mask, remainder)),
+        ],
+        roi_size,
+    )
+    assert canvas.size == roi_size
+    assert canvas.mode == "I"
+    # Full-tile rows decode exactly; remainder rows within the NEAREST ±2 px.
+    # 完整 tile 行精确解码；余块行在 NEAREST ±2 px 内。
+    for y in (0, 511):
+        row = [canvas.getpixel((x, y)) for x in range(2000)]
+        assert all(value == y * 2000 + x for x, value in enumerate(row))
+    value = canvas.getpixel((1500, 700))
+    assert value // 2000 == 700
+    assert 1498 <= value % 2000 <= 1502
+    assert canvas.getpixel((1999, 1023)) == 1023 * 2000 + 1999
+
+
+def test_stitch_class_id_masks_fails_closed_on_hole_overlap_and_drift() -> None:
+    roi_size = (2000, 1024)
+    tiles = partition_roi(_roi(roi_size))
+    full, remainder = tiles[0], tiles[1]
+    full_mask = _coord_mask((1024, 1024), roi_width=2000)
+    source_mask = _coord_mask((976, 1024), roi_width=2000, x0=1024)
+    model_mask = source_mask.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+    with pytest.raises(ValueError, match="unwritten"):
+        stitch_class_id_masks([(full, full_mask)], roi_size)
+    with pytest.raises(ValueError, match="overlapping"):
+        stitch_class_id_masks(
+            [
+                (full, full_mask),
+                (full, full_mask),
+            ],
+            roi_size,
+        )
+    with pytest.raises(ValueError, match="must match tile record"):
+        stitch_class_id_masks([(remainder, full_mask)], roi_size)
+    with pytest.raises(ValueError, match="exceeds ROI canvas"):
+        stitch_class_id_masks([(tiles[0], full_mask)], (1000, 1024))
+    with pytest.raises(ValueError, match="integer class-id grid"):
+        stitch_class_id_masks(
+            [(full, Image.new("F", (1024, 1024), 0.5))],
+            roi_size,
+        )

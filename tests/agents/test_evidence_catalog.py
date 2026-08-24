@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,7 @@ def _data() -> dict[str, object]:
         "small-vehicle": {
             "yolo_labels": ["small vehicle"],
             "segformer_labels": ["Small_Vehicle"],
+            "segformer_binding": "segmenter_mitb2_001",
             "yolo_enabled": True,
             "segformer_enabled": True,
         },
@@ -161,10 +163,41 @@ def test_enabled_capability_requires_a_verified_raw_label() -> None:
         EvidenceCatalog(data)
 
 
+@pytest.mark.parametrize(
+    "capability",
+    [
+        {"segformer_labels": ["Small_Vehicle"]},
+        {"segformer_labels": None, "segformer_binding": "segmenter_mitb2_001"},
+    ],
+)
+def test_segformer_labels_and_binding_are_all_or_none(capability: dict[str, object]) -> None:
+    data = _data()
+    data["leaves"]["plane"].update(capability)
+    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
+        EvidenceCatalog(data)
+
+
+@pytest.mark.parametrize("binding", ["segmenter mitb2", "Segmenter_MiTB2", "LABEL_7"])
+def test_segformer_binding_must_be_stable_lowercase_identifier(binding: str) -> None:
+    data = _data()
+    data["leaves"]["plane"].update(
+        {
+            "segformer_labels": ["plane"],
+            "segformer_binding": binding,
+            "yolo_enabled": False,
+            "segformer_enabled": True,
+        }
+    )
+    with pytest.raises(CatalogCategoryError, match="INVALID_LEAF_CAPABILITIES"):
+        EvidenceCatalog(data)
+
+
 def test_unknown_leaf_capability_queries_fail_closed() -> None:
     catalog = _catalog()
     with pytest.raises(CatalogCategoryError):
         catalog.leaf_yolo_labels("unknown-object")
+    with pytest.raises(CatalogCategoryError):
+        catalog.leaf_segformer_binding("unknown-object")
     with pytest.raises(CatalogCategoryError):
         catalog.capability_enabled("unknown-object", "yolo")
 
@@ -188,6 +221,8 @@ def test_capability_labels_and_identity_are_versioned() -> None:
     catalog = _catalog()
     assert catalog.leaf_yolo_labels("small-vehicle") == ("small vehicle",)
     assert catalog.leaf_segformer_labels("small-vehicle") == ("Small_Vehicle",)
+    assert catalog.leaf_segformer_binding("small-vehicle") == "segmenter_mitb2_001"
+    assert catalog.leaf_segformer_binding("large-vehicle") is None
     assert catalog.capability_enabled("small-vehicle", "segformer")
     assert not catalog.capability_enabled("large-vehicle", "segformer")
     assert catalog.capability_identity("small-vehicle", "yolo") == (
@@ -197,26 +232,34 @@ def test_capability_labels_and_identity_are_versioned() -> None:
 
 def test_production_catalog_publishes_only_verified_current_leaves() -> None:
     catalog = EvidenceCatalog.from_file(_PRODUCTION_CATALOG)
-    expected_yolo = (
+    expected_leaves = (
+        # 15 iSAID-bound leaves (YOLO + SegFormer capability).
         "plane", "baseball-diamond", "bridge", "ground-track-field",
         "small-vehicle", "large-vehicle", "ship", "tennis-court",
         "basketball-court", "storage-tank", "soccer-ball-field", "roundabout",
         "harbor", "swimming-pool", "helicopter", "container-crane", "airport",
         "helipad",
+        # 8 OEM-bound leaves (SegFormer-only capability).
+        "bareland", "rangeland", "developed-space", "road", "tree", "water",
+        "agriculture-land", "building",
     )
-    expected_segformer = {
-        "storage-tank", "large-vehicle", "small-vehicle", "plane", "ship",
-        "swimming-pool", "harbor", "tennis-court", "ground-track-field",
-        "soccer-ball-field", "baseball-diamond", "bridge", "basketball-court",
-        "roundabout", "helicopter",
-    }
-    assert catalog.catalog_version == "visual-evidence-catalog-v3"
-    assert catalog.leaf_categories == expected_yolo
-    assert catalog.executable_leaves_for_task("counting") == expected_yolo
+    expected_isaid = frozenset(expected_leaves[:15])
+    expected_oem = frozenset(expected_leaves[18:])
+    expected_yolo = frozenset(expected_leaves[:18])
+    assert catalog.catalog_version == "visual-evidence-catalog-v4"
+    assert catalog.leaf_categories == expected_leaves
+    assert catalog.executable_leaves_for_task("counting") == expected_leaves[:18]
+    assert set(catalog.executable_leaves_for_task("general_vqa")) == set(expected_leaves)
     assert {
         leaf for leaf in catalog.leaf_categories
         if catalog.capability_enabled(leaf, "segformer")
-    } == expected_segformer
+    } == expected_isaid | expected_oem
+    for leaf in expected_isaid:
+        assert catalog.leaf_segformer_binding(leaf) == "segmenter_mitb2_001"
+    for leaf in expected_oem:
+        assert catalog.leaf_segformer_binding(leaf) == "segmenter_oem_001"
+        assert catalog.leaf_yolo_labels(leaf) == ()
+        assert not catalog.capability_enabled(leaf, "yolo")
     assert "background" not in catalog.leaf_categories
     assert not any(leaf.startswith("label-") for leaf in catalog.leaf_categories)
 
@@ -234,11 +277,22 @@ def test_production_raw_labels_are_backed_by_current_model_maps() -> None:
     semantic_labels = {
         label for support in semantic.supports.values() for label in support.model_labels
     }
+    oem = experts.expert("segmenter_oem_001")
+    oem_class_map = json.loads(
+        (REPO_ROOT / oem.asset.class_map).read_text(encoding="utf-8")
+    )
+    oem_labels = set(oem_class_map["id2name"].values())
+    assert oem.status == "active"
+    assert oem.verification.class_map == "verified"
     for leaf in evidence.leaf_categories:
         if evidence.capability_enabled(leaf, "yolo"):
             assert set(evidence.leaf_yolo_labels(leaf)) <= yolo_labels
         if evidence.capability_enabled(leaf, "segformer"):
-            assert set(evidence.leaf_segformer_labels(leaf) or ()) <= semantic_labels
+            binding = evidence.leaf_segformer_binding(leaf)
+            expected = (
+                oem_labels if binding == "segmenter_oem_001" else semantic_labels
+            )
+            assert set(evidence.leaf_segformer_labels(leaf) or ()) <= expected
 
 
 def test_catalog_asset_has_no_physical_paths_or_unverified_classes() -> None:

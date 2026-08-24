@@ -38,7 +38,7 @@ Merger 与 LLM LoRA 使用不同学习率。训练脚本消费
    它只能作为行为参考，不能从旧分支 import；旧脚本是 merger-only LoRA，与本任务的
    “全量 Merger + LLM LoRA”不同；
 4. 检查当前本地 Qwen3-VL 配置和真实模块路径；
-5. 确认新脚本和测试路径已经过架构白名单批准；
+5. 确认新脚本职责清晰、符合 import DAG，并有对应测试；
 6. 默认离线，不触发 Hugging Face 自动下载。
 
 ## 3. CLI 参数分组

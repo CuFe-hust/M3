@@ -145,6 +145,64 @@ class RoiEvidenceRecord(BaseModel):
         return self
 
 
+class EvidenceTileRecord(BaseModel):
+    """One deterministic 1024×1024 model tile of a materialized ROI crop,
+    persisted-safe. source_tile_xyxy is in the ROI-local crop frame; the
+    whole-image frame is recovered by adding the materialized crop origin.
+    Scales are exactly 1024 / source extent, so YOLO boxes inverse-map by
+    division and SegFormer masks restore by NEAREST before placement.
+    A full 1024×1024 tile keeps scale 1 and resize_applied false.
+    一个已物化 ROI 裁切的确定性 1024×1024 model tile，持久化安全。
+    source_tile_xyxy 位于 ROI 局部裁切坐标系；整图像素坐标由加上物化裁切原点
+    恢复。scale 恰为 1024 / 源尺寸，使 YOLO 框按除法逆映射、SegFormer mask
+    先 NEAREST 恢复再放置。完整 1024×1024 tile 保持 scale 1 且
+    resize_applied=false。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    tile_id: str = Field(min_length=1, pattern=_BOX_PATTERN)
+    roi_id: str = Field(min_length=1, pattern=_BOX_PATTERN)
+    row: int = Field(ge=0)
+    column: int = Field(ge=0)
+    source_tile_xyxy: tuple[int, int, int, int]
+    source_tile_size: tuple[int, int]
+    model_input_size: Literal[(1024, 1024)] = (1024, 1024)
+    scale_x: float = Field(gt=0)
+    scale_y: float = Field(gt=0)
+    resize_applied: bool
+
+    @model_validator(mode="after")
+    def validate_tile(self) -> "EvidenceTileRecord":
+        """Require a non-degenerate source box whose size matches the box
+        difference, scales consistent with 1024 / extent, and the frozen
+        full-tile identity: a full tile is never resized and keeps scale 1.
+        要求非退化源框且尺寸与框差值一致，scale 与 1024 / 尺寸一致，并保持
+        冻结的 full-tile 身份：完整 tile 绝不 resize 且 scale 为 1。"""
+        box = self.source_tile_xyxy
+        if len(box) != 4 or any(not isinstance(value, int) for value in box):
+            raise ValueError("source_tile_xyxy must contain four integers")
+        if box[0] >= box[2] or box[1] >= box[3]:
+            raise ValueError("source_tile_xyxy must be non-degenerate")
+        _validate_size(self.source_tile_size, "source_tile_size")
+        if self.source_tile_size != (box[2] - box[0], box[3] - box[1]):
+            raise ValueError("source_tile_size must match source_tile_xyxy")
+        if not (math.isfinite(self.scale_x) and math.isfinite(self.scale_y)):
+            raise ValueError("tile scales must be finite")
+        width, height = self.source_tile_size
+        if not math.isclose(self.scale_x, 1024 / width, rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("scale_x must equal 1024 / source_tile_width")
+        if not math.isclose(self.scale_y, 1024 / height, rel_tol=1e-9, abs_tol=1e-9):
+            raise ValueError("scale_y must equal 1024 / source_tile_height")
+        full = self.source_tile_size == (1024, 1024)
+        if self.resize_applied == full:
+            raise ValueError(
+                "resize_applied must be true exactly when the source tile is not 1024 square"
+            )
+        if full and (self.scale_x != 1.0 or self.scale_y != 1.0):
+            raise ValueError("a full 1024x1024 tile must keep scale 1")
+        return self
+
+
 class LayerStateRecord(BaseModel):
     """One per-(leaf, layer) diagnostic state. The final leaf state is the
     deepest layer's state; hit leaves reach no further layer.
@@ -176,6 +234,7 @@ class ModelCallAudit(BaseModel):
 
     layer: Literal["yolo", "segformer"]
     roi_id: str = Field(min_length=1, pattern=_BOX_PATTERN)
+    tile_id: str | None = Field(default=None, pattern=_BOX_PATTERN)
     input_size: tuple[int, int]
     logical_model_id: str = Field(min_length=1)
     weights_sha256: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
@@ -194,6 +253,28 @@ class ModelCallAudit(BaseModel):
         return self
 
 
+class EvidencePreprocessing(BaseModel):
+    """Frozen evidence-tile preprocessing values injected by the composition
+    root. agents never import application settings, so this local contract
+    mirrors the settings identity without importing it. The values are
+    inject-only: no production default is invented anywhere else.
+    组合根注入的冻结 evidence tile 预处理值。agents 绝不导入 application
+    settings，因此本地契约镜像该身份而不导入之。值为仅注入：其他位置绝不
+    杜撰生产默认值。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    tile_size: Literal[1024] = 1024
+    partition_policy: Literal["greedy-row-major-no-overlap"] = (
+        "greedy-row-major-no-overlap"
+    )
+    remainder_resize: Literal["stretch"] = "stretch"
+    rgb_interpolation: Literal["lanczos"] = "lanczos"
+    mask_inverse_interpolation: Literal["nearest"] = "nearest"
+    max_tile_concurrency: int = Field(default=4, ge=1, le=32)
+
+
 class VqaEvidenceBundle(BaseModel):
     """Final JSON-safe evidence bundle for the single final-Qwen call of the
     object-evidence workflow. Images travel in memory separately; every
@@ -209,6 +290,12 @@ class VqaEvidenceBundle(BaseModel):
     # catalog version 固定产生本证据的封闭类别/叶子映射（14A2 §5.1）；审计与
     # resume 可据此核验来源。
     catalog_version: str = Field(min_length=1)
+    # Frozen tile-preprocessing identity and the deterministic tile record of
+    # every model call (6.2). Old artifacts may lack both: fresh v1 executors
+    # must fill them. 冻结的 tile 预处理身份与每次模型调用的确定性 tile 记录
+    # （6.2）。旧 artifact 可能缺失两者：fresh v1 executor 必须填满。
+    preprocessing_version: str | None = None
+    tiles: list[EvidenceTileRecord] = Field(default_factory=list)
     rois: list[RoiEvidenceRecord] = Field(default_factory=list)
     detections: list[YoloDetectionRecord] = Field(default_factory=list)
     segments: list[SegFormerEvidenceRecord] = Field(default_factory=list)

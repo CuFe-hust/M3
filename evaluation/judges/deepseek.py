@@ -158,6 +158,7 @@ class DeepSeekJudgeClient:
         response_model: type[ModelT],
         request_meta: RequestMeta,
         system_prompt: str | None = None,
+        repair_with_original_payload: bool = False,
     ) -> ModelT:
         """Return a schema-validated text-only result for a declared Judge
         contract. Cache hits skip the transport; failed recoveries raise
@@ -219,7 +220,12 @@ class DeepSeekJudgeClient:
                 if not repair_used:
                     repair_used = True
                     messages = _repair_messages(
-                        self.repair_prompt, raw, stable_error_label(error)
+                        self.repair_prompt,
+                        raw,
+                        stable_error_label(error),
+                        original_payload=(
+                            payload if repair_with_original_payload else None
+                        ),
                     )
                     continue
                 self._write_artifacts(
@@ -310,16 +316,23 @@ def _judge_messages(
 
 
 def _repair_messages(
-    prompt: str, raw_response: str, validation_error: str
+    prompt: str,
+    raw_response: str,
+    validation_error: str,
+    *,
+    original_payload: Mapping[str, Any] | None = None,
 ) -> list[dict[str, str]]:
+    repair_payload: dict[str, Any] = {
+        "validation_error": validation_error,
+        "raw_output": raw_response,
+    }
+    if original_payload is not None:
+        repair_payload["original_payload"] = dict(original_payload)
     return [
         {"role": "system", "content": prompt},
         {
             "role": "user",
-            "content": json.dumps(
-                {"validation_error": validation_error, "raw_output": raw_response},
-                ensure_ascii=False,
-            ),
+            "content": json.dumps(repair_payload, ensure_ascii=False),
         },
     ]
 

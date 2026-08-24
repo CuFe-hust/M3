@@ -31,7 +31,10 @@ from pathlib import Path
 from typing import Any
 
 from agents.counting.schema import CountingResult
-from agents.schema import AgentResult
+from agents.schema import (
+    GENERAL_VQA_AGENT_TASKS,
+    AgentResult,
+)
 from data.adapters.base import DatasetAdapter
 from data.schema import SampleDraft, SampleMaterializationError, UnifiedSample, materialize_sample
 from evaluation.records import (
@@ -46,7 +49,11 @@ from workflows.sample_runner import (
     _rebuild_sample_for_task,
     build_deterministic_evaluation,
 )
-from workflows.schema import DatasetRunSummary, SampleRunStatus
+from workflows.schema import (
+    DatasetRunSummary,
+    EvidencePreprocessingIdentity,
+    SampleRunStatus,
+)
 from workflows.visual_planner import VisualTaskPlanError, VisualTaskPlanner
 
 # Storage key length: sha256(sample_id) hex digest, truncated for directory
@@ -140,6 +147,8 @@ class DatasetRunner:
         visual_task_planner: VisualTaskPlanner | None = None,
         planning_mode: str = "visual-task-plan-v5",
         data_root: Path | None = None,
+        evidence_preprocessing: EvidencePreprocessingIdentity | None = None,
+        vqa_assistance_scope: str | None = None,
     ) -> None:
         self.adapter = adapter
         self.sample_runner = sample_runner
@@ -151,6 +160,8 @@ class DatasetRunner:
         self.visual_task_planner = visual_task_planner
         self.planning_mode = planning_mode
         self.data_root = data_root
+        self.evidence_preprocessing = evidence_preprocessing
+        self.vqa_assistance_scope = vqa_assistance_scope
 
     async def run(
         self,
@@ -410,6 +421,47 @@ class DatasetRunner:
                     sample_dir,
                     persisted_task=persisted.task if persisted is not None else None,
                 )
+            # The planner may rewrite the adapter source task, so the
+            # persisted execution task is the only authoritative task for the
+            # legacy gates; the source task is a fallback only when no status
+            # was persisted (missing status reruns per the documented
+            # contract). The honest 'unknown' sentinel (pre-task failure)
+            # cannot prove the replan stays outside the VQA family and fails
+            # closed. planner 可能改写 adapter 的 source task，因此 legacy
+            # 门禁只认持久化 execution task；仅在无持久化状态（缺失状态按
+            # 文档契约重跑）时才回退 source task。诚实的 'unknown' 哨兵（预
+            # task 失败）无法证明重规划会留在 VQA 族之外，按 fail-closed
+            # 处理。
+            persisted_task = persisted.task if persisted is not None else None
+            gate_task = persisted_task if persisted_task is not None else sample.task
+            # A legacy run (no frozen evidence preprocessing identity) that
+            # needs to rerun VQA evidence would silently switch to the new
+            # greedy-1024-stretch-v1 semantics; fail closed instead.
+            # 历史运行（无冻结 evidence 预处理身份）需要重跑 VQA evidence 时
+            # 会悄悄切换成新 greedy-1024-stretch-v1 语义；因此严格失败。
+            if self.evidence_preprocessing is None and gate_task == "general_vqa":
+                return self._write_planning_resume_failure(
+                    sample,
+                    sample_dir,
+                    persisted_task=persisted_task,
+                    code="LEGACY_VQA_EVIDENCE_PREPROCESSING_UNSUPPORTED",
+                )
+            # A legacy run without the frozen VQA assistance scope could
+            # silently let any GeneralVQAAgent task replan into the new
+            # evidence path; fail closed instead. The scope and the tile
+            # preprocessing identity are two independent frozen identities.
+            # 历史运行若缺少冻结的 VQA assistance scope，重新规划时可能让
+            # 任一 GeneralVQAAgent task 静默进入新证据路径；因此严格失败。
+            # scope 与 tile 预处理是两个独立的冻结身份。
+            if self.vqa_assistance_scope is None and (
+                gate_task in GENERAL_VQA_AGENT_TASKS or gate_task == "unknown"
+            ):
+                return self._write_planning_resume_failure(
+                    sample,
+                    sample_dir,
+                    persisted_task=persisted_task,
+                    code="LEGACY_VQA_ASSISTANCE_SCOPE_UNSUPPORTED",
+                )
         return await self._run_sample_visual(sample, sample_dir)
 
     async def _run_sample_visual(
@@ -499,6 +551,30 @@ class DatasetRunner:
                     sample_dir,
                     persisted_task=persisted.task if persisted is not None else None,
                 )
+            # A draft has no task field to inspect on the in-memory object;
+            # the persisted execution task is the only authority. The honest
+            # 'unknown' sentinel (pre-task planning failure) cannot prove the
+            # replan stays outside the VQA family and fails closed.
+            # SampleDraft 没有可检查的内存 task；持久化 execution task 是唯一
+            # 权威。诚实 'unknown' 哨兵（预 task 规划失败）无法证明重规划会
+            # 留在 VQA 族之外，按 fail-closed 处理。
+            persisted_task = persisted.task if persisted is not None else None
+            if self.evidence_preprocessing is None and persisted_task == "general_vqa":
+                return self._write_planning_resume_failure(
+                    draft,
+                    sample_dir,
+                    persisted_task=persisted_task,
+                    code="LEGACY_VQA_EVIDENCE_PREPROCESSING_UNSUPPORTED",
+                )
+            if self.vqa_assistance_scope is None and (
+                persisted_task in GENERAL_VQA_AGENT_TASKS or persisted_task == "unknown"
+            ):
+                return self._write_planning_resume_failure(
+                    draft,
+                    sample_dir,
+                    persisted_task=persisted_task,
+                    code="LEGACY_VQA_ASSISTANCE_SCOPE_UNSUPPORTED",
+                )
         return await self._run_draft_visual(draft, sample_dir)
 
 
@@ -581,6 +657,7 @@ class DatasetRunner:
         sample_dir: Path,
         *,
         persisted_task: str | None = None,
+        code: str = "LEGACY_PLANNING_RESUME_UNSUPPORTED",
     ) -> SampleRunStatus:
         """Reject inference reruns for historical planner modes while keeping
         old success supplements model-free. When a persisted status exists, its
@@ -596,7 +673,7 @@ class DatasetRunner:
             sample,
             sample_dir,
             task=task,
-            code="LEGACY_PLANNING_RESUME_UNSUPPORTED",
+            code=code,
         )
 
     def _write_draft_failure(
