@@ -301,7 +301,6 @@ class GenericTrainerCore:
             "seed": int(config.seed),
         }
 
-    @staticmethod
     def _effective_data_contract(self, config: TrainingConfig) -> dict[str, Any]:
         profile_identity = getattr(self.data_profile, "identity_contract", None)
         resolved = dict(profile_identity(config.image_roots) if callable(profile_identity) else {})
