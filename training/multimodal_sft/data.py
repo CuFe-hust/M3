@@ -77,14 +77,22 @@ class JsonlDataProfile:
         if self.required_target_schema and episode.target_schema != self.required_target_schema:
             raise DataProfileError("episode target schema does not match profile")
 
+    def prepare(self, episode: CanonicalEpisode, *, image_roots: Any, split: str, epoch: int, seed: int | str) -> CanonicalEpisode:
+        self.validate(episode)
+        return episode
 
-def profile_for(name: str) -> JsonlDataProfile:
+    def identity_contract(self, image_roots: Any) -> dict[str, Any]:
+        return {"data_profile": self.name}
+
+
+def profile_for(name: str, *, data_manifest: str | Path | None = None, prompt_ref: str | None = None, prompt_file: str | Path | None = None) -> Any:
     """Return an explicit task profile; model adapters are not consulted."""
 
     if name == "change_agent":
-        return JsonlDataProfile(name, required_target_schema="ChangeInitialResult")
+        from .profiles.change_agent import ChangeAgentDataProfile
+        return ChangeAgentDataProfile(data_manifest=data_manifest, prompt_ref=prompt_ref, prompt_file=prompt_file)
     if name == "phase2":
-        return JsonlDataProfile(name)
+        from .profiles.phase2 import Phase2DataProfile
+        return Phase2DataProfile()
     raise DataProfileError(f"unsupported data profile: {name}")
-
 

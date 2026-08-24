@@ -20,6 +20,7 @@ if __package__ in {None, ""}:
 
 from training.multimodal_sft.checkpoint import CheckpointContractError
 from training.multimodal_sft.data import profile_for
+from training.multimodal_sft.image_roots import ImageRootError, ImageRootRegistry
 from training.multimodal_sft.parameter_plan import TuningPolicy
 from training.multimodal_sft.registry import UnsupportedModelAdapter, default_registry
 
@@ -60,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fsdp")
     parser.add_argument("--fsdp-config", "--fsdp_config")
     parser.add_argument("--image-root", action="append", default=[])
+    parser.add_argument("--data-manifest", "--data_manifest", dest="data_manifest")
+    parser.add_argument("--prompt-ref", "--prompt_ref", dest="prompt_ref")
+    parser.add_argument("--prompt-file", "--prompt_file", dest="prompt_file")
     parser.add_argument("--dtype", "--torch-dtype", "--torch_dtype", dest="dtype", default="auto", choices=("auto", "float16", "bfloat16", "float32"))
     parser.add_argument("--device", default="auto")
     parser.add_argument("--local-files-only", "--local_files_only", action=argparse.BooleanOptionalAction, default=True)
@@ -74,7 +78,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise ValueError("GENERIC_BATCHING_NOT_YET_AVAILABLE: micro-batch size must be 1 before Phase 1D")
         if args.deepspeed or args.fsdp or args.fsdp_config:
             raise ValueError("distributed_backend=unsupported_in_generic_phase1: DeepSpeed/FSDP are not implemented")
-        profile = profile_for(args.data_profile)
+        if args.data_profile == "change_agent" and not args.plan_only and not args.data_manifest:
+            raise CheckpointContractError("--data-manifest is required for data_profile=change_agent")
+        profile = profile_for(args.data_profile, data_manifest=args.data_manifest, prompt_ref=args.prompt_ref, prompt_file=args.prompt_file)
+        image_registry = ImageRootRegistry.from_specs(args.image_root)
         registry = default_registry()
         adapter, probe = registry.resolve(
             args.model_id,
@@ -141,7 +148,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 repeat_weights=repeat_weights,
                 save_steps=args.save_steps,
                 save_total_limit=args.save_total_limit,
-                data_contract={"image_roots": list(args.image_root), "batch_size": args.batch_size},
+                image_roots=image_registry,
+                data_contract={"image_sources": sorted(image_registry.roots), "batch_size": args.batch_size},
             ),
             policy=selected_policy,
             probe=loaded_probe,
@@ -152,7 +160,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         result["manifest"] = str(training_result.manifest_path) if training_result.manifest_path else None
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
-    except (UnsupportedModelAdapter, CheckpointContractError, ValueError) as exc:
+    except (UnsupportedModelAdapter, CheckpointContractError, ImageRootError, ValueError) as exc:
         details = getattr(exc, "details", None)
         suffix = f" details={details!r}" if details else ""
         print(f"multimodal SFT rejected: {type(exc).__name__}: {exc}{suffix}")

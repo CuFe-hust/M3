@@ -15,6 +15,8 @@ from typing import Any, Mapping, Sequence
 
 from agents.change.prompt_contract import INITIAL_RESPONSE_SUFFIX, evidence_label
 from agents.change.schema import ChangeInitialResult
+from training.multimodal_sft.image_roots import ImageRootRegistry
+from training.multimodal_sft.profiles.change_agent import ChangeAgentDataProfile
 
 
 def _phase2() -> Any:
@@ -34,6 +36,24 @@ CHANGE_SFT_SCHEMA_VERSION = 1
 CHANGE_PAIR_AUGMENTATION_UNSUPPORTED = "CHANGE_PAIR_AUGMENTATION_UNSUPPORTED"
 _ALLOWED_TASKS = {"change_caption", "change_qa"}
 _ALLOWED_CONTRACTS = {"semantic_pair_v1", "runtime_initial_v1"}
+
+
+def prepare_change_episode(
+    episode: Mapping[str, Any],
+    *,
+    image_roots: ImageRootRegistry | Mapping[str, str],
+    data_manifest: str | Path,
+    prompt_ref: str | None = None,
+    prompt_file: str | Path | None = None,
+    split: str = "train",
+    epoch: int = 0,
+    seed: int | str = 0,
+) -> Any:
+    """Compatibility façade for the generic ChangeAgent data profile."""
+
+    profile = ChangeAgentDataProfile(data_manifest=data_manifest, prompt_ref=prompt_ref, prompt_file=prompt_file)
+    registry = image_roots if isinstance(image_roots, ImageRootRegistry) else ImageRootRegistry(image_roots)
+    return profile.prepare(episode, image_roots=registry, split=split, epoch=epoch, seed=seed)
 
 
 class ChangeSFTDataError(ValueError):

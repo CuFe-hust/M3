@@ -53,6 +53,7 @@ class TrainingConfig:
     save_total_limit: int | None = None
     resume_from: str | Path | None = None
     data_contract: Mapping[str, Any] = field(default_factory=dict)
+    image_roots: Any = None
     _test_stop_after_checkpoint_step: int | None = None
 
 
@@ -140,14 +141,29 @@ class GenericTrainerCore:
             payload = torch.load(path, map_location="cpu")
         GenericTrainerCore._restore_rng_payload(payload)
 
-    def preflight(self, episodes: Iterable[Any], *, limit: int | None = None) -> dict[str, Any]:
-        checked = 0
+    def preflight(self, episodes: Iterable[Any], *, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0, limit: int | None = None) -> dict[str, Any]:
+        counts = {"checked": 0, "schema_errors": 0, "image_errors": 0, "prompt_errors": 0, "other_errors": 0}
         for episode in episodes:
-            self.data_profile.validate(episode)
-            checked += 1
-            if limit is not None and checked >= limit:
+            if limit is not None and counts["checked"] >= limit:
                 break
-        return {"checked": checked, "profile": self.data_profile.name, "passed": True}
+            counts["checked"] += 1
+            try:
+                self._prepare_episode(episode, image_roots=image_roots, split=split, epoch=epoch, seed=seed)
+            except Exception as exc:  # noqa: BLE001 - preflight reports all source errors
+                code = str(getattr(exc, "code", "")) or str(exc)
+                if "IMAGE_" in code or "IMAGE" in code or "UNKNOWN_IMAGE_SOURCE" in code or "UNSAFE_IMAGE_PATH" in code:
+                    counts["image_errors"] += 1
+                elif "PROMPT" in code:
+                    counts["prompt_errors"] += 1
+                elif isinstance(exc, (ValueError, KeyError, TypeError)):
+                    counts["schema_errors"] += 1
+                else:
+                    counts["other_errors"] += 1
+        counts["profile"] = self.data_profile.name
+        counts["passed"] = not any(counts[key] for key in ("schema_errors", "image_errors", "prompt_errors", "other_errors"))
+        if not counts["passed"]:
+            raise ValueError(f"DATA_PREFLIGHT_FAILED: {counts}")
+        return counts
 
     @staticmethod
     def _materialize(episodes: Iterable[Any], limit: int | None) -> list[Any]:
@@ -184,10 +200,17 @@ class GenericTrainerCore:
         with (root / "training_log.jsonl").open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(dict(event), ensure_ascii=False, default=str) + "\n")
 
-    def smoke_gradients(self, *, model: Any, processor: Any, episode: Any) -> dict[str, Any]:
+    def _prepare_episode(self, episode: Any, *, image_roots: Any, split: str, epoch: int, seed: int | str) -> Any:
+        prepare = getattr(self.data_profile, "prepare", None)
+        if callable(prepare):
+            return prepare(episode, image_roots=image_roots, split=split, epoch=epoch, seed=seed)
         self.data_profile.validate(episode)
+        return episode
+
+    def smoke_gradients(self, *, model: Any, processor: Any, episode: Any, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0) -> dict[str, Any]:
+        prepared = self._prepare_episode(episode, image_roots=image_roots, split=split, epoch=epoch, seed=seed)
         model.train()
-        batch = self.adapter.encode(processor, episode)
+        batch = self.adapter.encode(processor, prepared)
         output = model(**self.adapter.prepare_forward_inputs(batch))
         loss = self._loss(output)
         if loss is None:
@@ -201,15 +224,15 @@ class GenericTrainerCore:
             parameter.grad = None
         return {"passed": True, "trainable_parameters": len(trainable), "parameters_with_grad": with_grad, "loss": float(loss.detach().cpu().item())}
 
-    def evaluate(self, *, model: Any, processor: Any, episodes: Sequence[Any]) -> float | None:
+    def evaluate(self, *, model: Any, processor: Any, episodes: Sequence[Any], image_roots: Any = None, epoch: int = 0, seed: int | str = 0) -> float | None:
         import torch
         losses: list[float] = []
         was_training = bool(getattr(model, "training", False))
         model.eval()
         with torch.no_grad():
             for episode in episodes:
-                self.data_profile.validate(episode)
-                batch = self.adapter.encode(processor, episode)
+                prepared = self._prepare_episode(episode, image_roots=image_roots, split="validation", epoch=epoch, seed=seed)
+                batch = self.adapter.encode(processor, prepared)
                 output = model(**self.adapter.prepare_forward_inputs(batch))
                 loss = self._loss(output)
                 if loss is not None:
@@ -279,8 +302,13 @@ class GenericTrainerCore:
         }
 
     @staticmethod
-    def _effective_data_contract(config: TrainingConfig) -> dict[str, Any]:
-        return {**dict(config.data_contract), "batch_size": int(config.batch_size), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
+    def _effective_data_contract(self, config: TrainingConfig) -> dict[str, Any]:
+        profile_identity = getattr(self.data_profile, "identity_contract", None)
+        resolved = dict(profile_identity(config.image_roots) if callable(profile_identity) else {})
+        roots_contract = config.image_roots.contract() if callable(getattr(config.image_roots, "contract", None)) else None
+        if roots_contract is not None:
+            resolved["image_root_contract"] = roots_contract
+        return {**resolved, **dict(config.data_contract), "batch_size": int(config.batch_size), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
 
     def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any]) -> dict[str, Any]:
         return build_training_manifest(
@@ -358,7 +386,9 @@ class GenericTrainerCore:
         if config.max_train_samples is not None:
             train_rows = train_rows[: config.max_train_samples]
         eval_rows = self._materialize(eval_episodes or (), config.max_eval_samples)
-        preflight = self.preflight(train_rows)
+        preflight = self.preflight(train_rows, image_roots=config.image_roots, split="train", epoch=0, seed=config.seed)
+        if eval_rows:
+            preflight["validation"] = self.preflight(eval_rows, image_roots=config.image_roots, split="validation", epoch=0, seed=config.seed)
         if config.preflight_only:
             plan = self.build_plan(model, policy, probe=probe)
             return TrainingResult(0, None, None, None, plan, {"preflight": preflight})
@@ -412,7 +442,7 @@ class GenericTrainerCore:
                 start_index = 0
             self._restore_rng_state(resume_root)
         if config.smoke_gradients:
-            self.smoke_gradients(model=model, processor=processor, episode=train_rows[start_index if start_index < len(train_rows) else 0])
+            self.smoke_gradients(model=model, processor=processor, episode=train_rows[start_index if start_index < len(train_rows) else 0], image_roots=config.image_roots, epoch=start_epoch, seed=config.seed)
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -426,7 +456,8 @@ class GenericTrainerCore:
             for index in range(begin, len(train_rows)):
                 episode = train_rows[index]
                 self.data_profile.validate(episode)
-                batch = self.adapter.encode(processor, episode)
+                prepared = self._prepare_episode(episode, image_roots=config.image_roots, split="train", epoch=epoch_index, seed=config.seed)
+                batch = self.adapter.encode(processor, prepared)
                 window_start = index - (index % config.gradient_accumulation_steps)
                 window_size = min(config.gradient_accumulation_steps, len(train_rows) - window_start)
                 with autocast_context(str(getattr(model, "device", "cpu")), config.mixed_precision):
@@ -467,7 +498,7 @@ class GenericTrainerCore:
             if stop:
                 break
 
-        eval_loss = self.evaluate(model=model, processor=processor, episodes=eval_rows) if eval_rows else None
+        eval_loss = self.evaluate(model=model, processor=processor, episodes=eval_rows, image_roots=config.image_roots, epoch=next_epoch_index, seed=config.seed) if eval_rows else None
         output_dir = Path(config.output_dir)
         final_manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight)
         self._serialize_checkpoint(target=output_dir, model=model, processor=processor, plan=plan, manifest=final_manifest, optimizer=optimizer, scheduler=scheduler, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)

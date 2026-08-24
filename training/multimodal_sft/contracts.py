@@ -100,6 +100,28 @@ class ModelStructure:
 
 
 @dataclass(frozen=True)
+class ImageRef:
+    """Resolved image identity kept outside canonical source JSONL."""
+
+    image_source: str
+    path: str
+    role: str
+
+
+@dataclass(frozen=True)
+class PreparedMultimodalEpisode:
+    """Runtime-neutral episode after source validation and image preparation."""
+
+    episode_id: str
+    task_profile: str
+    messages: tuple[Mapping[str, Any], ...]
+    images: tuple[Any, ...]
+    image_roles: tuple[str, ...]
+    target_schema: str
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class CanonicalEpisode:
     """Model-neutral training episode.
 
@@ -124,8 +146,19 @@ class DataProfile(Protocol):
     def read(self, path: str | Path) -> Iterable[CanonicalEpisode]:
         """Read canonical episodes without knowing a model family."""
 
-    def validate(self, episode: CanonicalEpisode) -> None:
+    def validate(self, episode: Any) -> None:
         """Fail closed when the task contract is not satisfied."""
+
+    def prepare(
+        self,
+        episode: Any,
+        *,
+        image_roots: Any,
+        split: str,
+        epoch: int,
+        seed: int | str,
+    ) -> PreparedMultimodalEpisode | CanonicalEpisode:
+        """Resolve task data into a model-neutral runtime episode."""
 
 
 @runtime_checkable
