@@ -550,7 +550,9 @@ def test_teacher_prompt_freezes_current_catalog_without_sample_data() -> None:
     assert rubric.strip() in prompt
     assert prompt.index(runtime_prompt) < prompt.index(rubric.strip())
     assert prompt.index(rubric.strip()) < prompt.index('"properties"')
-    assert (REPO_ROOT / "prompts" / "visual_task_plan_v5.md").read_text().strip() in prompt
+    assert (
+        REPO_ROOT / "prompts" / "visual_task_plan_v5.md"
+    ).read_text(encoding="utf-8").strip() in prompt
     assert "visual-evidence-catalog-v4" in prompt
     assert "bareland" in prompt
     assert "urban-versus-rural" in prompt

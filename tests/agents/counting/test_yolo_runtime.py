@@ -595,6 +595,7 @@ def _install_fake_ort(monkeypatch, providers_result: list[str], captured: dict):
     import types
 
     fake_np = __import__("numpy")
+    captured["preload_dlls_calls"] = 0
 
     class _FakeSession:
         def __init__(self, path, providers=None):
@@ -615,7 +616,7 @@ def _install_fake_ort(monkeypatch, providers_result: list[str], captured: dict):
     class _FakeOrt:
         @staticmethod
         def preload_dlls(directory=""):
-            pass
+            captured["preload_dlls_calls"] = captured.get("preload_dlls_calls", 0) + 1
 
         @staticmethod
         def InferenceSession(path, providers=None):
@@ -666,6 +667,7 @@ def test_onnx_cuda_device_binding(tmp_path: Path, monkeypatch) -> None:
     assert model.resolved_provider == "CUDAExecutionProvider"
     assert model.resolved_device == "1"
     assert model.cpu_fallback_used is False
+    assert captured["preload_dlls_calls"] == 1
 
 
 def test_onnx_cuda_device_zero(tmp_path: Path, monkeypatch) -> None:
@@ -686,6 +688,22 @@ def test_onnx_cpu_mode_never_requests_cuda(tmp_path: Path, monkeypatch) -> None:
     assert model.requested_device == "cpu"
     assert model.resolved_provider == "CPUExecutionProvider"
     assert model.resolved_device == "cpu"
+    assert captured["preload_dlls_calls"] == 0
+
+
+def test_onnx_cpu_mode_rejects_unexpected_provider_set(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from agents.errors import DetectorInferenceError
+
+    with pytest.raises(DetectorInferenceError, match="unexpected execution provider"):
+        _onnx_model(
+            tmp_path,
+            monkeypatch,
+            ["CUDAExecutionProvider", "CPUExecutionProvider"],
+            device="cpu",
+            require_cuda=False,
+        )
 
 
 def test_onnx_cuda_unavailable_without_fallback_fails(tmp_path: Path, monkeypatch) -> None:

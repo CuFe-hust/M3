@@ -498,6 +498,18 @@ def validate_checkpoint_layout(checkpoint_path: str | Path) -> dict:
         raise CheckpointValidationError(
             "checkpoint_type_mismatch", str(manifest.get("checkpoint_type"))
         )
+    profile = manifest.get("training_profile", "phase2")
+    if profile not in {"phase2", "change_agent"}:
+        raise CheckpointValidationError("training_profile_unsupported", str(profile))
+    if profile == "change_agent":
+        contract = manifest.get("data_contract") or {}
+        prompt = manifest.get("change_prompt") or {}
+        if (
+            contract.get("name") != "change_qwen_sft"
+            or contract.get("target_schema") != "ChangeInitialResult"
+            or not prompt.get("sha256")
+        ):
+            raise CheckpointValidationError("change_manifest_invalid", "data_contract/change_prompt")
     return manifest
 
 

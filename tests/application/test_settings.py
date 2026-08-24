@@ -73,7 +73,21 @@ def test_local_config_declares_detector_inventory() -> None:
     assert [item.name for item in settings.backend.yolo.detectors] == [
         "detector_obb_csl_001", "detector_yolo_detect_001"
     ]
-    assert settings.backend.yolo.detectors[0].enabled is True
+    assert all(item.enabled for item in settings.backend.yolo.detectors)
+    assert all(item.device == "cpu" for item in settings.backend.yolo.detectors)
+    assert all(item.require_cuda is False for item in settings.backend.yolo.detectors)
+    assert all(item.allow_cpu_fallback is False for item in settings.backend.yolo.detectors)
+    assert settings.models.qwen.model == "models/qwen3_vl_8b/merged"
+    assert settings.models.qwen.cache_model_id == "qwen3-vl-8b-merger-lora-merged"
+    assert set(settings.visual_planning.detectors) == {"detector_obb_csl_001"}
+    assert set(settings.visual_planning.segmenters) == {
+        "segmenter_mitb2_001", "segmenter_oem_001"
+    }
+    assert settings.counting.max_selected_detector_experts == 2
+    assert settings.counting.ensemble_singleton_high_confidence == 0.65
+    assert settings.agents.change.semantic.max_experts == 2
+    assert settings.agents.change.building_rescue.enabled is True
+    assert settings.agents.change.learned_change.enabled is False
 
 
 def test_legacy_yolo_execution_policy_migrates_only_at_settings_boundary(
@@ -211,6 +225,38 @@ def test_load_settings_env_overrides(tmp_path: Path) -> None:
     assert settings.models.deepseek.model == "deepseek-env"
     assert settings.models.segformer_isaid.model_path == Path(r"D:\models\isaid")
     assert settings.models.segformer_oem.model_path == Path(r"D:\models\oem")
+
+
+def test_qwen_model_override_clears_profile_cache_identity(tmp_path: Path) -> None:
+    path = _yaml_path(
+        tmp_path,
+        "models:\n  qwen:\n    model: /profile/model\n    cache_model_id: profile-id\n",
+    )
+    settings = load_settings(path, environ={"QWEN_MODEL": "qwen3-vl-4b-instruct"})
+    assert settings.models.qwen.model == "qwen3-vl-4b-instruct"
+    assert settings.models.qwen.cache_model_id is None
+
+
+def test_qwen_local_model_override_requires_explicit_cache_identity(tmp_path: Path) -> None:
+    path = _yaml_path(
+        tmp_path,
+        "models:\n  qwen:\n    model: models/qwen3_vl_8b/merged\n    cache_model_id: profile-id\n",
+    )
+    with pytest.raises(ValueError, match="cache_model_id"):
+        load_settings(path, environ={"QWEN_MODEL": "/tmp/model"})
+
+
+def test_qwen_local_model_override_accepts_explicit_cache_identity(tmp_path: Path) -> None:
+    path = _yaml_path(tmp_path, "models:\n  qwen:\n    model: qwen3-vl-4b-instruct\n")
+    settings = load_settings(
+        path,
+        environ={
+            "QWEN_MODEL": "/tmp/model",
+            "QWEN_CACHE_MODEL_ID": "test-local-qwen-v1",
+        },
+    )
+    assert settings.models.qwen.model == "/tmp/model"
+    assert settings.models.qwen.cache_model_id == "test-local-qwen-v1"
 
 
 def test_windows_paths_are_coerced() -> None:

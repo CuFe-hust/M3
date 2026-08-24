@@ -30,7 +30,7 @@ def test_parser_run_dataset_defaults() -> None:
     )
     assert args.command == "run-dataset"
     assert args.evaluate is True  # deterministic evaluation on by default
-    assert args.judge_policy == "all"  # DeepSeek verification on by default
+    assert args.judge_policy == "none"  # DeepSeek verification is opt-in
     assert args.auto_task is False
     assert args.resume is False
     assert args.limit is None
@@ -66,6 +66,26 @@ def test_parser_rejects_unknown_judge_policy() -> None:
                 "sometimes",
             ]
         )
+
+
+def test_parser_accepts_explicit_judge_policies() -> None:
+    for policy in ("all", "errors-only"):
+        args = main_module.build_parser().parse_args(
+            [
+                "run-dataset",
+                "--dataset",
+                "d",
+                "--root",
+                "r",
+                "--split",
+                "test",
+                "--task",
+                "caption",
+                "--judge-policy",
+                policy,
+            ]
+        )
+        assert args.judge_policy == policy
 
 
 def test_task_and_auto_task_mutually_exclusive(capsys) -> None:
@@ -193,7 +213,7 @@ def test_main_maps_args_to_options_and_prints_summary(capsys, monkeypatch) -> No
     assert options.shard_count == 2
     assert options.sample_concurrency == 3
     assert options.evaluate is True
-    assert options.judge_policy == "all"
+    assert options.judge_policy == "none"
     assert options.fail_fast is True
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "ok"

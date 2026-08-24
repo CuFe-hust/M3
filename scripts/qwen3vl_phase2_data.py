@@ -1077,7 +1077,9 @@ def _assistant_mask_by_turns(processor: Any, messages: list[dict]) -> tuple[list
     )
     ids_full = _flat_ids(full["input_ids"])
     mask = [0] * len(ids_full)
-    for j in range(1, len(messages), 2):
+    for j, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
         prefix = processor.apply_chat_template(
             messages[:j], tokenize=True, add_generation_prompt=True, return_dict=True
         )
@@ -1115,24 +1117,57 @@ def _align_labels(
     return labels
 
 
-def encode_episode(
+def _validate_image_placeholder_gate(messages: list[dict], image_count: int) -> None:
+    """Ensure every image placeholder is present before assistant supervision.
+
+    Qwen expands each placeholder into a variable visual-token span.  Keeping
+    all placeholders before the first assistant span makes label alignment a
+    single safe suffix shift, including multi-image episodes.
+    保证所有图像占位符都位于首个 assistant span 之前，便于安全对齐多图标签。
+    """
+    placeholders = 0
+    first_assistant = None
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and first_assistant is None:
+            first_assistant = index
+        content = message.get("content", [])
+        items = content if isinstance(content, list) else [{"type": "text", "text": content}]
+        placeholders += sum(1 for item in items if item.get("type") == "image")
+        if message.get("role") == "assistant" and any(item.get("type") == "image" for item in items):
+            raise FeatureError("image placeholder inside assistant span")
+    if placeholders != image_count:
+        raise FeatureError(
+            f"image_placeholder_count_mismatch expected={image_count} got={placeholders}"
+        )
+    if first_assistant is not None:
+        for message in messages[first_assistant:]:
+            content = message.get("content", [])
+            items = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            if any(item.get("type") == "image" for item in items):
+                raise FeatureError("image placeholder after assistant span")
+
+
+def encode_multimodal_episode(
     processor: Any,
-    image: Image.Image,
+    images: Sequence[Image.Image],
     messages: list[dict],
     max_seq_length: int,
     episode_id: str,
     truncate: bool = True,
 ) -> dict:
-    """Encode one conversation (chat template + processor + labels).
+    """Encode a one-or-more image conversation with assistant-only labels.
 
     Raises EpisodeTooLongError when a single turn pair exceeds
     max_seq_length; never returns all-(-100) labels.
     """
+    if not images:
+        raise FeatureError("episode has no images", episode_id)
+    _validate_image_placeholder_gate(messages, len(images))
     text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=False
     )
     text_ids, mask = _assistant_mask(processor, messages)
-    enc = processor(text=[text], images=[image], return_tensors="pt")
+    enc = processor(text=[text], images=list(images), return_tensors="pt")
     if "mm_token_type_ids" not in enc:
         raise FeatureError("mm_token_type_ids missing from processor output")
     input_ids = enc["input_ids"][0]
@@ -1148,7 +1183,7 @@ def encode_episode(
     n = int(input_ids.shape[0])
     if truncate and n > max_seq_length:
         feature = _truncate_feature(
-            processor, image, messages, episode_id, max_seq_length,
+            processor, images, messages, episode_id, max_seq_length,
             delta=n - len(text_ids),
         )
     if not (feature["labels"] != IGNORE_INDEX).any():
@@ -1156,9 +1191,23 @@ def encode_episode(
     return feature
 
 
-def _truncate_feature(
+def encode_episode(
     processor: Any,
     image: Image.Image,
+    messages: list[dict],
+    max_seq_length: int,
+    episode_id: str,
+    truncate: bool = True,
+) -> dict:
+    """Backward-compatible single-image wrapper. / 兼容旧单图调用。"""
+    return encode_multimodal_episode(
+        processor, [image], messages, max_seq_length, episode_id, truncate
+    )
+
+
+def _truncate_feature(
+    processor: Any,
+    images: Sequence[Image.Image],
     messages: list[dict],
     episode_id: str,
     max_seq_length: int,
@@ -1178,8 +1227,8 @@ def _truncate_feature(
         probe_len = len(_flat_ids(probe["input_ids"]))
         # with-image length = text-only length + constant image delta
         if probe_len + delta <= max_seq_length:
-            return encode_episode(
-                processor, image, messages[: 2 * k], max_seq_length, episode_id
+            return encode_multimodal_episode(
+                processor, images, messages[: 2 * k], max_seq_length, episode_id
             )
     raise EpisodeTooLongError(episode_id)
 

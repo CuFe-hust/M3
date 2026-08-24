@@ -87,6 +87,9 @@ class YoloOBBCountingBackend:
         return {
             "detector_name": self.name,
             "runtime": self._detector.runtime,
+            "configured_device": self._detector.device,
+            "require_cuda": self._detector.require_cuda,
+            "allow_cpu_fallback": self._detector.allow_cpu_fallback,
             "model_id": self._detector.model_id,
             "weights_file": self._detector.weights.name,
             "weights_sha256": self._detector.sha256,

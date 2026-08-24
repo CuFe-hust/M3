@@ -6,9 +6,19 @@ models:
     cache_model_id: qwen3-vl-8b-merger-lora-merged
     allow_download: false
 
+reporting:
+  native_html: true
+  max_visual_samples: null
+
 # Concrete expert deployment inventory belongs here, not in Python settings.
 backend:
   yolo:
+    # GB10 production invariant:
+    # YOLO inference is CPU-only.
+    # The YOLOv5-OBB ONNX CUDA Execution Provider is not used on GB10
+    # because it is not sufficiently stable for production runs.
+    # Both ONNX and Ultralytics YOLO experts therefore use device=cpu.
+    # This does not change the Qwen or SegFormer device policy.
     enabled: true
     detectors:
       - name: detector_obb_csl_001
@@ -25,9 +35,10 @@ backend:
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        device: "0"
+        # GB10 production invariant: explicit CPU-only ONNX YOLO.
+        device: cpu
         max_detections: 1000
-        require_cuda: true
+        require_cuda: false
         allow_cpu_fallback: false
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
@@ -45,9 +56,10 @@ backend:
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        device: "0"
+        # GB10 production invariant: explicit CPU-only Ultralytics YOLO.
+        device: cpu
         max_detections: 2000
-        require_cuda: true
+        require_cuda: false
         allow_cpu_fallback: false
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
@@ -77,3 +89,60 @@ visual_planning:
     rgb_interpolation: lanczos
     mask_inverse_interpolation: nearest
     max_tile_concurrency: 4
+
+counting:
+  sequential: true
+  concurrency: 1
+  fallback_on_backend_unavailable: true
+  fallback_on_backend_error: true
+  verify_empty_detection: true
+  verify_empty_semantic: false
+  trust_empty_detection: false
+  multi_detector_enabled: true
+  max_selected_detector_experts: 2
+  min_successful_detector_experts: 1
+  ensemble_iou_threshold: 0.45
+  ensemble_center_distance_ratio: 0.60
+  ensemble_singleton_high_confidence: 0.65
+  max_disagreement_regions: 12
+  disagreement_context_padding_ratio: 0.35
+  unresolved_ensemble_policy: retain_high_confidence
+
+agents:
+  change:
+    registration:
+      enabled: true
+      quality_policy: fallback_raw
+    harmonization:
+      enabled: true
+      reject_when_pif_mad_worse: true
+    semantic:
+      enabled: true
+      feature_stages: [1, 2, 3]
+      multi_expert_enabled: true
+      max_experts: 2
+      min_successful_experts: 1
+      semantic_consensus_weight: 0.65
+      semantic_union_weight: 0.35
+      failure_policy: fallback_legacy
+      temporal_stability_enabled: false
+    building_rescue:
+      enabled: true
+      shadow_only: false
+      qwen_review_enabled: true
+      allowed_directions: [added]
+      edge_only: true
+    reliability:
+      enabled: true
+    learned_change:
+      enabled: false
+      mode: shadow
+      checkpoint_dir: null
+      fusion_weight: 0.0
+      failure_policy: fallback_rule
+      strict_contract: true
+      device: auto
+    training_capture:
+      enabled: false
+      save_dense_features: false
+      capture_learned_inputs_only: true

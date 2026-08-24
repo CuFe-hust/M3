@@ -1,4 +1,6 @@
-# Change V3 example overlay. Merge this partial YAML over the normal AppSettings.
+# Change V3 partial configuration example.
+# This file overlays built-in AppSettings defaults when passed directly through
+# --config. It does not inherit configs/local.yaml.
 # Registration is conservative global geometry only; raw T1/T2 remain untouched.
 agents:
   change:
@@ -11,35 +13,29 @@ agents:
       enabled: true
       feature_stages: [1, 2, 3]
       multi_expert_enabled: true
-      max_experts: 4
+      max_experts: 2
       min_successful_experts: 1
       semantic_consensus_weight: 0.65
       semantic_union_weight: 0.35
     learned_change:
       enabled: false
       mode: shadow
-      checkpoint_dir: models/change_head/production
-      fusion_weight: 0.30
+      checkpoint_dir: null
+      fusion_weight: 0.0
       failure_policy: fallback_rule
       strict_contract: true
       device: auto
-      rescue:
-        enabled: true
-        min_reliability: 0.70
-        probability_threshold_override: null
-        min_component_area_ratio_override: null
-        max_rescue_proposals: 6
     training_capture:
       enabled: false
       save_dense_features: false
       capture_learned_inputs_only: true
 counting:
   multi_detector_enabled: true
-  max_selected_detector_experts: 5
+  max_selected_detector_experts: 2
   min_successful_detector_experts: 1
   ensemble_iou_threshold: 0.45
   ensemble_center_distance_ratio: 0.60
-  ensemble_singleton_high_confidence: 0.55
+  ensemble_singleton_high_confidence: 0.65
   max_disagreement_regions: 12
   disagreement_context_padding_ratio: 0.35
   unresolved_ensemble_policy: retain_high_confidence

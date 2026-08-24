@@ -3941,6 +3941,16 @@ assistant mask（5.14.1 键 `assistant_masks`，4.x `assistant_tokens_mask`，
 transformers 5.14.1 验证（pixel_values (G,1176)、image_grid_thw (1,3)、
 mm_token_type_ids 默认开启）。
 
+ChangeAgent SFT 接口（任务文档见 `docs/train/05_CHANGE_QWEN_SFT.md`）使用
+`scripts/prepare_change_qwen_sft.py`、`scripts/change_qwen_sft_data.py` 与
+`scripts/finetune_change_qwen_sft.py`。canonical episode 固定为有序
+`raw_full_t1`、`raw_full_t2`（可在未来附加真实 runtime evidence），并以
+`ChangeInitialResult` JSON 为唯一 initial-stage target；`change_caption`
+可为空问题，`change_qa` 必须非空。多图 processor 保留所有图像占位符且只对
+assistant token 计算 loss；Change profile 拒绝旧单图随机增强。共享训练器以
+`data_profile=change_agent` 选择该数据模块，checkpoint manifest 记录 profile、
+有序多图 contract 和生产 prompt SHA，resume 不允许与 `phase2` profile 交叉。
+
 ```text
 scripts/finetune_qwen3vl_phase2.py
 ```

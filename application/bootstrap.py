@@ -1213,16 +1213,14 @@ def _build_vqa_evidence_service(
     segmenter binding 必须解析到运行时清单中的已验证 client——绝不杜撰
     生产默认值。"""
 
-    policy = _resolved_evidence_policy(settings.visual_planning.detectors)
+    resolved_policy = _resolved_evidence_policy(settings.visual_planning.detectors)
+    policy = None
     yolo_client = None
     yolo_device = None
     yolo_image_size = None
-    if policy is not None:
-        detector = _first_enabled_detector(settings, project_root)
-        if detector is None:
-            raise RuntimeCompositionError(
-                "calibrated VQA detector policy requires an enabled detector"
-            )
+    if resolved_policy is not None:
+        binding, policy = resolved_policy
+        detector = _resolve_bound_detector(settings, binding, project_root)
         # The detector is wired lazily: composition never loads weights; the
         # first inference goes through the shared audited store.
         # 检测器惰性接线：组合期绝不加载权重；首次推理经共享审计 store。
@@ -1281,7 +1279,7 @@ def _build_grounding_evidence_service(
     显式未校准状态（YOLO 阶段关闭，最终 Qwen 自由补框）；完整校准策略必须
     有启用检测器，否则组装严格失败。"""
 
-    policy = _resolved_evidence_policy(settings.visual_planning.detectors)
+    resolved_policy = _resolved_evidence_policy(settings.visual_planning.detectors)
     yolo_client = None
     yolo_device = None
     yolo_image_size = None
@@ -1293,17 +1291,14 @@ def _build_grounding_evidence_service(
     # 改提供冻结值并要求启用检测器——未校准策略绝不接线用不到的检测器，接线
     # 保持惰性使组合期绝不加载权重。
     executor_policy = GroundingEvidencePolicy()
-    if policy is not None:
+    if resolved_policy is not None:
+        binding, policy = resolved_policy
         executor_policy = GroundingEvidencePolicy(
             confidence_threshold=policy.confidence_threshold,
             nms_iou_threshold=policy.nms_iou_threshold,
             max_detections=policy.max_detections,
         )
-        detector = _first_enabled_detector(settings, project_root)
-        if detector is None:
-            raise RuntimeCompositionError(
-                "calibrated grounding detector policy requires an enabled detector"
-            )
+        detector = _resolve_bound_detector(settings, binding, project_root)
         yolo_client = _LazyObjectDetectionClient(model_store, detector)
         yolo_device = detector.device
         yolo_image_size = detector.image_size
@@ -1325,8 +1320,8 @@ def _build_grounding_evidence_service(
 
 def _resolved_evidence_policy(
     detectors: dict[str, VisualDetectorSettings],
-) -> VisualDetectorSettings | None:
-    """Resolve the single global detector policy from the per-label settings:
+) -> tuple[str, VisualDetectorSettings] | None:
+    """Resolve the single detector binding policy from settings:
     zero calibrated entries mean uncalibrated (None), exactly one fully
     calibrated entry is the global policy, and any partial or multiple
     calibration is ambiguous and fails closed. 从逐标签设置解析单一全局检测
@@ -1334,8 +1329,8 @@ def _resolved_evidence_policy(
     部分或多条校准即歧义并严格失败。"""
 
     calibrated = [
-        entry
-        for entry in detectors.values()
+        (binding, entry)
+        for binding, entry in detectors.items()
         if entry.confidence_threshold is not None
         or entry.nms_iou_threshold is not None
         or entry.max_detections is not None
@@ -1346,7 +1341,7 @@ def _resolved_evidence_policy(
         raise RuntimeCompositionError(
             "multiple calibrated detector policies cannot form one global policy"
         )
-    entry = calibrated[0]
+    binding, entry = calibrated[0]
     if (
         entry.confidence_threshold is None
         or entry.nms_iou_threshold is None
@@ -1355,25 +1350,31 @@ def _resolved_evidence_policy(
         raise RuntimeCompositionError(
             "partially calibrated detector policy is not frozen"
         )
-    return entry
+    return binding, entry
 
 
-def _first_enabled_detector(
+def _resolve_bound_detector(
     settings: AppSettings,
+    binding: str,
     project_root: Path,
-) -> YoloDetectorSettings | None:
-    """Deterministic single detector for the evidence services: the first
-    enabled detector in stable name order, resolved against the project root.
-    证据服务的确定性单检测器：按稳定名称顺序的第一个启用检测器，相对项目根
-    解析。"""
+) -> YoloDetectorSettings:
+    """Resolve the exact visual evidence detector binding.
+    解析视觉证据绑定的唯一、精确 detector；绝不按名称或 priority 猜测替代。"""
 
-    enabled = sorted(
-        (detector for detector in settings.backend.yolo.detectors if detector.enabled),
-        key=lambda item: item.name,
-    )
-    if not enabled:
-        return None
-    return _resolve_yolo_detector(enabled[0], project_root)
+    if not settings.backend.yolo.enabled:
+        raise RuntimeCompositionError(
+            f"visual detector binding {binding!r} requires enabled YOLO backend"
+        )
+    matches = [
+        detector
+        for detector in settings.backend.yolo.detectors
+        if detector.name == binding
+    ]
+    if len(matches) != 1 or not matches[0].enabled:
+        raise RuntimeCompositionError(
+            f"visual detector binding {binding!r} does not resolve to exactly one enabled detector"
+        )
+    return _resolve_yolo_detector(matches[0], project_root)
 
 
 def _evidence_preprocessing(
@@ -1413,8 +1414,13 @@ def _vqa_executable_leaves(
     存在已验证运行时 client 时才算可执行。服务非 None 本身不代表 26 类全部
     可执行。"""
 
-    yolo_ready = _resolved_evidence_policy(settings.visual_planning.detectors) is not None
-    detector = _first_enabled_detector(settings, project_root) if yolo_ready else None
+    resolved_policy = _resolved_evidence_policy(settings.visual_planning.detectors)
+    yolo_ready = resolved_policy is not None
+    detector = (
+        _resolve_bound_detector(settings, resolved_policy[0], project_root)
+        if resolved_policy is not None
+        else None
+    )
     detector_labels = (
         {label.casefold() for label in detector.classes} if detector is not None else set()
     )

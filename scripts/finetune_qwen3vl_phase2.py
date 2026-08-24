@@ -79,6 +79,7 @@ SAVE_ERROR_FILENAME = "save_error.json"
 DEFAULT_AUG_SEED = "phase2-default-seed"
 DEFAULT_IMAGE_MIN_PIXELS = 256 * 32 * 32
 DEFAULT_IMAGE_MAX_PIXELS = 1280 * 32 * 32
+DATA_PROFILES = ("phase2", "change_agent")
 
 # LLM projection modules that receive LoRA (7 per decoder layer).
 # 每层语言模型接收 LoRA 的七个 projection。
@@ -202,6 +203,10 @@ class DataArguments:
     """Dataset arguments. / 数据参数。"""
 
     train_file: str = field(metadata={"help": "Phase 2 canonical train episodes JSONL."})
+    data_profile: str = field(
+        default="phase2",
+        metadata={"choices": DATA_PROFILES, "help": "Data contract profile (default: phase2)."},
+    )
     eval_file: str | None = field(
         default=None, metadata={"help": "Optional Phase 2 validation episodes JSONL."}
     )
@@ -229,7 +234,7 @@ class DataArguments:
     )
     repeat_group_key: str = field(
         default="task_kind",
-        metadata={"choices": ("task_kind", "source_task"), "help": "Episode field used as the repeat group key."},
+        metadata={"choices": ("task_kind", "source_task", "task"), "help": "Episode field used as the repeat group key."},
     )
     repeat_weights: list[str] = field(
         default_factory=list,
@@ -244,6 +249,10 @@ class DataArguments:
     preflight_limit: int = field(
         default=0,
         metadata={"help": "Preflight check N episodes before training (0=skip, negative=all)."},
+    )
+    change_prompt_file: str | None = field(
+        default=None,
+        metadata={"help": "Production ChangeAgent prompt text used by the change_agent profile."},
     )
 
 
@@ -327,18 +336,22 @@ class CheckpointArguments:
 # ---------------------------------------------------------------------------
 
 
-def _load_data_module() -> Any:
+def _load_data_module(profile: str = "phase2") -> Any:
     """Load the sibling data-pipeline module by file path (it imports
     torch/opencv/PIL, so it must stay out of the module import path).
     按文件路径加载数据管线模块（它 import torch/opencv/PIL，必须保持惰性）。"""
-    path = Path(__file__).resolve().parent / "qwen3vl_phase2_data.py"
+    if profile not in DATA_PROFILES:
+        raise ConfigurationError(f"unknown data profile: {profile!r}")
+    filename = "qwen3vl_phase2_data.py" if profile == "phase2" else "change_qwen_sft_data.py"
+    path = Path(__file__).resolve().parent / filename
     if not path.is_file():
         raise ConfigurationError(f"data pipeline module missing: {path.name}")
-    spec = importlib.util.spec_from_file_location("qwen3vl_phase2_data", path)
+    module_name = "qwen3vl_phase2_data" if profile == "phase2" else "change_qwen_sft_data"
+    spec = importlib.util.spec_from_file_location(module_name, path)
     if spec is None or spec.loader is None:
         raise ConfigurationError(f"cannot load data pipeline module: {path.name}")
     module = importlib.util.module_from_spec(spec)
-    sys.modules["qwen3vl_phase2_data"] = module
+    sys.modules[module_name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -1535,6 +1548,15 @@ def validate_resume_checkpoint(checkpoint_dir: str | Path, context: dict) -> Non
         raise ResumeConflictError("schema_version", [str(manifest.get("schema_version"))])
 
     mismatches: list[str] = []
+    # Missing profile is only backward-compatible with the original Phase2
+    # layout; Change checkpoints never silently cross-resume.
+    # 缺失 profile 仅兼容原始 Phase2；Change checkpoint 绝不跨 profile 恢复。
+    _compare("training_profile", context.get("training_profile", "phase2"),
+             manifest.get("training_profile", "phase2"), mismatches)
+    if context.get("training_profile") == "change_agent":
+        _compare("data_contract", context.get("data_contract"), manifest.get("data_contract"), mismatches)
+        _compare("change_prompt.sha256", context.get("change_prompt", {}).get("sha256"),
+                 manifest.get("change_prompt", {}).get("sha256"), mismatches)
     _compare("base_model.fingerprint", context["base_model"]["fingerprint"],
              manifest.get("base_model", {}).get("fingerprint"), mismatches)
     _compare("base_model.revision", context["base_model"].get("revision"),
@@ -1729,6 +1751,8 @@ def build_training_context(
     repeat_weights: dict[str, int],
     image_sources: Sequence[str],
     repo_root: str | Path,
+    training_profile: str = "phase2",
+    change_prompt: dict | None = None,
 ) -> dict:
     """Everything needed to (a) build the training manifest at save time and
     (b) validate a resume candidate before training.
@@ -1750,7 +1774,10 @@ def build_training_context(
         base_identity["merger_lora_adapter"] = merger_lora_adapter_identity(
             model_args.merger_lora_adapter
         )
-    return {
+    if training_profile not in DATA_PROFILES:
+        raise ConfigurationError(f"unknown data profile: {training_profile!r}")
+    context = {
+        "training_profile": training_profile,
         "base_model": base_identity,
         "processor": processor_identity(processor),
         "model_id_as_given": model_args.model_id,
@@ -1795,6 +1822,17 @@ def build_training_context(
             "python_version": sys.version.split()[0],
         },
     }
+    if training_profile == "change_agent":
+        if not change_prompt or not change_prompt.get("sha256"):
+            raise ConfigurationError("change_agent profile requires a prompt sha256")
+        context["data_contract"] = {
+            "name": "change_qwen_sft", "schema_version": 1,
+            "ordered_multi_image": True,
+            "required_leading_roles": ["raw_full_t1", "raw_full_t2"],
+            "target_schema": "ChangeInitialResult",
+        }
+        context["change_prompt"] = dict(change_prompt)
+    return context
 
 
 def build_manifest(
@@ -1813,6 +1851,7 @@ def build_manifest(
     return {
         "schema_version": SCHEMA_VERSION,
         "checkpoint_type": "phase2_composite",
+        "training_profile": context["training_profile"],
         "step": int(step),
         "epoch": float(epoch),
         "base_model": context["base_model"],
@@ -1831,6 +1870,8 @@ def build_manifest(
         "training": context["training"],
         "data_sampling": context["data_sampling"],
         "environment": context["environment"],
+        **({"data_contract": context["data_contract"], "change_prompt": context["change_prompt"]}
+           if context["training_profile"] == "change_agent" else {}),
     }
 
 
@@ -2243,7 +2284,7 @@ def _phase2_trainer_class() -> type:
     return _Phase2Trainer
 
 
-def main() -> None:
+def main(argv: Sequence[str] | None = None) -> None:
     transformers_mod = _transformers()
     torch = _torch()
     check_runtime()
@@ -2265,7 +2306,7 @@ def main() -> None:
         aug_args,
         optim_args,
         ckpt_args,
-    ) = parser.parse_args_into_dataclasses()
+    ) = parser.parse_args_into_dataclasses(args=list(argv) if argv is not None else None)
 
     if lora_args.lora_rank < 1 or lora_args.lora_alpha < 1:
         raise ConfigurationError("lora_rank and lora_alpha must be >= 1")
@@ -2277,6 +2318,10 @@ def main() -> None:
         raise ConfigurationError("image_min_pixels/image_max_pixels invalid")
     if data_args.max_seq_length < 16:
         raise ConfigurationError(f"max_seq_length too small: {data_args.max_seq_length}")
+    if data_args.data_profile not in DATA_PROFILES:
+        raise ConfigurationError(f"unknown data profile: {data_args.data_profile!r}")
+    if data_args.data_profile == "change_agent" and data_args.repeat_group_key == "task_kind":
+        data_args.repeat_group_key = "task"
     if optim_args.smoke_gradients and data_args.max_train_samples is None:
         raise ConfigurationError("--smoke-gradients requires --max-train-samples")
     if optim_args.deepspeed is not None:
@@ -2305,8 +2350,26 @@ def main() -> None:
 
     image_roots = parse_image_roots(data_args.image_root)
     repeat_weights = parse_repeat_weights(data_args.repeat_weights)
+    raw_args = list(argv) if argv is not None else sys.argv[1:]
+    if data_args.data_profile == "change_agent" and any(
+        flag in {"--aug_enabled", "--aug-enabled"} for flag in raw_args
+    ) and aug_args.aug_enabled:
+        raise ConfigurationError("CHANGE_PAIR_AUGMENTATION_UNSUPPORTED")
     aug_config = augmentation_config_from_args(aug_args)
-    data_module = _load_data_module()
+    if data_args.data_profile == "change_agent":
+        # Temporal pairs must never receive independent legacy augmentation.
+        # 时相图对绝不能使用旧的独立单图增强。
+        aug_config = replace(aug_config, enabled=False)
+    data_module = _load_data_module(data_args.data_profile)
+    change_prompt = None
+    if data_args.data_profile == "change_agent":
+        if not data_args.change_prompt_file:
+            raise ConfigurationError("change_agent profile requires --change-prompt-file")
+        prompt_path = Path(data_args.change_prompt_file)
+        if not prompt_path.is_file():
+            raise ConfigurationError("change prompt file not found")
+        prompt_text = prompt_path.read_text(encoding="utf-8")
+        change_prompt = {"ref": prompt_path.name, "sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()}
 
     logger.info("loading base model (offline: %s)", model_args.local_files_only)
     model, processor, config = load_base_model(model_args)
@@ -2374,6 +2437,7 @@ def main() -> None:
         seed=data_args.aug_seed,
         split="train",
         start_epoch=0,
+        **({"prompt_text": prompt_text} if data_args.data_profile == "change_agent" else {}),
     )
     eval_dataset = None
     if eval_file is not None:
@@ -2386,6 +2450,7 @@ def main() -> None:
             seed=data_args.aug_seed,
             split="validation",
             start_epoch=0,
+            **({"prompt_text": prompt_text} if data_args.data_profile == "change_agent" else {}),
         )
     train_store = data_module.LazyJsonLines(train_file)
     train_wrapped = GroupRepeatDataset(
@@ -2435,6 +2500,8 @@ def main() -> None:
         repeat_weights=repeat_weights,
         image_sources=list(image_roots.keys()),
         repo_root=Path(__file__).resolve().parents[1],
+        training_profile=data_args.data_profile,
+        change_prompt=change_prompt,
     )
 
     # -- resume target resolution + validation -------------------------------

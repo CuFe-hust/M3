@@ -1,0 +1,3 @@
+reporting:
+  native_html: true
+  max_visual_samples: null

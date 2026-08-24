@@ -50,20 +50,28 @@ class YoloV5ObbOnnxModel:
             import numpy as np  # noqa: PLC0415
             import onnxruntime as ort  # noqa: PLC0415
         except ImportError as exc:
+            if require_cuda:
+                dependency = "onnxruntime-gpu, numpy, opencv-python"
+                install_hint = "pip install onnxruntime-gpu numpy opencv-python"
+            else:
+                dependency = "onnxruntime, numpy, opencv-python"
+                install_hint = "pip install onnxruntime numpy opencv-python"
             raise OptionalDependencyMissingError(
                 "yolo",
-                dependency="onnxruntime-gpu, numpy, opencv-python",
-                install_hint="pip install onnxruntime-gpu numpy opencv-python",
+                dependency=dependency,
+                install_hint=install_hint,
             ) from exc
         self._cv2 = cv2
         self._np = np
         self._device = device
         self._require_cuda = require_cuda
         self._allow_cpu_fallback = allow_cpu_fallback
-        # Preload NVIDIA site-package CUDA/cuDNN libraries before creating the
-        # CUDA execution provider. 在创建 CUDA 执行器前预加载 CUDA/cuDNN 库。
-        ort.preload_dlls(directory="")
+        if not require_cuda and allow_cpu_fallback:
+            raise ValueError("CPU-only mode must not enable CPU fallback")
         if require_cuda:
+            # Preload NVIDIA site-package CUDA/cuDNN libraries only for the
+            # explicitly requested CUDA execution provider.
+            ort.preload_dlls(directory="")
             providers: list[object] = [
                 ("CUDAExecutionProvider", {"device_id": int(device)})
             ]
@@ -78,7 +86,15 @@ class YoloV5ObbOnnxModel:
             "CUDAExecutionProvider" if require_cuda else "CPUExecutionProvider"
         )
         self.requested_device = device
-        if require_cuda and "CUDAExecutionProvider" not in actual:
+        if not require_cuda:
+            if actual != ("CPUExecutionProvider",):
+                raise DetectorInferenceError(
+                    "CPU-only ONNX detector resolved unexpected execution provider"
+                )
+            self.cpu_fallback_used = False
+            self.resolved_provider = "CPUExecutionProvider"
+            self.resolved_device = "cpu"
+        elif "CUDAExecutionProvider" not in actual:
             if not allow_cpu_fallback:
                 raise DetectorInferenceError(
                     "CUDAExecutionProvider required but unavailable for ONNX detector"
@@ -88,12 +104,8 @@ class YoloV5ObbOnnxModel:
             self.resolved_device = "cpu"
         else:
             self.cpu_fallback_used = False
-            if require_cuda:
-                self.resolved_provider = "CUDAExecutionProvider"
-                self.resolved_device = device
-            else:
-                self.resolved_provider = "CPUExecutionProvider"
-                self.resolved_device = "cpu"
+            self.resolved_provider = "CUDAExecutionProvider"
+            self.resolved_device = device
         self.names = {index: name for index, name in enumerate(classes)}
         inputs = self._session.get_inputs()
         outputs = self._session.get_outputs()

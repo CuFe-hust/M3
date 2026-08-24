@@ -996,13 +996,19 @@ def test_visual_planning_binds_four_vqa_tasks_to_shared_capabilities(
             raise AssertionError("composition must not load weights")
 
     monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
+    monkeypatch.setattr(
+        "application.bootstrap._catalog_validated_yolo_detector",
+        lambda detector, _catalog: detector,
+    )
     catalog = EvidenceCatalog.from_file(REPO_ROOT / "agents" / "evidence_catalog.json")
     yolo_labels = [
         label
         for leaf in catalog.executable_leaves_for_task("general_vqa")
         for label in catalog.leaf_yolo_labels(leaf)
     ]
-    detector = _calibrated_detector(tmp_path, classes=yolo_labels)
+    detector = _calibrated_detector(
+        tmp_path, name="detector_obb_csl_001", classes=yolo_labels
+    )
     settings = _visual_settings(
         tmp_path,
         visual_planning={
@@ -1020,7 +1026,7 @@ def test_visual_planning_binds_four_vqa_tasks_to_shared_capabilities(
                 },
             },
         },
-        yolo={"enabled": False, "detectors": [detector]},
+        yolo={"enabled": True, "detectors": [detector]},
     )
     components = assemble_runtime(
         settings,
@@ -1438,7 +1444,11 @@ def test_visual_planning_detector_plus_segmenter_composes_combined_executor(
             raise AssertionError("composition must not load weights")
 
     monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
-    detector = _calibrated_detector(tmp_path, classes=["plane"])
+    monkeypatch.setattr(
+        "application.bootstrap._catalog_validated_yolo_detector",
+        lambda detector, _catalog: detector,
+    )
+    detector = _calibrated_detector(tmp_path, name="small_vehicle", classes=["plane"])
     settings = _visual_settings(
         tmp_path,
         visual_planning={
@@ -1456,7 +1466,7 @@ def test_visual_planning_detector_plus_segmenter_composes_combined_executor(
                 },
             },
         },
-        yolo={"enabled": False, "detectors": [detector]},
+        yolo={"enabled": True, "detectors": [detector]},
     )
     components = assemble_runtime(
         settings,
@@ -1502,13 +1512,19 @@ def test_visual_planning_full_runtime_capabilities_publish_all_catalog_leaves(
             raise AssertionError("composition must not load weights")
 
     monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
+    monkeypatch.setattr(
+        "application.bootstrap._catalog_validated_yolo_detector",
+        lambda detector, _catalog: detector,
+    )
     catalog = EvidenceCatalog.from_file(REPO_ROOT / "agents" / "evidence_catalog.json")
     yolo_labels = [
         label
         for leaf in catalog.executable_leaves_for_task("general_vqa")
         for label in catalog.leaf_yolo_labels(leaf)
     ]
-    detector = _calibrated_detector(tmp_path, classes=yolo_labels)
+    detector = _calibrated_detector(
+        tmp_path, name="detector_obb_csl_001", classes=yolo_labels
+    )
     settings = _visual_settings(
         tmp_path,
         visual_planning={
@@ -1526,7 +1542,7 @@ def test_visual_planning_full_runtime_capabilities_publish_all_catalog_leaves(
                 },
             },
         },
-        yolo={"enabled": False, "detectors": [detector]},
+        yolo={"enabled": True, "detectors": [detector]},
     )
     components = assemble_runtime(
         settings,
@@ -1544,13 +1560,20 @@ def test_visual_planning_full_runtime_capabilities_publish_all_catalog_leaves(
 
 def test_visual_planning_yolo_service_never_publishes_unmatched_leaves(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     """A calibrated detector whose classes intersect no catalog leaf still
     composes a YOLO-only service, but the planner publishes no executable
     leaves: a non-None service never means all 26 categories are runnable.
     已校准检测器类别不匹配任何目录叶子时仍组装 YOLO-only 服务，但 planner 不
     发布任何可执行叶子：服务非 None 绝不意味着 26 类全部可运行。"""
-    detector = _calibrated_detector(tmp_path, classes=["zzz-not-in-catalog"])
+    detector = _calibrated_detector(
+        tmp_path, name="small_vehicle", classes=["zzz-not-in-catalog"]
+    )
+    monkeypatch.setattr(
+        "application.bootstrap._catalog_validated_yolo_detector",
+        lambda detector, _catalog: detector,
+    )
     settings = _visual_settings(
         tmp_path,
         visual_planning={
@@ -1562,7 +1585,7 @@ def test_visual_planning_yolo_service_never_publishes_unmatched_leaves(
                 },
             },
         },
-        yolo={"enabled": False, "detectors": [detector]},
+        yolo={"enabled": True, "detectors": [detector]},
     )
     components = assemble_runtime(
         settings,
@@ -1598,7 +1621,11 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
             raise DetectorWeightsMissingError(detector.name, "weights.onnx")
 
     monkeypatch.setattr("application.bootstrap.YoloModelStore", _FakeStore)
-    detector = _calibrated_detector(tmp_path)
+    monkeypatch.setattr(
+        "application.bootstrap._catalog_validated_yolo_detector",
+        lambda detector, _catalog: detector,
+    )
+    detector = _calibrated_detector(tmp_path, name="small_vehicle")
     settings = _visual_settings(
         tmp_path,
         visual_planning={
@@ -1610,7 +1637,7 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
                 }
             },
         },
-        yolo={"enabled": False, "detectors": [detector]},
+        yolo={"enabled": True, "detectors": [detector]},
     )
     components = assemble_runtime(
         settings,
@@ -1632,7 +1659,7 @@ def test_visual_planning_yolo_stays_lazy_until_first_inference(
             device="cpu",
             max_detections=5,
         )
-    assert get_calls == ["fake-det"]  # first inference loads once / 首次推理才加载
+    assert get_calls == ["small_vehicle"]  # first inference loads once / 首次推理才加载
     # Only the stable error type name surfaces; never the host path.
     # 只呈现稳定错误类型名；绝不携带主机路径。
     assert "DetectorWeightsMissingError" in type(exc_info.value).__name__

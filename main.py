@@ -166,8 +166,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_dataset.add_argument(
         "--judge-policy",
         choices=("none", "errors-only", "all"),
-        default="all",
-        help="DeepSeek answer verification on by default",
+        default="none",
+        help="optional DeepSeek answer verification policy",
     )
     run_dataset.add_argument(
         "--judge-sample-rate",

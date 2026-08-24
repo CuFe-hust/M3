@@ -122,6 +122,24 @@ def test_detector_rejects_bad_sha256() -> None:
         _detector(sha256="not-hex")
 
 
+def test_detector_accepts_explicit_cpu_only_contract() -> None:
+    detector = _detector(device="cpu", require_cuda=False, allow_cpu_fallback=False)
+    assert detector.device == "cpu"
+    assert detector.require_cuda is False
+    assert detector.allow_cpu_fallback is False
+
+
+def test_detector_rejects_cpu_mode_with_fallback_enabled() -> None:
+    with pytest.raises(ValidationError, match="CPU-only mode"):
+        _detector(device="cpu", require_cuda=False, allow_cpu_fallback=True)
+
+
+def test_detector_keeps_generic_cuda_schema_capability() -> None:
+    detector = _detector(device="0", require_cuda=True, allow_cpu_fallback=False)
+    assert detector.device == "0"
+    assert detector.require_cuda is True
+
+
 # ── YoloCountingSettings / YOLO 计数配置 ───────────────────────────────────
 
 

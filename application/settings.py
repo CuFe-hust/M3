@@ -53,6 +53,15 @@ class RunSettings(BaseModel):
     save_raw_responses: bool = True
 
 
+class ReportingSettings(BaseModel):
+    """Native Report V2 output policy. / 原生 Report V2 输出策略。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    native_html: bool = True
+    max_visual_samples: int | None = Field(default=None, ge=0)
+
+
 class RouterSettings(BaseModel):
     """Task resolution and per-sample budget defaults.
     任务解析与逐样本预算默认值。"""
@@ -124,10 +133,10 @@ class VisualPlannerSettings(BaseModel):
 
 
 class VisualDetectorSettings(BaseModel):
-    """Per-label detector policy (C7, 14A2): every value defaults to None
+    """Per-binding detector calibration policy (C7, 14A2): every value defaults to None
     meaning "not calibrated" and disabling the capability (approved gate:
     uncalibrated = capability off). Values are range-validated when set; no
-    arbitrary production default is ever invented. 逐标签检测策略（C7，14A2）：
+    arbitrary production default is ever invented. 逐 binding 检测策略（C7，14A2）：
     每个值默认 None 表示“未校准”并关闭能力（已批准门禁：未校准=能力关闭）。
     设置值时校验范围；绝不杜撰任意生产默认值。"""
 
@@ -228,17 +237,19 @@ class VisualPlanningSettings(BaseModel):
     )
 
     @model_validator(mode="after")
-    def validate_segmenter_binding_keys(self) -> "VisualPlanningSettings":
-        """Segmenter dict keys are stable logical bindings: non-empty, safe,
-        and never path-like. 组合根负责把 binding 映射到已验证逻辑客户端。
-        Segmenter dict key 是稳定逻辑 binding：非空、安全且绝不路径化；
-        映射到已验证逻辑客户端由组合根完成。"""
-        for key in self.segmenters:
-            if re.fullmatch(_BINDING_KEY_PATTERN, key) is None:
-                raise ValueError(
-                    f"invalid segmenter binding key {key!r}: must be a stable "
-                    "logical binding identifier, not a path or free text"
-                )
+    def validate_visual_binding_keys(self) -> "VisualPlanningSettings":
+        """Detector and segmenter keys are stable logical bindings.
+        检测器与分割器 key 都必须是稳定逻辑 binding。"""
+        for kind, bindings in (
+            ("detector", self.detectors),
+            ("segmenter", self.segmenters),
+        ):
+            for key in bindings:
+                if re.fullmatch(_BINDING_KEY_PATTERN, key) is None:
+                    raise ValueError(
+                        f"invalid {kind} binding key {key!r}: must be a stable "
+                        "logical binding identifier, not a path or free text"
+                    )
         return self
 
 
@@ -251,6 +262,7 @@ class AppSettings(BaseModel):
     models: ModelSettings = Field(default_factory=ModelSettings)
     counting: CountingSettings = Field(default_factory=CountingSettings)
     runs: RunSettings = Field(default_factory=RunSettings)
+    reporting: ReportingSettings = Field(default_factory=ReportingSettings)
     router: RouterSettings = Field(default_factory=RouterSettings)
     paths: PathSettings = Field(default_factory=PathSettings)
     backend: BackendSettings = Field(default_factory=BackendSettings)
@@ -337,6 +349,7 @@ class AppSettings(BaseModel):
 
 _ENV_OVERRIDES = {
     "QWEN_MODEL": ("models", "qwen", "model"),
+    "QWEN_CACHE_MODEL_ID": ("models", "qwen", "cache_model_id"),
     "SEGFORMER_ISAID_MODEL": ("models", "segformer_isaid", "model_path"),
     "SEGFORMER_OEM_MODEL": ("models", "segformer_oem", "model_path"),
     "DEEPSEEK_BASE_URL": ("models", "deepseek", "base_url"),
@@ -424,6 +437,15 @@ def load_settings(
         for key in target[:-1]:
             node = node.setdefault(key, {})
         node[target[-1]] = value
+    # A physical/logical QWEN_MODEL override replaces the YAML model identity.
+    # Never retain a stale cache_model_id from the selected profile. A local
+    # checkpoint must then provide QWEN_CACHE_MODEL_ID explicitly and fail
+    # validation if it does not.
+    qwen_model = environ.get("QWEN_MODEL")
+    qwen_cache_model_id = environ.get("QWEN_CACHE_MODEL_ID")
+    if qwen_model:
+        qwen = overrides.setdefault("models", {}).setdefault("qwen", {})
+        qwen["cache_model_id"] = qwen_cache_model_id or None
     if overrides:
         merged = settings.model_dump()
         _deep_merge(merged, overrides)

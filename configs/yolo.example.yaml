@@ -1,4 +1,6 @@
-# YOLO Counting Deployment Example — the audited ONNX below is a Git LFS asset.
+# Generic YOLO Counting Deployment Example — CUDA-capable schema example.
+# This is not the GB10 production profile; use configs/local.yaml for GB10.
+# The audited ONNX below is a Git LFS asset.
 # YOLO 计数部署示例——下列已审计 ONNX 由 Git LFS 管理。
 agents:
   counting:

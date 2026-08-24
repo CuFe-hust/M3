@@ -14,10 +14,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import sys
 from collections import Counter
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,12 @@ from data.adapters.vrsbench.ontology import count_target_hint
 from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 from evaluation.metrics.counting import aggregate_counting, count_deterministic_metrics
 from evaluation.records import EvaluationRecord
+from reporting.adapters import sample_dir_for_row
+from reporting.builder import build_report
+from reporting.exporters import persist_report_bundle
+from workflows.artifact_writer import ArtifactWriter
+from workflows.run_store import RunManifest
+from workflows.schema import RunRequest, SampleRunStatus
 
 DEFAULT_INPUT = Path("data/VRSBench-counting/VRSBench_train_counting.jsonl")
 DEFAULT_DATA_ROOT = Path("data/VRSBench-full")
@@ -123,6 +131,7 @@ async def run_evaluation(args: argparse.Namespace) -> int:
         raise SystemExit(f"No rows found in {args.input}")
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+    _initialize_native_report_context(output_dir, args, settings, rows)
     jsonl_path = output_dir / "results.jsonl"
     jsonl_path.write_text("", encoding="utf-8")
     semaphore = asyncio.Semaphore(args.concurrency)
@@ -153,6 +162,19 @@ async def run_evaluation(args: argparse.Namespace) -> int:
     ]
     _atomic_write_json(output_dir / "summary.json", summary)
     _atomic_write_json(output_dir / "unsupported_or_error.json", unsupported)
+    if settings.reporting.native_html:
+        report = build_report(output_dir)
+        persist_report_bundle(
+            output_dir,
+            report,
+            max_visual_samples=settings.reporting.max_visual_samples,
+        )
+        summary["report"] = {
+            "native_html": True,
+            "path": "report/report.html",
+            "visual_assets": report.visual_total,
+        }
+        _atomic_write_json(output_dir / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     partial_failures = sum(
         1 for row_result in ordered if row_result["status"] in {"error", "unsupported"}
@@ -220,6 +242,12 @@ async def _run_one(
             deterministic_metrics=metrics,
             judge_status="not_requested",
         )
+        _persist_native_sample(
+            args.output_dir,
+            sample=sample,
+            execution=execution,
+            evaluation=evaluation,
+        )
         return record, evaluation
     except Exception as error:
         # Keep the batch alive; stable code/type name only, never raw text.
@@ -227,6 +255,96 @@ async def _run_one(
         record["status"] = "error"
         record["error_type"] = getattr(error, "code", None) or type(error).__name__
         return record, None
+
+
+def _initialize_native_report_context(
+    output_dir: Path,
+    args: argparse.Namespace,
+    settings: object,
+    rows: list[dict[str, Any]],
+) -> None:
+    """Create the private run identity consumed by native Report V2.
+
+    The counting evaluator historically emitted only a flat JSONL summary.
+    Native reporting requires the same durable run/sample artifacts as the
+    dataset runner, so this evaluator now records them while preserving its
+    existing flat outputs.
+    """
+
+    snapshot = settings.safe_snapshot()
+    config_hash = hashlib.sha256(
+        json.dumps(snapshot, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    manifest = RunManifest(
+        run_id=output_dir.name,
+        created_at=datetime.now(timezone.utc),
+        git_commit=None,
+        git_dirty=None,
+        config_hash=config_hash,
+        prompt_hashes={},
+        model_ids={"qwen": settings.models.qwen.effective_cache_model_id},
+        dataset="VRSBench",
+        split="validation",
+        sample_filter=f"vrsbench-counting rows={len(rows)}",
+    )
+    request = RunRequest(
+        dataset="VRSBench",
+        dataset_root=str(args.data_root),
+        split="validation",
+        task_mode="explicit",
+        tasks=["counting"],
+        limit=len(rows),
+        sample_concurrency=args.concurrency,
+        evaluate=True,
+        judge_policy="none",
+    )
+    _atomic_write_json(output_dir / "manifest.json", manifest.model_dump(mode="json"))
+    _atomic_write_json(output_dir / "config.snapshot.json", snapshot)
+    _atomic_write_json(output_dir / "run_request.json", request.model_dump(mode="json"))
+    (output_dir / "predictions.jsonl").write_text("", encoding="utf-8")
+
+
+def _persist_native_sample(
+    run_dir: Path,
+    *,
+    sample: UnifiedSample,
+    execution: Any,
+    evaluation: EvaluationRecord,
+) -> None:
+    """Persist the real AgentExecution in the native reporting layout."""
+
+    sample_dir = sample_dir_for_row(
+        run_dir,
+        {"run_task": "counting", "sample_id": sample.sample_id},
+    )
+    if sample_dir is None:
+        raise ValueError("unable to derive native sample directory")
+    sample_dir.mkdir(parents=True, exist_ok=True)
+    writer = ArtifactWriter()
+    writer.write_sample(sample_dir, sample)
+    writer.write_execution(sample_dir, execution)
+    writer.write_trace(sample_dir, execution.trace)
+    writer.write_evaluation(
+        sample_dir,
+        evaluation,
+        filename="counting_evaluation.json",
+    )
+    status = SampleRunStatus(
+        sample_id=sample.sample_id,
+        task="counting",
+        state="succeeded" if execution.status in _COMPLETED_STATUSES else "partial",
+        result_path=Path(execution.result_filename),
+        updated_at=datetime.now(timezone.utc).isoformat(),
+    )
+    writer.write_final_status(sample_dir, status)
+    writer.append_prediction(
+        run_dir,
+        sample_id=sample.sample_id,
+        run_task="counting",
+        task="counting",
+        status=status,
+        result_path=execution.result_filename,
+    )
 
 
 def _read_rows(path: Path, limit: int) -> list[dict[str, Any]]:

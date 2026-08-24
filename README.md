@@ -1012,6 +1012,28 @@ VisualTaskPlanner v5 count_target
 
 ## 21. YOLO OBB Counting
 
+### GB10 production profile
+
+`configs/local.yaml` is the current formal GB10 profile. Both enabled YOLO
+experts are intentionally CPU-only:
+
+- `detector_obb_csl_001`: ONNX Runtime `CPUExecutionProvider` only;
+- `detector_yolo_detect_001`: Ultralytics inference with `device=cpu`.
+
+The GB10 profile never requests `CUDAExecutionProvider` for YOLO, and CPU
+execution is not recorded as a fallback. This policy applies only to YOLO;
+Qwen and SegFormer retain their existing device policies.
+
+Install the standard YOLO dependencies with:
+
+```bash
+pip install -e ".[yolo,yolo-onnx]"
+```
+
+The `yolo-onnx` extra uses CPU `onnxruntime`. Do not manage
+`onnxruntime` and `onnxruntime-gpu` as simultaneous production dependencies
+for this profile.
+
 Python settings 只定义通用 schema，默认 `enabled=false`、`detectors=[]`，不内置具体
 checkpoint inventory。`ExpertCatalog` 声明专家能力与逻辑身份；部署配置（当前本地样例为
 `configs/local.yaml`）声明是否启用、物理权重路径、provider/device 与阈值。加载该配置后会
