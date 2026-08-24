@@ -7,6 +7,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 pytest.importorskip("peft")
+PretrainedConfig = pytest.importorskip("transformers").PretrainedConfig
 
 from training.multimodal_sft.adapters import _hf
 from training.multimodal_sft.contracts import CanonicalEpisode, ModelStructure
@@ -19,7 +20,7 @@ from training.multimodal_sft.trainer_core import GenericTrainerCore, TrainingCon
 class _TinyCausalLM(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.config = SimpleNamespace(model_type="tiny", pretraining_tp=1, is_encoder_decoder=False)
+        self.config = PretrainedConfig(model_type="tiny", is_encoder_decoder=False)
         self.language = torch.nn.Module()
         self.language.layer = torch.nn.Linear(2, 2, bias=True)
         self.connector = torch.nn.Linear(2, 2, bias=True)
