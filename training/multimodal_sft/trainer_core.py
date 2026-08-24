@@ -334,7 +334,7 @@ class GenericTrainerCore:
             resolved["image_root_contract"] = roots_contract
         return {**resolved, **dict(config.data_contract), "batch_size": int(config.batch_size), "max_seq_length": int(config.max_seq_length), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
 
-    def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any], processor: Any | None = None) -> dict[str, Any]:
+    def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any], processor: Any | None = None, next_sample_index: int = 0, next_batch_index: int = 0) -> dict[str, Any]:
         processor_identity = {}
         identity_fn = getattr(self.adapter, "processor_identity", None)
         if processor is not None and callable(identity_fn):
@@ -345,7 +345,8 @@ class GenericTrainerCore:
             data_contract=self._effective_data_contract(config), tuning_policy=policy.as_dict(),
             parameter_plan=plan.as_dict(), training={
                 "global_step": int(global_step), "epoch_index": int(epoch_index),
-                "next_micro_batch_index": int(next_micro_batch_index), "last_loss": last_loss,
+                "next_micro_batch_index": int(next_micro_batch_index),
+                "next_sample_index": int(next_sample_index), "next_batch_index": int(next_batch_index), "last_loss": last_loss,
                 "eval_loss": eval_loss, "seed": config.seed, "preflight": dict(preflight),
             },
             processor_identity=processor_identity,

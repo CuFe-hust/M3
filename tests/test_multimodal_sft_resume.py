@@ -161,10 +161,10 @@ def test_periodic_checkpoint_is_atomic_complete_and_rotated(tmp_path: Path) -> N
     assert checkpoint_complete(tmp_path / "checkpoint-3")
 
 
-def test_batching_is_fail_closed(tmp_path: Path) -> None:
+def test_adapter_without_collate_is_fail_closed_for_batching(tmp_path: Path) -> None:
     trainer = GenericTrainerCore(adapter=_TinyAdapter(), data_profile=JsonlDataProfile("phase2"))
-    with pytest.raises(ValueError, match="GENERIC_BATCHING_NOT_YET_AVAILABLE"):
-        trainer.fit(model=_TinyModel(), processor=object(), episodes=_episodes(1), config=TrainingConfig(output_dir=tmp_path, batch_size=2), policy="lora_plus_projector")
+    with pytest.raises(ValueError, match="ADAPTER_COLLATE_REQUIRED_FOR_BATCHING"):
+        trainer.fit(model=_TinyModel(), processor=object(), episodes=_episodes(2), config=TrainingConfig(output_dir=tmp_path, batch_size=2), policy="lora_plus_projector")
 
 
 def test_canonical_checkpoint_requires_rng_state(tmp_path: Path) -> None:
