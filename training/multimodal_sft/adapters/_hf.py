@@ -50,22 +50,9 @@ def identity_from_config(config: Any, *, processor_class: str | None = None) -> 
 
 
 def probe_processor(processor: Any) -> tuple[set[str], list[str], dict[str, Any]]:
-    capabilities: set[str] = set()
-    missing: list[str] = []
-    details: dict[str, Any] = {"processor_class": type(processor).__name__}
-    if callable(getattr(processor, "apply_chat_template", None)):
-        capabilities.add("chat_template")
-    else:
-        missing.append("chat_template")
-    if callable(processor):
-        capabilities.add("processor_call")
-    else:
-        missing.append("processor_call")
-    # A processor cannot prove a multi-image contract without model data; the
-    # adapter performs a deterministic synthetic two-image probe when asked.
-    details["supports_ordered_multi_image"] = True
-    capabilities.add("ordered_multi_image")
-    return capabilities, missing, details
+    from . import qwen_multimodal
+
+    return qwen_multimodal.probe_processor(processor)
 
 
 def module_map(model: Any) -> dict[str, Any]:

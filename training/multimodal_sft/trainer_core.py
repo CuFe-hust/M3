@@ -40,6 +40,7 @@ class TrainingConfig:
     max_steps: int | None = None
     gradient_accumulation_steps: int = 1
     batch_size: int = 1
+    max_seq_length: int = 4096
     seed: int = 1234
     mixed_precision: str = "off"
     preflight_only: bool = False
@@ -207,10 +208,11 @@ class GenericTrainerCore:
         self.data_profile.validate(episode)
         return episode
 
-    def smoke_gradients(self, *, model: Any, processor: Any, episode: Any, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0) -> dict[str, Any]:
+    def smoke_gradients(self, *, model: Any, processor: Any, episode: Any, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0, max_seq_length: int = 4096) -> dict[str, Any]:
         prepared = self._prepare_episode(episode, image_roots=image_roots, split=split, epoch=epoch, seed=seed)
         model.train()
-        batch = self.adapter.encode(processor, prepared)
+        encoded = self._encode(processor, prepared, max_seq_length=max_seq_length)
+        batch, _meta = self._collate([encoded])
         output = model(**self.adapter.prepare_forward_inputs(batch))
         loss = self._loss(output)
         if loss is None:
@@ -224,15 +226,16 @@ class GenericTrainerCore:
             parameter.grad = None
         return {"passed": True, "trainable_parameters": len(trainable), "parameters_with_grad": with_grad, "loss": float(loss.detach().cpu().item())}
 
-    def evaluate(self, *, model: Any, processor: Any, episodes: Sequence[Any], image_roots: Any = None, epoch: int = 0, seed: int | str = 0) -> float | None:
+    def evaluate(self, *, model: Any, processor: Any, episodes: Sequence[Any], image_roots: Any = None, epoch: int = 0, seed: int | str = 0, max_seq_length: int = 4096, batch_size: int = 1) -> float | None:
         import torch
         losses: list[float] = []
         was_training = bool(getattr(model, "training", False))
         model.eval()
         with torch.no_grad():
-            for episode in episodes:
-                prepared = self._prepare_episode(episode, image_roots=image_roots, split="validation", epoch=epoch, seed=seed)
-                batch = self.adapter.encode(processor, prepared)
+            prepared_rows = [self._prepare_episode(episode, image_roots=image_roots, split="validation", epoch=epoch, seed=seed) for episode in episodes]
+            for start in range(0, len(prepared_rows), max(1, int(batch_size))):
+                encoded = [self._encode(processor, episode, max_seq_length=max_seq_length) for episode in prepared_rows[start:start + max(1, int(batch_size))]]
+                batch, _meta = self._collate(encoded)
                 output = model(**self.adapter.prepare_forward_inputs(batch))
                 loss = self._loss(output)
                 if loss is not None:
@@ -241,8 +244,27 @@ class GenericTrainerCore:
             model.train()
         return sum(losses) / len(losses) if losses else None
 
+    def _encode(self, processor: Any, episode: Any, *, max_seq_length: int) -> Mapping[str, Any]:
+        encode = getattr(self.adapter, "encode", None)
+        if not callable(encode):
+            raise ValueError("selected adapter does not implement encode")
+        try:
+            return encode(processor, episode, max_seq_length=max_seq_length)
+        except TypeError as exc:
+            if "max_seq_length" not in str(exc):
+                raise
+            return encode(processor, episode)
+
+    def _collate(self, encoded_examples: Sequence[Mapping[str, Any]]) -> tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]:
+        collate = getattr(self.adapter, "collate", None)
+        if callable(collate):
+            return collate(encoded_examples)
+        if len(encoded_examples) != 1:
+            raise ValueError("ADAPTER_COLLATE_REQUIRED_FOR_BATCHING")
+        return encoded_examples[0], ({},)
+
     @staticmethod
-    def _save_runtime_state(root: Path, *, global_step: int, epoch_index: int, next_micro_batch_index: int, optimizer_updates_in_epoch: int, loss: float | None, eval_loss: float | None, optimizer: Any, scheduler: Any) -> None:
+    def _save_runtime_state(root: Path, *, global_step: int, epoch_index: int, next_micro_batch_index: int, next_sample_index: int, next_batch_index: int, optimizer_updates_in_epoch: int, loss: float | None, eval_loss: float | None, optimizer: Any, scheduler: Any) -> None:
         import torch
         torch.save(optimizer.state_dict(), root / OPTIMIZER_FILENAME)
         torch.save(scheduler.state_dict(), root / SCHEDULER_FILENAME)
@@ -250,6 +272,8 @@ class GenericTrainerCore:
             "global_step": int(global_step),
             "epoch_index": int(epoch_index),
             "next_micro_batch_index": int(next_micro_batch_index),
+            "next_sample_index": int(next_sample_index),
+            "next_batch_index": int(next_batch_index),
             "optimizer_updates_in_epoch": int(optimizer_updates_in_epoch),
             "step": int(global_step),
             "epoch": int(epoch_index),
@@ -286,6 +310,7 @@ class GenericTrainerCore:
         return {
             "schema_version": 1,
             "micro_batch_size": int(config.batch_size),
+            "max_seq_length": int(config.max_seq_length),
             "gradient_accumulation_steps": int(config.gradient_accumulation_steps),
             "planned_total_optimizer_steps": int(planned_total_steps),
             "resolved_epochs": int(config.epochs),
@@ -307,9 +332,13 @@ class GenericTrainerCore:
         roots_contract = config.image_roots.contract() if callable(getattr(config.image_roots, "contract", None)) else None
         if roots_contract is not None:
             resolved["image_root_contract"] = roots_contract
-        return {**resolved, **dict(config.data_contract), "batch_size": int(config.batch_size), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
+        return {**resolved, **dict(config.data_contract), "batch_size": int(config.batch_size), "max_seq_length": int(config.max_seq_length), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
 
-    def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any]) -> dict[str, Any]:
+    def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any], processor: Any | None = None) -> dict[str, Any]:
+        processor_identity = {}
+        identity_fn = getattr(self.adapter, "processor_identity", None)
+        if processor is not None and callable(identity_fn):
+            processor_identity = dict(identity_fn(processor))
         return build_training_manifest(
             adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)),
             model_identity=dict(model_identity), task_profile=self.data_profile.name,
@@ -319,10 +348,11 @@ class GenericTrainerCore:
                 "next_micro_batch_index": int(next_micro_batch_index), "last_loss": last_loss,
                 "eval_loss": eval_loss, "seed": config.seed, "preflight": dict(preflight),
             },
+            processor_identity=processor_identity,
             training_plan=training_plan,
         )
 
-    def _serialize_checkpoint(self, *, target: Path, model: Any, processor: Any, plan: ParameterPlan, manifest: Mapping[str, Any], optimizer: Any, scheduler: Any, global_step: int, epoch_index: int, next_micro_batch_index: int, optimizer_updates_in_epoch: int, last_loss: float | None, eval_loss: float | None) -> None:
+    def _serialize_checkpoint(self, *, target: Path, model: Any, processor: Any, plan: ParameterPlan, manifest: Mapping[str, Any], optimizer: Any, scheduler: Any, global_step: int, epoch_index: int, next_micro_batch_index: int, next_sample_index: int = 0, next_batch_index: int = 0, optimizer_updates_in_epoch: int = 0, last_loss: float | None, eval_loss: float | None) -> None:
         save_checkpoint = getattr(self.adapter, "save_checkpoint", None)
         save_trainable_state = getattr(self.adapter, "save_trainable_state", None)
         validate_checkpoint_state = getattr(self.adapter, "validate_checkpoint_state", None)
@@ -333,7 +363,7 @@ class GenericTrainerCore:
         save_checkpoint(model, processor, target)
         save_trainable_state(model, target / "model_trainable_state.safetensors", plan)
         (target / PARAMETER_PLAN_FILENAME).write_text(json.dumps(plan.as_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        self._save_runtime_state(target, global_step=global_step, epoch_index=epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, loss=last_loss, eval_loss=eval_loss, optimizer=optimizer, scheduler=scheduler)
+        self._save_runtime_state(target, global_step=global_step, epoch_index=epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, loss=last_loss, eval_loss=eval_loss, optimizer=optimizer, scheduler=scheduler)
         self._write_rng_state(target, rng_payload)
         self._write_log(target, {"event": "checkpoint", "step": global_step, "epoch": epoch_index, "next_micro_batch_index": next_micro_batch_index})
         write_manifest(target, manifest)
@@ -358,7 +388,7 @@ class GenericTrainerCore:
         for _step, path in sorted(candidates)[:-keep] if keep else sorted(candidates):
             shutil.rmtree(path)
 
-    def _save_periodic(self, *, output_dir: Path, step: int, model: Any, processor: Any, plan: ParameterPlan, manifest: Mapping[str, Any], optimizer: Any, scheduler: Any, epoch_index: int, next_micro_batch_index: int, optimizer_updates_in_epoch: int, last_loss: float | None, eval_loss: float | None, save_total_limit: int | None) -> Path:
+    def _save_periodic(self, *, output_dir: Path, step: int, model: Any, processor: Any, plan: ParameterPlan, manifest: Mapping[str, Any], optimizer: Any, scheduler: Any, epoch_index: int, next_micro_batch_index: int, next_sample_index: int = 0, next_batch_index: int = 0, optimizer_updates_in_epoch: int = 0, last_loss: float | None, eval_loss: float | None, save_total_limit: int | None) -> Path:
         output_dir.mkdir(parents=True, exist_ok=True)
         target = output_dir / f"checkpoint-{step}"
         if target.exists():
@@ -366,15 +396,17 @@ class GenericTrainerCore:
         temp = output_dir / f".checkpoint-{step}.tmp-{os.getpid()}"
         if temp.exists():
             shutil.rmtree(temp)
-        self._serialize_checkpoint(target=temp, model=model, processor=processor, plan=plan, manifest=manifest, optimizer=optimizer, scheduler=scheduler, global_step=step, epoch_index=epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)
+        self._serialize_checkpoint(target=temp, model=model, processor=processor, plan=plan, manifest=manifest, optimizer=optimizer, scheduler=scheduler, global_step=step, epoch_index=epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)
         os.replace(temp, target)
         self._rotate_periodic_checkpoints(output_dir, save_total_limit)
         return target
 
     def fit(self, *, model: Any, processor: Any, episodes: Iterable[Any], config: TrainingConfig, policy: TuningPolicy | str, probe: Any | None = None, model_identity: Mapping[str, Any] | None = None, eval_episodes: Iterable[Any] | None = None) -> TrainingResult:
         import torch
-        if config.batch_size != 1:
-            raise ValueError("GENERIC_BATCHING_NOT_YET_AVAILABLE: micro-batch size must be 1 before Phase 1D")
+        if config.batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        if config.max_seq_length < 1:
+            raise ValueError("max_seq_length must be positive")
         if config.gradient_accumulation_steps < 1:
             raise ValueError("gradient_accumulation_steps must be positive")
         if config.save_steps < 0:
@@ -393,8 +425,16 @@ class GenericTrainerCore:
             return TrainingResult(0, None, None, None, plan, {"preflight": preflight})
         if not train_rows:
             raise ValueError("training profile produced no episodes")
+        if config.batch_size > 1:
+            weighted = [row for row in train_rows if float((getattr(row, "metadata", {}) or {}).get("sample_weight", 1.0)) != 1.0]
+            if weighted:
+                raise ValueError("SAMPLE_WEIGHT_BATCHING_UNSUPPORTED")
         selected_policy = policy if isinstance(policy, TuningPolicy) else TuningPolicy.from_name(policy)
         plan = self.build_plan(model, selected_policy, probe=probe)
+        processor_identity = {}
+        processor_identity_fn = getattr(self.adapter, "processor_identity", None)
+        if callable(processor_identity_fn):
+            processor_identity = dict(processor_identity_fn(processor))
         apply_policy = getattr(self.adapter, "apply_tuning_policy", None)
         if not callable(apply_policy):
             raise ValueError("selected adapter does not implement parameter-plan application")
@@ -403,12 +443,14 @@ class GenericTrainerCore:
         if callable(validate_trainable):
             validate_trainable(model, plan)
 
-        updates_per_epoch = max(1, (len(train_rows) + config.gradient_accumulation_steps - 1) // config.gradient_accumulation_steps)
+        micro_batches_per_epoch = max(1, (len(train_rows) + config.batch_size - 1) // config.batch_size)
+        updates_per_epoch = max(1, (micro_batches_per_epoch + config.gradient_accumulation_steps - 1) // config.gradient_accumulation_steps)
         planned_total_steps = config.max_steps or max(1, updates_per_epoch * config.epochs)
         training_plan = self._training_plan(config, planned_total_steps)
 
         resume_root: Path | None = None
-        start_step = start_epoch = start_index = optimizer_updates_in_epoch = 0
+        start_step = start_epoch = start_sample_index = optimizer_updates_in_epoch = 0
+        start_batch_index = 0
         if config.resume_from:
             resume_root = Path(config.resume_from)
             if not checkpoint_complete(resume_root):
@@ -416,7 +458,7 @@ class GenericTrainerCore:
             resume_manifest = read_compatible_manifest(resume_root, legacy_manifest_names=("phase2_training_manifest.json",))
             if "checkpoint_type" not in resume_manifest:
                 raise ValueError("legacy checkpoint requires an adapter-specific compatibility restore")
-            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=dict(model_identity or {}), task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan)
+            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=dict(model_identity or {}), task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan, processor_identity=processor_identity)
             restore = getattr(self.adapter, "restore_trainable_state", None)
             if not callable(restore):
                 raise ValueError("selected adapter does not implement trainable-state restore")
@@ -434,43 +476,53 @@ class GenericTrainerCore:
             state = self._load_runtime_state(resume_root, optimizer, scheduler)
             start_step = int(state.get("global_step", state.get("step", 0)))
             start_epoch = int(state.get("epoch_index", state.get("epoch", 0)))
-            start_index = int(state.get("next_micro_batch_index", 0))
+            start_sample_index = int(state.get("next_sample_index", state.get("next_micro_batch_index", 0)))
+            start_batch_index = int(state.get("next_batch_index", start_sample_index // config.batch_size))
             optimizer_updates_in_epoch = int(state.get("optimizer_updates_in_epoch", 0))
-            if start_index >= len(train_rows):
+            if start_sample_index >= len(train_rows):
                 start_epoch += 1
-                start_index = 0
+                start_sample_index = 0
+                start_batch_index = 0
             self._restore_rng_state(resume_root)
         if config.smoke_gradients:
-            self.smoke_gradients(model=model, processor=processor, episode=train_rows[start_index if start_index < len(train_rows) else 0], image_roots=config.image_roots, epoch=start_epoch, seed=config.seed)
+            smoke_index = start_sample_index if start_sample_index < len(train_rows) else 0
+            self.smoke_gradients(model=model, processor=processor, episode=train_rows[smoke_index], image_roots=config.image_roots, epoch=start_epoch, seed=config.seed, max_seq_length=config.max_seq_length)
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
         last_loss: float | None = None
         current_step = start_step
         next_epoch_index = start_epoch
-        next_micro_batch_index = start_index
+        next_sample_index = start_sample_index
+        next_batch_index = start_batch_index
+        next_micro_batch_index = start_sample_index
         stop = current_step >= (config.max_steps or 2**63 - 1)
         for epoch_index in range(start_epoch, config.epochs):
-            begin = start_index if epoch_index == start_epoch else 0
-            for index in range(begin, len(train_rows)):
-                episode = train_rows[index]
-                self.data_profile.validate(episode)
-                prepared = self._prepare_episode(episode, image_roots=config.image_roots, split="train", epoch=epoch_index, seed=config.seed)
-                batch = self.adapter.encode(processor, prepared)
-                window_start = index - (index % config.gradient_accumulation_steps)
-                window_size = min(config.gradient_accumulation_steps, len(train_rows) - window_start)
+            begin = start_sample_index if epoch_index == start_epoch else 0
+            for batch_start in range(begin, len(train_rows), config.batch_size):
+                batch_rows = train_rows[batch_start:batch_start + config.batch_size]
+                prepared_rows = []
+                for episode in batch_rows:
+                    self.data_profile.validate(episode)
+                    prepared_rows.append(self._prepare_episode(episode, image_roots=config.image_roots, split="train", epoch=epoch_index, seed=config.seed))
+                encoded = [self._encode(processor, prepared, max_seq_length=config.max_seq_length) for prepared in prepared_rows]
+                batch, _meta = self._collate(encoded)
+                batch_index = batch_start // config.batch_size
+                window_start = batch_index - (batch_index % config.gradient_accumulation_steps)
+                total_batches = (len(train_rows) + config.batch_size - 1) // config.batch_size
+                window_size = min(config.gradient_accumulation_steps, total_batches - window_start)
                 with autocast_context(str(getattr(model, "device", "cpu")), config.mixed_precision):
                     output = model(**self.adapter.prepare_forward_inputs(batch))
                     loss = self._loss(output)
                     if loss is None:
                         raise ValueError("adapter/model forward did not return loss; labels are required")
-                    sample_weight = float((getattr(episode, "metadata", {}) or {}).get("sample_weight", 1.0))
+                    sample_weight = float((getattr(batch_rows[0], "metadata", {}) or {}).get("sample_weight", 1.0)) if len(batch_rows) == 1 else 1.0
                     if sample_weight < 0:
                         raise ValueError("sample_weight must be non-negative")
                     scaled_loss = (loss * sample_weight) / window_size
                 scaled_loss.backward()
                 last_loss = float(loss.detach().cpu().item())
-                end_window = ((index + 1) % config.gradient_accumulation_steps == 0) or index == len(train_rows) - 1
+                end_window = ((batch_index + 1) % config.gradient_accumulation_steps == 0) or batch_start + len(batch_rows) >= len(train_rows)
                 if not end_window:
                     continue
                 clip_gradients(model, config.max_grad_norm)
@@ -479,27 +531,29 @@ class GenericTrainerCore:
                 optimizer.zero_grad(set_to_none=True)
                 current_step += 1
                 optimizer_updates_in_epoch += 1
-                if index + 1 < len(train_rows):
-                    next_epoch_index, next_micro_batch_index = epoch_index, index + 1
+                if batch_start + len(batch_rows) < len(train_rows):
+                    next_epoch_index, next_sample_index = epoch_index, batch_start + len(batch_rows)
+                    next_batch_index = next_sample_index // config.batch_size
                 else:
-                    next_epoch_index, next_micro_batch_index = epoch_index + 1, 0
+                    next_epoch_index, next_sample_index, next_batch_index = epoch_index + 1, 0, 0
+                next_micro_batch_index = next_sample_index
                 if config.logging_steps > 0 and current_step % config.logging_steps == 0:
-                    self._write_log(Path(config.output_dir), {"event": "train", "step": current_step, "epoch": epoch_index, "loss": last_loss})
+                    self._write_log(Path(config.output_dir), {"event": "train", "step": current_step, "epoch": epoch_index, "loss": last_loss, "next_sample_index": next_sample_index, "next_batch_index": next_batch_index})
                 if config.save_steps and current_step % config.save_steps == 0:
-                    manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=None, preflight=preflight)
-                    self._save_periodic(output_dir=Path(config.output_dir), step=current_step, model=model, processor=processor, plan=plan, manifest=manifest, optimizer=optimizer, scheduler=scheduler, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=None, save_total_limit=config.save_total_limit)
+                    manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, last_loss=last_loss, eval_loss=None, preflight=preflight, processor=processor)
+                    self._save_periodic(output_dir=Path(config.output_dir), step=current_step, model=model, processor=processor, plan=plan, manifest=manifest, optimizer=optimizer, scheduler=scheduler, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=None, save_total_limit=config.save_total_limit)
                     if config._test_stop_after_checkpoint_step == current_step:
                         raise RuntimeError("TEST_STOP_AFTER_CHECKPOINT")
                 if config.max_steps is not None and current_step >= config.max_steps:
                     stop = True
                     break
-            start_index = 0
+            start_sample_index = 0
             if stop:
                 break
 
-        eval_loss = self.evaluate(model=model, processor=processor, episodes=eval_rows, image_roots=config.image_roots, epoch=next_epoch_index, seed=config.seed) if eval_rows else None
+        eval_loss = self.evaluate(model=model, processor=processor, episodes=eval_rows, image_roots=config.image_roots, epoch=next_epoch_index, seed=config.seed, max_seq_length=config.max_seq_length, batch_size=config.batch_size) if eval_rows else None
         output_dir = Path(config.output_dir)
-        final_manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight)
-        self._serialize_checkpoint(target=output_dir, model=model, processor=processor, plan=plan, manifest=final_manifest, optimizer=optimizer, scheduler=scheduler, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)
+        final_manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight, processor=processor)
+        self._serialize_checkpoint(target=output_dir, model=model, processor=processor, plan=plan, manifest=final_manifest, optimizer=optimizer, scheduler=scheduler, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)
         self._write_log(output_dir, {"event": "eval", "step": current_step, "epoch": next_epoch_index, "loss": last_loss, "eval_loss": eval_loss})
         return TrainingResult(current_step, last_loss, eval_loss, output_dir / "training_manifest.json", plan, optimizer_stats)

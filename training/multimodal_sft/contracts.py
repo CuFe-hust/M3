@@ -185,8 +185,18 @@ class MultimodalModelAdapter(Protocol):
         processor: Any,
         episode: CanonicalEpisode,
         *,
+        max_seq_length: int = 4096,
         return_tensors: str = "pt",
     ) -> Mapping[str, Any]:
+        ...
+
+    def collate(
+        self,
+        encoded_examples: Sequence[Mapping[str, Any]],
+    ) -> tuple[Mapping[str, Any], Sequence[Mapping[str, Any]]]:
+        ...
+
+    def processor_identity(self, processor: Any) -> Mapping[str, Any]:
         ...
 
     def discover_structure(self, model: Any) -> ModelStructure:

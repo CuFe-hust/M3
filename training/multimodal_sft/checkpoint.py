@@ -222,6 +222,7 @@ def validate_resume_compatibility(
     parameter_plan: Mapping[str, Any] | None = None,
     data_contract: Mapping[str, Any] | None = None,
     training_plan: Mapping[str, Any] | None = None,
+    processor_identity: Mapping[str, Any] | None = None,
 ) -> None:
     validate_training_manifest(manifest)
     if manifest.get("adapter_name") != adapter_name:
@@ -244,3 +245,5 @@ def validate_resume_compatibility(
         expected = identity_fingerprint(training_plan)
         if manifest.get("training_plan_sha256") != expected or dict(manifest.get("training_plan", {})) != dict(training_plan):
             raise CheckpointContractError("RESUME_TRAINING_PLAN_MISMATCH")
+    if processor_identity is not None and dict(manifest.get("processor", {})) != dict(processor_identity):
+        raise CheckpointContractError("RESUME_PROCESSOR_IDENTITY_MISMATCH")

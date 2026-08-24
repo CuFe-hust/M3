@@ -42,7 +42,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", "--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--max-grad-norm", "--max_grad_norm", type=float, default=1.0)
-    parser.add_argument("--batch-size", "--per-device-train-batch-size", "--per_device_train_batch_size", dest="batch_size", type=int, default=1, help="Phase 1D deferred: only micro-batch size 1 is supported")
+    parser.add_argument("--batch-size", "--per-device-train-batch-size", "--per_device_train_batch_size", dest="batch_size", type=int, default=1)
+    parser.add_argument("--max-seq-length", "--max_seq_length", dest="max_seq_length", type=int, default=4096)
     parser.add_argument("--gradient-accumulation", "--gradient-accumulation-steps", "--gradient_accumulation_steps", dest="gradient_accumulation", type=int, default=1)
     parser.add_argument("--epochs", "--num-train-epochs", "--num_train_epochs", dest="epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int)
@@ -74,8 +75,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        if args.batch_size != 1:
-            raise ValueError("GENERIC_BATCHING_NOT_YET_AVAILABLE: micro-batch size must be 1 before Phase 1D")
+        if args.batch_size < 1:
+            raise ValueError("batch_size must be positive")
+        if args.max_seq_length < 1:
+            raise ValueError("max_seq_length must be positive")
         if args.deepspeed or args.fsdp or args.fsdp_config:
             raise ValueError("distributed_backend=unsupported_in_generic_phase1: DeepSpeed/FSDP are not implemented")
         if args.data_profile == "change_agent" and not args.plan_only and not args.data_manifest:
@@ -144,12 +147,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_eval_samples=args.max_eval_samples,
                 logging_steps=args.logging_steps,
                 batch_size=args.batch_size,
+                max_seq_length=args.max_seq_length,
                 repeat_group_key=args.repeat_group_key,
                 repeat_weights=repeat_weights,
                 save_steps=args.save_steps,
                 save_total_limit=args.save_total_limit,
                 image_roots=image_registry,
-                data_contract={"image_sources": sorted(image_registry.roots), "batch_size": args.batch_size},
+                data_contract={"image_sources": sorted(image_registry.roots), "batch_size": args.batch_size, "max_seq_length": args.max_seq_length},
             ),
             policy=selected_policy,
             probe=loaded_probe,

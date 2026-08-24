@@ -31,8 +31,14 @@ class GenericHFAdapter:
         probe = self.probe(model_id, local_files_only=local_files_only)
         raise AdapterContractError("generic adapter requires an explicit proven structure; it will not guess module paths")
 
-    def encode(self, processor: Any, episode: Any, *, return_tensors: str = "pt") -> dict[str, Any]:
-        return _hf.encode_episode(processor, episode, return_tensors=return_tensors)
+    def encode(self, processor: Any, episode: Any, *, max_seq_length: int = 4096, return_tensors: str = "pt") -> dict[str, Any]:
+        raise AdapterContractError("hf_generic_multimodal cannot encode without a proven processor contract")
+
+    def collate(self, encoded_examples: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        raise AdapterContractError("hf_generic_multimodal cannot collate without a proven processor contract")
+
+    def processor_identity(self, processor: Any) -> dict[str, Any]:
+        return {"class": f"{type(processor).__module__}.{type(processor).__name__}", "encoding_contract_version": "unproven"}
 
     def discover_structure(self, model: Any) -> ModelStructure:
         raise AdapterContractError("generic adapter cannot infer a safe model structure")

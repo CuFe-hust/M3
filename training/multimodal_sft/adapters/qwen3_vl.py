@@ -7,6 +7,7 @@ from typing import Any
 
 from ..contracts import AdapterContractError, AdapterProbe, ModelStructure
 from . import _hf
+from . import qwen_multimodal
 
 
 class Qwen3VLAdapter:
@@ -18,7 +19,7 @@ class Qwen3VLAdapter:
             identity = _hf.identity_from_config(config)
             return AdapterProbe(self.name, identity, details={"rejected_model_type": getattr(config, "model_type", None)}, missing_capabilities=("model_type=qwen3_vl",))
         processor = _hf.auto_processor(model_id, local_files_only=local_files_only)
-        caps, missing, details = _hf.probe_processor(processor)
+        caps, missing, details = qwen_multimodal.probe_processor(processor)
         caps.update({"forward_labels", "language_backbone", "vision_backbone", "semantic_connectors"})
         return AdapterProbe(self.name, _hf.identity_from_config(config, processor_class=type(processor).__name__), frozenset(caps), tuple(missing), details)
 
@@ -38,8 +39,14 @@ class Qwen3VLAdapter:
         processor = _hf.auto_processor(model_id, local_files_only=local_files_only)
         return model, processor, probe
 
-    def encode(self, processor: Any, episode: Any, *, return_tensors: str = "pt") -> dict[str, Any]:
-        return _hf.encode_episode(processor, episode, return_tensors=return_tensors)
+    def encode(self, processor: Any, episode: Any, *, max_seq_length: int = 4096, return_tensors: str = "pt") -> dict[str, Any]:
+        return qwen_multimodal.encode_multimodal_episode(processor, episode, max_seq_length=max_seq_length, return_tensors=return_tensors)
+
+    def collate(self, encoded_examples: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        return qwen_multimodal.collate(encoded_examples)
+
+    def processor_identity(self, processor: Any) -> dict[str, Any]:
+        return qwen_multimodal.processor_identity(processor)
 
     def discover_structure(self, model: Any) -> ModelStructure:
         modules = _hf.module_map(model)
