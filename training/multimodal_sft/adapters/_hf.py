@@ -163,6 +163,46 @@ def save_checkpoint(model: Any, processor: Any, output_dir: str | Path) -> None:
     save_processor(processor, root / "processor")
 
 
+def validate_trainable_parameters(model: Any, parameter_plan: Any) -> None:
+    """Ensure adapter application did not leak unrelated trainable weights."""
+
+    selected = tuple(getattr(parameter_plan, "lora_module_paths", ())) + tuple(
+        getattr(parameter_plan, "full_train_module_paths", ())
+    )
+    trainable = [
+        name for name, parameter in model.named_parameters()
+        if bool(getattr(parameter, "requires_grad", False))
+    ]
+    if not trainable:
+        raise AdapterContractError("parameter plan produced no trainable parameters")
+    unexpected = [
+        name for name in trainable
+        if "lora" not in name.lower()
+        and not any(("." + path + ".") in ("." + name + ".") for path in selected)
+    ]
+    if unexpected:
+        raise AdapterContractError("unexpected trainable parameters: " + ", ".join(unexpected[:8]))
+
+
+def save_trainable_state(model: Any, output_path: str | Path) -> None:
+    """Persist only requires-grad tensors through the adapter contract."""
+
+    state = {
+        name: value.detach().cpu()
+        for name, value in model.named_parameters()
+        if bool(getattr(value, "requires_grad", False))
+    }
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        from safetensors.torch import save_file
+    except ImportError:  # pragma: no cover - optional dependency
+        import torch
+        torch.save(state, target)
+    else:
+        save_file(state, str(target))
+
+
 def export_peft_checkpoint(
     adapter: Any,
     *,

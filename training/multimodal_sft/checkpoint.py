@@ -6,11 +6,16 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 
 SCHEMA_VERSION = 1
-TRAINING_MANIFEST_FILENAME = "multimodal_sft_training_manifest.json"
+TRAINING_MANIFEST_FILENAME = "training_manifest.json"
+COMPATIBILITY_MANIFEST_FILENAME = "multimodal_sft_training_manifest.json"
+PARAMETER_PLAN_FILENAME = "parameter_plan.json"
+TRAINER_STATE_FILENAME = "trainer_state.json"
+OPTIMIZER_FILENAME = "optimizer.pt"
+SCHEDULER_FILENAME = "scheduler.pt"
 
 
 class CheckpointContractError(ValueError):
@@ -72,11 +77,18 @@ def write_manifest(checkpoint_dir: str | Path, manifest: Mapping[str, Any]) -> P
     temp = target.with_suffix(target.suffix + ".tmp")
     temp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     os.replace(temp, target)
+    # Keep the first generic name readable by the previous Phase 1 adapter
+    # tests and callers while making training_manifest.json canonical.
+    compatibility = root / COMPATIBILITY_MANIFEST_FILENAME
+    compatibility.write_text(target.read_text(encoding="utf-8"), encoding="utf-8")
     return target
 
 
 def read_manifest(checkpoint_dir: str | Path) -> dict[str, Any]:
-    path = Path(checkpoint_dir) / TRAINING_MANIFEST_FILENAME
+    root = Path(checkpoint_dir)
+    path = root / TRAINING_MANIFEST_FILENAME
+    if not path.is_file():
+        path = root / COMPATIBILITY_MANIFEST_FILENAME
     if not path.is_file():
         raise CheckpointContractError(f"missing manifest: {path.name}")
     try:
@@ -87,6 +99,64 @@ def read_manifest(checkpoint_dir: str | Path) -> dict[str, Any]:
         raise CheckpointContractError("manifest must be a JSON object")
     validate_training_manifest(manifest)
     return manifest
+
+
+def read_compatible_manifest(
+    checkpoint_dir: str | Path,
+    *,
+    legacy_manifest_names: Iterable[str] = (),
+) -> dict[str, Any]:
+    """Read the canonical manifest or an explicitly named legacy manifest.
+
+    Legacy names are supplied by the caller so this generic layer does not
+    encode a task/model-family filename.  Legacy payloads are returned as-is;
+    callers must apply their own compatibility validation before resume.
+    """
+
+    root = Path(checkpoint_dir)
+    try:
+        return read_manifest(root)
+    except CheckpointContractError as canonical_error:
+        for name in legacy_manifest_names:
+            candidate = root / str(name)
+            if not candidate.is_file():
+                continue
+            try:
+                payload = json.loads(candidate.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise CheckpointContractError(f"legacy manifest is not valid JSON: {candidate.name}") from exc
+            if not isinstance(payload, dict):
+                raise CheckpointContractError("legacy manifest must be a JSON object")
+            return payload
+        raise canonical_error
+
+
+def checkpoint_complete(
+    checkpoint_dir: str | Path,
+    *,
+    required_files: Iterable[str] = (),
+) -> bool:
+    """Return whether the canonical composite checkpoint is resumable."""
+
+    root = Path(checkpoint_dir)
+    required = {
+        TRAINING_MANIFEST_FILENAME,
+        PARAMETER_PLAN_FILENAME,
+        TRAINER_STATE_FILENAME,
+        OPTIMIZER_FILENAME,
+        SCHEDULER_FILENAME,
+        "model_trainable_state.safetensors",
+    }
+    required.update(str(item) for item in required_files)
+    if not all((root / item).exists() for item in required):
+        return False
+    if not (root / "adapter").is_dir() or not (root / "processor").is_dir():
+        return False
+    try:
+        read_manifest(root)
+    except CheckpointContractError:
+        return False
+    return True
 
 
 def validate_resume_compatibility(
@@ -106,5 +176,3 @@ def validate_resume_compatibility(
         raise CheckpointContractError("resume task profile mismatch")
     if dict(manifest.get("tuning_policy", {})) != dict(tuning_policy):
         raise CheckpointContractError("resume tuning policy mismatch")
-
-

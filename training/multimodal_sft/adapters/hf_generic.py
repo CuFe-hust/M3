@@ -49,5 +49,11 @@ class GenericHFAdapter:
     def save_checkpoint(self, model: Any, processor: Any, output_dir: str | Path) -> None:
         raise AdapterContractError("generic adapter cannot save a checkpoint without a proven model-family seam")
 
+    def validate_trainable_parameters(self, model: Any, parameter_plan: Any) -> None:
+        _hf.validate_trainable_parameters(model, parameter_plan)
+
+    def save_trainable_state(self, model: Any, output_path: str | Path) -> None:
+        _hf.save_trainable_state(model, output_path)
+
     def export_checkpoint(self, **kwargs: Any) -> dict[str, Any]:
         raise AdapterContractError("generic exporter requires an adapter-specific checkpoint implementation")

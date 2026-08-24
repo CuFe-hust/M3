@@ -172,6 +172,12 @@ class MultimodalModelAdapter(Protocol):
     def save_checkpoint(self, model: Any, processor: Any, output_dir: str | Path) -> None:
         ...
 
+    def validate_trainable_parameters(self, model: Any, parameter_plan: Any) -> None:
+        ...
+
+    def save_trainable_state(self, model: Any, output_path: str | Path) -> None:
+        ...
+
     def export_checkpoint(
         self,
         *,

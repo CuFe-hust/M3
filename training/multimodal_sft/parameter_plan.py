@@ -19,12 +19,18 @@ class TuningPolicy:
     name: str
     lora_roles: tuple[str, ...] = ("language_lora_targets",)
     full_train_roles: tuple[str, ...] = ()
+    rank: int = 64
+    alpha: int = 128
+    dropout: float = 0.05
 
     def as_dict(self) -> dict[str, object]:
         return {
             "name": self.name,
             "lora_roles": list(self.lora_roles),
             "full_train_roles": list(self.full_train_roles),
+            "rank": self.rank,
+            "alpha": self.alpha,
+            "dropout": self.dropout,
         }
 
     @classmethod
@@ -136,5 +142,4 @@ def build_parameter_plan(
     )
     plan.validate()
     return plan
-
 

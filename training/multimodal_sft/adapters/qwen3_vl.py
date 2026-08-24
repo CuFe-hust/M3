@@ -67,6 +67,12 @@ class Qwen3VLAdapter:
     def apply_tuning_policy(self, model: Any, parameter_plan: Any, policy: Any) -> Any:
         return _hf.apply_tuning_policy(model, parameter_plan, policy)
 
+    def validate_trainable_parameters(self, model: Any, parameter_plan: Any) -> None:
+        _hf.validate_trainable_parameters(model, parameter_plan)
+
+    def save_trainable_state(self, model: Any, output_path: str | Path) -> None:
+        _hf.save_trainable_state(model, output_path)
+
     def save_processor(self, processor: Any, output_dir: str | Path) -> None:
         _hf.save_processor(processor, output_dir)
 

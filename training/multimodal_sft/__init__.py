@@ -21,6 +21,7 @@ from .parameter_plan import (
     TuningPolicy,
     build_parameter_plan,
 )
+from .optimizer import OptimizerConfig, build_cosine_scheduler, build_optimizer_groups
 from .registry import AdapterRegistry, UnsupportedModelAdapter, default_registry
 
 __all__ = [
@@ -36,9 +37,11 @@ __all__ = [
     "ParameterPlan",
     "ParameterPlanError",
     "TuningPolicy",
+    "OptimizerConfig",
     "UnsupportedModelAdapter",
     "build_parameter_plan",
     "default_registry",
+    "build_cosine_scheduler",
+    "build_optimizer_groups",
 ]
-
 
