@@ -188,6 +188,9 @@ class MultimodalModelAdapter(Protocol):
     ) -> Any:
         ...
 
+    def validate_checkpoint_state(self, checkpoint_dir: str | Path, parameter_plan: Any) -> Mapping[str, Any]:
+        ...
+
     def export_checkpoint(
         self,
         *,

@@ -142,7 +142,7 @@ def apply_tuning_policy(model: Any, parameter_plan: Any, policy: Any) -> Any:
             bias="none",
             task_type=TaskType.CAUSAL_LM,
             target_modules=list(parameter_plan.lora_module_paths),
-            modules_to_save=list(parameter_plan.full_train_module_paths) or None,
+            modules_to_save=None,
         )
         model = get_peft_model(model, config)
     for name, parameter in model.named_parameters():
@@ -205,6 +205,46 @@ def _load_tensor_file(path: Path) -> dict[str, Any]:
     return dict(load_file(str(path), device="cpu"))
 
 
+def canonicalize_peft_lora_state_keys(state: dict[str, Any]) -> dict[str, Any]:
+    """Canonicalize only known LoRA keys; reject all non-LoRA tensors."""
+
+    canonical: dict[str, Any] = {}
+    for name, value in state.items():
+        key = _canonical_parameter_name(name)
+        if ".lora_" not in key.lower():
+            raise AdapterContractError(f"UNEXPECTED_NON_LORA_ADAPTER_STATE: {name}")
+        if key in canonical:
+            raise AdapterContractError(f"duplicate canonical LoRA key: {key}")
+        canonical[key] = value
+    return canonical
+
+
+def _adapter_state_path(root: Path) -> Path:
+    for candidate in (root / "adapter" / "adapter_model.safetensors", root / "adapter" / "adapter_model.bin"):
+        if candidate.is_file():
+            return candidate
+    raise AdapterContractError("resume checkpoint is missing adapter weights")
+
+
+def validate_checkpoint_state(checkpoint_dir: str | Path, parameter_plan: Any) -> dict[str, Any]:
+    """Audit state ownership and exact persisted key topology after saving."""
+
+    root = Path(checkpoint_dir)
+    adapter_state = canonicalize_peft_lora_state_keys(_load_tensor_file(_adapter_state_path(root)))
+    full_state = _load_tensor_file(root / "model_trainable_state.safetensors")
+    expected_full = set(getattr(parameter_plan, "full_train_parameter_names", ()))
+    if set(full_state) != expected_full:
+        raise AdapterContractError("full-train state keys do not match ParameterPlan.full_train_parameter_names")
+    overlap = set(adapter_state) & set(full_state)
+    if overlap:
+        raise AdapterContractError(f"CHECKPOINT_STATE_OWNERSHIP_CONFLICT: {sorted(overlap)[:8]}")
+    parents = {key.rsplit(".lora_", 1)[0] for key in adapter_state}
+    planned = {_canonical_parameter_name(path) for path in getattr(parameter_plan, "lora_module_paths", ())}
+    if parents != planned:
+        raise AdapterContractError(f"LoRA parent mismatch: planned={sorted(planned)[:8]} persisted={sorted(parents)[:8]}")
+    return {"adapter_keys": sorted(adapter_state), "full_train_keys": sorted(full_state), "overlap_count": len(overlap)}
+
+
 def save_trainable_state(model: Any, output_path: str | Path, parameter_plan: Any) -> None:
     """Persist only full-train connector tensors with stable semantic names."""
 
@@ -245,7 +285,7 @@ def restore_trainable_state(
     if not adapter_path.is_file():
         raise AdapterContractError("resume checkpoint is missing adapter weights")
     adapter_state = _load_tensor_file(adapter_path)
-    adapter_canonical = {_canonical_parameter_name(name): value for name, value in adapter_state.items()}
+    adapter_canonical = canonicalize_peft_lora_state_keys(adapter_state)
     restored_parents = {
         name.rsplit(".lora_", 1)[0]
         for name in adapter_canonical
@@ -303,6 +343,10 @@ def restore_trainable_state(
             raise AdapterContractError(f"full-train restore dtype mismatch: {canonical}")
         mapped[target_name] = value.to(dtype=expected_value.dtype)
     model.load_state_dict(mapped, strict=False)
+    for canonical, value in {**adapter_canonical, **full_state}.items():
+        target_name = actual_by_canonical.get(_canonical_parameter_name(canonical))
+        if target_name is None or not model_state[target_name].equal(value.to(dtype=model_state[target_name].dtype)):
+            raise AdapterContractError(f"restored tensor equality check failed: {canonical}")
     return model
 
 

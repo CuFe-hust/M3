@@ -53,6 +53,7 @@ class TrainingConfig:
     save_total_limit: int | None = None
     resume_from: str | Path | None = None
     data_contract: Mapping[str, Any] = field(default_factory=dict)
+    _test_stop_after_checkpoint_step: int | None = None
 
 
 @dataclass(frozen=True)
@@ -235,13 +236,39 @@ class GenericTrainerCore:
             scheduler_state = torch.load(root / SCHEDULER_FILENAME, map_location="cpu")
         optimizer.load_state_dict(optimizer_state)
         scheduler.load_state_dict(scheduler_state)
+        for group in optimizer.param_groups:
+            for parameter in group.get("params", ()):
+                state = optimizer.state.get(parameter, {})
+                for key, value in list(state.items()):
+                    if hasattr(value, "to"):
+                        state[key] = value.to(device=parameter.device)
         return state
+
+    @staticmethod
+    def _training_plan(config: TrainingConfig, planned_total_steps: int) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "micro_batch_size": int(config.batch_size),
+            "gradient_accumulation_steps": int(config.gradient_accumulation_steps),
+            "planned_total_optimizer_steps": int(planned_total_steps),
+            "resolved_epochs": int(config.epochs),
+            "resolved_max_steps": config.max_steps,
+            "scheduler_type": "cosine",
+            "warmup_steps": int(planned_total_steps * config.warmup_ratio),
+            "warmup_ratio": float(config.warmup_ratio),
+            "lora_lr": float(config.lora_lr),
+            "connector_lr": float(config.connector_lr),
+            "weight_decay": float(config.weight_decay),
+            "max_grad_norm": float(config.max_grad_norm),
+            "mixed_precision": config.mixed_precision,
+            "seed": int(config.seed),
+        }
 
     @staticmethod
     def _effective_data_contract(config: TrainingConfig) -> dict[str, Any]:
         return {**dict(config.data_contract), "batch_size": int(config.batch_size), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
 
-    def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any]) -> dict[str, Any]:
+    def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any]) -> dict[str, Any]:
         return build_training_manifest(
             adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)),
             model_identity=dict(model_identity), task_profile=self.data_profile.name,
@@ -251,12 +278,14 @@ class GenericTrainerCore:
                 "next_micro_batch_index": int(next_micro_batch_index), "last_loss": last_loss,
                 "eval_loss": eval_loss, "seed": config.seed, "preflight": dict(preflight),
             },
+            training_plan=training_plan,
         )
 
     def _serialize_checkpoint(self, *, target: Path, model: Any, processor: Any, plan: ParameterPlan, manifest: Mapping[str, Any], optimizer: Any, scheduler: Any, global_step: int, epoch_index: int, next_micro_batch_index: int, optimizer_updates_in_epoch: int, last_loss: float | None, eval_loss: float | None) -> None:
         save_checkpoint = getattr(self.adapter, "save_checkpoint", None)
         save_trainable_state = getattr(self.adapter, "save_trainable_state", None)
-        if not callable(save_checkpoint) or not callable(save_trainable_state):
+        validate_checkpoint_state = getattr(self.adapter, "validate_checkpoint_state", None)
+        if not callable(save_checkpoint) or not callable(save_trainable_state) or not callable(validate_checkpoint_state):
             raise ValueError("selected adapter does not implement checkpoint state contracts")
         target.mkdir(parents=True, exist_ok=True)
         save_checkpoint(model, processor, target)
@@ -266,6 +295,7 @@ class GenericTrainerCore:
         self._save_rng_state(target)
         self._write_log(target, {"event": "checkpoint", "step": global_step, "epoch": epoch_index, "next_micro_batch_index": next_micro_batch_index})
         write_manifest(target, manifest)
+        validate_checkpoint_state(target, plan)
         write_completion_marker(target, global_step=global_step)
         if not checkpoint_complete(target):
             raise ValueError(f"checkpoint completeness validation failed: {target}")
@@ -325,6 +355,10 @@ class GenericTrainerCore:
         if callable(validate_trainable):
             validate_trainable(model, plan)
 
+        updates_per_epoch = max(1, (len(train_rows) + config.gradient_accumulation_steps - 1) // config.gradient_accumulation_steps)
+        planned_total_steps = config.max_steps or max(1, updates_per_epoch * config.epochs)
+        training_plan = self._training_plan(config, planned_total_steps)
+
         resume_root: Path | None = None
         start_step = start_epoch = start_index = optimizer_updates_in_epoch = 0
         if config.resume_from:
@@ -334,7 +368,7 @@ class GenericTrainerCore:
             resume_manifest = read_compatible_manifest(resume_root, legacy_manifest_names=("phase2_training_manifest.json",))
             if "checkpoint_type" not in resume_manifest:
                 raise ValueError("legacy checkpoint requires an adapter-specific compatibility restore")
-            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=dict(model_identity or {}), task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config))
+            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=dict(model_identity or {}), task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan)
             restore = getattr(self.adapter, "restore_trainable_state", None)
             if not callable(restore):
                 raise ValueError("selected adapter does not implement trainable-state restore")
@@ -344,9 +378,7 @@ class GenericTrainerCore:
 
         groups, optimizer_stats = build_optimizer_groups(model, plan, OptimizerConfig(lora_lr=config.lora_lr, connector_lr=config.connector_lr, weight_decay=config.weight_decay, warmup_ratio=config.warmup_ratio, max_grad_norm=config.max_grad_norm, mixed_precision=config.mixed_precision))
         optimizer = torch.optim.AdamW(groups)
-        updates_per_epoch = max(1, (len(train_rows) + config.gradient_accumulation_steps - 1) // config.gradient_accumulation_steps)
-        total_steps = config.max_steps or max(1, updates_per_epoch * config.epochs)
-        scheduler = build_cosine_scheduler(optimizer, total_steps, config.warmup_ratio)
+        scheduler = build_cosine_scheduler(optimizer, planned_total_steps, config.warmup_ratio)
         if resume_root is not None:
             state = self._load_runtime_state(resume_root, optimizer, scheduler)
             start_step = int(state.get("global_step", state.get("step", 0)))
@@ -402,8 +434,10 @@ class GenericTrainerCore:
                 if config.logging_steps > 0 and current_step % config.logging_steps == 0:
                     self._write_log(Path(config.output_dir), {"event": "train", "step": current_step, "epoch": epoch_index, "loss": last_loss})
                 if config.save_steps and current_step % config.save_steps == 0:
-                    manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=None, preflight=preflight)
+                    manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=None, preflight=preflight)
                     self._save_periodic(output_dir=Path(config.output_dir), step=current_step, model=model, processor=processor, plan=plan, manifest=manifest, optimizer=optimizer, scheduler=scheduler, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=None, save_total_limit=config.save_total_limit)
+                    if config._test_stop_after_checkpoint_step == current_step:
+                        raise RuntimeError("TEST_STOP_AFTER_CHECKPOINT")
                 if config.max_steps is not None and current_step >= config.max_steps:
                     stop = True
                     break
@@ -413,7 +447,7 @@ class GenericTrainerCore:
 
         eval_loss = self.evaluate(model=model, processor=processor, episodes=eval_rows) if eval_rows else None
         output_dir = Path(config.output_dir)
-        final_manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight)
+        final_manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight)
         self._serialize_checkpoint(target=output_dir, model=model, processor=processor, plan=plan, manifest=final_manifest, optimizer=optimizer, scheduler=scheduler, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)
         self._write_log(output_dir, {"event": "eval", "step": current_step, "epoch": next_epoch_index, "loss": last_loss, "eval_loss": eval_loss})
         return TrainingResult(current_step, last_loss, eval_loss, output_dir / "training_manifest.json", plan, optimizer_stats)

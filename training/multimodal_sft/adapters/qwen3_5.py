@@ -83,6 +83,9 @@ class Qwen35Adapter:
     def restore_trainable_state(self, *, model: Any, checkpoint_dir: str | Path, parameter_plan: Any, manifest: dict[str, Any]) -> Any:
         return _hf.restore_trainable_state(model=model, checkpoint_dir=checkpoint_dir, parameter_plan=parameter_plan, manifest=manifest)
 
+    def validate_checkpoint_state(self, checkpoint_dir: str | Path, parameter_plan: Any) -> dict[str, Any]:
+        return _hf.validate_checkpoint_state(checkpoint_dir, parameter_plan)
+
     def save_processor(self, processor: Any, output_dir: str | Path) -> None:
         _hf.save_processor(processor, output_dir)
 

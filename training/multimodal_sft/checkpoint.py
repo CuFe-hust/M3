@@ -42,6 +42,7 @@ def build_training_manifest(
     parameter_plan: Mapping[str, Any],
     processor_identity: Mapping[str, Any] | None = None,
     training: Mapping[str, Any] | None = None,
+    training_plan: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not adapter_name or not task_profile:
         raise CheckpointContractError("adapter_name and task_profile are required")
@@ -54,6 +55,8 @@ def build_training_manifest(
         "tuning_policy": dict(tuning_policy),
         "parameter_plan": dict(parameter_plan),
         "parameter_plan_sha256": identity_fingerprint(parameter_plan),
+        "training_plan": dict(training_plan or {}),
+        "training_plan_sha256": identity_fingerprint(training_plan or {}),
         "processor": dict(processor_identity or {}),
         "training": dict(training or {}),
     }
@@ -215,6 +218,7 @@ def validate_resume_compatibility(
     tuning_policy: Mapping[str, Any],
     parameter_plan: Mapping[str, Any] | None = None,
     data_contract: Mapping[str, Any] | None = None,
+    training_plan: Mapping[str, Any] | None = None,
 ) -> None:
     validate_training_manifest(manifest)
     if manifest.get("adapter_name") != adapter_name:
@@ -233,3 +237,7 @@ def validate_resume_compatibility(
             raise CheckpointContractError("resume parameter plan fingerprint mismatch")
     if data_contract is not None and dict(manifest.get("task", {}).get("contract", {})) != dict(data_contract):
         raise CheckpointContractError("resume data contract mismatch")
+    if training_plan is not None:
+        expected = identity_fingerprint(training_plan)
+        if manifest.get("training_plan_sha256") != expected or dict(manifest.get("training_plan", {})) != dict(training_plan):
+            raise CheckpointContractError("RESUME_TRAINING_PLAN_MISMATCH")

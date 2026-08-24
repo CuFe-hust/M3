@@ -22,7 +22,7 @@ class _TinyModel(torch.nn.Module):
 
     def forward(self, x):
         value = self.language(x) + self.connector(x)
-        return SimpleNamespace(loss=(value - 1.0).pow(2).mean())
+        return SimpleNamespace(loss=(value + torch.rand_like(value) * 0.01 - 1.0).pow(2).mean())
 
 
 class _TinyAdapter:
@@ -71,12 +71,21 @@ class _TinyAdapter:
                 dict(model.named_parameters())[name].copy_(value)
         return model
 
+    def validate_checkpoint_state(self, checkpoint_dir, parameter_plan):
+        root = Path(checkpoint_dir)
+        adapter_state = torch.load(root / "adapter" / "adapter_model.safetensors", weights_only=False)
+        full_state = torch.load(root / "model_trainable_state.safetensors", weights_only=False)
+        assert all("language." in name for name in adapter_state)
+        assert set(full_state) == set(parameter_plan.full_train_parameter_names)
+        assert not set(adapter_state) & set(full_state)
+        return {"overlap_count": 0}
+
 
 def _episodes(count: int) -> list[CanonicalEpisode]:
     return [CanonicalEpisode("phase2", ({"role": "user", "content": "x"},), metadata={"x": index + 1}) for index in range(count)]
 
 
-def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_from: Path | None = None, save_steps: int = 0, save_total_limit: int | None = None):
+def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_from: Path | None = None, save_steps: int = 0, save_total_limit: int | None = None, stop_after_checkpoint: int | None = None):
     model = _TinyModel()
     torch.manual_seed(123)
     for parameter in model.parameters():
@@ -86,7 +95,7 @@ def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_fro
         model=model,
         processor=object(),
         episodes=_episodes(count),
-        config=TrainingConfig(output_dir=tmp_path, epochs=1, max_steps=max_steps, resume_from=resume_from, save_steps=save_steps, save_total_limit=save_total_limit, lora_lr=1e-2, connector_lr=1e-2, max_grad_norm=100.0),
+        config=TrainingConfig(output_dir=tmp_path, epochs=1, max_steps=max_steps, resume_from=resume_from, save_steps=save_steps, save_total_limit=save_total_limit, lora_lr=1e-2, connector_lr=1e-2, max_grad_norm=100.0, _test_stop_after_checkpoint_step=stop_after_checkpoint),
         policy="lora_plus_projector",
         model_identity={"model_type": "tiny", "base_config_sha256": "cfg"},
     )
@@ -96,7 +105,8 @@ def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_fro
 def test_exact_resume_restores_lora_connector_and_position(tmp_path: Path) -> None:
     continuous, continuous_result = _run(tmp_path / "continuous", count=6, max_steps=3)
     interrupted_dir = tmp_path / "interrupted"
-    _run(interrupted_dir, count=6, max_steps=2, save_steps=1)
+    with pytest.raises(RuntimeError, match="TEST_STOP_AFTER_CHECKPOINT"):
+        _run(interrupted_dir, count=6, max_steps=3, save_steps=2, stop_after_checkpoint=2)
     checkpoint = interrupted_dir / "checkpoint-2"
     assert checkpoint_complete(checkpoint)
     resumed, resumed_result = _run(interrupted_dir, count=6, max_steps=3, resume_from=checkpoint)
@@ -106,6 +116,13 @@ def test_exact_resume_restores_lora_connector_and_position(tmp_path: Path) -> No
     state = json.loads((interrupted_dir / "trainer_state.json").read_text(encoding="utf-8"))
     assert state["global_step"] == 3
     assert state["next_micro_batch_index"] == 0
+
+
+def test_checkpoint_serialization_does_not_change_rng_trajectory(tmp_path: Path) -> None:
+    without_checkpoints, _ = _run(tmp_path / "without", count=6, max_steps=3, save_steps=0)
+    with_checkpoints, _ = _run(tmp_path / "with", count=6, max_steps=3, save_steps=1)
+    for left, right in zip(without_checkpoints.parameters(), with_checkpoints.parameters()):
+        assert torch.equal(left, right)
 
 
 def test_periodic_checkpoint_is_atomic_complete_and_rotated(tmp_path: Path) -> None:
