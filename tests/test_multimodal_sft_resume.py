@@ -102,6 +102,26 @@ def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_fro
     return model, result
 
 
+def _assert_nested_equal(left, right) -> None:
+    if isinstance(left, torch.Tensor):
+        assert isinstance(right, torch.Tensor)
+        assert torch.equal(left, right)
+        return
+    if isinstance(left, dict):
+        assert isinstance(right, dict)
+        assert list(left) == list(right)
+        for key in left:
+            _assert_nested_equal(left[key], right[key])
+        return
+    if isinstance(left, (list, tuple)):
+        assert type(left) is type(right)
+        assert len(left) == len(right)
+        for left_item, right_item in zip(left, right):
+            _assert_nested_equal(left_item, right_item)
+        return
+    assert left == right
+
+
 def test_exact_resume_restores_lora_connector_and_position(tmp_path: Path) -> None:
     continuous, continuous_result = _run(tmp_path / "continuous", count=6, max_steps=3)
     interrupted_dir = tmp_path / "interrupted"
@@ -113,6 +133,14 @@ def test_exact_resume_restores_lora_connector_and_position(tmp_path: Path) -> No
     for left, right in zip(continuous.parameters(), resumed.parameters()):
         assert torch.equal(left, right)
     assert continuous_result.steps == resumed_result.steps == 3
+    _assert_nested_equal(
+        torch.load(tmp_path / "continuous" / "optimizer.pt", weights_only=False),
+        torch.load(interrupted_dir / "optimizer.pt", weights_only=False),
+    )
+    _assert_nested_equal(
+        torch.load(tmp_path / "continuous" / "scheduler.pt", weights_only=False),
+        torch.load(interrupted_dir / "scheduler.pt", weights_only=False),
+    )
     state = json.loads((interrupted_dir / "trainer_state.json").read_text(encoding="utf-8"))
     assert state["global_step"] == 3
     assert state["next_micro_batch_index"] == 3
