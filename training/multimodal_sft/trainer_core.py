@@ -93,7 +93,7 @@ class GenericTrainerCore:
             pass
 
     @staticmethod
-    def _save_rng_state(root: Path) -> None:
+    def _capture_rng_state() -> dict[str, Any]:
         import torch
         payload: dict[str, Any] = {"python": random.getstate(), "torch": torch.get_rng_state()}
         try:
@@ -103,7 +103,30 @@ class GenericTrainerCore:
             pass
         if torch.cuda.is_available():
             payload["cuda"] = torch.cuda.get_rng_state_all()
+        return payload
+
+    @staticmethod
+    def _write_rng_state(root: Path, payload: Mapping[str, Any]) -> None:
+        import torch
         torch.save(payload, root / RNG_STATE_FILENAME)
+
+    @staticmethod
+    def _save_rng_state(root: Path) -> None:
+        GenericTrainerCore._write_rng_state(root, GenericTrainerCore._capture_rng_state())
+
+    @staticmethod
+    def _restore_rng_payload(payload: Mapping[str, Any]) -> None:
+        import torch
+        random.setstate(payload["python"])
+        if "numpy" in payload:
+            try:
+                import numpy as np
+                np.random.set_state(payload["numpy"])
+            except ImportError:
+                pass
+        torch.set_rng_state(payload["torch"])
+        if torch.cuda.is_available() and "cuda" in payload:
+            torch.cuda.set_rng_state_all(payload["cuda"])
 
     @staticmethod
     def _restore_rng_state(root: Path) -> None:
@@ -115,16 +138,7 @@ class GenericTrainerCore:
             payload = torch.load(path, map_location="cpu", weights_only=False)
         except TypeError:
             payload = torch.load(path, map_location="cpu")
-        random.setstate(payload["python"])
-        if "numpy" in payload:
-            try:
-                import numpy as np
-                np.random.set_state(payload["numpy"])
-            except ImportError:
-                pass
-        torch.set_rng_state(payload["torch"])
-        if torch.cuda.is_available() and "cuda" in payload:
-            torch.cuda.set_rng_state_all(payload["cuda"])
+        GenericTrainerCore._restore_rng_payload(payload)
 
     def preflight(self, episodes: Iterable[Any], *, limit: int | None = None) -> dict[str, Any]:
         checked = 0
@@ -287,18 +301,20 @@ class GenericTrainerCore:
         validate_checkpoint_state = getattr(self.adapter, "validate_checkpoint_state", None)
         if not callable(save_checkpoint) or not callable(save_trainable_state) or not callable(validate_checkpoint_state):
             raise ValueError("selected adapter does not implement checkpoint state contracts")
+        rng_payload = self._capture_rng_state()
         target.mkdir(parents=True, exist_ok=True)
         save_checkpoint(model, processor, target)
         save_trainable_state(model, target / "model_trainable_state.safetensors", plan)
         (target / PARAMETER_PLAN_FILENAME).write_text(json.dumps(plan.as_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self._save_runtime_state(target, global_step=global_step, epoch_index=epoch_index, next_micro_batch_index=next_micro_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, loss=last_loss, eval_loss=eval_loss, optimizer=optimizer, scheduler=scheduler)
-        self._save_rng_state(target)
+        self._write_rng_state(target, rng_payload)
         self._write_log(target, {"event": "checkpoint", "step": global_step, "epoch": epoch_index, "next_micro_batch_index": next_micro_batch_index})
         write_manifest(target, manifest)
         validate_checkpoint_state(target, plan)
         write_completion_marker(target, global_step=global_step)
         if not checkpoint_complete(target):
             raise ValueError(f"checkpoint completeness validation failed: {target}")
+        self._restore_rng_payload(rng_payload)
 
     @staticmethod
     def _rotate_periodic_checkpoints(output_dir: Path, limit: int | None) -> None:
