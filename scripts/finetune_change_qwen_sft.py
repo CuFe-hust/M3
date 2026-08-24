@@ -33,6 +33,9 @@ def _normalize_args(args: list[str]) -> list[str]:
         "--smoke_gradients": "--smoke-gradients",
         "--preflight_only": "--preflight-only",
         "--logging_steps": "--logging-steps",
+        "--per_device_train_batch_size": "--batch-size",
+        "--save_steps": "--save-steps",
+        "--save_total_limit": "--save-total-limit",
     }
     normalized: list[str] = []
     for value in args:

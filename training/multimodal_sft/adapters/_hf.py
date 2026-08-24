@@ -184,13 +184,36 @@ def validate_trainable_parameters(model: Any, parameter_plan: Any) -> None:
         raise AdapterContractError("unexpected trainable parameters: " + ", ".join(unexpected[:8]))
 
 
-def save_trainable_state(model: Any, output_path: str | Path) -> None:
-    """Persist only requires-grad tensors through the adapter contract."""
+def _canonical_parameter_name(name: str) -> str:
+    value = str(name)
+    for prefix in ("base_model.model.", "base_model."):
+        if value.startswith(prefix):
+            value = value[len(prefix):]
+    value = value.replace(".modules_to_save.default", "")
+    return value
 
+
+def _load_tensor_file(path: Path) -> dict[str, Any]:
+    try:
+        from safetensors.torch import load_file
+    except ImportError:  # pragma: no cover - optional dependency
+        import torch
+        try:
+            return torch.load(path, map_location="cpu", weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location="cpu")
+    return dict(load_file(str(path), device="cpu"))
+
+
+def save_trainable_state(model: Any, output_path: str | Path, parameter_plan: Any) -> None:
+    """Persist only full-train connector tensors with stable semantic names."""
+
+    full_paths = tuple(getattr(parameter_plan, "full_train_module_paths", ()))
     state = {
-        name: value.detach().cpu()
+        _canonical_parameter_name(name): value.detach().cpu()
         for name, value in model.named_parameters()
         if bool(getattr(value, "requires_grad", False))
+        and any(("." + path + ".") in ("." + name + ".") for path in full_paths)
     }
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -201,6 +224,86 @@ def save_trainable_state(model: Any, output_path: str | Path) -> None:
         torch.save(state, target)
     else:
         save_file(state, str(target))
+
+
+def restore_trainable_state(
+    *,
+    model: Any,
+    checkpoint_dir: str | Path,
+    parameter_plan: Any,
+    manifest: dict[str, Any],
+) -> Any:
+    """Restore adapter and full-train tensors with strict semantic checks."""
+
+    root = Path(checkpoint_dir)
+    model_state = model.state_dict()
+    actual_by_canonical = {_canonical_parameter_name(name): name for name in model_state}
+
+    adapter_path = root / "adapter" / "adapter_model.safetensors"
+    if not adapter_path.is_file():
+        adapter_path = root / "adapter" / "adapter_model.bin"
+    if not adapter_path.is_file():
+        raise AdapterContractError("resume checkpoint is missing adapter weights")
+    adapter_state = _load_tensor_file(adapter_path)
+    adapter_canonical = {_canonical_parameter_name(name): value for name, value in adapter_state.items()}
+    restored_parents = {
+        name.rsplit(".lora_", 1)[0]
+        for name in adapter_canonical
+        if ".lora_" in name
+    }
+    planned_parents = {
+        _canonical_parameter_name(path)
+        for path in getattr(parameter_plan, "lora_module_paths", ())
+    }
+    if restored_parents != planned_parents:
+        raise AdapterContractError(
+            f"adapter restore parent mismatch: planned={sorted(planned_parents)[:8]} restored={sorted(restored_parents)[:8]}"
+        )
+    expected_adapter = {
+        canonical
+        for canonical in actual_by_canonical
+        if "lora_" in canonical.lower()
+        and any(("." + path + ".") in ("." + canonical + ".") for path in getattr(parameter_plan, "lora_module_paths", ()))
+    }
+    if set(adapter_canonical) != expected_adapter:
+        missing = sorted(expected_adapter - set(adapter_canonical))
+        unexpected = sorted(set(adapter_canonical) - expected_adapter)
+        raise AdapterContractError(f"adapter restore key mismatch: missing={missing[:8]} unexpected={unexpected[:8]}")
+    mapped: dict[str, Any] = {}
+    for canonical, value in adapter_canonical.items():
+        target_name = actual_by_canonical.get(canonical)
+        if target_name is None:
+            raise AdapterContractError(f"adapter restore key is not present in model: {canonical}")
+        expected_value = model_state[target_name]
+        if tuple(expected_value.shape) != tuple(value.shape):
+            raise AdapterContractError(f"adapter restore shape mismatch: {canonical}")
+        mapped[target_name] = value.to(dtype=expected_value.dtype)
+    result = model.load_state_dict(mapped, strict=False)
+    if getattr(result, "unexpected_keys", ()):
+        raise AdapterContractError("unexpected adapter keys after restore")
+
+    full_path = root / "model_trainable_state.safetensors"
+    if not full_path.is_file():
+        raise AdapterContractError("resume checkpoint is missing model_trainable_state.safetensors")
+    full_state = _load_tensor_file(full_path)
+    expected_full = set(getattr(parameter_plan, "full_train_parameter_names", ()))
+    if set(full_state) != expected_full:
+        missing = sorted(expected_full - set(full_state))
+        unexpected = sorted(set(full_state) - expected_full)
+        raise AdapterContractError(f"full-train restore key mismatch: missing={missing[:8]} unexpected={unexpected[:8]}")
+    mapped = {}
+    for canonical, value in full_state.items():
+        target_name = actual_by_canonical.get(_canonical_parameter_name(canonical))
+        if target_name is None:
+            raise AdapterContractError(f"full-train restore key is not present in model: {canonical}")
+        expected_value = model_state[target_name]
+        if tuple(expected_value.shape) != tuple(value.shape):
+            raise AdapterContractError(f"full-train restore shape mismatch: {canonical}")
+        if getattr(expected_value, "dtype", None) != getattr(value, "dtype", None):
+            raise AdapterContractError(f"full-train restore dtype mismatch: {canonical}")
+        mapped[target_name] = value.to(dtype=expected_value.dtype)
+    model.load_state_dict(mapped, strict=False)
+    return model
 
 
 def export_peft_checkpoint(

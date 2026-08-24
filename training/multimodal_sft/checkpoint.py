@@ -16,6 +16,8 @@ PARAMETER_PLAN_FILENAME = "parameter_plan.json"
 TRAINER_STATE_FILENAME = "trainer_state.json"
 OPTIMIZER_FILENAME = "optimizer.pt"
 SCHEDULER_FILENAME = "scheduler.pt"
+RNG_STATE_FILENAME = "rng_state.pt"
+COMPLETION_MARKER_FILENAME = "checkpoint_complete.json"
 
 
 class CheckpointContractError(ValueError):
@@ -51,6 +53,7 @@ def build_training_manifest(
         "task": {"profile": task_profile, "contract": dict(data_contract)},
         "tuning_policy": dict(tuning_policy),
         "parameter_plan": dict(parameter_plan),
+        "parameter_plan_sha256": identity_fingerprint(parameter_plan),
         "processor": dict(processor_identity or {}),
         "training": dict(training or {}),
     }
@@ -146,6 +149,8 @@ def checkpoint_complete(
         OPTIMIZER_FILENAME,
         SCHEDULER_FILENAME,
         "model_trainable_state.safetensors",
+        COMPLETION_MARKER_FILENAME,
+        "training_log.jsonl",
     }
     required.update(str(item) for item in required_files)
     if not all((root / item).exists() for item in required):
@@ -156,7 +161,49 @@ def checkpoint_complete(
         read_manifest(root)
     except CheckpointContractError:
         return False
-    return True
+    try:
+        marker = json.loads((root / COMPLETION_MARKER_FILENAME).read_text(encoding="utf-8"))
+        manifest = read_manifest(root)
+        plan = json.loads((root / PARAMETER_PLAN_FILENAME).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, CheckpointContractError):
+        return False
+    return bool(
+        marker.get("complete") is True
+        and marker.get("manifest_sha256") == file_sha256(root / TRAINING_MANIFEST_FILENAME)
+        and marker.get("parameter_plan_sha256") == file_sha256(root / PARAMETER_PLAN_FILENAME)
+        and manifest.get("parameter_plan_sha256") == identity_fingerprint(plan)
+    )
+
+
+def file_sha256(path: str | Path) -> str:
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_completion_marker(
+    checkpoint_dir: str | Path,
+    *,
+    global_step: int,
+) -> Path:
+    root = Path(checkpoint_dir)
+    manifest = root / TRAINING_MANIFEST_FILENAME
+    plan = root / PARAMETER_PLAN_FILENAME
+    if not manifest.is_file() or not plan.is_file():
+        raise CheckpointContractError("cannot mark incomplete checkpoint")
+    target = root / COMPLETION_MARKER_FILENAME
+    payload = {
+        "global_step": int(global_step),
+        "complete": True,
+        "manifest_sha256": file_sha256(manifest),
+        "parameter_plan_sha256": file_sha256(plan),
+    }
+    temp = target.with_suffix(target.suffix + ".tmp")
+    temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp, target)
+    return target
 
 
 def validate_resume_compatibility(
@@ -166,6 +213,8 @@ def validate_resume_compatibility(
     model_identity: Mapping[str, Any],
     task_profile: str,
     tuning_policy: Mapping[str, Any],
+    parameter_plan: Mapping[str, Any] | None = None,
+    data_contract: Mapping[str, Any] | None = None,
 ) -> None:
     validate_training_manifest(manifest)
     if manifest.get("adapter_name") != adapter_name:
@@ -176,3 +225,11 @@ def validate_resume_compatibility(
         raise CheckpointContractError("resume task profile mismatch")
     if dict(manifest.get("tuning_policy", {})) != dict(tuning_policy):
         raise CheckpointContractError("resume tuning policy mismatch")
+    if parameter_plan is not None:
+        found_plan = manifest.get("parameter_plan", {})
+        if identity_fingerprint(found_plan) != identity_fingerprint(parameter_plan):
+            raise CheckpointContractError("resume parameter plan mismatch")
+        if manifest.get("parameter_plan_sha256") not in (None, identity_fingerprint(parameter_plan)):
+            raise CheckpointContractError("resume parameter plan fingerprint mismatch")
+    if data_contract is not None and dict(manifest.get("task", {}).get("contract", {})) != dict(data_contract):
+        raise CheckpointContractError("resume data contract mismatch")

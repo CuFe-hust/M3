@@ -70,8 +70,11 @@ class Qwen3VLAdapter:
     def validate_trainable_parameters(self, model: Any, parameter_plan: Any) -> None:
         _hf.validate_trainable_parameters(model, parameter_plan)
 
-    def save_trainable_state(self, model: Any, output_path: str | Path) -> None:
-        _hf.save_trainable_state(model, output_path)
+    def save_trainable_state(self, model: Any, output_path: str | Path, parameter_plan: Any) -> None:
+        _hf.save_trainable_state(model, output_path, parameter_plan)
+
+    def restore_trainable_state(self, *, model: Any, checkpoint_dir: str | Path, parameter_plan: Any, manifest: dict[str, Any]) -> Any:
+        return _hf.restore_trainable_state(model=model, checkpoint_dir=checkpoint_dir, parameter_plan=parameter_plan, manifest=manifest)
 
     def save_processor(self, processor: Any, output_dir: str | Path) -> None:
         _hf.save_processor(processor, output_dir)

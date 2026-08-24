@@ -67,6 +67,9 @@ def _translate_legacy_args(argv: Sequence[str]) -> list[str]:
         "--logging-steps": "--logging-steps", "--logging_steps": "--logging-steps",
         "--torch-dtype": "--dtype", "--torch_dtype": "--dtype", "--dtype": "--dtype",
         "--local-files-only": "--local-files-only", "--local_files_only": "--local-files-only",
+        "--batch-size": "--batch-size", "--per-device-train-batch-size": "--batch-size", "--per_device_train_batch_size": "--batch-size",
+        "--save-steps": "--save-steps", "--save_steps": "--save-steps",
+        "--save-total-limit": "--save-total-limit", "--save_total_limit": "--save-total-limit",
     }
     index = 0
     while index < len(args):

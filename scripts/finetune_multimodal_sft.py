@@ -41,7 +41,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--weight-decay", "--weight_decay", type=float, default=0.01)
     parser.add_argument("--warmup-ratio", "--warmup_ratio", type=float, default=0.03)
     parser.add_argument("--max-grad-norm", "--max_grad_norm", type=float, default=1.0)
-    parser.add_argument("--batch-size", "--per_device_train_batch_size", type=int, default=1)
+    parser.add_argument("--batch-size", "--per-device-train-batch-size", "--per_device_train_batch_size", dest="batch_size", type=int, default=1, help="Phase 1D deferred: only micro-batch size 1 is supported")
     parser.add_argument("--gradient-accumulation", "--gradient-accumulation-steps", "--gradient_accumulation_steps", dest="gradient_accumulation", type=int, default=1)
     parser.add_argument("--epochs", "--num-train-epochs", "--num_train_epochs", dest="epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int)
@@ -54,6 +54,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--repeat-group-key", "--repeat_group_key", dest="repeat_group_key")
     parser.add_argument("--repeat-weights", "--repeat_weights", action="append", default=[])
     parser.add_argument("--logging-steps", "--logging_steps", type=int, default=10)
+    parser.add_argument("--save-steps", "--save_steps", type=int, default=0)
+    parser.add_argument("--save-total-limit", "--save_total_limit", type=int)
+    parser.add_argument("--deepspeed")
+    parser.add_argument("--fsdp")
+    parser.add_argument("--fsdp-config", "--fsdp_config")
     parser.add_argument("--image-root", action="append", default=[])
     parser.add_argument("--dtype", "--torch-dtype", "--torch_dtype", dest="dtype", default="auto", choices=("auto", "float16", "bfloat16", "float32"))
     parser.add_argument("--device", default="auto")
@@ -65,6 +70,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
+        if args.batch_size != 1:
+            raise ValueError("GENERIC_BATCHING_NOT_YET_AVAILABLE: micro-batch size must be 1 before Phase 1D")
+        if args.deepspeed or args.fsdp or args.fsdp_config:
+            raise ValueError("distributed_backend=unsupported_in_generic_phase1: DeepSpeed/FSDP are not implemented")
         profile = profile_for(args.data_profile)
         registry = default_registry()
         adapter, probe = registry.resolve(
@@ -127,8 +136,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 max_train_samples=args.max_train_samples,
                 max_eval_samples=args.max_eval_samples,
                 logging_steps=args.logging_steps,
+                batch_size=args.batch_size,
                 repeat_group_key=args.repeat_group_key,
                 repeat_weights=repeat_weights,
+                save_steps=args.save_steps,
+                save_total_limit=args.save_total_limit,
                 data_contract={"image_roots": list(args.image_root), "batch_size": args.batch_size},
             ),
             policy=selected_policy,

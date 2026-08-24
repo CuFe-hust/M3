@@ -56,6 +56,7 @@ class ParameterPlan:
     lora_module_paths: tuple[str, ...] = ()
     full_train_module_paths: tuple[str, ...] = ()
     parameter_names: tuple[str, ...] = ()
+    full_train_parameter_names: tuple[str, ...] = ()
     frozen_parameter_names: tuple[str, ...] = ()
     model_identity: Mapping[str, Any] = field(default_factory=dict)
     structure: Mapping[str, Any] = field(default_factory=dict)
@@ -69,6 +70,7 @@ class ParameterPlan:
             "lora_module_paths": list(self.lora_module_paths),
             "full_train_module_paths": list(self.full_train_module_paths),
             "parameter_names": list(self.parameter_names),
+            "full_train_parameter_names": list(self.full_train_parameter_names),
             "frozen_parameter_names": list(self.frozen_parameter_names),
             "model_identity": dict(self.model_identity),
             "structure": dict(self.structure),
@@ -127,6 +129,7 @@ def build_parameter_plan(
         raise ParameterPlanError(f"policy {policy.name!r} has no discovered full-train modules")
     names = _named_parameter_names(model)
     selected = _parameters_under((*lora_paths, *full_paths), names)
+    full_selected = _parameters_under(full_paths, names)
     frozen = tuple(name for name in names if name not in selected)
     plan = ParameterPlan(
         adapter_name=str(getattr(adapter, "name", type(adapter).__name__)),
@@ -136,10 +139,10 @@ def build_parameter_plan(
         lora_module_paths=lora_paths,
         full_train_module_paths=full_paths,
         parameter_names=selected,
+        full_train_parameter_names=full_selected,
         frozen_parameter_names=frozen,
         model_identity=_identity_from_probe(probe),
         structure=structure.as_dict(),
     )
     plan.validate()
     return plan
-
