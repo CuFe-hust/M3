@@ -38,6 +38,7 @@ qwen35-gb10 = ["huggingface-hub>=1.0.0", "kernels>=0.15.2,<0.16.0"]
 [tool.setuptools.packages.find]
 include = [
   "data*",
+  "training*",
   "models*",
   "agents*",
   "routing*",

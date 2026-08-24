@@ -33,3 +33,17 @@ The resulting training manifest has `training_profile=change_agent`, the
 ordered multi-image data contract, and prompt SHA-256.  It cannot resume a
 generic Phase2 checkpoint, and the existing Phase2 exporter accepts both
 profiles after its unchanged checksum and offline-reload gates pass.
+# Compatibility note
+
+The model-family-agnostic entry point is now:
+
+```text
+scripts/finetune_multimodal_sft.py --model-adapter auto --data-profile change_agent
+scripts/export_multimodal_sft_checkpoint.py --model-adapter auto
+```
+
+`finetune_change_qwen_sft.py`, `finetune_qwen3vl_phase2.py`, and
+`export_qwen3vl_phase2_checkpoint.py` remain legacy compatibility entry points
+for existing checkpoints. New model families must be implemented under
+`training/multimodal_sft/adapters/` and must not add model branches to the
+generic trainer or exporter.

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Thin ChangeAgent profile wrapper around the shared Phase2 trainer."""
+"""Backward-compatible ChangeAgent profile wrapper.
+
+New model-family-agnostic runs should use ``scripts/finetune_multimodal_sft.py``
+with ``--data-profile change_agent``.  This file remains as the stable legacy
+CLI for existing Phase2 checkpoints and tests.
+"""
 
 from __future__ import annotations
 
