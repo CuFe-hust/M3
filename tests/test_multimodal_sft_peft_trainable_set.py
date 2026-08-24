@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -121,6 +122,26 @@ def _new_model() -> _TinyCausalLM:
     return model
 
 
+def _assert_nested_equal(left, right) -> None:
+    if isinstance(left, torch.Tensor):
+        assert isinstance(right, torch.Tensor)
+        assert torch.equal(left, right)
+        return
+    if isinstance(left, dict):
+        assert isinstance(right, dict)
+        assert list(left) == list(right)
+        for key in left:
+            _assert_nested_equal(left[key], right[key])
+        return
+    if isinstance(left, (list, tuple)):
+        assert type(left) is type(right)
+        assert len(left) == len(right)
+        for left_item, right_item in zip(left, right):
+            _assert_nested_equal(left_item, right_item)
+        return
+    assert left == right
+
+
 def test_real_peft_trainable_set_and_one_step_mutation() -> None:
     model = _apply(_new_model())
     plan = _plan()
@@ -180,9 +201,26 @@ def test_real_peft_continuous_resume_and_checkpoint_ownership(tmp_path: Path) ->
     _hf.validate_trainable_parameters(continuous_adapter.last_model, _plan()) if hasattr(continuous_adapter, "last_model") else None
     for adapter in (continuous_adapter, resumed_adapter):
         assert not _actual(adapter.last_model, "language.layer.base_layer.weight").requires_grad
+        assert not _actual(adapter.last_model, "language.layer.base_layer.bias").requires_grad
+    for canonical in ("language.layer.base_layer.weight", "language.layer.base_layer.bias", "unrelated.weight", "unrelated.bias"):
+        assert torch.equal(_actual(continuous_adapter.last_model, canonical), _actual(resumed_adapter.last_model, canonical))
+    continuous_adapter_state = _hf._load_tensor_file(tmp_path / "continuous" / "adapter" / "adapter_model.safetensors")
+    resumed_adapter_state = _hf._load_tensor_file(interrupted_dir / "adapter" / "adapter_model.safetensors")
+    assert set(continuous_adapter_state) == set(resumed_adapter_state)
+    for key in continuous_adapter_state:
+        assert torch.equal(continuous_adapter_state[key], resumed_adapter_state[key])
     continuous_state = _hf._load_tensor_file(tmp_path / "continuous" / "model_trainable_state.safetensors")
     resumed_state = _hf._load_tensor_file(interrupted_dir / "model_trainable_state.safetensors")
     assert set(continuous_state) == set(resumed_state) == {"connector.weight", "connector.bias"}
     for key in continuous_state:
         assert torch.equal(continuous_state[key], resumed_state[key])
+    _assert_nested_equal(
+        torch.load(tmp_path / "continuous" / "optimizer.pt", weights_only=False),
+        torch.load(interrupted_dir / "optimizer.pt", weights_only=False),
+    )
+    _assert_nested_equal(
+        torch.load(tmp_path / "continuous" / "scheduler.pt", weights_only=False),
+        torch.load(interrupted_dir / "scheduler.pt", weights_only=False),
+    )
+    assert json.loads((interrupted_dir / "trainer_state.json").read_text(encoding="utf-8"))["global_step"] == 3
     assert (tmp_path / "continuous" / "rng_state.pt").is_file()
