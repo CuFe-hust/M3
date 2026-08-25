@@ -153,6 +153,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 save_steps=args.save_steps,
                 save_total_limit=args.save_total_limit,
                 image_roots=image_registry,
+                base_model_id=args.model_id,
                 data_contract={"image_sources": sorted(image_registry.roots), "batch_size": args.batch_size, "max_seq_length": args.max_seq_length},
             ),
             policy=selected_policy,

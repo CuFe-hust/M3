@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..contracts import AdapterContractError, CanonicalEpisode
+from ..identity import processor_content_identity, processor_semantic_identity
 
 
 def _legacy() -> Any:
@@ -79,16 +80,15 @@ def truncate_feature(
 def processor_identity(processor: Any) -> dict[str, Any]:
     """Return stable processor/chat-template identity for manifests/resume."""
 
-    template = getattr(processor, "chat_template", None)
-    if template is None:
-        tokenizer = getattr(processor, "tokenizer", None)
-        template = getattr(tokenizer, "chat_template", None)
-    if template is None:
-        template = ""
-    canonical = json.dumps(template, ensure_ascii=False, sort_keys=True, default=str)
     return {
-        "class": f"{type(processor).__module__}.{type(processor).__name__}",
-        "chat_template_sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+        **processor_semantic_identity(processor),
+        "encoding_contract_version": "qwen_multimodal_v1",
+    }
+
+
+def saved_processor_identity(processor: Any, processor_dir: str) -> dict[str, Any]:
+    return {
+        **processor_content_identity(processor_dir, processor),
         "encoding_contract_version": "qwen_multimodal_v1",
     }
 

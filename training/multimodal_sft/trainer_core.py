@@ -24,6 +24,7 @@ from .checkpoint import (
     write_manifest,
 )
 from .contracts import DataProfile, MultimodalModelAdapter
+from .identity import base_weight_identity, processor_content_identity
 from .optimizer import OptimizerConfig, autocast_context, build_cosine_scheduler, build_optimizer_groups, clip_gradients
 from .parameter_plan import ParameterPlan, TuningPolicy, build_parameter_plan
 
@@ -55,6 +56,7 @@ class TrainingConfig:
     resume_from: str | Path | None = None
     data_contract: Mapping[str, Any] = field(default_factory=dict)
     image_roots: Any = None
+    base_model_id: str | Path | None = None
     _test_stop_after_checkpoint_step: int | None = None
 
 
@@ -351,6 +353,8 @@ class GenericTrainerCore:
             },
             processor_identity=processor_identity,
             training_plan=training_plan,
+            base_model_id=str(config.base_model_id) if config.base_model_id is not None else None,
+            base_weight_identity=model_identity.get("base_weight_identity"),
         )
 
     def _serialize_checkpoint(self, *, target: Path, model: Any, processor: Any, plan: ParameterPlan, manifest: Mapping[str, Any], optimizer: Any, scheduler: Any, global_step: int, epoch_index: int, next_micro_batch_index: int, next_sample_index: int = 0, next_batch_index: int = 0, optimizer_updates_in_epoch: int = 0, last_loss: float | None, eval_loss: float | None) -> None:
@@ -362,12 +366,22 @@ class GenericTrainerCore:
         rng_payload = self._capture_rng_state()
         target.mkdir(parents=True, exist_ok=True)
         save_checkpoint(model, processor, target)
+        saved_identity_fn = getattr(self.adapter, "saved_processor_identity", None)
+        if callable(saved_identity_fn):
+            saved_processor_identity = dict(saved_identity_fn(processor, target / "processor"))
+        else:
+            saved_processor_identity = dict(processor_content_identity(target / "processor", processor))
+            object_identity_fn = getattr(self.adapter, "processor_identity", None)
+            if callable(object_identity_fn):
+                saved_processor_identity.update({"encoding_contract_version": object_identity_fn(processor).get("encoding_contract_version")})
+        manifest_to_write = dict(manifest)
+        manifest_to_write["processor"] = saved_processor_identity
         save_trainable_state(model, target / "model_trainable_state.safetensors", plan)
         (target / PARAMETER_PLAN_FILENAME).write_text(json.dumps(plan.as_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         self._save_runtime_state(target, global_step=global_step, epoch_index=epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, loss=last_loss, eval_loss=eval_loss, optimizer=optimizer, scheduler=scheduler)
         self._write_rng_state(target, rng_payload)
         self._write_log(target, {"event": "checkpoint", "step": global_step, "epoch": epoch_index, "next_micro_batch_index": next_micro_batch_index})
-        write_manifest(target, manifest)
+        write_manifest(target, manifest_to_write)
         validate_checkpoint_state(target, plan)
         validate_checkpoint_ownership = getattr(self.adapter, "validate_checkpoint_ownership", None)
         if callable(validate_checkpoint_ownership):
@@ -413,6 +427,9 @@ class GenericTrainerCore:
         if config.save_steps < 0:
             raise ValueError("save_steps must be zero or positive")
         self.seed_everything(config.seed)
+        effective_model_identity = dict(model_identity or {})
+        if config.base_model_id is not None:
+            effective_model_identity["base_weight_identity"] = base_weight_identity(config.base_model_id)
         train_rows = self._materialize(episodes, None)
         train_rows = self._repeat_rows(train_rows, group_key=config.repeat_group_key, weights=config.repeat_weights)
         if config.max_train_samples is not None:
@@ -459,7 +476,7 @@ class GenericTrainerCore:
             resume_manifest = read_compatible_manifest(resume_root, legacy_manifest_names=("phase2_training_manifest.json",))
             if "checkpoint_type" not in resume_manifest:
                 raise ValueError("legacy checkpoint requires an adapter-specific compatibility restore")
-            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=dict(model_identity or {}), task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan, processor_identity=processor_identity)
+            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=effective_model_identity, task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan, processor_identity=processor_identity)
             restore = getattr(self.adapter, "restore_trainable_state", None)
             if not callable(restore):
                 raise ValueError("selected adapter does not implement trainable-state restore")
@@ -541,7 +558,7 @@ class GenericTrainerCore:
                 if config.logging_steps > 0 and current_step % config.logging_steps == 0:
                     self._write_log(Path(config.output_dir), {"event": "train", "step": current_step, "epoch": epoch_index, "loss": last_loss, "next_sample_index": next_sample_index, "next_batch_index": next_batch_index})
                 if config.save_steps and current_step % config.save_steps == 0:
-                    manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, last_loss=last_loss, eval_loss=None, preflight=preflight, processor=processor)
+                    manifest = self._manifest(model_identity=effective_model_identity, plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, last_loss=last_loss, eval_loss=None, preflight=preflight, processor=processor)
                     self._save_periodic(output_dir=Path(config.output_dir), step=current_step, model=model, processor=processor, plan=plan, manifest=manifest, optimizer=optimizer, scheduler=scheduler, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=None, save_total_limit=config.save_total_limit)
                     if config._test_stop_after_checkpoint_step == current_step:
                         raise RuntimeError("TEST_STOP_AFTER_CHECKPOINT")
@@ -554,7 +571,7 @@ class GenericTrainerCore:
 
         eval_loss = self.evaluate(model=model, processor=processor, episodes=eval_rows, image_roots=config.image_roots, epoch=next_epoch_index, seed=config.seed, max_seq_length=config.max_seq_length, batch_size=config.batch_size) if eval_rows else None
         output_dir = Path(config.output_dir)
-        final_manifest = self._manifest(model_identity=dict(model_identity or {}), plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight, processor=processor)
+        final_manifest = self._manifest(model_identity=effective_model_identity, plan=plan, policy=selected_policy, config=config, training_plan=training_plan, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, last_loss=last_loss, eval_loss=eval_loss, preflight=preflight, processor=processor)
         self._serialize_checkpoint(target=output_dir, model=model, processor=processor, plan=plan, manifest=final_manifest, optimizer=optimizer, scheduler=scheduler, global_step=current_step, epoch_index=next_epoch_index, next_micro_batch_index=next_micro_batch_index, next_sample_index=next_sample_index, next_batch_index=next_batch_index, optimizer_updates_in_epoch=optimizer_updates_in_epoch, last_loss=last_loss, eval_loss=eval_loss)
         self._write_log(output_dir, {"event": "eval", "step": current_step, "epoch": next_epoch_index, "loss": last_loss, "eval_loss": eval_loss})
         return TrainingResult(current_step, last_loss, eval_loss, output_dir / "training_manifest.json", plan, optimizer_stats)

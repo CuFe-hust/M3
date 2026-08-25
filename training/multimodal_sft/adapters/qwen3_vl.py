@@ -48,6 +48,12 @@ class Qwen3VLAdapter:
     def processor_identity(self, processor: Any) -> dict[str, Any]:
         return qwen_multimodal.processor_identity(processor)
 
+    def load_processor(self, processor_dir: str | Path, *, local_files_only: bool = True) -> Any:
+        return _hf.auto_processor(processor_dir, local_files_only=local_files_only)
+
+    def saved_processor_identity(self, processor: Any, processor_dir: str | Path) -> dict[str, Any]:
+        return qwen_multimodal.saved_processor_identity(processor, str(processor_dir))
+
     def discover_structure(self, model: Any) -> ModelStructure:
         modules = _hf.module_map(model)
         language = _hf.find_root(modules, ("model.language_model", "language_model", "model.text_model", "text_model"))

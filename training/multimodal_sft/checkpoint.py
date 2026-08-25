@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .identity import artifact_tree_identity, sha256_file
 
-SCHEMA_VERSION = 1
+
+SCHEMA_VERSION = 2
 TRAINING_MANIFEST_FILENAME = "training_manifest.json"
 COMPATIBILITY_MANIFEST_FILENAME = "multimodal_sft_training_manifest.json"
 PARAMETER_PLAN_FILENAME = "parameter_plan.json"
@@ -43,6 +45,8 @@ def build_training_manifest(
     processor_identity: Mapping[str, Any] | None = None,
     training: Mapping[str, Any] | None = None,
     training_plan: Mapping[str, Any] | None = None,
+    base_model_id: str | None = None,
+    base_weight_identity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not adapter_name or not task_profile:
         raise CheckpointContractError("adapter_name and task_profile are required")
@@ -51,6 +55,13 @@ def build_training_manifest(
         "checkpoint_type": "multimodal_sft_composite",
         "adapter_name": adapter_name,
         "model": {"identity": dict(model_identity), "fingerprint": identity_fingerprint(model_identity)},
+        "base_model": {
+            "model_id": str(base_model_id) if base_model_id is not None else None,
+            "model_type": model_identity.get("model_type"),
+            "architectures": list(model_identity.get("architectures", ())),
+            "config_fingerprint": model_identity.get("fingerprint"),
+            "weight_identity": dict(base_weight_identity or model_identity.get("base_weight_identity", {})),
+        },
         "task": {"profile": task_profile, "contract": dict(data_contract)},
         "tuning_policy": dict(tuning_policy),
         "parameter_plan": dict(parameter_plan),
@@ -67,7 +78,7 @@ def validate_training_manifest(manifest: Mapping[str, Any]) -> None:
     missing = sorted(required - set(manifest))
     if missing:
         raise CheckpointContractError(f"manifest missing required fields: {', '.join(missing)}")
-    if manifest.get("schema_version") != SCHEMA_VERSION:
+    if manifest.get("schema_version") not in (1, SCHEMA_VERSION):
         raise CheckpointContractError("unsupported multimodal SFT manifest schema")
     if manifest.get("checkpoint_type") != "multimodal_sft_composite":
         raise CheckpointContractError("checkpoint_type is not multimodal_sft_composite")
@@ -171,21 +182,43 @@ def checkpoint_complete(
         plan = json.loads((root / PARAMETER_PLAN_FILENAME).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, CheckpointContractError):
         return False
-    return bool(
-        marker.get("complete") is True
-        and marker.get("manifest_sha256") == file_sha256(root / TRAINING_MANIFEST_FILENAME)
-        and marker.get("parameter_plan_sha256") == file_sha256(root / PARAMETER_PLAN_FILENAME)
-        and marker.get("rng_state_sha256") == file_sha256(root / RNG_STATE_FILENAME)
-        and manifest.get("parameter_plan_sha256") == identity_fingerprint(plan)
+    if marker.get("schema_version") != 2 or marker.get("complete") is not True:
+        return False
+    if manifest.get("parameter_plan_sha256") != identity_fingerprint(plan):
+        return False
+    files = marker.get("files")
+    directories = marker.get("directories")
+    if not isinstance(files, Mapping) or not isinstance(directories, Mapping):
+        return False
+    core_names = (
+        TRAINING_MANIFEST_FILENAME,
+        PARAMETER_PLAN_FILENAME,
+        "model_trainable_state.safetensors",
+        OPTIMIZER_FILENAME,
+        SCHEDULER_FILENAME,
+        TRAINER_STATE_FILENAME,
+        RNG_STATE_FILENAME,
+        "training_log.jsonl",
     )
+    for name in core_names:
+        path = root / name
+        expected = files.get(name)
+        if not path.is_file() or not isinstance(expected, Mapping):
+            return False
+        if dict(expected) != {"sha256": file_sha256(path), "size": path.stat().st_size}:
+            return False
+    for directory in ("adapter", "processor"):
+        expected = directories.get(directory)
+        if not isinstance(expected, Mapping) or not (root / directory).is_dir():
+            return False
+        actual = artifact_tree_identity(root / directory)
+        if dict(expected) != actual:
+            return False
+    return True
 
 
 def file_sha256(path: str | Path) -> str:
-    digest = hashlib.sha256()
-    with Path(path).open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def write_completion_marker(
@@ -199,12 +232,29 @@ def write_completion_marker(
     if not manifest.is_file() or not plan.is_file():
         raise CheckpointContractError("cannot mark incomplete checkpoint")
     target = root / COMPLETION_MARKER_FILENAME
+    required_names = (
+        TRAINING_MANIFEST_FILENAME,
+        PARAMETER_PLAN_FILENAME,
+        "model_trainable_state.safetensors",
+        OPTIMIZER_FILENAME,
+        SCHEDULER_FILENAME,
+        TRAINER_STATE_FILENAME,
+        RNG_STATE_FILENAME,
+        "training_log.jsonl",
+    )
+    if not all((root / name).is_file() for name in required_names):
+        raise CheckpointContractError("cannot mark incomplete checkpoint state")
     payload = {
+        "schema_version": 2,
         "global_step": int(global_step),
         "complete": True,
-        "manifest_sha256": file_sha256(manifest),
-        "parameter_plan_sha256": file_sha256(plan),
-        "rng_state_sha256": file_sha256(root / RNG_STATE_FILENAME),
+        "files": {
+            name: {"sha256": file_sha256(root / name), "size": (root / name).stat().st_size}
+            for name in required_names
+        },
+        "directories": {
+            name: artifact_tree_identity(root / name) for name in ("adapter", "processor")
+        },
     }
     temp = target.with_suffix(target.suffix + ".tmp")
     temp.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
@@ -229,6 +279,13 @@ def validate_resume_compatibility(
         raise CheckpointContractError("resume adapter mismatch")
     if manifest.get("model", {}).get("fingerprint") != identity_fingerprint(model_identity):
         raise CheckpointContractError("resume model identity mismatch")
+    expected_weight = (
+        manifest.get("base_model", {}).get("weight_identity")
+        or manifest.get("model", {}).get("identity", {}).get("base_weight_identity")
+    )
+    actual_weight = model_identity.get("base_weight_identity")
+    if expected_weight and expected_weight != actual_weight:
+        raise CheckpointContractError("RESUME_BASE_WEIGHT_IDENTITY_MISMATCH")
     if manifest.get("task", {}).get("profile") != task_profile:
         raise CheckpointContractError("resume task profile mismatch")
     if dict(manifest.get("tuning_policy", {})) != dict(tuning_policy):
@@ -245,5 +302,8 @@ def validate_resume_compatibility(
         expected = identity_fingerprint(training_plan)
         if manifest.get("training_plan_sha256") != expected or dict(manifest.get("training_plan", {})) != dict(training_plan):
             raise CheckpointContractError("RESUME_TRAINING_PLAN_MISMATCH")
-    if processor_identity is not None and dict(manifest.get("processor", {})) != dict(processor_identity):
-        raise CheckpointContractError("RESUME_PROCESSOR_IDENTITY_MISMATCH")
+    if processor_identity:
+        expected_processor = dict(manifest.get("processor", {}))
+        semantic_keys = ("class", "tokenizer_class", "chat_template_sha256", "special_tokens_sha256", "special_token_ids")
+        if any(expected_processor.get(key) != processor_identity.get(key) for key in semantic_keys):
+            raise CheckpointContractError("RESUME_PROCESSOR_IDENTITY_MISMATCH")

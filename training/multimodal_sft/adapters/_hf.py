@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,12 @@ from ..checkpoint import (
     file_sha256,
     identity_fingerprint,
     read_manifest,
+)
+from ..identity import (
+    base_weight_identity,
+    processor_content_identity,
+    processor_semantic_equal,
+    processor_semantic_identity,
 )
 
 
@@ -552,10 +559,40 @@ def export_peft_checkpoint(
         raise AdapterContractError("EXPORT_OUTPUT_EXISTS")
     if not checkpoint_complete(checkpoint, required_files=("adapter/adapter_config.json",)):
         raise AdapterContractError("EXPORT_CHECKPOINT_INCOMPLETE")
+    checkpoint_processor_dir = checkpoint / "processor"
+    if not checkpoint_processor_dir.is_dir():
+        raise AdapterContractError("EXPORT_PROCESSOR_MISSING")
     manifest_path = checkpoint / TRAINING_MANIFEST_FILENAME
     if not manifest_path.is_file():
         raise AdapterContractError("EXPORT_CANONICAL_MANIFEST_MISSING")
     manifest = read_manifest(checkpoint)
+    expected_weight = (
+        manifest.get("base_model", {}).get("weight_identity")
+        or manifest.get("model", {}).get("identity", {}).get("base_weight_identity")
+    )
+    if not expected_weight:
+        raise AdapterContractError("EXPORT_BASE_WEIGHT_IDENTITY_MISSING")
+    try:
+        actual_weight = base_weight_identity(model_id)
+    except ValueError as exc:
+        raise AdapterContractError(str(exc)) from exc
+    if actual_weight != expected_weight:
+        raise AdapterContractError("EXPORT_BASE_WEIGHT_IDENTITY_MISMATCH")
+    load_checkpoint_processor = getattr(adapter, "load_processor", None)
+    if callable(load_checkpoint_processor):
+        checkpoint_processor = load_checkpoint_processor(checkpoint_processor_dir, local_files_only=local_files_only)
+    else:
+        checkpoint_processor = auto_processor(checkpoint_processor_dir, local_files_only=local_files_only)
+    saved_processor_identity_fn = getattr(adapter, "saved_processor_identity", None)
+    if callable(saved_processor_identity_fn):
+        actual_processor_identity = dict(saved_processor_identity_fn(checkpoint_processor, checkpoint_processor_dir))
+    else:
+        actual_processor_identity = dict(processor_content_identity(checkpoint_processor_dir, checkpoint_processor))
+    expected_processor_identity = manifest.get("processor", {})
+    if not expected_processor_identity or not processor_semantic_equal(expected_processor_identity, actual_processor_identity):
+        raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
+    if expected_processor_identity.get("content_sha256") != actual_processor_identity.get("content_sha256"):
+        raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
     plan_path = checkpoint / PARAMETER_PLAN_FILENAME
     try:
         parameter_plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -579,7 +616,7 @@ def export_peft_checkpoint(
     validate_state = getattr(adapter, "validate_checkpoint_state", None)
     if callable(validate_state):
         validate_state(checkpoint, parameter_plan)
-    model, processor, probe = adapter.load(model_id, local_files_only=local_files_only)
+    model, _model_processor, probe = adapter.load(model_id, local_files_only=local_files_only)
     expected_identity = manifest.get("model", {}).get("identity", {})
     expected_fingerprint = expected_identity.get("fingerprint")
     actual_fingerprint = getattr(probe.identity, "fingerprint", None)
@@ -601,14 +638,33 @@ def export_peft_checkpoint(
     merged.save_pretrained(output, safe_serialization=True)
     # The root is the canonical deployment/reload directory.  Keep a nested
     # copy for old callers that still expect a processor/ subdirectory.
-    save_processor(processor, output)
-    save_processor(processor, output / "processor")
+    source_files = [item["path"] for item in actual_processor_identity.get("files", ())]
+    for relative in source_files:
+        source = checkpoint_processor_dir / relative
+        root_target = output / relative
+        root_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, root_target)
+    nested = output / "processor"
+    for relative in source_files:
+        source = checkpoint_processor_dir / relative
+        nested_target = nested / relative
+        nested_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, nested_target)
+    exported_processor_identity = dict(
+        processor_content_identity(output, checkpoint_processor, include_paths=source_files)
+    )
+    if not processor_semantic_equal(actual_processor_identity, exported_processor_identity):
+        raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
+    if exported_processor_identity.get("content_sha256") != actual_processor_identity.get("content_sha256"):
+        raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
     reload_export = getattr(adapter, "reload_exported", None)
     if not callable(reload_export):
         raise AdapterContractError("EXPORT_ADAPTER_MISSING_OFFLINE_RELOAD")
     reloaded_model, reloaded_processor = reload_export(
         output, local_files_only=local_files_only
     )
+    if not processor_semantic_equal(actual_processor_identity, processor_semantic_identity(reloaded_processor)):
+        raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
     verification = {
         "offline_processor_reload": "PASS",
         "offline_model_reload": "PASS",
@@ -638,6 +694,14 @@ def export_peft_checkpoint(
         "parameter_plan_sha256": file_sha256(plan_path),
         "adapter_state_sha256": file_sha256(adapter_state_path),
         "full_train_state_sha256": file_sha256(full_state_path),
+        "source": {
+            "base_weight_sha256": actual_weight["sha256"],
+            "processor_content_sha256": actual_processor_identity["content_sha256"],
+            "checkpoint_completion_sha256": file_sha256(checkpoint / "checkpoint_complete.json"),
+        },
+        "exported": {
+            "processor_content_sha256": exported_processor_identity["content_sha256"],
+        },
         "base_model_identity": probe.identity.as_dict(),
         "processor_identity": dict(getattr(adapter, "processor_identity")(processor)),
         **verification,
