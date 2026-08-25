@@ -14,6 +14,7 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from agents.base import CallBudget as _CallBudgetProtocol
@@ -98,6 +99,11 @@ class RuntimeComponents:
     root. 由组合根恰好组装一次的全体运行时依赖。"""
 
     qwen_client: VisionLanguageClient
+    # Bound clients keyed by concrete AgentName; qwen_client is the planner
+    # compatibility seam only. 按具体 AgentName 键控的绑定 client；qwen_client
+    # 仅保留为 planner 兼容 seam。
+    qwen_clients: Mapping[str, VisionLanguageClient]
+    qwen_runtime_identity: Mapping[str, Any]
     judge_client: DeepSeekJudgeClient | None
     prompt_catalog: PromptCatalog
     router: TaskRouter
@@ -124,6 +130,210 @@ class RuntimeCompositionError(ValueError):
     """A fail-closed composition contract failed without exposing host paths."""
 
 
+@dataclass(frozen=True)
+class _QwenClientInventory:
+    planner: VisionLanguageClient
+    agents: Mapping[str, VisionLanguageClient]
+    runtime_identity: Mapping[str, Any]
+
+
+class _InjectedBoundQwenClient:
+    """Test seam adding declared binding identity to one injected client.
+    为单个注入 client 增加声明式绑定身份的测试 seam。"""
+
+    def __init__(
+        self,
+        client: VisionLanguageClient,
+        identity: ModelCacheIdentity,
+    ) -> None:
+        self._client = client
+        self._identity = identity
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return self._identity
+
+    async def complete_json(self, **kwargs: Any) -> Any:
+        return await self._client.complete_json(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._client, name)
+
+
+_QWEN_COMPONENT_TO_AGENT = {
+    "counting": "counting_agent",
+    "change": "change_agent",
+    "grounding": "grounding_agent",
+    "general_vqa": "general_vqa_agent",
+    "caption": "caption_agent",
+}
+
+
+def _build_qwen_client_inventory(
+    settings: AppSettings,
+    *,
+    project_root: Path,
+    repair_prompt: str,
+    cache: JsonResponseCache,
+    injected: VisionLanguageClient | None,
+) -> _QwenClientInventory:
+    """Build one engine and deterministic component/Agent bound views.
+    构建一个 engine 及确定性的组件/Agent 绑定视图。"""
+
+    bindings = settings.models.qwen_adapter_bindings.as_dict()
+    engine: Any
+    if injected is None:
+        engine = create_model(
+            "qwen3_5_multi_adapter",
+            settings=settings.models.qwen,
+            adapters=settings.models.qwen_adapters,
+            project_root=project_root,
+            repair_prompt=repair_prompt,
+            cache=cache,
+        )
+    elif callable(getattr(injected, "bind", None)):
+        # Tests may inject a fake engine; production construction still goes
+        # through models.entry. 测试可注入 fake engine；生产构造仍统一经过
+        # models.entry。
+        engine = injected
+    else:
+        return _single_qwen_client_inventory(settings, injected)
+
+    bind = getattr(engine, "bind", None)
+    runtime = getattr(engine, "runtime_identity", None)
+    if not callable(bind) or not isinstance(runtime, Mapping):
+        # A patched builder in an offline composition test may return one
+        # protocol client. Production entry returns an engine. 离线组合测试中
+        # 被替换的 builder 可返回单协议 client；生产 entry 返回 engine。
+        return _single_qwen_client_inventory(settings, engine)
+    component_clients = {
+        component: bind(binding) for component, binding in bindings.items()
+    }
+    agents = MappingProxyType(
+        {
+            agent_name: component_clients[component]
+            for component, agent_name in _QWEN_COMPONENT_TO_AGENT.items()
+        }
+    )
+    adapter_inventory = runtime.get("adapters", {})
+    logical_bindings: dict[str, dict[str, str | None]] = {}
+    for component, binding in bindings.items():
+        if binding == "base":
+            logical_bindings[component] = {
+                "catalog_name": "base",
+                "logical_id": "base",
+                "revision": None,
+            }
+            continue
+        try:
+            adapter_identity = adapter_inventory[binding]
+        except (KeyError, TypeError):
+            raise RuntimeCompositionError(
+                "Qwen adapter engine inventory is incomplete"
+            ) from None
+        logical_bindings[component] = {
+            "catalog_name": binding,
+            "logical_id": str(adapter_identity["logical_id"]),
+            "revision": str(adapter_identity["revision"]),
+        }
+    runtime_identity = MappingProxyType(
+        {
+            "schema_version": "qwen-adapter-bindings-v1",
+            "base_model_id": runtime.get("base_model_id"),
+            "base_revision": runtime.get("base_revision"),
+            "client_version": runtime.get("client_version"),
+            "adapters": {
+                name: dict(identity)
+                for name, identity in adapter_inventory.items()
+            },
+            "bindings": logical_bindings,
+        }
+    )
+    return _QwenClientInventory(
+        planner=component_clients["planner"],
+        agents=agents,
+        runtime_identity=runtime_identity,
+    )
+
+
+def _single_qwen_client_inventory(
+    settings: AppSettings,
+    client: VisionLanguageClient,
+) -> _QwenClientInventory:
+    """Adapt the explicit test-injection seam without loading PEFT assets.
+    在不加载 PEFT 资产的情况下适配显式测试注入 seam。"""
+
+    identity = require_model_cache_identity(client, component="injected Qwen client")
+    bindings = settings.models.qwen_adapter_bindings.as_dict()
+    adapters = {
+        name: {
+            "logical_id": adapter.logical_id,
+            "revision": adapter.revision,
+            "peft_version": None,
+        }
+        for name, adapter in settings.models.qwen_adapters.items()
+        if adapter.enabled
+    }
+    logical_bindings: dict[str, dict[str, str | None]] = {}
+    component_clients: dict[str, VisionLanguageClient] = {}
+    for component, binding in bindings.items():
+        if binding == "base":
+            logical_bindings[component] = {
+                "catalog_name": "base",
+                "logical_id": "base",
+                "revision": None,
+            }
+            component_clients[component] = client
+        else:
+            adapter = adapters[binding]
+            logical_bindings[component] = {
+                "catalog_name": binding,
+                "logical_id": adapter["logical_id"],
+                "revision": adapter["revision"],
+            }
+            component_clients[component] = _InjectedBoundQwenClient(
+                client,
+                ModelCacheIdentity(
+                    model=identity.model,
+                    generation={
+                        **identity.generation_payload(),
+                        "adapter": {
+                            "logical_id": adapter["logical_id"],
+                            "revision": adapter["revision"],
+                            "peft_version": adapter["peft_version"],
+                        },
+                    },
+                    client_version=f"{identity.client_version}:injected-binding-v1",
+                    revision=identity.revision,
+                ),
+            )
+    agents = MappingProxyType(
+        {
+            agent_name: component_clients[component]
+            for component, agent_name in _QWEN_COMPONENT_TO_AGENT.items()
+        }
+    )
+    runtime_client_version = (
+        identity.client_version
+        if all(binding == "base" for binding in bindings.values())
+        else f"{identity.client_version}:injected-binding-v1"
+    )
+    return _QwenClientInventory(
+        planner=component_clients["planner"],
+        agents=agents,
+        runtime_identity=MappingProxyType(
+            {
+                "schema_version": "qwen-adapter-bindings-v1",
+                "base_model_id": identity.model,
+                "base_revision": identity.revision,
+                "client_version": runtime_client_version,
+                "adapters": adapters,
+                "bindings": logical_bindings,
+            }
+        ),
+    )
+
+
 def assemble_runtime(
     settings: AppSettings,
     *,
@@ -143,13 +353,17 @@ def assemble_runtime(
 
     catalog = _load_prompt_catalog(project_root, prompts_root)
     service_cache = JsonResponseCache(settings.runs.root / "service" / "cache")
-    if qwen_client is None:
-        qwen_client = create_model(
-            "qwen_transformers",
-            settings=settings.models.qwen,
-            repair_prompt=catalog["json_repair"],
-            cache=service_cache,
-        )
+    qwen_inventory = _build_qwen_client_inventory(
+        settings,
+        project_root=project_root,
+        repair_prompt=catalog["json_repair"],
+        cache=service_cache,
+        injected=qwen_client,
+    )
+    # This compatibility seam means the planner client only; fresh Agent
+    # wiring uses qwen_inventory.agents explicitly. 此兼容 seam 仅表示 planner
+    # client；新鲜 Agent 接线显式使用 qwen_inventory.agents。
+    qwen_client = qwen_inventory.planner
     asset_root = _expert_asset_root(project_root)
     expert_catalog = _load_expert_catalog(asset_root)
     evidence_catalog = _load_evidence_catalog(asset_root)
@@ -183,7 +397,8 @@ def assemble_runtime(
     visual_task_planner, visual_bindings = _build_visual_task_planning(
         settings,
         catalog,
-        qwen_client,
+        qwen_inventory.planner,
+        qwen_inventory.agents["grounding_agent"],
         model_store,
         expert_catalog=expert_catalog,
         segmenter_clients=vqa_segmenter_clients,
@@ -211,7 +426,7 @@ def assemble_runtime(
     agent_registry = _build_agent_registry(
         settings,
         catalog,
-        qwen_client,
+        qwen_inventory.agents,
         semantic_client,
         learned_change_client=learned_change_client,
         expert_catalog=expert_catalog,
@@ -249,6 +464,7 @@ def assemble_runtime(
             fallback_on_partial=settings.router.fallback_on_partial,
             data_root=data_root,
             visual_bindings=visual_bindings,
+            qwen_clients=qwen_inventory.agents,
         )
 
     def dataset_runner_factory(
@@ -279,6 +495,8 @@ def assemble_runtime(
 
     components = RuntimeComponents(
         qwen_client=qwen_client,
+        qwen_clients=qwen_inventory.agents,
+        qwen_runtime_identity=qwen_inventory.runtime_identity,
         judge_client=judge_client,
         prompt_catalog=catalog,
         router=router,
@@ -300,7 +518,7 @@ def assemble_runtime(
 def _build_agent_registry(
     settings: AppSettings,
     catalog: PromptCatalog,
-    qwen_client: VisionLanguageClient,
+    qwen_clients: Mapping[str, VisionLanguageClient],
     semantic_client: DenseSemanticClient | None = None,
     learned_change_client: LearnedChangeClient | None = None,
     *,
@@ -318,14 +536,14 @@ def _build_agent_registry(
     backend_registry = _build_backend_registry(
         settings,
         catalog,
-        qwen_client,
+        qwen_clients["counting_agent"],
         expert_catalog=expert_catalog,
         segformer_clients=segformer_clients,
         project_root=root,
         model_store=model_store,
     )
     counting_agent = CountingAgent(
-        qwen_client,
+        qwen_clients["counting_agent"],
         target_resolver=CountTargetResolver(
             evidence_catalog=_load_evidence_catalog(root),
             expert_catalog=expert_catalog,
@@ -347,7 +565,7 @@ def _build_agent_registry(
         expert_catalog=expert_catalog,
     )
     change_agent = ChangeAgent(
-        qwen_client,
+        qwen_clients["change_agent"],
         semantic_client=semantic_client,
         learned_change_client=learned_change_client,
         semantic_experts=semantic_experts,
@@ -360,9 +578,9 @@ def _build_agent_registry(
         ),
         settings=settings.agents.change,
     )
-    grounding_agent = GroundingAgent(qwen_client)
-    general_vqa_agent = GeneralVQAAgent(qwen_client)
-    caption_agent = CaptionAgent(qwen_client)
+    grounding_agent = GroundingAgent(qwen_clients["grounding_agent"])
+    general_vqa_agent = GeneralVQAAgent(qwen_clients["general_vqa_agent"])
+    caption_agent = CaptionAgent(qwen_clients["caption_agent"])
 
     registry = AgentRegistry()
     for agent in (counting_agent, change_agent, grounding_agent,
@@ -948,7 +1166,8 @@ def _build_judge_client(
 def _build_visual_task_planning(
     settings: AppSettings,
     catalog: PromptCatalog,
-    qwen_client: VisionLanguageClient,
+    planner_client: VisionLanguageClient,
+    grounding_client: VisionLanguageClient,
     model_store: YoloModelStore,
     *,
     expert_catalog: ExpertCatalog,
@@ -971,7 +1190,7 @@ def _build_visual_task_planning(
         settings,
         catalog,
         evidence_catalog,
-        qwen_client,
+        grounding_client,
         model_store,
         segmenter_clients=segmenter_clients,
         project_root=project_root,
@@ -1011,7 +1230,7 @@ def _build_visual_task_planning(
         ),
     }
     planner = VisualTaskPlanner(
-        qwen_client,
+        planner_client,
         system_prompt=catalog["visual_task_plan"],
         prompt_version=planner_settings.task_prompt_version,
         catalog=evidence_catalog,

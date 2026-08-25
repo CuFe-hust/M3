@@ -29,6 +29,8 @@ def test_default_settings() -> None:
     assert settings.paths.dataset_root == Path("dataset")
     assert settings.router.confidence_threshold == 0.7
     assert settings.models.qwen.allow_download is False
+    assert settings.models.qwen_adapters == {}
+    assert set(settings.models.qwen_adapter_bindings.as_dict().values()) == {"base"}
     assert settings.models.segformer_isaid.allow_download is False
     assert settings.models.segformer_isaid.model_path == Path(
         "models/segformer_mitb2_isaid"
@@ -74,6 +76,69 @@ def test_local_config_declares_detector_inventory() -> None:
         "detector_obb_csl_001", "detector_yolo_detect_001"
     ]
     assert settings.backend.yolo.detectors[0].enabled is True
+    adapter = settings.models.qwen_adapters["visual-planner-supplement"]
+    assert adapter.logical_id == (
+        "qwen35-9b-visual-planner-supplement-20260824"
+    )
+    assert set(settings.models.qwen_adapter_bindings.as_dict().values()) == {
+        "visual-planner-supplement"
+    }
+    snapshot = settings.safe_snapshot()
+    assert snapshot["models"]["qwen_adapters"]["visual-planner-supplement"][
+        "path"
+    ].endswith("/final_adapter")
+
+
+def test_qwen_adapter_settings_fail_closed() -> None:
+    base = {
+        "path": "~/adapters/a",
+        "logical_id": "adapter-a",
+        "revision": "a" * 64,
+    }
+    with pytest.raises(ValueError, match="extra"):
+        AppSettings.model_validate(
+            {"models": {"qwen_adapters": {"a": {**base, "unknown": True}}}}
+        )
+    with pytest.raises(ValueError, match="local path"):
+        AppSettings.model_validate(
+            {
+                "models": {
+                    "qwen_adapters": {
+                        "a": {**base, "logical_id": "/private/adapter-a"}
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="SHA-256"):
+        AppSettings.model_validate(
+            {
+                "models": {
+                    "qwen_adapters": {"a": {**base, "revision": "latest"}}
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="unknown adapter"):
+        AppSettings.model_validate(
+            {"models": {"qwen_adapter_bindings": {"planner": "missing"}}}
+        )
+
+
+def test_qwen_adapter_path_is_not_expanded_by_settings(tmp_path: Path) -> None:
+    path = _yaml_path(
+        tmp_path,
+        """
+models:
+  qwen_adapters:
+    adapter-a:
+      path: ~/private/adapter-a
+      logical_id: adapter-a-v1
+      revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+""",
+    )
+    settings = load_settings(path, environ={})
+    assert settings.models.qwen_adapters["adapter-a"].path == Path(
+        "~/private/adapter-a"
+    )
 
 
 def test_legacy_yolo_execution_policy_migrates_only_at_settings_boundary(

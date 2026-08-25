@@ -78,6 +78,13 @@ planner 和旧产物写入能力已删除；历史产物读取 seam 仅用于 re
 `evidence_preprocessing`（tile 预处理，14.14）与 `vqa_assistance_scope`（VQA 辅助
 范围，doc 24）；二者缺失均表示历史运行，绝不从当前默认值回填。
 
+Doc 25 已接入 Qwen3.5 单基座、多 PEFT LoRA 运行时：一次 assembly 只加载一份
+base/processor，Planner 与五个 Agent 使用固定逻辑 binding 获得轻量 bound client；
+adapter 选择、资产路径解析与注入只发生在 composition root/models 加载边界。
+`configs/local.yaml` 首期把全部 binding 指向同一个 visual-planner supplement adapter。
+真实 Transformers/PEFT 推理 gate 仍取决于部署环境的可选依赖与 GPU，不能由离线 fake
+测试替代。
+
 ---
 
 ## 2. 文档职责
@@ -710,6 +717,8 @@ VisionLanguageClient
 qwen_transformers
 qwen3_vl_baseline
 qwen3_5_transformers
+qwen3_5_multi_adapter
+segformer_transformers
 ```
 
 统一构造：
@@ -729,6 +738,14 @@ Qwen3-VL baseline wrapper。
 ### `qwen3_5_transformers`
 
 通过 `models/qwen3_5/model.py` 暴露，同样复用共享 Qwen Transformers 客户端能力。
+
+### `qwen3_5_multi_adapter`
+
+`models/qwen3_5/multi_adapter.py` 提供 `MultiAdapterQwenEngine`。engine 独占一份
+Qwen3.5 base、processor、命名 PEFT LoRA inventory、response cache 和 generation lock；
+`bind(...)` 返回继续满足 `VisionLanguageClient` 的 `BoundQwenAdapterClient`。
+cache hit 不取得生成锁；miss 时 adapter 切换、首次生成和有界 JSON repair 位于同一锁内。
+运行态不调用 `merge_and_unload()`，全部参数冻结并保持 eval mode。
 
 ## 14.3 专家模型运行层
 
@@ -812,6 +829,8 @@ allow_download
 min_pixels
 max_pixels
 revision
+qwen_adapters
+qwen_adapter_bindings
 segformer_experts
 ```
 
@@ -830,6 +849,20 @@ cache_model_id
 必须显式提供。
 
 原因：缓存 hash、trace 与 RequestMeta 使用逻辑模型身份，不应泄露机器本地路径。
+
+`qwen_adapters` 是受校验 catalog：每项声明物理 `path`、机器无关 `logical_id`、
+精确 `adapter_model.safetensors` SHA-256 `revision` 与 `enabled`。`path` 只在模型加载
+边界执行 `expanduser()`/项目根解析，不进入 cache identity、trace、prediction 或报告。
+`qwen_adapter_bindings` 是固定六键结构：
+
+```text
+planner / counting / change / grounding / general_vqa / caption
+```
+
+每个值必须是显式 `base` 或已启用 catalog key；未知、disabled、缺失、不兼容、LFS pointer、
+非 LoRA、非空 `modules_to_save`、旧 `visual_planner_roi_head` 或权重未完整消费均 fail closed。
+adapter logical id、权重 revision 和 PEFT/client version 进入 bound client 的 cache identity，
+因此只修改 binding 也会自然产生不同 request hash。
 
 SegFormer 专家配置包含：
 
@@ -1683,7 +1716,9 @@ cv2/numpy 等视觉依赖保持可选边界，不应使基础 import 强制依�
 
 ```text
 PromptCatalog
-Qwen client
+Qwen3.5 multi-adapter engine（或显式测试注入 client）
+planner bound client
+per-Agent bound clients
 ExpertCatalog
 lazy SegFormer clients by logical model id
 Counting backend registry
@@ -1707,12 +1742,14 @@ Reporting functions
 如果没有测试注入 client：
 
 ```python
-create_model("qwen_transformers", ...)
+create_model("qwen3_5_multi_adapter", ...)
 ```
 
-在这里创建一次。
-
-Agent 和 Workflow 共享这个实例。
+在这里创建一次 engine。VisualTaskPlanner 固定使用 `planner` binding；Counting、Change、
+Grounding、GeneralVQA、Caption 及其嵌套 Qwen backend/evidence service 使用各自 binding。
+首期本地配置六个 binding 指向同一 supplement adapter；以后只改 catalog/binding 配置即可
+切换单个 Agent，无需修改 Agent 或 Router。`RuntimeComponents.qwen_client` 仅保留为 planner
+兼容 seam，fresh Agent 接线使用 `qwen_clients[agent_name]`。
 
 ## 28.2 DeepSeek
 
@@ -1873,6 +1910,7 @@ config.snapshot.json
 
 run_request.json
     actual user/runtime invocation
+    + path-free Qwen base/adapter catalog/binding identity
 ```
 
 resume 重建实际调用时以 `run_request.json` 为准。
@@ -2370,6 +2408,15 @@ run_request.json
 为权威。
 
 新的 CLI 默认值或 config 漂移不得静默改变原 run 行为。
+
+### Qwen adapter identity（doc 25）
+
+新 run 在 `manifest.model_ids`、`config.snapshot.json` 与 `run_request.qwen_runtime_identity`
+冻结 base logical id/revision、adapter logical id/weights digest、六个完整 binding 和 client
+version。`run_request` 只含逻辑身份，不含 adapter 物理路径。resume 重跑前要求当前已组装
+identity 与持久化 identity 完全一致；冲突稳定拒绝，绝不换用当前默认 adapter。Doc 25 之前
+缺少该字段的 run 明确解释为 legacy base-only，不猜成当前 adapter。已经 succeeded 且可直接
+复用的 count-image 结果保持零模型调用。
 
 ### VQA evidence 预处理身份（14.14）
 

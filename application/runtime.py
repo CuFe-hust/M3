@@ -16,6 +16,7 @@ import json
 import re
 import secrets
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,7 @@ from workflows.schema import (
     EvidencePreprocessingIdentity,
     RunRequest,
     VQA_ASSISTANCE_SCOPE,
+    QwenRuntimeAuditIdentity,
 )
 
 # Only the first level of a manual image directory is scanned. / 手动图片目录只扫描第一层。
@@ -574,7 +576,11 @@ def _validate_resume_match(
             raise ValueError("resume vqa assistance scope mismatch")
 
 
-def _build_run_request(options: DatasetRunOptions) -> RunRequest:
+def _build_run_request(
+    options: DatasetRunOptions,
+    *,
+    qwen_runtime_identity: Mapping[str, Any] | None = None,
+) -> RunRequest:
     """Map the concrete dataset run options into the persisted invocation
     artifact. judge_policy/rate are stored as the original intent; the
     evaluate gate is re-applied on resume by the runtime itself.
@@ -617,7 +623,50 @@ def _build_run_request(options: DatasetRunOptions) -> RunRequest:
         large_image_policy=options.large_image_policy,
         evidence_preprocessing=options.evidence_preprocessing,
         vqa_assistance_scope=options.vqa_assistance_scope,
+        qwen_runtime_identity=(
+            None
+            if qwen_runtime_identity is None
+            else QwenRuntimeAuditIdentity.model_validate(qwen_runtime_identity)
+        ),
     )
+
+
+def _validate_qwen_resume_identity(
+    persisted: QwenRuntimeAuditIdentity | None,
+    current: Mapping[str, Any],
+) -> None:
+    """Reject adapter drift before any resumed sample can call a model.
+    在任何恢复样本调用模型前拒绝 adapter 漂移。"""
+
+    current_identity = QwenRuntimeAuditIdentity.model_validate(current)
+    if persisted is None:
+        # Pre-feature runs have the explicit legacy/base-only meaning; they
+        # never inherit today's adapter. 功能上线前运行显式解释为 legacy/base-only，
+        # 绝不继承当前 adapter。
+        if any(
+            binding.catalog_name != "base"
+            for binding in current_identity.bindings.values()
+        ):
+            raise ValueError("resume Qwen adapter identity mismatch")
+        return
+    if persisted != current_identity:
+        raise ValueError("resume Qwen adapter identity mismatch")
+
+
+def _qwen_binding_model_ids(identity: Mapping[str, Any]) -> dict[str, str]:
+    """Project portable adapter identities into the existing manifest map.
+    将可移植 adapter 身份投影到现有 manifest model_ids。"""
+
+    validated = QwenRuntimeAuditIdentity.model_validate(identity)
+    projected: dict[str, str] = {}
+    for component, binding in sorted(validated.bindings.items()):
+        suffix = binding.revision or "base"
+        projected[f"qwen.binding.{component}"] = f"{binding.logical_id}@{suffix}"
+    for name, adapter in sorted(validated.adapters.items()):
+        projected[f"qwen.adapter.{name}"] = (
+            f"{adapter.logical_id}@{adapter.revision}"
+        )
+    return projected
 
 
 def _posix(path: Path) -> str:
@@ -730,6 +779,11 @@ class Runtime:
             _validate_resume_match(options, persisted)
             options = persisted
             self._validate_existing_run(run_dir, options, run_id)
+            persisted_request = self.components.run_store.read_run_request(run_dir)
+            _validate_qwen_resume_identity(
+                persisted_request.qwen_runtime_identity,
+                self.components.qwen_runtime_identity,
+            )
         if options.planning_mode == "visual-task-plan-v5":
             planner = self.components.visual_task_planner
             expected = {
@@ -762,6 +816,9 @@ class Runtime:
                 model_ids={
                     "qwen": self.settings.models.qwen.effective_cache_model_id,
                     "deepseek": self.settings.models.deepseek.model,
+                    **_qwen_binding_model_ids(
+                        self.components.qwen_runtime_identity
+                    ),
                 },
                 prompt_paths=self.components.prompt_catalog.snapshot_paths(),
                 prompt_texts=(
@@ -788,7 +845,11 @@ class Runtime:
             # run before inference. 在身份确立后、任何样本/模型执行前持久化
             # 具体调用；失败使 fresh run 在推理前失败。
             self.components.run_store.write_run_request(
-                run_dir, _build_run_request(options)
+                run_dir,
+                _build_run_request(
+                    options,
+                    qwen_runtime_identity=self.components.qwen_runtime_identity,
+                ),
             )
         adapter = self.registry.get(options.dataset)
         judge_policy = options.judge_policy if options.evaluate else "none"
@@ -1083,7 +1144,7 @@ class Runtime:
 
         context = AgentContext(
             artifact_dir=request_dir / "agent",
-            qwen_client=self.components.qwen_client,
+            qwen_client=self.components.qwen_clients[primary_agent],
             call_budget=(
                 budget
                 if budget is not None

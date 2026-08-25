@@ -325,6 +325,10 @@ class AppSettings(BaseModel):
             serialized["model_path"] = _posix(profile.model_path)
             if profile.processor_path is not None:
                 serialized["processor_path"] = _posix(profile.processor_path)
+        for adapter_name, adapter in self.models.qwen_adapters.items():
+            payload["models"]["qwen_adapters"][adapter_name]["path"] = _posix(
+                adapter.path
+            )
         return payload
 
     def safe_snapshot(self) -> dict[str, Any]:

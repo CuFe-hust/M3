@@ -34,7 +34,7 @@ from PIL import Image
 
 from agents.counting.schema import CountingResult, CountTargetSpec
 from application.prompts import PromptCatalog
-from application.runtime import Runtime
+from application.runtime import Runtime, _validate_qwen_resume_identity
 from application.settings import load_settings
 from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 from evaluation.records import EVALUATION_FILENAME_BY_TASK
@@ -42,7 +42,7 @@ from reporting.visualization import render_counting_overlay
 from workflows.call_budget import CallBudget
 from workflows.dataset_runner import storage_key
 from workflows.run_store import RunManifest, RunStore
-from workflows.schema import RunRequest, SampleRunStatus
+from workflows.schema import QwenRuntimeAuditIdentity, RunRequest, SampleRunStatus
 
 EXIT_OK = 0
 EXIT_RUNTIME = 1
@@ -126,6 +126,7 @@ async def _run(args: argparse.Namespace) -> int:
             model_ids={
                 "qwen": settings.models.qwen.effective_cache_model_id,
                 "deepseek": settings.models.deepseek.model,
+                **settings.models.qwen_manifest_model_ids(),
             },
             prompt_paths=catalog.snapshot_paths(),
             run_id=args.run_id,
@@ -248,6 +249,23 @@ async def _run(args: argparse.Namespace) -> int:
         project_root=project_root,
         api_key=None,
     )
+    if args.resume:
+        _validate_qwen_resume_identity(
+            request.qwen_runtime_identity,
+            runtime.components.qwen_runtime_identity,
+        )
+    else:
+        # Replace the declaration-only fresh snapshot with the verified engine
+        # identity before the first planner/Agent call. 首次 planner/Agent 调用前，
+        # 用已验证 engine 身份替换仅声明的 fresh 快照。
+        request = request.model_copy(
+            update={
+                "qwen_runtime_identity": QwenRuntimeAuditIdentity.model_validate(
+                    runtime.components.qwen_runtime_identity
+                )
+            }
+        )
+        store.write_run_request(run_dir, request)
     budget = _build_budget(runtime, effective_max_qwen, effective_max_deepseek)
     sample = UnifiedSample(
         sample_id=sample_id,

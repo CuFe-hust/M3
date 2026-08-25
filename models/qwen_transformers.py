@@ -15,6 +15,7 @@ import inspect
 import io
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,8 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         cache: JsonResponseCache | None = None,
         model: Any | None = None,
         processor: Any | None = None,
+        generation_lock: asyncio.Lock | None = None,
+        generation_activation: Callable[[], None] | None = None,
     ) -> None:
         self.settings = settings
         self.repair_prompt = repair_prompt
@@ -67,7 +70,12 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
         self.load_seconds = round(time.perf_counter() - started, 6)
         # Serializes generation on this single client instance; cache hits do
         # not acquire this lock. 序列化本客户端实例上的生成；缓存命中不占用锁。
-        self._generation_lock = asyncio.Lock()
+        self._generation_lock = generation_lock or asyncio.Lock()
+        # Multi-adapter bound views use this hook to select their named LoRA
+        # only after taking the shared generation lock. The base client leaves
+        # it unset. 多 adapter 绑定视图仅在取得共享生成锁后通过此 hook 选择
+        # 命名 LoRA；基座 client 不设置它。
+        self._generation_activation = generation_activation
 
     @property
     def cache_identity(self) -> ModelCacheIdentity:
@@ -201,6 +209,8 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
             # no other request can interleave between them.
             # 首次生成与修复共用一次锁获取，避免其他请求插入其间。
             async with self._generation_lock:
+                if self._generation_activation is not None:
+                    self._generation_activation()
                 raw_response, token_usage = await asyncio.to_thread(
                     self._generate, messages, response_model, max_tokens
                 )

@@ -98,7 +98,12 @@ def _view() -> MaterializedVisualView:
     )
 
 
-def _runner(agents: list[_FakeAgent], *, fallback_on_partial: bool = False) -> SampleRunner:
+def _runner(
+    agents: list[_FakeAgent],
+    *,
+    fallback_on_partial: bool = False,
+    qwen_clients: dict[str, object] | None = None,
+) -> SampleRunner:
     registry = AgentRegistry()
     for agent in agents:
         registry.register(agent)
@@ -110,6 +115,7 @@ def _runner(agents: list[_FakeAgent], *, fallback_on_partial: bool = False) -> S
         call_budget_factory=CallBudgetFactory(),
         fallback_on_partial=fallback_on_partial,
         data_root=Path("/data"),
+        qwen_clients=qwen_clients,  # type: ignore[arg-type]
     )
 
 
@@ -180,6 +186,29 @@ def test_declared_router_fallback_rebuilds_only_change_qa_task(tmp_path: Path) -
     assert outcome.fallback_used is True
     assert fallback.calls[0][0].task == "general_vqa"
     assert sample.task == "change_qa"
+
+
+def test_primary_and_fallback_context_use_their_agent_bound_clients(
+    tmp_path: Path,
+) -> None:
+    primary = _FakeAgent("change_agent", ("change_qa",), error=RuntimeError("boom"))
+    fallback = _FakeAgent("general_vqa_agent", ("general_vqa",), answer="ok")
+    change_client, vqa_client = object(), object()
+    outcome = _run(
+        _runner(
+            [primary, fallback],
+            qwen_clients={
+                "change_agent": change_client,
+                "general_vqa_agent": vqa_client,
+            },
+        ),
+        _sample(task="change_qa"),
+        tmp_path / "sample",
+    )
+
+    assert outcome.status.state == "succeeded"
+    assert primary.calls[0][1].qwen_client is change_client
+    assert fallback.calls[0][1].qwen_client is vqa_client
 
 
 def test_partial_policy_uses_declared_fallback(tmp_path: Path) -> None:

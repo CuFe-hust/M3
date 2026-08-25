@@ -36,6 +36,7 @@ def run_run_init(args: argparse.Namespace) -> int:
             model_ids={
                 "qwen": settings.models.qwen.effective_cache_model_id,
                 "deepseek": settings.models.deepseek.model,
+                **settings.models.qwen_manifest_model_ids(),
             },
             prompt_paths=catalog.snapshot_paths(),
             run_id=args.run_id,

@@ -148,11 +148,53 @@ def test_runtime_run_dataset_delegates_to_dataset_runner(tmp_path: Path) -> None
     run_dir = tmp_path / "runs" / run_id
     assert run_dir.is_dir()
     RunManifest.model_validate_json((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["model_ids"]["qwen.binding.planner"] == "base@base"
     snapshot = json.loads((run_dir / "config.snapshot.json").read_text(encoding="utf-8"))
     assert snapshot["runs"]["root"] == (tmp_path / "runs").as_posix()
     assert (run_dir / "prompts.snapshot" / "visual_task_plan_v5.runtime.md").is_file()
     assert (run_dir / "tasks" / "auto" / "dataset_probe.json").is_file()
     assert (run_dir / "predictions.jsonl").is_file()
+    request = json.loads((run_dir / "run_request.json").read_text(encoding="utf-8"))
+    assert request["qwen_runtime_identity"]["schema_version"] == (
+        "qwen-adapter-bindings-v1"
+    )
+    assert set(request["qwen_runtime_identity"]["bindings"]) == {
+        "planner", "counting", "change", "grounding", "general_vqa", "caption"
+    }
+    assert str(tmp_path) not in json.dumps(request["qwen_runtime_identity"])
+
+
+def test_resume_rejects_frozen_qwen_adapter_binding_drift(tmp_path: Path) -> None:
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    options = _options(root=data_root, run_id="adapter-drift")
+    assert _run(runtime, options)["auto"].succeeded == 1
+    calls_after_fresh = runtime.components.qwen_client.calls
+    request_path = tmp_path / "runs" / "adapter-drift" / "run_request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    identity = request["qwen_runtime_identity"]
+    identity["adapters"] = {
+        "adapter-a": {
+            "logical_id": "adapter-a-v1",
+            "revision": "a" * 64,
+            "peft_version": "test",
+        }
+    }
+    identity["bindings"] = {
+        component: {
+            "catalog_name": "adapter-a",
+            "logical_id": "adapter-a-v1",
+            "revision": "a" * 64,
+        }
+        for component in identity["bindings"]
+    }
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="adapter identity mismatch"):
+        _run(runtime, _options(root=data_root, run_id="adapter-drift", resume=True))
+    assert runtime.components.qwen_client.calls == calls_after_fresh
 
 
 def test_fresh_v2_planning_mode_is_rejected_before_run_creation(tmp_path: Path) -> None:
@@ -6365,8 +6407,15 @@ def test_parity_run_init_manifest(tmp_path, monkeypatch, capsys) -> None:
     # 环境 provenance，而非 parity 键。
     assert "git_dirty" in manifest
     assert isinstance(manifest["git_dirty"], bool)
+    assert manifest["model_ids"]["qwen.binding.planner"] == "base@base"
     # stable functional parity / 稳定功能 parity
-    assert _parity_normalize(manifest) == _parity_fixture("run_init_manifest.json")
+    legacy_manifest = _parity_normalize(manifest)
+    legacy_manifest["model_ids"] = {
+        key: value
+        for key, value in legacy_manifest["model_ids"].items()
+        if not key.startswith("qwen.binding.")
+    }
+    assert legacy_manifest == _parity_fixture("run_init_manifest.json")
 
 
 def test_parity_normalization_ignores_git_dirty_environment_state() -> None:
@@ -6453,6 +6502,14 @@ def test_parity_evaluate_run_report(tmp_path, monkeypatch, capsys) -> None:
         sample.pop("execution_steps", None)
         sample.pop("task_routing", None)
     legacy_parity.pop("process_report", None)
+    assert legacy_parity["metadata"]["model_ids"]["qwen.binding.planner"] == (
+        "base@base"
+    )
+    legacy_parity["metadata"]["model_ids"] = {
+        key: value
+        for key, value in legacy_parity["metadata"]["model_ids"].items()
+        if not key.startswith("qwen.binding.")
+    }
     assert legacy_parity == _parity_fixture("evaluate_run.json")
 
 

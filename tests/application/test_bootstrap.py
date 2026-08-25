@@ -32,6 +32,11 @@ from application.bootstrap import (
 from application.prompts import PromptCatalog
 from application.settings import AppSettings, load_settings
 from models.base import ModelCacheIdentity
+from models.settings import (
+    ModelSettings,
+    QwenAdapterBindings,
+    QwenAdapterSettings,
+)
 
 
 class _FakeQwenClient:
@@ -48,6 +53,49 @@ class _FakeQwenClient:
 
     async def complete_json(self, **kwargs: Any) -> Any:
         raise AssertionError("bootstrap must not call the model")
+
+
+class _FakeBoundEngine:
+    """Path-free fake engine proving composition binding selection.
+    不含路径的 fake engine，用于证明组合绑定选择。"""
+
+    def __init__(self, settings: ModelSettings) -> None:
+        self.clients = {
+            name: _NamedFakeQwenClient(name)
+            for name in ("base", *settings.qwen_adapters)
+        }
+        self.bind_calls: list[str] = []
+        self.runtime_identity = {
+            "base_model_id": settings.qwen.effective_cache_model_id,
+            "base_revision": settings.qwen.revision,
+            "client_version": "fake-multi-v1",
+            "adapters": {
+                name: {
+                    "logical_id": adapter.logical_id,
+                    "revision": adapter.revision,
+                    "peft_version": "test",
+                }
+                for name, adapter in settings.qwen_adapters.items()
+                if adapter.enabled
+            },
+        }
+
+    def bind(self, name: str) -> "_NamedFakeQwenClient":
+        self.bind_calls.append(name)
+        return self.clients[name]
+
+
+class _NamedFakeQwenClient(_FakeQwenClient):
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        return ModelCacheIdentity(
+            model="fake-base",
+            generation={"adapter": self.name},
+            client_version="fake-multi-v1",
+        )
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -128,6 +176,80 @@ def test_assemble_runtime_with_injected_qwen(tmp_path: Path) -> None:
     assert components.prompt_catalog.asset("change").path in (
         components.prompt_catalog.snapshot_paths()
     )
+
+
+def test_runtime_wires_planner_agents_and_nested_services_by_binding(
+    tmp_path: Path,
+) -> None:
+    digest_a, digest_b = "a" * 64, "b" * 64
+    settings = _settings(tmp_path)
+    models = settings.models.model_copy(
+        update={
+            "qwen_adapters": {
+                "adapter-a": QwenAdapterSettings(
+                    path=Path("unused/a"),
+                    logical_id="adapter-a-v1",
+                    revision=digest_a,
+                ),
+                "adapter-b": QwenAdapterSettings(
+                    path=Path("unused/b"),
+                    logical_id="adapter-b-v1",
+                    revision=digest_b,
+                ),
+            },
+            "qwen_adapter_bindings": QwenAdapterBindings(
+                planner="adapter-a",
+                counting="adapter-a",
+                change="adapter-b",
+                grounding="adapter-b",
+                general_vqa="adapter-a",
+                caption="adapter-b",
+            ),
+        }
+    )
+    settings = settings.model_copy(update={"models": models})
+    engine = _FakeBoundEngine(models)
+
+    components = assemble_runtime(
+        settings,
+        project_root=tmp_path,
+        prompts_root=REPO_ROOT / "prompts",
+        qwen_client=engine,  # type: ignore[arg-type]
+    )
+
+    assert engine.bind_calls == [
+        "adapter-a",
+        "adapter-a",
+        "adapter-b",
+        "adapter-b",
+        "adapter-a",
+        "adapter-b",
+    ]
+    assert getattr(components.visual_task_planner, "_client").name == "adapter-a"
+    expected = {
+        "counting_agent": "adapter-a",
+        "change_agent": "adapter-b",
+        "grounding_agent": "adapter-b",
+        "general_vqa_agent": "adapter-a",
+        "caption_agent": "adapter-b",
+    }
+    for agent_name, binding in expected.items():
+        assert getattr(components.agent_registry.get(agent_name), "_client").name == binding
+        assert components.qwen_clients[agent_name].name == binding
+    counting = components.agent_registry.get("counting_agent")
+    backend_registry = getattr(getattr(counting, "_selector"), "_registry")
+    assert getattr(backend_registry.get("qwen_point"), "_client").name == "adapter-a"
+    assert getattr(backend_registry.get("quantity_proposal"), "_client").name == (
+        "adapter-a"
+    )
+    grounding_evidence = components.visual_bindings.grounding_evidence
+    assert grounding_evidence is not None
+    assert getattr(grounding_evidence, "_qwen_client").name == "adapter-b"
+    assert components.qwen_runtime_identity["bindings"]["change"] == {
+        "catalog_name": "adapter-b",
+        "logical_id": "adapter-b-v1",
+        "revision": digest_b,
+    }
 
 
 def test_runtime_uses_project_prompt_root_when_present(tmp_path: Path) -> None:
@@ -634,6 +756,10 @@ def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class
         prompts_root=REPO_ROOT / "prompts",
         qwen_client=_FakeQwenClient(),
     )
+    injected_identity = components.qwen_clients["counting_agent"].cache_identity
+    assert injected_identity.generation_payload()["adapter"]["logical_id"] == (
+        "qwen35-9b-visual-planner-supplement-20260824"
+    )
     agent = components.agent_registry.get("counting_agent")
     selector = getattr(agent, "_selector")
     catalog = getattr(agent, "_expert_catalog")
@@ -731,7 +857,7 @@ def test_qwen_created_exactly_once(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr("application.bootstrap.create_model", fake_create_model)
     components = _assemble(tmp_path)
     assert calls == [
-        "qwen_transformers",
+        "qwen3_5_multi_adapter",
         "segformer_transformers",
         "segformer_transformers",
     ]
@@ -739,7 +865,7 @@ def test_qwen_created_exactly_once(tmp_path: Path, monkeypatch) -> None:
     # Injecting a client must never trigger creation. / 注入客户端绝不触发创建。
     _assemble(tmp_path, qwen_client=_FakeQwenClient())
     assert calls == [
-        "qwen_transformers",
+        "qwen3_5_multi_adapter",
         "segformer_transformers",
         "segformer_transformers",
         "segformer_transformers",
@@ -756,7 +882,7 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
 
     def fake_create_model(name, **kwargs):
         calls.append((name, kwargs.get("settings")))
-        if name == "qwen_transformers":
+        if name == "qwen3_5_multi_adapter":
             return _FakeQwenClient()
         if name == "segformer_transformers":
             return dense_client
@@ -783,7 +909,7 @@ def test_counting_segformer_is_reused_when_change_semantic_is_enabled(
     )
 
     assert [name for name, _ in calls] == [
-        "qwen_transformers",
+        "qwen3_5_multi_adapter",
         "segformer_transformers",
         "segformer_transformers",
     ]

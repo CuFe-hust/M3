@@ -19,6 +19,7 @@ ModelName = Literal[
     "qwen_transformers",
     "qwen3_vl_baseline",
     "qwen3_5_transformers",
+    "qwen3_5_multi_adapter",
     "segformer_transformers",
 ]
 
@@ -83,6 +84,31 @@ def build_qwen3_5_transformers_client(
 
     return QwenTransformersClient(
         settings,
+        repair_prompt=repair_prompt,
+        cache=cache,
+        **kwargs,
+    )
+
+
+@register("qwen3_5_multi_adapter")
+def build_qwen3_5_multi_adapter_engine(
+    *,
+    settings: Any,
+    adapters: Any,
+    project_root: Any,
+    repair_prompt: str | None = None,
+    cache: Any | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Build one shared Qwen3.5 base with named PEFT adapters lazily.
+    惰性构建一份共享 Qwen3.5 基座及命名 PEFT adapter。"""
+
+    from models.qwen3_5.multi_adapter import MultiAdapterQwenEngine
+
+    return MultiAdapterQwenEngine(
+        settings,
+        adapters=adapters,
+        project_root=project_root,
         repair_prompt=repair_prompt,
         cache=cache,
         **kwargs,
