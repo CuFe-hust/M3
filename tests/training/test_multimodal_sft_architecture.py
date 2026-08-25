@@ -19,6 +19,7 @@ from training.multimodal_sft.checkpoint import (
 from training.multimodal_sft.data import JsonlDataProfile
 from training.multimodal_sft.parameter_plan import build_parameter_plan
 from training.multimodal_sft.registry import default_registry
+from training.multimodal_sft.adapters import _hf
 
 
 class _FakeParameter:
@@ -111,6 +112,17 @@ def test_qwen35_adapter_discovers_semantic_roles_without_vision_name_sniffing() 
     assert plan.full_train_module_paths == ("model.visual.merger",)
     assert all("visual" not in path for path in plan.lora_module_paths)
     assert all("q_proj" not in path for path in plan.lora_module_paths)
+
+
+def test_qwen35_adapter_is_dense_only_and_layer_aware(monkeypatch) -> None:
+    adapter = Qwen35Adapter()
+    assert adapter.model_types == frozenset({"qwen3_5"})
+    monkeypatch.setattr(_hf, "auto_config", lambda *args, **kwargs: SimpleNamespace(model_type="qwen3_5_moe", architectures=()))
+    probe = adapter.probe("unused", local_files_only=True)
+    assert "model_type=qwen3_5" in probe.missing_capabilities
+    source = Path("training/multimodal_sft/adapters/qwen3_5.py").read_text(encoding="utf-8")
+    assert "target_leaf_names" not in source
+    assert "semantic-module-scan" not in source
 
 
 def test_registry_exposes_explicit_builtin_families() -> None:
