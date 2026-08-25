@@ -13,6 +13,7 @@ PretrainedConfig = pytest.importorskip("transformers").PretrainedConfig
 from training.multimodal_sft.adapters import _hf
 from training.multimodal_sft.contracts import CanonicalEpisode, ModelStructure
 from training.multimodal_sft.data import JsonlDataProfile
+from training.multimodal_sft.identity import processor_content_identity, processor_semantic_identity
 from training.multimodal_sft.optimizer import OptimizerConfig, build_optimizer_groups
 from training.multimodal_sft.parameter_plan import ParameterPlan
 from training.multimodal_sft.trainer_core import GenericTrainerCore, TrainingConfig
@@ -84,6 +85,15 @@ class _TinyPeftAdapter:
 
     def validate_trainable_parameters(self, model, parameter_plan):
         return _hf.validate_trainable_parameters(model, parameter_plan)
+
+    def processor_identity(self, processor):
+        return {**processor_semantic_identity(processor), "encoding_contract_version": "tiny_peft_v1"}
+
+    def load_processor(self, processor_dir, *, local_files_only=True):
+        return _Processor()
+
+    def saved_processor_identity(self, processor, processor_dir):
+        return {**processor_content_identity(processor_dir, processor), "encoding_contract_version": "tiny_peft_v1"}
 
     def validate_optimizer_parameters(self, model, parameter_plan, groups):
         return _hf.validate_optimizer_parameters(model, parameter_plan, groups)
