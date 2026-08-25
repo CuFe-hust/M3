@@ -70,12 +70,18 @@ def run_smoke_qwen(
             {"role": "user", "content": content},
         ]
         catalog = PromptCatalog(project_root / "prompts")
-        client = qwen_client or create_model(
-            "qwen_transformers",
-            settings=settings.models.qwen,
-            repair_prompt=catalog["json_repair"],
-            cache=JsonResponseCache(settings.runs.root / "service" / "cache"),
-        )
+        if qwen_client is None:
+            engine = create_model(
+                "qwen3_5_multi_adapter",
+                settings=settings.models.qwen,
+                adapters=settings.models.qwen_adapters,
+                project_root=project_root,
+                repair_prompt=catalog["json_repair"],
+                cache=JsonResponseCache(settings.runs.root / "service" / "cache"),
+            )
+            client = engine.bind(settings.models.qwen_adapter_bindings.planner)
+        else:
+            client = qwen_client
         identity = require_model_cache_identity(client, component="smoke_qwen")
         image_sha256 = hashlib.sha256(data).hexdigest()
         request_hash = build_request_hash(

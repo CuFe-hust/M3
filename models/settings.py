@@ -6,12 +6,25 @@ application/settings.py 负责。
 
 from __future__ import annotations
 
+import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from models.base import is_local_model_path, validate_logical_model_id
+
+
+QWEN_ADAPTER_BINDING_COMPONENTS = (
+    "planner",
+    "counting",
+    "change",
+    "grounding",
+    "general_vqa",
+    "caption",
+)
+_ADAPTER_NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
 class QwenSettings(BaseModel):
@@ -64,6 +77,80 @@ class QwenSettings(BaseModel):
         if self.cache_model_id is not None:
             return self.cache_model_id
         return validate_logical_model_id(self.model, where="model")
+
+
+class QwenAdapterSettings(BaseModel):
+    """One declared PEFT LoRA asset with a portable logical identity.
+    一个带可移植逻辑身份的声明式 PEFT LoRA 资产。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Physical deployment directory; resolved only at the model-loading edge.
+    # 物理部署目录；仅在模型加载边界解析。
+    path: Path
+    logical_id: str
+    # The initial contract freezes the exact adapter weight bytes by SHA-256.
+    # 首期契约以 SHA-256 冻结 adapter 权重的确切字节。
+    revision: str
+    enabled: bool = True
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "QwenAdapterSettings":
+        if not str(self.path).strip():
+            raise ValueError("Qwen adapter path must not be empty")
+        logical_id = validate_logical_model_id(
+            self.logical_id,
+            where="qwen adapter logical_id",
+        )
+        if (
+            logical_id.startswith((".", "~"))
+            or "/" in logical_id
+            or "\\" in logical_id
+            or re.match(r"^[A-Za-z]:", logical_id) is not None
+        ):
+            raise ValueError("qwen adapter logical_id must not be path-like")
+        self.logical_id = logical_id
+        revision = self.revision.strip().casefold()
+        if _SHA256_PATTERN.fullmatch(revision) is None:
+            raise ValueError(
+                "qwen adapter revision must be a 64-character SHA-256 digest"
+            )
+        self.revision = revision
+        return self
+
+
+class QwenAdapterBindings(BaseModel):
+    """Closed component-to-adapter bindings; ``base`` is explicit fallback.
+    封闭的组件到 adapter 绑定；``base`` 是显式基座回退。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    planner: str = "base"
+    counting: str = "base"
+    change: str = "base"
+    grounding: str = "base"
+    general_vqa: str = "base"
+    caption: str = "base"
+
+    @model_validator(mode="after")
+    def validate_binding_names(self) -> "QwenAdapterBindings":
+        for component in QWEN_ADAPTER_BINDING_COMPONENTS:
+            binding = getattr(self, component)
+            if binding != "base" and _ADAPTER_NAME_PATTERN.fullmatch(binding) is None:
+                raise ValueError(
+                    f"qwen adapter binding {component!r} must be 'base' or a "
+                    "stable catalog key"
+                )
+        return self
+
+    def as_dict(self) -> dict[str, str]:
+        """Return bindings in the frozen component order.
+        按冻结组件顺序返回绑定。"""
+
+        return {
+            component: getattr(self, component)
+            for component in QWEN_ADAPTER_BINDING_COMPONENTS
+        }
 
 
 class DeepSeekSettings(BaseModel):
@@ -155,6 +242,10 @@ class ModelSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     qwen: QwenSettings = Field(default_factory=QwenSettings)
+    qwen_adapters: dict[str, QwenAdapterSettings] = Field(default_factory=dict)
+    qwen_adapter_bindings: QwenAdapterBindings = Field(
+        default_factory=QwenAdapterBindings
+    )
     deepseek: DeepSeekSettings = Field(default_factory=DeepSeekSettings)
     segformer_isaid: SegFormerSettings = Field(default_factory=SegFormerSettings)
     segformer_oem: SegFormerSettings = Field(
@@ -175,7 +266,29 @@ class ModelSettings(BaseModel):
     segformer_experts: dict[str, SegFormerSettings] = Field(default_factory=dict)
 
     @model_validator(mode="after")
-    def validate_segformer_expert_profiles(self) -> "ModelSettings":
+    def validate_model_catalogs(self) -> "ModelSettings":
+        logical_ids: set[str] = set()
+        for name, adapter in self.qwen_adapters.items():
+            if name == "base" or _ADAPTER_NAME_PATTERN.fullmatch(name) is None:
+                raise ValueError(
+                    "Qwen adapter catalog keys must be stable identifiers and "
+                    "must not use the reserved 'base' binding"
+                )
+            if adapter.logical_id in logical_ids:
+                raise ValueError("Qwen adapter logical_id values must be unique")
+            logical_ids.add(adapter.logical_id)
+        for component, binding in self.qwen_adapter_bindings.as_dict().items():
+            if binding == "base":
+                continue
+            adapter = self.qwen_adapters.get(binding)
+            if adapter is None:
+                raise ValueError(
+                    f"Qwen adapter binding {component!r} references an unknown adapter"
+                )
+            if not adapter.enabled:
+                raise ValueError(
+                    f"Qwen adapter binding {component!r} references a disabled adapter"
+                )
         normalized = [name.strip() for name in self.segformer_experts]
         if any(not name for name in normalized) or len(normalized) != len(set(normalized)):
             raise ValueError("SegFormer expert profile names must be non-empty and unique")
@@ -204,6 +317,26 @@ class ModelSettings(BaseModel):
         if len(matches) != 1:
             raise ValueError("SegFormer catalog expert has no unique runtime profile")
         return matches[0]
+
+    def qwen_manifest_model_ids(self) -> dict[str, str]:
+        """Return path-free declared adapter identities without loading assets.
+        在不加载资产的情况下返回不含路径的 adapter 声明身份。"""
+
+        projected: dict[str, str] = {}
+        for component, binding in self.qwen_adapter_bindings.as_dict().items():
+            if binding == "base":
+                projected[f"qwen.binding.{component}"] = "base@base"
+                continue
+            adapter = self.qwen_adapters[binding]
+            projected[f"qwen.binding.{component}"] = (
+                f"{adapter.logical_id}@{adapter.revision}"
+            )
+        for name, adapter in sorted(self.qwen_adapters.items()):
+            if adapter.enabled:
+                projected[f"qwen.adapter.{name}"] = (
+                    f"{adapter.logical_id}@{adapter.revision}"
+                )
+        return projected
 
 
 def _plain_filename(value: str, *, where: str) -> str:

@@ -46,7 +46,7 @@ from evaluation.judges.deepseek import (
     DeepSeekJudgeError,
     JudgeTransportError,
 )
-from models.base import RequestMeta
+from models.base import ModelCacheIdentity, RequestMeta
 from models.cache import JsonResponseCache
 from models.settings import DeepSeekSettings
 
@@ -187,6 +187,18 @@ class RuntimeProtocol:
 class _NoopVisionLanguageClient:
     """Assembly-only client; dataset refinement never invokes Qwen.
     仅用于 runtime 组装；数据复标绝不调用 Qwen。"""
+
+    @property
+    def cache_identity(self) -> ModelCacheIdentity:
+        """Declared offline identity required by the composition seam; it is
+        never hashed against a real request. 组合 seam 要求的声明式离线身份；
+        绝不用于真实请求哈希。"""
+
+        return ModelCacheIdentity(
+            model="offline-assembly-noop",
+            generation={},
+            client_version="noop-v1",
+        )
 
     async def complete_json(self, **_: Any) -> Any:
         raise AssertionError("dataset refinement must not call Qwen")

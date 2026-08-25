@@ -29,6 +29,8 @@ def test_default_settings() -> None:
     assert settings.paths.dataset_root == Path("dataset")
     assert settings.router.confidence_threshold == 0.7
     assert settings.models.qwen.allow_download is False
+    assert settings.models.qwen_adapters == {}
+    assert set(settings.models.qwen_adapter_bindings.as_dict().values()) == {"base"}
     assert settings.models.segformer_isaid.allow_download is False
     assert settings.models.segformer_isaid.model_path == Path(
         "models/segformer_mitb2_isaid"
@@ -77,8 +79,8 @@ def test_local_config_declares_detector_inventory() -> None:
     assert all(item.device == "cpu" for item in settings.backend.yolo.detectors)
     assert all(item.require_cuda is False for item in settings.backend.yolo.detectors)
     assert all(item.allow_cpu_fallback is False for item in settings.backend.yolo.detectors)
-    assert settings.models.qwen.model == "models/qwen3_vl_8b/merged"
-    assert settings.models.qwen.cache_model_id == "qwen3-vl-8b-merger-lora-merged"
+    assert settings.models.qwen.model == "models/Qwen3.5-9B"
+    assert settings.models.qwen.cache_model_id == "Qwen/Qwen3.5-9B:local"
     assert set(settings.visual_planning.detectors) == {"detector_obb_csl_001"}
     assert set(settings.visual_planning.segmenters) == {
         "segmenter_mitb2_001", "segmenter_oem_001"
@@ -88,6 +90,69 @@ def test_local_config_declares_detector_inventory() -> None:
     assert settings.agents.change.semantic.max_experts == 2
     assert settings.agents.change.building_rescue.enabled is True
     assert settings.agents.change.learned_change.enabled is False
+    adapter = settings.models.qwen_adapters["visual-planner-supplement"]
+    assert adapter.logical_id == (
+        "qwen35-9b-visual-planner-supplement-20260824"
+    )
+    assert set(settings.models.qwen_adapter_bindings.as_dict().values()) == {
+        "visual-planner-supplement"
+    }
+    snapshot = settings.safe_snapshot()
+    assert snapshot["models"]["qwen_adapters"]["visual-planner-supplement"][
+        "path"
+    ].endswith("/final_adapter")
+
+
+def test_qwen_adapter_settings_fail_closed() -> None:
+    base = {
+        "path": "~/adapters/a",
+        "logical_id": "adapter-a",
+        "revision": "a" * 64,
+    }
+    with pytest.raises(ValueError, match="extra"):
+        AppSettings.model_validate(
+            {"models": {"qwen_adapters": {"a": {**base, "unknown": True}}}}
+        )
+    with pytest.raises(ValueError, match="local path"):
+        AppSettings.model_validate(
+            {
+                "models": {
+                    "qwen_adapters": {
+                        "a": {**base, "logical_id": "/private/adapter-a"}
+                    }
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="SHA-256"):
+        AppSettings.model_validate(
+            {
+                "models": {
+                    "qwen_adapters": {"a": {**base, "revision": "latest"}}
+                }
+            }
+        )
+    with pytest.raises(ValueError, match="unknown adapter"):
+        AppSettings.model_validate(
+            {"models": {"qwen_adapter_bindings": {"planner": "missing"}}}
+        )
+
+
+def test_qwen_adapter_path_is_not_expanded_by_settings(tmp_path: Path) -> None:
+    path = _yaml_path(
+        tmp_path,
+        """
+models:
+  qwen_adapters:
+    adapter-a:
+      path: ~/private/adapter-a
+      logical_id: adapter-a-v1
+      revision: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+""",
+    )
+    settings = load_settings(path, environ={})
+    assert settings.models.qwen_adapters["adapter-a"].path == Path(
+        "~/private/adapter-a"
+    )
 
 
 def test_legacy_yolo_execution_policy_migrates_only_at_settings_boundary(

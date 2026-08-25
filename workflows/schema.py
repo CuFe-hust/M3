@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
@@ -15,6 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from agents.base import AgentExecution
 from data.schema import TaskName
+from models.base import is_local_model_path
 from routing.schema import RoutingDecision
 
 SampleRunState = Literal[
@@ -39,6 +41,9 @@ RunTaskName = TaskName | Literal["unknown"]
 # 失该字段时解析为 None，绝不伪装成新 scope。它与
 # EvidencePreprocessingIdentity（tile 预处理 vs task scope）是独立身份。
 VQA_ASSISTANCE_SCOPE = "general-vqa-agent-tasks-v1"
+_QWEN_BINDING_COMPONENTS = frozenset(
+    {"planner", "counting", "change", "grounding", "general_vqa", "caption"}
+)
 
 
 class SampleRunStatus(BaseModel):
@@ -225,6 +230,83 @@ class DatasetRunOptions:
             raise ValueError("large_image_policy must not be empty")
 
 
+class QwenAdapterAuditIdentity(BaseModel):
+    """Path-free adapter identity frozen into a run.
+    冻结进运行且不含路径的 adapter 身份。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    logical_id: str = Field(min_length=1)
+    revision: str = Field(pattern=r"^[0-9a-f]{64}$")
+    peft_version: str | None = None
+
+    @model_validator(mode="after")
+    def reject_paths(self) -> "QwenAdapterAuditIdentity":
+        if self.logical_id.startswith(("/", ".", "~")) or any(
+            separator in self.logical_id for separator in ("/", "\\")
+        ) or re.match(r"^[A-Za-z]:", self.logical_id):
+            raise ValueError("adapter logical_id must not be path-like")
+        return self
+
+
+class QwenBindingAuditIdentity(BaseModel):
+    """One component binding resolved to its portable identity.
+    一个已解析为可移植身份的组件绑定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    catalog_name: str = Field(min_length=1)
+    logical_id: str = Field(min_length=1)
+    revision: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def validate_base_or_adapter(self) -> "QwenBindingAuditIdentity":
+        if self.catalog_name == "base":
+            if self.logical_id != "base" or self.revision is not None:
+                raise ValueError("base binding identity is inconsistent")
+        elif self.logical_id == "base" or self.revision is None:
+            raise ValueError("adapter binding identity is incomplete")
+        for value in (self.catalog_name, self.logical_id):
+            if value.startswith(("/", ".", "~")) or any(
+                separator in value for separator in ("/", "\\")
+            ) or re.match(r"^[A-Za-z]:", value):
+                raise ValueError("Qwen binding identity must not be path-like")
+        return self
+
+
+class QwenRuntimeAuditIdentity(BaseModel):
+    """Complete path-free Qwen base/catalog/binding identity for resume.
+    用于 resume 的完整且不含路径的 Qwen 基座/目录/绑定身份。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["qwen-adapter-bindings-v1"] = (
+        "qwen-adapter-bindings-v1"
+    )
+    base_model_id: str = Field(min_length=1)
+    base_revision: str | None = None
+    client_version: str = Field(min_length=1)
+    adapters: dict[str, QwenAdapterAuditIdentity] = Field(default_factory=dict)
+    bindings: dict[str, QwenBindingAuditIdentity]
+
+    @model_validator(mode="after")
+    def validate_closed_bindings(self) -> "QwenRuntimeAuditIdentity":
+        if set(self.bindings) != _QWEN_BINDING_COMPONENTS:
+            raise ValueError("Qwen runtime identity must contain every fixed binding")
+        if is_local_model_path(self.base_model_id):
+            raise ValueError("base_model_id must not be a local path")
+        for binding in self.bindings.values():
+            if binding.catalog_name == "base":
+                continue
+            adapter = self.adapters.get(binding.catalog_name)
+            if adapter is None or (
+                adapter.logical_id != binding.logical_id
+                or adapter.revision != binding.revision
+            ):
+                raise ValueError("Qwen binding differs from adapter inventory")
+        return self
+
+
 class RunRequest(BaseModel):
     """The concrete user/runtime invocation for one dataset run, persisted as
     ``runs/<run_id>/run_request.json``. This is not a replacement for the
@@ -286,6 +368,10 @@ class RunRequest(BaseModel):
     # 冻结 VQA assistance scope 身份；历史 run request 缺失（None），绝不从
     # 当前默认值回填。
     vqa_assistance_scope: str | None = None
+    # None is the explicit legacy/base-only interpretation for runs created
+    # before multi-adapter identity freezing. None 是多 adapter 身份冻结前运行
+    # 的显式 legacy/base-only 解释。
+    qwen_runtime_identity: QwenRuntimeAuditIdentity | None = None
     # v4/v3 historical run requests used roi_size. Accept it for read-only
     # historical resume/reporting, but never serialize it for new runs.
     # v4/v3 历史 run request 使用 roi_size；仅为只读历史 resume/reporting 接受，

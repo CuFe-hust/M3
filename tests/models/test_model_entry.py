@@ -29,6 +29,7 @@ def test_register_and_list_models() -> None:
     assert "qwen_transformers" in names
     assert "qwen3_vl_baseline" in names
     assert "qwen3_5_transformers" in names
+    assert "qwen3_5_multi_adapter" in names
     assert "segformer_transformers" in names
     assert len(names) == len(set(names))
 

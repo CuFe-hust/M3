@@ -174,9 +174,48 @@ models.entry.create_model(name, ...)
 qwen_transformers
 qwen3_vl_baseline
 qwen3_5_transformers
+qwen3_5_multi_adapter
 ```
 
 Agent/Workflow 不直接 import 具体 Qwen 实现；具体模型只在 `application` composition root 选择和创建。
+
+### Qwen3.5 单基座、多 LoRA
+
+完整 Runtime 使用 `qwen3_5_multi_adapter`：Qwen3.5 base 与 processor 只加载一次，
+Planner/Counting/Change/Grounding/GeneralVQA/Caption 通过固定配置 binding 选择命名 PEFT
+LoRA。当前 `configs/local.yaml` 将六个 binding 统一指向：
+
+```text
+outputs/finetune/qwen35-9b-visual-planner-lora-supplement-20260824/final_adapter
+```
+
+配置结构为：
+
+```yaml
+models:
+  qwen:
+    model: models/Qwen3.5-9B
+    cache_model_id: Qwen/Qwen3.5-9B:local
+    allow_download: false
+  qwen_adapters:
+    visual-planner-supplement:
+      path: outputs/finetune/qwen35-9b-visual-planner-lora-supplement-20260824/final_adapter
+      logical_id: qwen35-9b-visual-planner-supplement-20260824
+      revision: e59d7f5afe0f3c75a06e785579a74d4a7a9880a589be8d91197d699569dea170
+      enabled: true
+  qwen_adapter_bindings:
+    planner: visual-planner-supplement
+    counting: visual-planner-supplement
+    change: visual-planner-supplement
+    grounding: visual-planner-supplement
+    general_vqa: visual-planner-supplement
+    caption: visual-planner-supplement
+```
+
+binding 只能引用已声明且启用的 catalog key，或显式写 `base`。物理 adapter 路径不进入
+缓存身份与公开运行产物；`logical_id` 和精确权重 SHA-256 会进入缓存与 resume 身份。
+本功能运行时需要 `requirements-models.txt` 中的 Transformers/PEFT/safetensors；普通 import
+与离线单元测试仍不加载这些可选重依赖。
 
 ### 本地 checkpoint
 

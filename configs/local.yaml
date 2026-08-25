@@ -1,10 +1,24 @@
-# Local Qwen model configuration: Qwen3-VL-8B with merged merger-LoRA.
-# 本地 Qwen 模型配置：已合并 merger-LoRA 的 Qwen3-VL-8B。
+# Local Qwen3.5-9B base with one verified supplement LoRA shared by all
+# planner/Agent bindings. 本地 Qwen3.5-9B 基座；所有 planner/Agent 绑定共享
+# 一个已验证 supplement LoRA。
 models:
   qwen:
-    model: models/qwen3_vl_8b/merged
-    cache_model_id: qwen3-vl-8b-merger-lora-merged
+    model: models/Qwen3.5-9B
+    cache_model_id: Qwen/Qwen3.5-9B:local
     allow_download: false
+  qwen_adapters:
+    visual-planner-supplement:
+      path: outputs/finetune/qwen35-9b-visual-planner-lora-supplement-20260824/final_adapter
+      logical_id: qwen35-9b-visual-planner-supplement-20260824
+      revision: e59d7f5afe0f3c75a06e785579a74d4a7a9880a589be8d91197d699569dea170
+      enabled: true
+  qwen_adapter_bindings:
+    planner: visual-planner-supplement
+    counting: visual-planner-supplement
+    change: visual-planner-supplement
+    grounding: visual-planner-supplement
+    general_vqa: visual-planner-supplement
+    caption: visual-planner-supplement
 
 reporting:
   native_html: true

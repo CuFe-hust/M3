@@ -995,7 +995,11 @@ def test_exporters_metadata_no_host_absolute_paths(tmp_path: Path) -> None:
                 "git_dirty": None,
                 "config_hash": "hash",
                 "prompt_hashes": {},
-                "model_ids": {"qwen": "fake-qwen", "deepseek": "fake-deepseek"},
+                "model_ids": {
+                    "qwen": "fake-qwen",
+                    "deepseek": "fake-deepseek",
+                    "qwen.binding.planner": "adapter-a-v1@" + "a" * 64,
+                },
                 "dataset": "demo",
                 "split": "test",
                 "sample_filter": None,
@@ -1010,6 +1014,9 @@ def test_exporters_metadata_no_host_absolute_paths(tmp_path: Path) -> None:
     assert metadata["dataset"] == "demo"
     assert metadata["split"] == "test"
     assert metadata["model_ids"]["qwen"] == "fake-qwen"
+    assert metadata["model_ids"]["qwen.binding.planner"] == (
+        "adapter-a-v1@" + "a" * 64
+    )
     assert metadata["created_at"] == "2026-08-09T00:00:00Z"
     assert metadata["counts"]["succeeded"] == 2
     assert metadata["sample_count"] == 2

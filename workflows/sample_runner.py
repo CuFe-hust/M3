@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import replace as dataclass_replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -229,10 +231,12 @@ class SampleRunner:
         fallback_on_partial: bool = False,
         data_root: Path | None = None,
         visual_bindings: VisualPlanBindings | None = None,
+        qwen_clients: Mapping[str, VisionLanguageClient] | None = None,
     ) -> None:
         self.agent_registry = registry
         self.router = router
         self.qwen_client = qwen_client
+        self.qwen_clients = dict(qwen_clients or {})
         self.artifact_writer = artifact_writer
         self.call_budget_factory = call_budget_factory
         self.judge_service = judge_service
@@ -466,11 +470,21 @@ class SampleRunner:
         last_failure: str | None = None
         fallback_used = False
         for index, agent_attempt in enumerate(attempt.agent_attempts):
+            # The context follows the concrete primary/fallback Agent client;
+            # it never retains a planner/global binding. context 跟随实际执行的
+            # primary/fallback Agent client，绝不保留 planner/全局绑定。
+            agent_context = dataclass_replace(
+                context,
+                qwen_client=self.qwen_clients.get(
+                    agent_attempt.agent_name,
+                    self.qwen_client,
+                ),
+            )
             try:
                 execution = await self.agent_registry.get(
                     agent_attempt.agent_name
                 ).run(
-                    agent_attempt.sample, context
+                    agent_attempt.sample, agent_context
                 )
             except Exception as error:
                 last_failure = _stable_error_code(error)
