@@ -703,7 +703,7 @@ def export_peft_checkpoint(
             "processor_content_sha256": exported_processor_identity["content_sha256"],
         },
         "base_model_identity": probe.identity.as_dict(),
-        "processor_identity": dict(getattr(adapter, "processor_identity")(processor)),
+        "processor_identity": dict(getattr(adapter, "processor_identity")(checkpoint_processor)),
         **verification,
         "verify_forward": bool(verify_forward),
     }
