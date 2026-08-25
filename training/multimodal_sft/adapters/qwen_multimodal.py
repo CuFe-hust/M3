@@ -199,7 +199,7 @@ def _load_change_fixture(path: str | Path) -> CanonicalEpisode:
 def _forward_one(adapter: Any, model: Any, processor: Any, episode: CanonicalEpisode) -> dict[str, Any]:
     import torch
 
-    encoded = adapter.encode(processor, episode, max_seq_length=512, return_tensors="pt")
+    encoded = adapter.encode(processor, episode, max_seq_length=4096, return_tensors="pt")
     batch, _metadata = adapter.collate([encoded])
     prepared = adapter.prepare_forward_inputs(batch)
     model.eval()
