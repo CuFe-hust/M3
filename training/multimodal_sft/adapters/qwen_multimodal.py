@@ -93,7 +93,8 @@ def assistant_mask(processor: Any, messages: list[dict[str, Any]]) -> tuple[list
             normalized_mask = _flat_ids(mask)
             if len(normalized_mask) != len(ids):
                 raise AdapterContractError("assistant mask length mismatch")
-            return ids, normalized_mask
+            if any(normalized_mask):
+                return ids, normalized_mask
     full = processor.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=False, return_dict=True
     )

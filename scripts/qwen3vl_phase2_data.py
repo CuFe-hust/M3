@@ -1066,7 +1066,8 @@ def _assistant_mask(processor: Any, messages: list[dict]) -> tuple[list[int], li
             mask = _flat_ids(mask)
             if len(mask) != len(ids):
                 raise FeatureError("assistant mask length mismatch")
-            return ids, mask
+            if any(mask):
+                return ids, mask
     return _assistant_mask_by_turns(processor, messages)
 
 

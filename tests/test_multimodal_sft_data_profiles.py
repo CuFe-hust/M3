@@ -12,6 +12,7 @@ from training.multimodal_sft.data import JsonlDataProfile
 from training.multimodal_sft.image_roots import ImageRootError, ImageRootRegistry
 from training.multimodal_sft.profiles.change_agent import ChangeAgentDataError, ChangeAgentDataProfile
 from training.multimodal_sft.profiles.phase2 import Phase2DataProfile
+from training.multimodal_sft.adapters import qwen_multimodal
 from training.multimodal_sft.token_audit import audit_change_agent_tokens
 from training.multimodal_sft.trainer_core import GenericTrainerCore
 
@@ -104,6 +105,28 @@ def test_change_token_audit_is_untruncated_and_caches_visual_shape(tmp_path: Pat
     assert result["recommended_max_seq_length"] == 1024
     assert result["visual_token_delta_by_shape"] == {"8x6+8x6": 8}
     assert result["empty_supervision"] == 0
+
+
+def test_qwen_assistant_mask_falls_back_when_native_mask_is_all_zero() -> None:
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "question"},
+        {"role": "assistant", "content": "answer"},
+    ]
+
+    class _Processor:
+        def apply_chat_template(self, current, *, tokenize, add_generation_prompt, return_dict=False, return_assistant_tokens_mask=False):
+            assert tokenize is True
+            lengths = {(0, True): 1, (2, True): 7, (3, False): 10}
+            length = lengths.get((len(current), add_generation_prompt), len(current) * 3 + 1)
+            payload = {"input_ids": list(range(length))}
+            if return_assistant_tokens_mask:
+                payload["assistant_masks"] = [0] * length
+            return payload
+
+    ids, mask = qwen_multimodal.assistant_mask(_Processor(), messages)
+    assert len(ids) == 10
+    assert mask == [0] * 7 + [1, 1, 1]
 
 
 def test_change_prompt_and_data_manifest_sha_are_fail_closed(tmp_path: Path) -> None:
