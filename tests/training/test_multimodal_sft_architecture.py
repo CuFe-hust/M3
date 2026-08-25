@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -57,6 +58,9 @@ class _FakeModule:
     def parameters(self):
         return (value for _, value in self.named_parameters())
 
+    def __iter__(self):
+        return iter(self._children.values())
+
 
 class _FakeLinear(_FakeModule):
     def __init__(self) -> None:
@@ -68,9 +72,9 @@ class _FakeLayer(_FakeModule):
     def __init__(self) -> None:
         super().__init__()
         attention = _FakeModule()
-        attention.add_module("in_proj_qkv", _FakeLinear())
-        attention.add_module("out_proj", _FakeLinear())
-        self.add_module("self_attn", attention)
+        for name in ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj"):
+            attention.add_module(name, _FakeLinear())
+        self.add_module("linear_attn", attention)
         mlp = _FakeModule()
         for name in ("gate_proj", "up_proj", "down_proj"):
             mlp.add_module(name, _FakeLinear())
@@ -89,12 +93,13 @@ class _FakeVisual(_FakeModule):
     def __init__(self) -> None:
         super().__init__()
         self.add_module("q_proj", _FakeLinear())  # same name trap
-        self.add_module("projector", _FakeLinear())
+        self.add_module("merger", _FakeLinear())
 
 
 class _FakeModel(_FakeModule):
     def __init__(self) -> None:
         super().__init__()
+        self.config = SimpleNamespace(text_config=SimpleNamespace(num_hidden_layers=1, layer_types=["linear_attention"]))
         self.add_module("model", _FakeModule())
         self.model.add_module("language_model", _FakeLanguage())
         self.model.add_module("visual", _FakeVisual())
@@ -103,7 +108,7 @@ class _FakeModel(_FakeModule):
 def test_qwen35_adapter_discovers_semantic_roles_without_vision_name_sniffing() -> None:
     plan = build_parameter_plan(_FakeModel(), Qwen35Adapter(), "lora_plus_projector")
     assert plan.lora_module_paths
-    assert plan.full_train_module_paths == ("model.visual.projector",)
+    assert plan.full_train_module_paths == ("model.visual.merger",)
     assert all("visual" not in path for path in plan.lora_module_paths)
     assert all("q_proj" not in path for path in plan.lora_module_paths)
 

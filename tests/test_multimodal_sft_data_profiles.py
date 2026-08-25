@@ -77,6 +77,16 @@ def test_change_prompt_and_data_manifest_sha_are_fail_closed(tmp_path: Path) -> 
         list(profile.read(train))
 
 
+def test_change_prompt_repo_fallback_is_independent_of_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    prompt = Path("prompts/change_dual_path_v9.md").resolve()
+    digest = hashlib.sha256(prompt.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"change_prompt": {"ref": "change_dual_path_v9", "sha256": digest}, "outputs": {"train.jsonl_sha256": "x", "validation.jsonl_sha256": "x"}}) + "\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    profile = ChangeAgentDataProfile(data_manifest=manifest)
+    assert profile._prompt_text() == prompt.read_text(encoding="utf-8")
+
+
 def test_image_root_registry_rejects_unknown_escape_missing_and_decode(tmp_path: Path) -> None:
     _image(tmp_path / "ok.png", (1, 2, 3))
     registry = ImageRootRegistry({"known": tmp_path})

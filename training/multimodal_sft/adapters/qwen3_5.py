@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +14,7 @@ from . import qwen_multimodal
 
 class Qwen35Adapter:
     name = "qwen3_5"
-    model_types = frozenset({"qwen3_5", "qwen3_5_moe"})
+    model_types = frozenset({"qwen3_5"})
 
     def probe(self, model_id: str | Path, *, local_files_only: bool = True) -> AdapterProbe:
         config = _hf.auto_config(model_id, local_files_only=local_files_only)
@@ -54,26 +56,71 @@ class Qwen35Adapter:
         modules = _hf.module_map(model)
         language = _find_language_root(modules)
         vision = _find_vision_root(modules)
-        language_prefix = language + "." if language else ""
-        target_leaf_names = {
-            "q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj",
-            "in_proj_qkv", "in_proj", "out_proj", "z_proj", "b_proj", "dt_proj",
+        config = getattr(model, "config", None)
+        text_config = getattr(config, "text_config", None)
+        layer_types = list(getattr(text_config, "layer_types", ()) or ())
+        num_layers = int(getattr(text_config, "num_hidden_layers", 0) or 0)
+        if not layer_types or len(layer_types) != num_layers:
+            raise AdapterContractError("QWEN35_LAYER_TYPES_MISMATCH")
+        unsupported = sorted(set(layer_types) - {"linear_attention", "full_attention"})
+        if unsupported:
+            raise AdapterContractError(f"QWEN35_UNSUPPORTED_LAYER_TYPE: {unsupported}")
+        language_module = modules[language]
+        layers = getattr(language_module, "layers", None)
+        if layers is None or len(list(layers)) != num_layers:
+            raise AdapterContractError("QWEN35_DECODER_COUNT_MISMATCH")
+        targets: list[str] = []
+        full_indexes: list[int] = []
+        linear_indexes: list[int] = []
+        for index, layer_type in enumerate(layer_types):
+            prefix = f"{language}.layers.{index}"
+            for leaf in ("gate_proj", "up_proj", "down_proj"):
+                path = f"{prefix}.mlp.{leaf}"
+                self._require_parameter_module(modules, path, "QWEN35_MLP_TOPOLOGY_MISMATCH")
+                targets.append(path)
+            if layer_type == "full_attention":
+                full_indexes.append(index)
+                leaves = ("q_proj", "k_proj", "v_proj", "o_proj")
+                code = "QWEN35_FULL_ATTENTION_TOPOLOGY_MISMATCH"
+                root = "self_attn"
+            else:
+                linear_indexes.append(index)
+                leaves = ("in_proj_qkv", "in_proj_z", "in_proj_b", "in_proj_a", "out_proj")
+                code = "QWEN35_LINEAR_ATTENTION_TOPOLOGY_MISMATCH"
+                root = "linear_attn"
+            for leaf in leaves:
+                path = f"{prefix}.{root}.{leaf}"
+                self._require_parameter_module(modules, path, code)
+                targets.append(path)
+        connector = f"{vision}.merger"
+        self._require_parameter_module(modules, connector, "QWEN35_VISION_MERGER_MISSING")
+        deepstack_paths = tuple(name for name in modules if name.startswith(vision + ".") and "deepstack" in name.lower())
+        if deepstack_paths:
+            raise AdapterContractError("QWEN35_UNEXPECTED_DEEPSTACK")
+        layer_sha = hashlib.sha256(json.dumps(layer_types, separators=(",", ":")).encode("utf-8")).hexdigest()
+        expected = 3 * num_layers + 4 * len(full_indexes) + 5 * len(linear_indexes)
+        if len(targets) != expected or len(set(targets)) != expected:
+            raise AdapterContractError("QWEN35_TARGET_COUNT_MISMATCH")
+        details = {
+            "adapter_contract_version": "qwen35_strict_v1",
+            "discovery": "layer_types_exact",
+            "num_hidden_layers": num_layers,
+            "layer_types_sha256": layer_sha,
+            "full_attention_layer_indexes": full_indexes,
+            "linear_attention_layer_indexes": linear_indexes,
+            "expected_target_count": expected,
+            "actual_target_count": len(targets),
+            "exact_vision_connector": connector,
+            "deepstack_expected": False,
+            "deepstack_present": False,
         }
-        targets = []
-        for name, module in _hf.child_paths(modules, language):
-            leaf = name.rsplit(".", 1)[-1]
-            if leaf in target_leaf_names and _hf.has_parameters(module):
-                targets.append(name)
-        connectors = []
-        for name, module in _hf.child_paths(modules, vision):
-            leaf = name.rsplit(".", 1)[-1].lower()
-            if _hf.has_parameters(module) and any(token in leaf for token in ("merger", "projector", "connector")):
-                connectors.append(name)
-        if not targets:
-            raise AdapterContractError("qwen3_5 adapter could not discover safe language targets")
-        if not connectors:
-            raise AdapterContractError("qwen3_5 adapter could not discover a safe vision connector/projector")
-        return ModelStructure(language, vision, {"language_lora_targets": tuple(targets), "vision_connectors": tuple(connectors)}, {"adapter": self.name, "discovery": "semantic-module-scan"})
+        return ModelStructure(language, vision, {"language_lora_targets": tuple(targets), "vision_connectors": (connector,)}, details)
+
+    @staticmethod
+    def _require_parameter_module(modules: dict[str, Any], path: str, code: str) -> None:
+        module = modules.get(path)
+        if module is None or not _hf.has_parameters(module):
+            raise AdapterContractError(f"{code}: {path}")
 
     def prepare_forward_inputs(self, batch: dict[str, Any]) -> dict[str, Any]:
         return dict(batch)
@@ -110,26 +157,17 @@ class Qwen35Adapter:
 
 
 def _find_language_root(modules: dict[str, Any]) -> str:
-    preferred = ("model.language_model", "language_model", "model.text_model", "text_model", "model.decoder", "decoder")
-    for name in preferred:
-        module = modules.get(name)
-        if module is not None and _has_layer_and_embedding(module):
-            return name
-    for name, module in sorted(modules.items(), key=lambda item: (item[0].count("."), item[0])):
-        if _has_layer_and_embedding(module):
-            return name
-    raise AdapterContractError("qwen3_5 adapter could not locate a language backbone")
+    candidates = [name for name in ("model.language_model", "language_model") if name in modules]
+    if len(candidates) != 1:
+        raise AdapterContractError(f"QWEN35_LANGUAGE_ROOT_AMBIGUOUS: {candidates}")
+    return candidates[0]
 
 
 def _find_vision_root(modules: dict[str, Any]) -> str:
-    preferred = ("model.visual", "visual", "model.vision_tower", "vision_tower", "model.vision_model", "vision_model")
-    for name in preferred:
-        if name in modules:
-            return name
-    for name in modules:
-        if any(token in name.lower().split(".")[-1] for token in ("visual", "vision")):
-            return name
-    raise AdapterContractError("qwen3_5 adapter could not locate a vision backbone")
+    candidates = [name for name in ("model.visual", "visual") if name in modules]
+    if len(candidates) != 1:
+        raise AdapterContractError(f"QWEN35_VISION_ROOT_AMBIGUOUS: {candidates}")
+    return candidates[0]
 
 
 def _has_layer_and_embedding(module: Any) -> bool:

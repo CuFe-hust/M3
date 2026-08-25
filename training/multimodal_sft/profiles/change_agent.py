@@ -76,7 +76,7 @@ class ChangeAgentDataProfile:
             if maybe.is_file():
                 candidate = maybe
             else:
-                repo_prompt = Path(__file__).resolve().parents[2] / "prompts" / f"{ref}.md"
+                repo_prompt = Path(__file__).resolve().parents[3] / "prompts" / f"{ref}.md"
                 if repo_prompt.is_file():
                     candidate = repo_prompt
         if candidate is None or not candidate.is_file():
@@ -184,4 +184,3 @@ class ChangeAgentDataProfile:
             "image_sources": sorted(registry.roots),
             "image_root_contract": registry.contract(),
         }
-
