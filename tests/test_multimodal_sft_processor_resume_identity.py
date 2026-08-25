@@ -7,6 +7,7 @@ from training.multimodal_sft.checkpoint import (
     build_training_manifest,
     validate_resume_compatibility,
 )
+from training.multimodal_sft.identity import artifact_tree_identity
 
 
 def _identity(*, content: str = "content-a", encoding: str = "contract-v1", template: str = "template-a", special: str = "special-a") -> dict:
@@ -72,4 +73,18 @@ def test_missing_processor_content_is_unproven() -> None:
     actual = dict(expected)
     actual.pop("content_sha256")
     with pytest.raises(CheckpointContractError, match="RESUME_PROCESSOR_IDENTITY_UNPROVEN"):
+        _validate(_manifest(expected), actual)
+
+
+def test_tokenizer_artifact_content_drift_is_rejected(tmp_path) -> None:
+    left = tmp_path / "processor_a"
+    right = tmp_path / "processor_b"
+    left.mkdir()
+    right.mkdir()
+    (left / "tokenizer.json").write_text('{"vocab":{"a":1}}\n', encoding="utf-8")
+    (right / "tokenizer.json").write_text('{"vocab":{"a":2}}\n', encoding="utf-8")
+    expected = _identity(content=artifact_tree_identity(left)["sha256"])
+    actual = dict(expected)
+    actual["content_sha256"] = artifact_tree_identity(right)["sha256"]
+    with pytest.raises(CheckpointContractError, match="RESUME_PROCESSOR_CONTENT_MISMATCH"):
         _validate(_manifest(expected), actual)
