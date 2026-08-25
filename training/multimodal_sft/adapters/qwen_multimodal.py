@@ -164,8 +164,12 @@ def _load_change_fixture(path: str | Path) -> CanonicalEpisode:
             raise AdapterContractError("EXPORT_CHANGE_FIXTURE_NOT_FOUND")
         root = candidates[0]
     try:
-        lines = [line for line in root.read_text(encoding="utf-8").splitlines() if line.strip()]
-        payload = json.loads(lines[0])
+        text = root.read_text(encoding="utf-8")
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            lines = [line for line in text.splitlines() if line.strip()]
+            payload = json.loads(lines[0])
     except (OSError, IndexError, json.JSONDecodeError) as exc:
         raise AdapterContractError("EXPORT_CHANGE_FIXTURE_INVALID") from exc
     messages = payload.get("messages")
