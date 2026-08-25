@@ -211,6 +211,31 @@ class GenericTrainerCore:
         self.data_profile.validate(episode)
         return episode
 
+    @staticmethod
+    def _model_input_device(model: Any) -> Any:
+        getter = getattr(model, "get_input_embeddings", None)
+        if callable(getter):
+            embedding = getter()
+            weight = getattr(embedding, "weight", None)
+            if weight is not None and getattr(weight, "device", None) is not None:
+                return weight.device
+        return getattr(model, "device", "cpu")
+
+    @classmethod
+    def _move_input_value(cls, value: Any, device: Any) -> Any:
+        if isinstance(value, Mapping):
+            return {key: cls._move_input_value(item, device) for key, item in value.items()}
+        if isinstance(value, tuple):
+            return tuple(cls._move_input_value(item, device) for item in value)
+        if isinstance(value, list):
+            return [cls._move_input_value(item, device) for item in value]
+        move = getattr(value, "to", None)
+        return move(device=device) if callable(move) else value
+
+    def _forward_inputs(self, model: Any, batch: Mapping[str, Any]) -> Mapping[str, Any]:
+        prepared = self.adapter.prepare_forward_inputs(dict(batch))
+        return self._move_input_value(prepared, self._model_input_device(model))
+
     def smoke_gradients(self, *, model: Any, processor: Any, episode: Any, parameter_plan: Any = None, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0, max_seq_length: int = 4096) -> dict[str, Any]:
         import torch
 
@@ -220,7 +245,7 @@ class GenericTrainerCore:
             parameter.grad = None
         encoded = self._encode(processor, prepared, max_seq_length=max_seq_length)
         batch, _meta = self._collate([encoded])
-        output = model(**self.adapter.prepare_forward_inputs(batch))
+        output = model(**self._forward_inputs(model, batch))
         loss = self._loss(output)
         if loss is None:
             raise ValueError("gradient smoke requires a model loss")
@@ -274,7 +299,7 @@ class GenericTrainerCore:
             for start in range(0, len(prepared_rows), max(1, int(batch_size))):
                 encoded = [self._encode(processor, episode, max_seq_length=max_seq_length) for episode in prepared_rows[start:start + max(1, int(batch_size))]]
                 batch, _meta = self._collate(encoded)
-                output = model(**self.adapter.prepare_forward_inputs(batch))
+                output = model(**self._forward_inputs(model, batch))
                 loss = self._loss(output)
                 if loss is not None:
                     losses.append(float(loss.detach().cpu().item()))
@@ -607,7 +632,7 @@ class GenericTrainerCore:
                 total_batches = (len(train_rows) + config.batch_size - 1) // config.batch_size
                 window_size = min(config.gradient_accumulation_steps, total_batches - window_start)
                 with autocast_context(str(getattr(model, "device", "cpu")), config.mixed_precision):
-                    output = model(**self.adapter.prepare_forward_inputs(batch))
+                    output = model(**self._forward_inputs(model, batch))
                     loss = self._loss(output)
                     if loss is None:
                         raise ValueError("adapter/model forward did not return loss; labels are required")

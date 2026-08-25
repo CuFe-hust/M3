@@ -134,3 +134,21 @@ def test_gradient_smoke_only_runs_backward_without_writing_checkpoint(tmp_path):
     assert smoke["frozen_parameter_tensors_with_grad"] == 0
     assert smoke["nonfinite_gradient_tensors"] == 0
     assert not any(tmp_path.iterdir())
+
+
+def test_forward_inputs_move_nested_values_to_embedding_device():
+    moved = []
+
+    class _Value:
+        def to(self, *, device):
+            moved.append(device)
+            return self
+
+    model = SimpleNamespace(
+        device="fallback",
+        get_input_embeddings=lambda: SimpleNamespace(weight=SimpleNamespace(device="embedding-device")),
+    )
+    trainer = GenericTrainerCore(adapter=_BatchAdapter(), data_profile=JsonlDataProfile("phase2"))
+    payload = trainer._forward_inputs(model, {"x": _Value(), "nested": [_Value()]})
+    assert payload["x"] is not None
+    assert moved == ["embedding-device", "embedding-device"]
