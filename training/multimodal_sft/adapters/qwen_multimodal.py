@@ -53,11 +53,76 @@ def collate(encoded_examples: Sequence[Mapping[str, Any]]) -> tuple[dict[str, An
 
 
 def validate_image_placeholder_gate(messages: list[dict[str, Any]], image_count: int) -> None:
-    return _legacy()._validate_image_placeholder_gate(messages, image_count)
+    placeholders = 0
+    first_assistant = None
+    for index, message in enumerate(messages):
+        if message.get("role") == "assistant" and first_assistant is None:
+            first_assistant = index
+        content = message.get("content", [])
+        items = content if isinstance(content, list) else [{"type": "text", "text": content}]
+        placeholders += sum(1 for item in items if item.get("type") == "image")
+        if message.get("role") == "assistant" and any(item.get("type") == "image" for item in items):
+            raise AdapterContractError("image placeholder inside assistant span")
+    if placeholders != image_count:
+        raise AdapterContractError(f"image_placeholder_count_mismatch expected={image_count} got={placeholders}")
+    if first_assistant is not None:
+        for message in messages[first_assistant:]:
+            content = message.get("content", [])
+            items = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            if any(item.get("type") == "image" for item in items):
+                raise AdapterContractError("image placeholder after assistant span")
 
 
 def assistant_mask(processor: Any, messages: list[dict[str, Any]]) -> tuple[list[int], list[int]]:
-    return _legacy()._assistant_mask(processor, messages)
+    try:
+        result = processor.apply_chat_template(
+            messages,
+            tokenize=True,
+            add_generation_prompt=False,
+            return_dict=True,
+            return_assistant_tokens_mask=True,
+        )
+    except (TypeError, ValueError):
+        result = None
+    if result is not None and isinstance(result, Mapping):
+        mask = result.get("assistant_masks")
+        if mask is None:
+            mask = result.get("assistant_tokens_mask")
+        if mask is not None:
+            ids = _flat_ids(result["input_ids"])
+            normalized_mask = _flat_ids(mask)
+            if len(normalized_mask) != len(ids):
+                raise AdapterContractError("assistant mask length mismatch")
+            return ids, normalized_mask
+    full = processor.apply_chat_template(
+        messages, tokenize=True, add_generation_prompt=False, return_dict=True
+    )
+    ids_full = _flat_ids(full["input_ids"])
+    mask = [0] * len(ids_full)
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        prefix = processor.apply_chat_template(
+            messages[:index], tokenize=True, add_generation_prompt=True, return_dict=True
+        )
+        turn_full = processor.apply_chat_template(
+            messages[: index + 1], tokenize=True, add_generation_prompt=False, return_dict=True
+        )
+        prefix_ids = _flat_ids(prefix["input_ids"])
+        turn_ids = _flat_ids(turn_full["input_ids"])
+        if len(turn_ids) < len(prefix_ids) or len(turn_ids) > len(ids_full):
+            raise AdapterContractError("assistant span malformed")
+        for position in range(len(prefix_ids), len(turn_ids)):
+            mask[position] = 1
+    return ids_full, mask
+
+
+def _flat_ids(value: Any) -> list[Any]:
+    if hasattr(value, "tolist"):
+        value = value.tolist()
+    if value and isinstance(value[0], list):
+        value = value[0]
+    return list(value)
 
 
 def align_labels(text_ids: Sequence[int], mask: Sequence[int], input_ids: Any) -> Any:

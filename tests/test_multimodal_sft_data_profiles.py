@@ -12,6 +12,7 @@ from training.multimodal_sft.data import JsonlDataProfile
 from training.multimodal_sft.image_roots import ImageRootError, ImageRootRegistry
 from training.multimodal_sft.profiles.change_agent import ChangeAgentDataError, ChangeAgentDataProfile
 from training.multimodal_sft.profiles.phase2 import Phase2DataProfile
+from training.multimodal_sft.token_audit import audit_change_agent_tokens
 from training.multimodal_sft.trainer_core import GenericTrainerCore
 
 
@@ -63,6 +64,46 @@ def test_change_profile_prepares_real_source_schema_and_t1_t2(tmp_path: Path) ->
     assert prepared.messages[0]["content"].endswith("Set agent_name to change_agent and status to completed.")
     assert prepared.messages[1]["content"][1]["text"] == "AUTHORITATIVE RAW T1 - earlier full scene"
     assert prepared.metadata["request_payload"]["decision_stage"] == "initial"
+    assert profile.render_messages(rows[0]) == prepared.messages
+
+
+def test_change_token_audit_is_untruncated_and_caches_visual_shape(tmp_path: Path) -> None:
+    train, prompt, manifest = _write_change_fixture(tmp_path)
+    profile = ChangeAgentDataProfile(data_manifest=manifest, prompt_file=prompt)
+    rows = list(profile.read(train))
+
+    class _Processor:
+        def apply_chat_template(self, messages, *, tokenize, add_generation_prompt, return_dict=False, return_assistant_tokens_mask=False):
+            length = 20 + len(json.dumps(messages[-1], sort_keys=True))
+            if not tokenize:
+                return f"LEN:{length}"
+            payload = {"input_ids": list(range(length))}
+            if return_assistant_tokens_mask:
+                payload["assistant_masks"] = [0] * (length - 3) + [1, 1, 1]
+            return payload
+
+        def __call__(self, *, text, images, return_tensors):
+            import numpy as np
+
+            length = int(text[0].split(":", 1)[1]) + 8
+            return {
+                "input_ids": np.zeros((1, length), dtype=np.int64),
+                "mm_token_type_ids": np.zeros((1, length), dtype=np.int64),
+            }
+
+    result = audit_change_agent_tokens(
+        profile=profile,
+        processor=_Processor(),
+        image_roots=ImageRootRegistry({"changechat": tmp_path}),
+        split_episodes={"train": rows},
+        thresholds=(1024,),
+    )
+    assert result["status"] == "PASS"
+    assert result["overall"]["checked"] == 1
+    assert result["overall"]["over_threshold"]["1024"] == 0
+    assert result["recommended_max_seq_length"] == 1024
+    assert result["visual_token_delta_by_shape"] == {"8x6+8x6": 8}
+    assert result["empty_supervision"] == 0
 
 
 def test_change_prompt_and_data_manifest_sha_are_fail_closed(tmp_path: Path) -> None:

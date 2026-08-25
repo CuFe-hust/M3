@@ -109,3 +109,28 @@ def test_sample_weight_batching_fails_closed(tmp_path):
             policy="lora_plus_projector",
             model_identity={"model_type": "batch_fixture"},
         )
+
+
+def test_gradient_smoke_only_runs_backward_without_writing_checkpoint(tmp_path):
+    trainer = GenericTrainerCore(adapter=_BatchAdapter(), data_profile=JsonlDataProfile("phase2"))
+    result = trainer.fit(
+        model=_BatchModel(),
+        processor={"max_seq_length": 321},
+        episodes=_episodes(1),
+        config=TrainingConfig(
+            output_dir=tmp_path,
+            max_seq_length=321,
+            smoke_gradients=True,
+            smoke_gradients_only=True,
+        ),
+        policy="lora_plus_projector",
+        model_identity={"model_type": "batch_fixture"},
+    )
+    smoke = result.optimizer_stats["gradient_smoke"]
+    assert result.steps == 0
+    assert result.manifest_path is None
+    assert smoke["passed"] is True
+    assert smoke["parameter_tensors_with_grad"] == smoke["trainable_parameter_tensors"]
+    assert smoke["frozen_parameter_tensors_with_grad"] == 0
+    assert smoke["nonfinite_gradient_tensors"] == 0
+    assert not any(tmp_path.iterdir())

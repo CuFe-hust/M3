@@ -137,12 +137,27 @@ class ChangeAgentDataProfile:
         except Exception as exc:  # noqa: BLE001 - stable profile boundary
             raise ChangeAgentDataError("INVALID_TARGET_SCHEMA", episode_id) from exc
 
+    def render_messages(self, episode: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
+        """Render the exact training conversation without loading image bytes."""
+
+        self.validate(episode)
+        prompt_text = self._prompt_text()
+        user: list[dict[str, Any]] = [{"type": "text", "text": "Decision stage: initial. Compare the next two authoritative raw images first."}]
+        for image in episode["images"]:
+            user.append({"type": "text", "text": evidence_label(str(image["role"]))})
+            user.append({"type": "image"})
+        user.append({"type": "text", "text": json.dumps(episode["request_payload"], ensure_ascii=False, separators=(",", ":"))})
+        return (
+            {"role": "system", "content": prompt_text + "\n\n" + INITIAL_RESPONSE_SUFFIX},
+            {"role": "user", "content": user},
+            {"role": "assistant", "content": [{"type": "text", "text": json.dumps(episode["target"]["result"], ensure_ascii=False, separators=(",", ":"))}]},
+        )
+
     def prepare(self, episode: Mapping[str, Any], *, image_roots: Any, split: str, epoch: int, seed: int | str) -> PreparedMultimodalEpisode:
         self.validate(episode)
         if str(episode.get("split")) != split:
             raise ChangeAgentDataError("SPLIT_MISMATCH", str(episode.get("episode_id") or ""))
         registry = image_roots if isinstance(image_roots, ImageRootRegistry) else ImageRootRegistry(dict(image_roots or {}))
-        prompt_text = self._prompt_text()
         resolved_images = []
         refs: list[ImageRef] = []
         for image in episode["images"]:
@@ -150,16 +165,7 @@ class ChangeAgentDataProfile:
             relative = str(image["path"])
             resolved_images.append(registry.load_rgb(source, relative))
             refs.append(ImageRef(source, str(registry.resolve(source, relative)), str(image["role"])))
-        user: list[dict[str, Any]] = [{"type": "text", "text": "Decision stage: initial. Compare the next two authoritative raw images first."}]
-        for image in episode["images"]:
-            user.append({"type": "text", "text": evidence_label(str(image["role"]))})
-            user.append({"type": "image"})
-        user.append({"type": "text", "text": json.dumps(episode["request_payload"], ensure_ascii=False, separators=(",", ":"))})
-        messages = (
-            {"role": "system", "content": prompt_text + "\n\n" + INITIAL_RESPONSE_SUFFIX},
-            {"role": "user", "content": user},
-            {"role": "assistant", "content": [{"type": "text", "text": json.dumps(episode["target"]["result"], ensure_ascii=False, separators=(",", ":"))}]},
-        )
+        messages = self.render_messages(episode)
         return PreparedMultimodalEpisode(
             episode_id=str(episode["episode_id"]), task_profile=self.name, messages=messages,
             images=tuple(resolved_images), image_roles=tuple(ref.role for ref in refs),

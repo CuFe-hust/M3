@@ -49,6 +49,7 @@ class TrainingConfig:
     max_eval_samples: int | None = None
     logging_steps: int = 10
     smoke_gradients: bool = False
+    smoke_gradients_only: bool = False
     repeat_group_key: str | None = None
     repeat_weights: Mapping[str, int] = field(default_factory=dict)
     save_steps: int = 0
@@ -210,23 +211,58 @@ class GenericTrainerCore:
         self.data_profile.validate(episode)
         return episode
 
-    def smoke_gradients(self, *, model: Any, processor: Any, episode: Any, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0, max_seq_length: int = 4096) -> dict[str, Any]:
+    def smoke_gradients(self, *, model: Any, processor: Any, episode: Any, parameter_plan: Any = None, image_roots: Any = None, split: str = "train", epoch: int = 0, seed: int | str = 0, max_seq_length: int = 4096) -> dict[str, Any]:
+        import torch
+
         prepared = self._prepare_episode(episode, image_roots=image_roots, split=split, epoch=epoch, seed=seed)
         model.train()
+        for parameter in model.parameters():
+            parameter.grad = None
         encoded = self._encode(processor, prepared, max_seq_length=max_seq_length)
         batch, _meta = self._collate([encoded])
         output = model(**self.adapter.prepare_forward_inputs(batch))
         loss = self._loss(output)
         if loss is None:
             raise ValueError("gradient smoke requires a model loss")
+        if not bool(torch.isfinite(loss).all().item()):
+            raise ValueError("gradient smoke found non-finite loss")
         loss.backward()
-        trainable = [parameter for parameter in model.parameters() if bool(getattr(parameter, "requires_grad", False))]
-        with_grad = sum(parameter.grad is not None for parameter in trainable)
-        if trainable and with_grad != len(trainable):
-            raise ValueError(f"gradient smoke found missing gradients: {with_grad}/{len(trainable)}")
-        for parameter in trainable:
+        named_parameters = list(model.named_parameters())
+        trainable = [(name, parameter) for name, parameter in named_parameters if bool(getattr(parameter, "requires_grad", False))]
+        with_grad = [(name, parameter) for name, parameter in trainable if parameter.grad is not None]
+        if trainable and len(with_grad) != len(trainable):
+            raise ValueError(f"gradient smoke found missing gradients: {len(with_grad)}/{len(trainable)}")
+        nonfinite = [name for name, parameter in with_grad if not bool(torch.isfinite(parameter.grad).all().item())]
+        if nonfinite:
+            raise ValueError(f"gradient smoke found non-finite gradients: {nonfinite[:10]}")
+        frozen_with_grad = [
+            name for name, parameter in named_parameters
+            if not bool(getattr(parameter, "requires_grad", False)) and parameter.grad is not None
+        ]
+        if frozen_with_grad:
+            raise ValueError(f"gradient smoke found frozen-parameter gradients: {frozen_with_grad[:10]}")
+        squared_norm = sum(float(parameter.grad.detach().float().pow(2).sum().cpu().item()) for _, parameter in with_grad)
+        max_abs = max((float(parameter.grad.detach().float().abs().max().cpu().item()) for _, parameter in with_grad), default=0.0)
+        full_train_paths = tuple(getattr(parameter_plan, "full_train_module_paths", ()) or ())
+        connector_with_grad = sum(
+            any(("." + path + ".") in ("." + name + ".") for path in full_train_paths)
+            for name, _ in with_grad
+        )
+        lora_with_grad = len(with_grad) - connector_with_grad
+        for _, parameter in trainable:
             parameter.grad = None
-        return {"passed": True, "trainable_parameters": len(trainable), "parameters_with_grad": with_grad, "loss": float(loss.detach().cpu().item())}
+        return {
+            "passed": True,
+            "trainable_parameter_tensors": len(trainable),
+            "parameter_tensors_with_grad": len(with_grad),
+            "lora_parameter_tensors_with_grad": lora_with_grad,
+            "connector_parameter_tensors_with_grad": connector_with_grad,
+            "frozen_parameter_tensors_with_grad": 0,
+            "nonfinite_gradient_tensors": 0,
+            "gradient_l2_norm": squared_norm ** 0.5,
+            "gradient_max_abs": max_abs,
+            "loss": float(loss.detach().cpu().item()),
+        }
 
     def evaluate(self, *, model: Any, processor: Any, episodes: Sequence[Any], image_roots: Any = None, epoch: int = 0, seed: int | str = 0, max_seq_length: int = 4096, batch_size: int = 1) -> float | None:
         import torch
@@ -461,6 +497,8 @@ class GenericTrainerCore:
             raise ValueError("gradient_accumulation_steps must be positive")
         if config.save_steps < 0:
             raise ValueError("save_steps must be zero or positive")
+        if config.smoke_gradients_only and not config.smoke_gradients:
+            raise ValueError("smoke_gradients_only requires smoke_gradients")
         self.seed_everything(config.seed)
         effective_model_identity = dict(model_identity or {})
         if config.base_model_id is not None:
@@ -538,9 +576,12 @@ class GenericTrainerCore:
                 start_sample_index = 0
                 start_batch_index = 0
             self._restore_rng_state(resume_root)
+        smoke_result = None
         if config.smoke_gradients:
             smoke_index = start_sample_index if start_sample_index < len(train_rows) else 0
-            self.smoke_gradients(model=model, processor=processor, episode=train_rows[smoke_index], image_roots=config.image_roots, epoch=start_epoch, seed=config.seed, max_seq_length=config.max_seq_length)
+            smoke_result = self.smoke_gradients(model=model, processor=processor, episode=train_rows[smoke_index], parameter_plan=plan, image_roots=config.image_roots, epoch=start_epoch, seed=config.seed, max_seq_length=config.max_seq_length)
+        if config.smoke_gradients_only:
+            return TrainingResult(0, None, None, None, plan, {**optimizer_stats, "gradient_smoke": smoke_result})
 
         model.train()
         optimizer.zero_grad(set_to_none=True)

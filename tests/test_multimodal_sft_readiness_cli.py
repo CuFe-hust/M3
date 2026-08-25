@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+from scripts import finetune_multimodal_sft as cli
+from training.multimodal_sft.contracts import AdapterProbe, ModelIdentity
+from training.multimodal_sft.trainer_core import GenericTrainerCore
+
+
+def test_cli_propagates_resume_and_smoke_only(monkeypatch, tmp_path: Path, capsys) -> None:
+    captured = {}
+    probe = AdapterProbe("fixture", ModelIdentity("fixture"), frozenset())
+
+    class _Adapter:
+        name = "fixture"
+
+        def load(self, *args, **kwargs):
+            return object(), object(), probe
+
+    class _Registry:
+        def resolve(self, *args, **kwargs):
+            return _Adapter(), probe
+
+    profile = SimpleNamespace(name="change_agent", read=lambda path: iter([{"episode_id": "x"}]))
+    monkeypatch.setattr(cli, "profile_for", lambda *args, **kwargs: profile)
+    monkeypatch.setattr(cli, "default_registry", lambda: _Registry())
+    monkeypatch.setattr(cli.ImageRootRegistry, "from_specs", lambda specs: SimpleNamespace(roots={}))
+
+    def _fit(self, **kwargs):
+        captured["config"] = kwargs["config"]
+        return SimpleNamespace(steps=0, manifest_path=None, optimizer_stats={"gradient_smoke": {"passed": True}})
+
+    monkeypatch.setattr(GenericTrainerCore, "fit", _fit)
+    resume = tmp_path / "checkpoint-10"
+    exit_code = cli.main([
+        "--model-id", "fixture",
+        "--data-profile", "change_agent",
+        "--train-file", str(tmp_path / "train.jsonl"),
+        "--data-manifest", str(tmp_path / "manifest.json"),
+        "--resume-from", str(resume),
+        "--smoke-gradients-only",
+    ])
+
+    assert exit_code == 0
+    assert captured["config"].resume_from == str(resume)
+    assert captured["config"].smoke_gradients is True
+    assert captured["config"].smoke_gradients_only is True
+    assert '"gradient_smoke"' in capsys.readouterr().out

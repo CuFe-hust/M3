@@ -51,6 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume-from", "--resume-from-checkpoint", "--resume_from_checkpoint", dest="resume_from", type=str)
     parser.add_argument("--preflight-only", "--preflight_only", action="store_true")
     parser.add_argument("--smoke-gradients", "--smoke_gradients", action="store_true")
+    parser.add_argument("--smoke-gradients-only", "--smoke_gradients_only", action="store_true", help="Run one real backward-pass audit and exit without an optimizer step or checkpoint")
     parser.add_argument("--max-train-samples", "--max_train_samples", type=int)
     parser.add_argument("--max-eval-samples", "--max_eval_samples", type=int)
     parser.add_argument("--repeat-group-key", "--repeat_group_key", dest="repeat_group_key")
@@ -142,7 +143,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 gradient_accumulation_steps=args.gradient_accumulation,
                 seed=args.seed,
                 preflight_only=args.preflight_only,
-                smoke_gradients=args.smoke_gradients,
+                smoke_gradients=args.smoke_gradients or args.smoke_gradients_only,
+                smoke_gradients_only=args.smoke_gradients_only,
                 max_train_samples=args.max_train_samples,
                 max_eval_samples=args.max_eval_samples,
                 logging_steps=args.logging_steps,
@@ -155,6 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 image_roots=image_registry,
                 base_model_id=args.model_id,
                 data_contract={"image_sources": sorted(image_registry.roots), "batch_size": args.batch_size, "max_seq_length": args.max_seq_length},
+                resume_from=args.resume_from,
             ),
             policy=selected_policy,
             probe=loaded_probe,
@@ -163,6 +166,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result["steps"] = training_result.steps
         result["manifest"] = str(training_result.manifest_path) if training_result.manifest_path else None
+        if "gradient_smoke" in training_result.optimizer_stats:
+            result["gradient_smoke"] = training_result.optimizer_stats["gradient_smoke"]
         print(json.dumps(result, indent=2, ensure_ascii=False))
         return 0
     except (UnsupportedModelAdapter, CheckpointContractError, ImageRootError, ValueError) as exc:
