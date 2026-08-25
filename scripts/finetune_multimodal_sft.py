@@ -166,6 +166,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         result["steps"] = training_result.steps
         result["manifest"] = str(training_result.manifest_path) if training_result.manifest_path else None
+        plan_payload = training_result.parameter_plan.as_dict()
+        structure_payload = dict(plan_payload.get("structure", {}))
+        result["parameter_plan_summary"] = {
+            "adapter_name": plan_payload.get("adapter_name"),
+            "policy": plan_payload.get("policy"),
+            "lora_module_count": len(plan_payload.get("lora_module_paths", [])),
+            "full_train_module_count": len(plan_payload.get("full_train_module_paths", [])),
+            "full_train_module_paths": plan_payload.get("full_train_module_paths", []),
+            "structure_details": structure_payload.get("details", {}),
+        }
         if "gradient_smoke" in training_result.optimizer_stats:
             result["gradient_smoke"] = training_result.optimizer_stats["gradient_smoke"]
         print(json.dumps(result, indent=2, ensure_ascii=False))

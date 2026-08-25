@@ -29,7 +29,14 @@ def test_cli_propagates_resume_and_smoke_only(monkeypatch, tmp_path: Path, capsy
 
     def _fit(self, **kwargs):
         captured["config"] = kwargs["config"]
-        return SimpleNamespace(steps=0, manifest_path=None, optimizer_stats={"gradient_smoke": {"passed": True}})
+        plan = SimpleNamespace(as_dict=lambda: {
+            "adapter_name": "fixture",
+            "policy": "lora_plus_projector",
+            "lora_module_paths": ["language.one", "language.two"],
+            "full_train_module_paths": ["vision.connector"],
+            "structure": {"details": {"actual_target_count": 2}},
+        })
+        return SimpleNamespace(steps=0, manifest_path=None, parameter_plan=plan, optimizer_stats={"gradient_smoke": {"passed": True}})
 
     monkeypatch.setattr(GenericTrainerCore, "fit", _fit)
     resume = tmp_path / "checkpoint-10"
@@ -46,4 +53,7 @@ def test_cli_propagates_resume_and_smoke_only(monkeypatch, tmp_path: Path, capsy
     assert captured["config"].resume_from == str(resume)
     assert captured["config"].smoke_gradients is True
     assert captured["config"].smoke_gradients_only is True
-    assert '"gradient_smoke"' in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert '"gradient_smoke"' in output
+    assert '"lora_module_count": 2' in output
+    assert '"full_train_module_paths"' in output
