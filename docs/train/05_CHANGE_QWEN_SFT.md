@@ -5,6 +5,25 @@ the frozen production prompt, and `ChangeInitialResult` assistant targets.
 Only `change_caption` and `change_qa` enter the current profile. Structured
 localization and context-dependent multi-turn sources remain excluded.
 
+## Final readiness
+
+The complete Spark gate passed on training-code commit
+`10f94da9b6bcf453aad15b9cc033db489b23b4e1`:
+
+```text
+READY_FOR_FORMAL_POSTTRAINING=true
+FORMAL_QWEN_SFT_STARTED=false
+token_audit=PASS (108956/108956, p99=800, max=854, over_4096=0)
+gradient_smoke=PASS (cuda:0, BF16, max_seq_length=4096, batch=1, GAS=8)
+resume_gate=PASS
+full_test_gate=2482 passed
+```
+
+The approved formal settings are `max_seq_length=4096`, micro batch 1,
+gradient accumulation 8, one epoch, save interval 1000, log interval 10, and
+save limit 4. The complete evidence and artifact hashes are recorded in
+[`../training/CHANGEAGENT_FINAL_POSTTRAIN_READINESS_REPORT.md`](../training/CHANGEAGENT_FINAL_POSTTRAIN_READINESS_REPORT.md).
+
 ## Formal corpus
 
 Build the fail-closed mixed corpus from an explicit source specification:
@@ -90,10 +109,11 @@ fail-closed on completion marker, base weights, processor semantic/content
 identity, data contract, parameter/training plans, optimizer, scheduler,
 trainer state, and RNG state.
 
-Do not launch formal training until the corpus SHA checks, full token audit,
-real gradient smoke, CLI resume tests, environment checks, and final readiness
-record all pass. Runtime configuration is not a substitute for training CLI
-device, sequence-length, batch, or accumulation settings.
+The corpus SHA checks, complete token audit, real gradient smoke, CLI resume
+tests, environment checks, and final readiness record have all passed. Formal
+training has deliberately not been launched. Runtime configuration is not a
+substitute for training CLI device, sequence-length, batch, or accumulation
+settings.
 
 ## Export
 
