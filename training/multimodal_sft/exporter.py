@@ -25,6 +25,7 @@ class GenericExporter:
         output_dir: str | Path,
         local_files_only: bool = True,
         verify_forward: bool = False,
+        change_fixture: str | Path | None = None,
     ) -> Mapping[str, Any]:
         manifest = read_manifest(checkpoint_dir)
         expected = str(getattr(self.adapter, "name", type(self.adapter).__name__))
@@ -41,6 +42,6 @@ class GenericExporter:
             output_dir=output_dir,
             local_files_only=local_files_only,
             verify_forward=verify_forward,
+            change_fixture=change_fixture,
         )
-
 

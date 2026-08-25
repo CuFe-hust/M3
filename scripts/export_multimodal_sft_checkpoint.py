@@ -24,6 +24,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--model-adapter", default="auto")
     parser.add_argument("--local-files-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--verify-forward", action="store_true")
+    parser.add_argument(
+        "--change-fixture",
+        help="Optional canonical JSON/JSONL fixture used by the adapter-owned Change forward smoke.",
+    )
     return parser
 
 
@@ -41,6 +45,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             output_dir=args.output_dir,
             local_files_only=args.local_files_only,
             verify_forward=args.verify_forward,
+            change_fixture=args.change_fixture,
         )
         print(json.dumps(result, indent=2, ensure_ascii=False, default=str))
         return 0

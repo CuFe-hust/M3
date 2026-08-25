@@ -8,7 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts import AdapterContractError, AdapterProbe, ModelIdentity, ModelStructure
-from ..checkpoint import read_manifest
+from ..checkpoint import (
+    PARAMETER_PLAN_FILENAME,
+    TRAINING_MANIFEST_FILENAME,
+    checkpoint_complete,
+    file_sha256,
+    identity_fingerprint,
+    read_manifest,
+)
 
 
 def transformers() -> Any:
@@ -449,6 +456,84 @@ def restore_trainable_state(
     return model
 
 
+def restore_full_train_state_for_export(
+    *,
+    model: Any,
+    checkpoint_dir: str | Path,
+    parameter_plan: Any,
+) -> Any:
+    """Restore only the persisted full-train tensors during export.
+
+    PEFT has already loaded the LoRA state at this point.  Re-entering the
+    resume path would load the adapter a second time, so export uses this
+    deliberately narrow helper for connector/projector state.
+    """
+
+    root = Path(checkpoint_dir)
+    full_path = root / "model_trainable_state.safetensors"
+    if not full_path.is_file():
+        raise AdapterContractError("EXPORT_MISSING_FULL_TRAIN_STATE")
+    full_state = _load_tensor_file(full_path)
+    expected_full = set(getattr(parameter_plan, "full_train_parameter_names", ()))
+    if set(full_state) != expected_full:
+        missing = sorted(expected_full - set(full_state))
+        unexpected = sorted(set(full_state) - expected_full)
+        raise AdapterContractError(
+            "EXPORT_FULL_TRAIN_STATE_KEY_MISMATCH: "
+            f"missing={missing[:8]} unexpected={unexpected[:8]}"
+        )
+
+    model_state = model.state_dict()
+    actual_by_canonical: dict[str, str] = {}
+    for name in model_state:
+        canonical = canonicalize_model_parameter_name(name)
+        if canonical in actual_by_canonical and actual_by_canonical[canonical] != name:
+            raise AdapterContractError(f"ambiguous canonical model state name: {canonical}")
+        actual_by_canonical[canonical] = name
+
+    mapped: dict[str, Any] = {}
+    for canonical, value in full_state.items():
+        target_name = actual_by_canonical.get(canonicalize_model_parameter_name(canonical))
+        if target_name is None:
+            raise AdapterContractError(f"EXPORT_FULL_TRAIN_STATE_MISSING_TARGET: {canonical}")
+        expected_value = model_state[target_name]
+        if tuple(expected_value.shape) != tuple(value.shape):
+            raise AdapterContractError(f"EXPORT_FULL_TRAIN_STATE_SHAPE_MISMATCH: {canonical}")
+        if getattr(expected_value, "dtype", None) != getattr(value, "dtype", None):
+            raise AdapterContractError(f"EXPORT_FULL_TRAIN_STATE_DTYPE_MISMATCH: {canonical}")
+        mapped[target_name] = value.to(dtype=expected_value.dtype)
+    result = model.load_state_dict(mapped, strict=False)
+    if getattr(result, "unexpected_keys", ()):
+        raise AdapterContractError("EXPORT_FULL_TRAIN_STATE_UNEXPECTED_KEYS")
+    for canonical, value in full_state.items():
+        target_name = actual_by_canonical[canonicalize_model_parameter_name(canonical)]
+        if not model_state[target_name].equal(value):
+            raise AdapterContractError(f"EXPORT_FULL_TRAIN_STATE_RESTORE_FAILED: {canonical}")
+    return model
+
+
+def snapshot_full_train_state(model: Any, parameter_plan: Any) -> dict[str, Any]:
+    """Clone exact full-train tensors using their canonical semantic names."""
+
+    by_canonical = _canonical_parameter_map(model)
+    snapshot: dict[str, Any] = {}
+    for planned in getattr(parameter_plan, "full_train_parameter_names", ()):
+        canonical = canonicalize_model_parameter_name(planned)
+        match = by_canonical.get(canonical)
+        if match is None:
+            raise AdapterContractError(f"EXPORT_FULL_TRAIN_PARAMETER_MISSING: {canonical}")
+        snapshot[canonical] = match[1].detach().clone()
+    return snapshot
+
+
+def compare_tensor_snapshots(before: dict[str, Any], after: dict[str, Any]) -> None:
+    if set(before) != set(after):
+        raise AdapterContractError("EXPORT_CONNECTOR_MUTATED_DURING_MERGE")
+    for name in before:
+        if not before[name].equal(after[name]):
+            raise AdapterContractError("EXPORT_CONNECTOR_MUTATED_DURING_MERGE")
+
+
 def export_peft_checkpoint(
     adapter: Any,
     *,
@@ -457,41 +542,112 @@ def export_peft_checkpoint(
     output_dir: str | Path,
     local_files_only: bool = True,
     verify_forward: bool = False,
+    change_fixture: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Generic PEFT merge/export seam used by adapters with a proven PEFT layout."""
+    """Validate, restore, merge, export and offline-verify a PEFT checkpoint."""
 
     checkpoint = Path(checkpoint_dir)
     output = Path(output_dir)
     if output.exists():
-        raise AdapterContractError("export output already exists")
+        raise AdapterContractError("EXPORT_OUTPUT_EXISTS")
+    if not checkpoint_complete(checkpoint, required_files=("adapter/adapter_config.json",)):
+        raise AdapterContractError("EXPORT_CHECKPOINT_INCOMPLETE")
+    manifest_path = checkpoint / TRAINING_MANIFEST_FILENAME
+    if not manifest_path.is_file():
+        raise AdapterContractError("EXPORT_CANONICAL_MANIFEST_MISSING")
     manifest = read_manifest(checkpoint)
+    plan_path = checkpoint / PARAMETER_PLAN_FILENAME
+    try:
+        parameter_plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise AdapterContractError("EXPORT_PARAMETER_PLAN_UNREADABLE") from exc
+    if manifest.get("parameter_plan_sha256") != identity_fingerprint(parameter_plan_payload):
+        raise AdapterContractError("EXPORT_PARAMETER_PLAN_MANIFEST_MISMATCH")
+    try:
+        from ..parameter_plan import ParameterPlan
+
+        parameter_plan = ParameterPlan(**parameter_plan_payload)
+    except Exception as exc:  # noqa: BLE001 - convert malformed plans to the export contract
+        raise AdapterContractError("EXPORT_PARAMETER_PLAN_INVALID") from exc
+    if manifest.get("adapter_name") != adapter.name:
+        raise AdapterContractError("EXPORT_ADAPTER_IDENTITY_MISMATCH")
     adapter_dir = checkpoint / "adapter"
     if not (adapter_dir / "adapter_config.json").is_file():
-        raise AdapterContractError("checkpoint does not contain a PEFT adapter_config.json")
+        raise AdapterContractError("EXPORT_MISSING_PEFT_CONFIG")
+    adapter_state_path = _adapter_state_path(checkpoint)
+    full_state_path = checkpoint / "model_trainable_state.safetensors"
+    validate_state = getattr(adapter, "validate_checkpoint_state", None)
+    if callable(validate_state):
+        validate_state(checkpoint, parameter_plan)
     model, processor, probe = adapter.load(model_id, local_files_only=local_files_only)
     expected_identity = manifest.get("model", {}).get("identity", {})
     expected_fingerprint = expected_identity.get("fingerprint")
     actual_fingerprint = getattr(probe.identity, "fingerprint", None)
     if expected_fingerprint and actual_fingerprint and expected_fingerprint != actual_fingerprint:
-        raise AdapterContractError("checkpoint model identity does not match the base model")
+        raise AdapterContractError("EXPORT_BASE_IDENTITY_MISMATCH")
     try:
         from peft import PeftModel
     except ImportError as exc:  # pragma: no cover - optional training dependency
         raise AdapterContractError("PEFT is required for multimodal checkpoint export") from exc
     peft_model = PeftModel.from_pretrained(model, adapter_dir, is_trainable=False)
+    restore_full_train_state_for_export(
+        model=peft_model, checkpoint_dir=checkpoint, parameter_plan=parameter_plan
+    )
+    connector_before = snapshot_full_train_state(peft_model, parameter_plan)
     merged = peft_model.merge_and_unload()
+    connector_after = snapshot_full_train_state(merged, parameter_plan)
+    compare_tensor_snapshots(connector_before, connector_after)
     output.mkdir(parents=True)
     merged.save_pretrained(output, safe_serialization=True)
+    # The root is the canonical deployment/reload directory.  Keep a nested
+    # copy for old callers that still expect a processor/ subdirectory.
+    save_processor(processor, output)
     save_processor(processor, output / "processor")
+    reload_export = getattr(adapter, "reload_exported", None)
+    if not callable(reload_export):
+        raise AdapterContractError("EXPORT_ADAPTER_MISSING_OFFLINE_RELOAD")
+    reloaded_model, reloaded_processor = reload_export(
+        output, local_files_only=local_files_only
+    )
+    verification = {
+        "offline_processor_reload": "PASS",
+        "offline_model_reload": "PASS",
+        "synthetic_two_image_forward": "NOT_RUN",
+        "change_fixture_forward": "NOT_REQUESTED",
+    }
+    verify = getattr(adapter, "verify_export_forward", None)
+    if verify_forward:
+        if not callable(verify):
+            raise AdapterContractError("EXPORT_ADAPTER_MISSING_FORWARD_VERIFIER")
+        verification.update(
+            dict(
+                verify(
+                    reloaded_model,
+                    reloaded_processor,
+                    change_fixture=change_fixture,
+                )
+            )
+        )
     result = {
-        "schema_version": 1,
+        "schema_version": 2,
         "export_type": "multimodal_sft_deployment",
         "adapter_name": adapter.name,
         "model": probe.identity.as_dict(),
-        "source_training_manifest": str(checkpoint / "multimodal_sft_training_manifest.json"),
+        "source_training_manifest": str(manifest_path),
+        "training_manifest_sha256": file_sha256(manifest_path),
+        "parameter_plan_sha256": file_sha256(plan_path),
+        "adapter_state_sha256": file_sha256(adapter_state_path),
+        "full_train_state_sha256": file_sha256(full_state_path),
+        "base_model_identity": probe.identity.as_dict(),
+        "processor_identity": dict(getattr(adapter, "processor_identity")(processor)),
+        **verification,
         "verify_forward": bool(verify_forward),
-        "reload_validation": "base model/processor reload delegated to adapter load contract",
     }
+    (output / "training_export_manifest.json").write_text(
+        json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )
+    # Legacy filename remains an alias; training_manifest.json remains the
+    # only canonical source identity on the input checkpoint.
     (output / "multimodal_sft_export_manifest.json").write_text(
         json.dumps(result, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
     )

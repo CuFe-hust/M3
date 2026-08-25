@@ -118,7 +118,7 @@ class AdapterRegistry:
         from .adapters.hf_generic import GenericHFAdapter
 
         self.register("qwen3_vl", Qwen3VLAdapter, model_types={"qwen3_vl"})
-        self.register("qwen3_5", Qwen35Adapter, model_types={"qwen3_5", "qwen3_5_moe"})
+        self.register("qwen3_5", Qwen35Adapter, model_types={"qwen3_5"})
         self.register("hf_generic_multimodal", GenericHFAdapter)
 
 
@@ -130,4 +130,3 @@ def default_registry() -> AdapterRegistry:
     if _DEFAULT_REGISTRY is None:
         _DEFAULT_REGISTRY = AdapterRegistry()
     return _DEFAULT_REGISTRY
-

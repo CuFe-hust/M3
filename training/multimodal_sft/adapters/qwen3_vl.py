@@ -100,3 +100,15 @@ class Qwen3VLAdapter:
 
     def export_checkpoint(self, **kwargs: Any) -> dict[str, Any]:
         return _hf.export_peft_checkpoint(self, **kwargs)
+
+    def reload_exported(self, output_dir: str | Path, *, local_files_only: bool = True) -> tuple[Any, Any]:
+        t = _hf.transformers()
+        factory = getattr(t, "Qwen3VLForConditionalGeneration", None) or getattr(t, "AutoModelForImageTextToText", None)
+        if factory is None:
+            raise AdapterContractError("Transformers has no image-text model loader for exported qwen3_vl")
+        model = factory.from_pretrained(output_dir, local_files_only=local_files_only, trust_remote_code=True)
+        processor = _hf.auto_processor(output_dir, local_files_only=local_files_only)
+        return model, processor
+
+    def verify_export_forward(self, model: Any, processor: Any, *, change_fixture: str | Path | None = None) -> dict[str, Any]:
+        return qwen_multimodal.verify_export_forward(self, model, processor, change_fixture=change_fixture)
