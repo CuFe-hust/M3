@@ -24,12 +24,12 @@ from agents.schema import VisualEvidence
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _box(label: str, box: list[int], confidence: float = 0.9) -> VisualEvidence:
-    return VisualEvidence(label=label, box=box, confidence=confidence)
+def _box(label: str, box: list[int]) -> VisualEvidence:
+    return VisualEvidence(label=label, box=box)
 
 
-def _point(label: str, point: list[int], confidence: float = 0.9) -> VisualEvidence:
-    return VisualEvidence(label=label, point=point, confidence=confidence)
+def _point(label: str, point: list[int]) -> VisualEvidence:
+    return VisualEvidence(label=label, point=point)
 
 
 # ── 数量解析 / count parsing ──────────────────────────────────────────────
@@ -78,13 +78,13 @@ def test_is_tiny_border_fragment() -> None:
 
 def test_merge_count_evidence_merges_by_iou() -> None:
     items = [
-        _box("car", [100, 100, 200, 200], confidence=0.8),
-        _box("car", [102, 102, 198, 198], confidence=0.9),
-        _box("car", [300, 300, 400, 400], confidence=0.7),
+        _box("car", [100, 100, 200, 200]),
+        _box("car", [102, 102, 198, 198]),
+        _box("car", [300, 300, 400, 400]),
     ]
     merged = merge_count_evidence(items)
     assert len(merged) == 2
-    assert merged[0].confidence == 0.9  # higher confidence wins / 高置信度胜出
+    assert merged[0].box == [100, 100, 200, 200]
 
 
 def test_merge_count_evidence_keeps_adjacent_distinct() -> None:
@@ -143,7 +143,7 @@ def test_accepted_count_evidence_drops_fragments_and_dedups() -> None:
 
 def test_global_count_point_conversion() -> None:
     point = global_count_point(
-        "s1", "car", _point("car", [100, 200], confidence=0.8), index=3, width=1000, height=1000
+        "s1", "car", _point("car", [100, 200]), index=3, width=1000, height=1000
     )
     assert point.global_id == "s1:whole_image_overview:p003"
     assert point.local_id == "p003"

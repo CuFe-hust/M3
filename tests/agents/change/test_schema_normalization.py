@@ -104,12 +104,10 @@ def test_canonical_adjudication_negative_clears_model_evidence() -> None:
             "candidate_reviews": [_candidate()],
             "answer": CANONICAL_NO_CHANGE,
             "boxes": [[1, 2, 3, 4]],
-            "evidence": ["change_000:reference_t1_crop"],
             "evidence_items": [{"image_id": "raw_full_t1", "description": "same"}],
         }
     )
     assert result.boxes == []
-    assert result.evidence == []
     assert result.evidence_items == []
     assert result.geometry["change_input_normalizations"] == [
         "canonical_no_change_cleared_model_evidence"
@@ -155,4 +153,3 @@ def test_building_rescue_review_requires_final_answer_only_for_confirmations() -
         final_answer=None,
     )
     assert valid.reviews[0].verdict == "confirmed_added_building"
-

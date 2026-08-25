@@ -6,14 +6,16 @@
 分支；旧 run、旧 artifact 和旧 trace 仍可只读审计，但需要重新推理时不使用旧
 planner，也不静默改用 v2 或 v3。
 
-doc 18 further supersedes the active v2 response shape: fresh execution uses
-`visual-task-plan-v4`, removes planner confidence, and adds the counting target. v2/v3 remain historical,
-confidence-bearing artifact/resume identity only; reporting may display it but never
-rewrites or re-executes it.
+Doc 18 superseded the active v2 response shape with `visual-task-plan-v4`, removing
+planner confidence and adding the counting target. Doc 20 subsequently superseded v4:
+fresh execution now uses `visual-task-plan-v5` with quantized ROI coordinates. Earlier
+versions remain historical artifact/resume identities only; reporting may display them
+but never rewrites or re-executes them.
 
-doc 18 进一步替代现役 v2 response shape：新鲜执行使用
-`visual-task-plan-v4`，删除 planner confidence 并增加计数目标。v2/v3 仅作为历史
-artifact/resume 身份保留；reporting 可以展示，但绝不改写或重新执行。
+doc 18 曾以 `visual-task-plan-v4` 替代现役 v2 response shape，删除 planner
+confidence 并增加计数目标。doc 20 随后继续替代 v4：当前新鲜执行使用带量化 ROI
+坐标的 `visual-task-plan-v5`。更早版本仅作为历史 artifact/resume 身份保留；
+reporting 可以展示，但绝不改写或重新执行。
 
 ## 任务权威来源变化
 
@@ -36,9 +38,12 @@ doc 15 的联合模式曾改变这一顺序：单次 Qwen 调用同时产出 tas
 VisualTaskPlanner 调用 -> `visual-task-plan-v2` -> materialized view + task
       -> TaskRouter(确定性) -> Agent(注入 v2 plan/view)
 
-当前（doc 18）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
+历史（doc 18/19）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
 VisualTaskPlanner 调用 -> `visual-task-plan-v4` -> materialized view + task/count target
-      -> TaskRouter(确定性) -> Agent(注入 v3 plan/view)
+
+当前（doc 20）：SampleDraft/UnifiedSample -> 预览图像 + 原始 question 的一次
+VisualTaskPlanner 调用 -> `visual-task-plan-v5` -> quantized ROI/materialized view + task/count target
+      -> TaskRouter(确定性) -> Agent(注入 v5 plan/view)
 ```
 
 ## 历史结果可比性
@@ -54,7 +59,7 @@ VisualTaskPlanner 调用 -> `visual-task-plan-v4` -> materialized view + task/co
 
 ## 影响范围
 
-- doc 18 后所有 fresh manual/dataset 入口均统一为一次 v3 规划调用，
-  trace 增加 `planning_mode=visual-task-plan-v4`；
+- doc 20 后所有 fresh manual/dataset 入口均统一为一次 v5 规划调用，
+  trace 增加 `planning_mode=visual-task-plan-v5`；
 - 历史 doc 15 run 保留既有 artifact 与 report 语义，但不再获得旧推理能力；
 - 不新增第二套 Prediction/全局 sample schema；`UnifiedSample` 契约不变。

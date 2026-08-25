@@ -417,7 +417,7 @@ Ground Truth 是源标注的只读保留。
 > “这是什么任务，以及是否需要已声明的视觉辅助？”
 
 每条 fresh manual `ask` 和 dataset（explicit/default/auto）样本都必须经过**恰好一次**
-`visual-task-plan-v4` 模型规划调用。第一次调用的 sample-specific 输入只包含：
+`visual-task-plan-v5` 模型规划调用。第一次调用的 sample-specific 输入只包含：
 
 ```text
 ordered normalized image previews
@@ -431,7 +431,7 @@ ordered normalized image previews
 - dataset name、adapter task、source task 不得覆盖模型选定 task；
 - 空 question 的结构提示可以保留在冻结 planner prompt 中，但 post-validation 不得再根据图像数、dataset 或 source task 确定性改写模型返回的 task；
 - planner 失败应稳定 fail closed，不重试、不回退到历史 Resolver，也不猜 `general_vqa`；
-- 当前 v4 planner 不输出或消费 confidence / candidate task 列表。
+- 当前 v5 planner 不输出或消费 confidence / candidate task 列表。
 
 历史 `TaskResolver` 只允许出现在迁移文档、旧产物解释和 parity 审计中，不得重新接回 fresh runtime。
 

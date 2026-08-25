@@ -8,7 +8,7 @@
 
 ## 1. 背景
 
-当前 fresh 运行使用 `visual-task-plan-v4`。模型在问题明确描述区域时输出
+本改造实施前，fresh 运行使用 `visual-task-plan-v4`。模型在问题明确描述区域时输出
 `focus_xy_norm`，workflow 再以该焦点为中心物化一个固定的 `1024 x 1024` ROI：
 
 ```text

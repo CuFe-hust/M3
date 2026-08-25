@@ -17,13 +17,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_catalog_loads_all_bound_prompts() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
-    assert len(catalog.all_keys()) == 14
+    assert len(catalog.all_keys()) == 15
     for key in (
         "count_tile",
         "change",
         "change_building_rescue",
         "general",
         "grounding",
+        "grounding_final",
         "caption",
         "seam",
         "visual_task_plan",
@@ -44,6 +45,8 @@ def test_catalog_asset_and_versions() -> None:
     assert catalog.version("count_tile") == "v4"
     assert catalog.version("general") == "v3"
     assert catalog.asset("general").path.name == "general_vqa_v3.md"
+    assert catalog.version("grounding_final") == "v1"
+    assert catalog.asset("grounding_final").path.name == "grounding_final_v1.md"
     assert catalog.version("visual_task_plan") == "v5"
     assert catalog.asset("visual_task_plan").path.name == "visual_task_plan_v5.md"
     assert catalog.version("vqa_judge") == "v2"
@@ -58,7 +61,7 @@ def test_catalog_asset_and_versions() -> None:
 def test_catalog_snapshot_paths_stable_and_existing() -> None:
     catalog = PromptCatalog(REPO_ROOT / "prompts")
     paths = catalog.snapshot_paths()
-    assert len(paths) == 13  # 14 keys, general_vqa_v3 shared by two keys
+    assert len(paths) == 14  # 15 keys, general_vqa_v3 shared by two keys
     assert all(path.is_file() for path in paths)
     assert catalog.snapshot_paths() == paths  # stable order / 稳定顺序
 
@@ -74,6 +77,20 @@ def test_vqa_judge_v2_declares_semantic_text_only_rules() -> None:
         "cannot inspect an image",
         "official reference answers are authoritative",
         "return json only",
+    ):
+        assert required in prompt
+
+
+def test_grounding_final_prompt_declares_candidate_authority() -> None:
+    prompt = PromptCatalog(REPO_ROOT / "prompts")["grounding_final"].casefold()
+    for required in (
+        "candidate_id",
+        "missing_categories",
+        "roi-local",
+        "0..999",
+        "groundingqwenresponse",
+        "do not output confidence",
+        "return valid json only",
     ):
         assert required in prompt
 
@@ -206,6 +223,7 @@ def test_catalog_texts_are_cached_no_reread(tmp_path: Path) -> None:
             "change_dual_path_v9.md",
         "change_building_rescue_v1.md",
         "general_vqa_v3.md",
+        "grounding_final_v1.md",
         "caption_v1.md",
         "seam_review_v2.md",
         "visual_task_plan_v5.md",

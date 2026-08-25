@@ -442,7 +442,7 @@ def test_multiple_choice_evidence_vertical_slice_enforces_choices(
             normalized_task="multiple_choice_vqa",  # type: ignore[arg-type]
             normalizer="test",
             version="1",
-            answer_constraints={"choices": ["road", "water"]},
+            choices=["road", "water"],
         ),
     )
     run_store = RunStore(tmp_path / "runs", tmp_path)

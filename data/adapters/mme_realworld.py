@@ -6,8 +6,9 @@
   不进入样本流；
 - 保留原始选项与问题文本事实，不拼接字母选项 Prompt、不构造 system
   instruction、不把正确答案写进 question；
-- 输出 multiple_choice_vqa，metadata 保存 allow_multiple、source subtask 与
-  原始 choices；答案必须存在且属于合法选项字母格式。
+- 输出 multiple_choice_vqa，TaskNormalization 保存规范 choices 与
+  allow_multiple，metadata 只保留 source subtask；答案必须存在且属于合法
+  选项字母格式。
 """
 
 from __future__ import annotations
@@ -19,7 +20,13 @@ from typing import Any, Pattern
 import re
 
 from data.adapters.base import AdapterProbe, DatasetProbeError, read_json_rows
-from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
+from data.schema import (
+    GroundTruth,
+    ImageRef,
+    TaskNormalization,
+    UnifiedSample,
+    stable_sample_id,
+)
 
 ANNOTATION_NAME = "MME_RealWorld.json"
 SUPPORTED_TASKS = frozenset({"multiple_choice_vqa"})
@@ -142,10 +149,17 @@ class MMERealWorldAdapter:
                     "source": "MME-RealWorld",
                     "source_index": index,
                     "subtask": subtask,
-                    "allow_multiple": allow_multiple,
-                    "choices": [str(choice) for choice in choices],
                     "adapter_version": ADAPTER_VERSION,
                 },
+                normalization=TaskNormalization(
+                    source_task=subtask,
+                    normalized_task="multiple_choice_vqa",
+                    semantic_subtype=subtask,
+                    normalizer="mme_realworld_adapter",
+                    version=ADAPTER_VERSION,
+                    choices=[str(choice) for choice in choices],
+                    allow_multiple=allow_multiple,
+                ),
             )
 
     # ── helpers / 辅助 ──────────────────────────────────────────────────────

@@ -348,7 +348,6 @@ def _agent_result(counting: CountingResult, image_id: str) -> AgentResult:
                 else counting.target
             ),
             point=[point.global_x_norm, point.global_y_norm],
-            confidence=point.confidence,
             image_id=image_id,
         )
         for point in accepted
@@ -363,7 +362,6 @@ def _agent_result(counting: CountingResult, image_id: str) -> AgentResult:
     return AgentResult(
         agent_name="counting_agent",
         answer=str(counting.final_count),
-        evidence=[point.short_evidence for point in accepted],
         evidence_items=evidence,
         geometry={
             "version": "accepted-detector-point-count-v1",

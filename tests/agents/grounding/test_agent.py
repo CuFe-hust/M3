@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -54,7 +55,7 @@ class _RecordingClient:
                 "agent_name": "grounding_agent",
                 "answer": "building",
                 "evidence_items": [
-                    {"label": "building", "box": [120, 80, 340, 260], "confidence": 0.9}
+                    {"label": "building", "box": [120, 80, 340, 260]}
                 ],
                 "status": "completed",
             }
@@ -118,12 +119,16 @@ class _FakeGroundingService:
         self.result = result
         self.calls: list[dict[str, Any]] = []
 
-    async def run(self, plan, sample, images, *, fallback_image_id, artifact_dir, budget, materialized_views):
+    async def run(
+        self, plan, sample, images, *, base_user_payload, fallback_image_id,
+        artifact_dir, budget, materialized_views,
+    ):
         self.calls.append(
             {
                 "plan": plan,
                 "sample": sample,
                 "images": images,
+                "base_user_payload": base_user_payload,
                 "materialized_views": materialized_views,
             }
         )
@@ -161,6 +166,15 @@ def test_direct_grounding_path_returns_unified_result(tmp_path: Path) -> None:
     assert execution.payload.evidence_items[0].box == [120, 80, 340, 260]
     assert execution.payload.boxes == [[120, 80, 340, 260]]
     assert len(client.calls) == 1
+    user_payload = json.loads(
+        client.calls[0]["messages"][1]["content"][-1]["text"]
+    )
+    assert user_payload == {
+        "task": "grounding",
+        "question": "Locate the building.",
+        "coordinate_frame": "normalized_0_999_top_left",
+        "box_format": "integer_xyxy_json",
+    }
 
 
 def test_v2_grounding_path_consumes_plan_and_views(tmp_path: Path) -> None:
@@ -182,6 +196,12 @@ def test_v2_grounding_path_consumes_plan_and_views(tmp_path: Path) -> None:
     )
     assert len(service.calls) == 1
     assert service.calls[0]["plan"] is plan
+    assert service.calls[0]["base_user_payload"] == {
+        "task": "grounding",
+        "question": "Locate the building.",
+        "coordinate_frame": "normalized_0_999_top_left",
+        "box_format": "integer_xyxy_json",
+    }
     assert service.calls[0]["materialized_views"] == views
     assert execution.payload.boxes == [[120, 80, 340, 260]]
     assert execution.additional_results["grounding_evidence.json"]["rois"][0]["expanded_xyxy"] == [0, 0, 8, 6]

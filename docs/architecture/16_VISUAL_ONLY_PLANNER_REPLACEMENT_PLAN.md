@@ -12,11 +12,13 @@
 > 后续收口：doc 17 已删除剩余可执行 resolver/gate/joint 实现；本文仅保留迁移基线与
 > v2 设计记录。
 >
-> Superseded by docs 18/19: fresh execution now uses `visual-task-plan-v4` without planner
-> confidence; the v2 shape remains only as historical artifact/resume context.
+> Superseded by docs 18/19 and then doc 20: v4 removed planner confidence, and current
+> fresh execution now uses `visual-task-plan-v5` with quantized ROI coordinates. The
+> v2/v3/v4 shapes remain only as historical artifact/resume context.
 >
-> 后续 supersede：doc 18 将 fresh execution 升级为不含 planner confidence 的
-> `visual-task-plan-v4`；v2/v3 shape 仅作为历史产物/resume 上下文保留。
+> 后续 supersede：doc 18 曾将 fresh execution 升级为不含 planner confidence 的
+> `visual-task-plan-v4`，doc 20 又将当前 fresh execution 升级为带量化 ROI 坐标的
+> `visual-task-plan-v5`；v2/v3/v4 shape 仅作为历史产物/resume 上下文保留。
 
 ## 1. 背景与问题
 

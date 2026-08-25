@@ -7,5 +7,5 @@ arrangement. Do not list objects or use bullet points. Do not mention the
 coordinate system, image borders, or your own process.
 
 Return valid JSON only. Set agent_name to 'caption_agent'; put the concise caption
-in answer; use empty boxes, evidence, and evidence_items; set status to
-'completed' only when a valid caption is provided.
+in answer; use empty boxes and evidence_items; do not include an evidence field or
+confidence values; set status to 'completed' only when a valid caption is provided.

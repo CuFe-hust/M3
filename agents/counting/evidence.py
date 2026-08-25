@@ -54,9 +54,7 @@ def box_evidence(
         box = [min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)]
         if box[0] >= box[2] or box[1] >= box[3]:
             continue
-        evidence.append(
-            VisualEvidence(label=target, box=box, confidence=0.9, image_id=image_id)
-        )
+        evidence.append(VisualEvidence(label=target, box=box, image_id=image_id))
     return evidence
 
 
@@ -130,9 +128,7 @@ def merge_count_evidence(items: list[VisualEvidence]) -> list[VisualEvidence]:
         )
         if dup_idx is None:
             merged.append(candidate)
-        elif (
-            candidate.box is not None and merged[dup_idx].box is None
-        ) or candidate.confidence > merged[dup_idx].confidence:
+        elif candidate.box is not None and merged[dup_idx].box is None:
             merged[dup_idx] = candidate
     return merged
 
@@ -164,9 +160,7 @@ def accepted_count_evidence(
             dropped += 1
             continue
         raw_points.append(
-            VisualEvidence(
-                label=target, point=point, confidence=item.confidence, image_id=image_id
-            )
+            VisualEvidence(label=target, point=point, image_id=image_id)
         )
     points = merge_count_evidence(raw_points)
     dropped += len(raw_points) - len(points)
@@ -200,7 +194,10 @@ def global_count_point(
         global_x_norm=x,
         global_y_norm=y,
         radius_px=0.0,
-        confidence=evidence.confidence,
+        # Public visual evidence intentionally carries no confidence. This
+        # compatibility path records the confidence as unknown.
+        # 公共视觉证据有意不携带置信度；此兼容路径将置信度记录为未知。
+        confidence=0.0,
         ownership_valid=True,
         near_core_boundary=False,
         accepted=True,

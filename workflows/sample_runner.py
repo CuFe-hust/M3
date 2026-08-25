@@ -613,7 +613,13 @@ def _rebuild_sample_for_task(
     try:
         data = sample.model_dump(mode="json")
         data["task"] = task
-        data["normalization"] = None
+        normalization = sample.normalization
+        if normalization is None:
+            data["normalization"] = None
+        else:
+            normalization_data = normalization.model_dump(mode="json")
+            normalization_data["normalized_task"] = task
+            data["normalization"] = normalization_data
         for image_data, role in zip(data["images"], roles):
             image_data["role"] = role
         return UnifiedSample.model_validate(data)

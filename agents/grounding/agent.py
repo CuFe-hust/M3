@@ -8,6 +8,7 @@ postprocess 强制 completed 必须携带合法定位证据，不在本模块计
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 from agents.base import (
     AgentContext,
@@ -40,9 +41,8 @@ _DEFAULT_PROMPT_TEXT = (
     "copy all evidence-item boxes into boxes in the same order. Coordinates "
     "are integer whole-image 0..999 raster coordinates in JSON with the origin at the "
     "top-left, positive x to the right, and positive y downward. A box is one "
-    "flat array [x1,y1,x2,y2], never a pair of corner arrays. Use an empty "
-    "evidence list only when the answer genuinely has no localizable visual "
-    "support. Do not include hidden reasoning."
+    "flat array [x1,y1,x2,y2], never a pair of corner arrays. Do not include "
+    "confidence values or hidden reasoning."
 )
 
 _DEFAULT_PROMPT_VERSION = "general_vqa_v3"
@@ -74,6 +74,16 @@ class GroundingAgent(VisualAgentBase):
             prompt=prompt
             or PromptBinding(text=_DEFAULT_PROMPT_TEXT, version=_DEFAULT_PROMPT_VERSION),
         )
+
+    def build_user_payload(self, sample: UnifiedSample) -> dict[str, Any]:
+        """Build the direct whole-image grounding payload.
+        构造 direct 整图定位载荷。"""
+        return {
+            "task": sample.task,
+            "question": sample.question,
+            "coordinate_frame": "normalized_0_999_top_left",
+            "box_format": "integer_xyxy_json",
+        }
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
         """Protocol-owner entry for the v5 plan and injected grounding service.
@@ -151,6 +161,7 @@ class GroundingAgent(VisualAgentBase):
                 plan,
                 sample,
                 images,
+                base_user_payload=self.build_user_payload(sample),
                 fallback_image_id=sample.images[0].image_id,
                 artifact_dir=context.artifact_dir,
                 budget=context.call_budget,

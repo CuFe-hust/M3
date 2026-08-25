@@ -25,7 +25,13 @@ from data.adapters.xlrs_image_cache import (
     cache_existing_path,
     materialize_image,
 )
-from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
+from data.schema import (
+    GroundTruth,
+    ImageRef,
+    TaskNormalization,
+    UnifiedSample,
+    stable_sample_id,
+)
 
 ADAPTER_VERSION = "hf-disk-v1"
 # Official Hugging Face releases per task. / 各任务的官方 Hugging Face 发布。
@@ -627,10 +633,16 @@ class XLRSAdapter:
                 "release_split": RELEASE_SPLITS["multiple_choice_vqa"],
                 "source_index": index,
                 "image_root_kind": image_root_kind,
-                "choices": [str(choice) for choice in choices],
-                "allow_multiple": allow_multiple,
                 "adapter_version": ADAPTER_VERSION,
             },
+            normalization=TaskNormalization(
+                source_task="xlrs_vqa_lite",
+                normalized_task="multiple_choice_vqa",
+                normalizer="xlrs_vqa_lite_adapter",
+                version=ADAPTER_VERSION,
+                choices=[str(choice) for choice in choices],
+                allow_multiple=allow_multiple,
+            ),
         )
 
 

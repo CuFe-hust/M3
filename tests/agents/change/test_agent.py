@@ -338,7 +338,6 @@ def test_building_rescue_caption_preserves_clean_answer_and_binary_verdict() -> 
         agent_name="change_agent",
         answer=CANONICAL_NO_CHANGE,
         boxes=[],
-        evidence=[],
         geometry={"core_verdict": "NO_CHANGE"},
         status="completed",
     )
@@ -368,7 +367,6 @@ def test_building_rescue_caption_ignores_model_coordinates_and_roi_text() -> Non
         agent_name="change_agent",
         answer=CANONICAL_NO_CHANGE,
         boxes=[],
-        evidence=[],
         status="completed",
     )
     merged = ChangeAgent._merge_building_rescue(core, review, [candidate])
@@ -897,7 +895,7 @@ def _adjudication_result(
             for index, verdict in enumerate(candidate_verdicts)
         ],
         "answer": answer,
-        "boxes": [[1, 2, 3, 4]], "evidence": ["raw_full_t1"],
+        "boxes": [[1, 2, 3, 4]],
         "status": "completed",
     })
 
@@ -910,7 +908,7 @@ def test_global_negative_overrides_local_insufficient_merge(tmp_path: Path) -> N
     assert outcome == "negative"
     assert merged.answer == "No significant semantic change detected."
     assert merged.status == "completed"
-    assert merged.boxes == merged.evidence == merged.evidence_items == []
+    assert merged.boxes == merged.evidence_items == []
     assert provenance["final_rule"] == "GLOBAL_NEGATIVE_OVERRIDES_LOCAL_INSUFFICIENT"
 
 

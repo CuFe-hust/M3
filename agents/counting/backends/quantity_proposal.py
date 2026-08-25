@@ -64,7 +64,6 @@ class _CountProposalResult(BaseModel):
     agent_name: AgentName
     answer: str
     boxes: list[list[float]] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
     status: Literal["completed", "partial", "failed"] = "completed"
 
 
@@ -268,10 +267,6 @@ class QuantityProposalBackend:
                 "the count is incomplete."
             ),
             boxes=[[float(value) for value in box] for box in supporting_boxes],
-            evidence=[
-                f"Accepted point {index + 1}: {item.point}"
-                for index, item in enumerate(points)
-            ],
             evidence_items=points,
             geometry=geometry,
             status="completed" if complete else "partial",
@@ -298,7 +293,7 @@ class QuantityProposalBackend:
         image_bytes = _encode_image(request.image)
         system_prompt = self._proposal_prompt + (
             "\n\nReturn valid JSON only. Set agent_name to 'counting_agent'; put the "
-            "concise final answer in answer, use empty boxes/evidence when they are not "
+            "concise final answer in answer, use empty boxes when they are not "
             "needed, and set status to 'completed'."
         )
         messages: list[dict[str, Any]] = [
@@ -365,7 +360,6 @@ class QuantityProposalBackend:
                     agent_name="counting_agent",
                     answer=str(recovered),
                     boxes=[],
-                    evidence=[],
                     status="partial",
                 ),
                 "Recovered a complete integer answer header; malformed geometry "
@@ -448,5 +442,3 @@ def _encode_image(image: Any) -> bytes:
 def _normalize_target(value: str) -> str:
     separators_normalized = value.strip().casefold().replace("_", " ").replace("-", " ")
     return "-".join(separators_normalized.split())
-
-

@@ -414,10 +414,17 @@ version
 reason_codes
 spatial_query
 answer_constraints
+choices
+allow_multiple
 count_target_hint
 ```
 
 这是 `UnifiedSample` 的一等字段，不应把重要 task-normalization 信息重新塞回不透明 metadata。
+`multiple_choice_vqa` 的 `choices` 至少包含两个非空且不重复的字符串；
+`allow_multiple` 是独立布尔事实。Agent 不再从 `answer_constraints`、metadata 或
+Ground Truth 推导选择项。读取 pre-v2 持久化 normalization 时，schema 可将历史
+`answer_constraints.choices/allow_multiple` 一次性提升为 canonical 字段；这是读取
+兼容 seam，不是生产 adapter 或 Agent 的权威来源。
 
 ---
 
@@ -1005,7 +1012,7 @@ prompts.snapshot/
 涉及模型输出行为的 Prompt 修改必须被视为行为变化，而不只是文案修改。
 
 当前 active planner binding 为 `"visual_task_plan"` → 版本化
-`visual_task_plan_v4.md`（v4）。旧 resolver/gate/joint prompt 不在 active
+`visual_task_plan_v5.md`（v5）。旧 resolver/gate/joint prompt 不在 active
 catalog 中；历史 prompt 文件不参与新鲜规划。
 
 ---
@@ -1071,6 +1078,24 @@ trace
 additional_results
 ```
 
+## 20.4 `AgentResult` 与 `VisualEvidence`
+
+非计数 Agent 的统一结果字段为：
+
+```text
+agent_name
+answer
+boxes
+evidence_items
+geometry
+status
+```
+
+`AgentResult` 不包含独立文本 `evidence` 字段。`evidence_items` 中的
+`VisualEvidence` 只保存 `label`、恰好一种 `box`/`point`、可选 `image_id` 与
+`coordinate_frame`，不公开 `confidence`。检测器或计数流水线内部的置信度仍属于
+各自领域契约，不进入公共 `VisualEvidence`。
+
 安全约束：
 
 - result filename 是纯 basename；
@@ -1117,17 +1142,22 @@ GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
 放大（掩膜 NEAREST、照片 LANCZOS）。YOLO 框为黑色 5px 外描边 + 品红 3px 内描边，
 标签为黑底、品红边框、白色叶子文字，confidence 绝不写入。SegFormer 调色表按 catalog
 segformer 叶子顺序确定性生成（与品红 ≥128、与黑底 ≥96、彼此 ≥48 的 RGB
-距离约束，`sha256(leaf|attempt)` 重采样），仅存内存、绝不持久化。文本证据
-含 question、answer constraints、图像尺寸、ROI 裁切几何、
-requested/rendered_yolo/rendered_segformer/missing leaves、mask legend、
-`visual_inputs` 与 `evidence_identity{catalog_version, preprocessing_version,
-palette_version, visual_content_version}`；渲染图像摘要（包括 mask 与 clean ROI
-的实际 PNG digest）与 evidence_identity 共同覆盖 request hash（14.13）。两类图像
+距离约束，`sha256(leaf|attempt)` 重采样），仅存内存、绝不持久化。最终文本
+payload 由同一个 task-aware `build_user_payload(sample)` 基础事实加嵌套
+`evidence` 构成；`evidence` 只含实际 `visual_inputs`、最小 ROI identity/crop size、
+requested/missing categories、ROI-local detections/segmentation hits 与 mask legend。
+完整 VisualTaskPlan、source geometry、catalog/preprocessing/palette identity 和 detector
+confidence 不给最终 Qwen。渲染图像摘要（包括 mask 与 clean ROI 的实际 PNG digest）、
+source geometry 与 evidence protocol identity 仍共同覆盖 request hash（14.13）。两类图像
 只以内存 PNG 传输，不新增磁盘 artifact。
 `vqa_evidence.json` 作为 additional result 持久化 bundle（严格 JSON-safe，
 含 preprocessing version、tiles 与逐 tile call audit，无掩膜数组/无 secret）。
 `needs_visual_assistance == false` 或未注入计划时走 direct 路径。模型侧框统一使用
 `0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
+
+GeneralVQA 基础 payload 不含 `answer_constraints`。非空 `semantic_subtype` 才进入
+payload；`multiple_choice_vqa` 只从 `TaskNormalization.choices/allow_multiple`
+在顶层输出唯一一份选项事实，缺失选项会在读图、budget 与 Qwen 前稳定失败。
 
 Doc 24：GeneralVQAAgent 的四个 supported task（`general_vqa`、
 `scene_classification`、`multiple_choice_vqa`、`spatial_relation`）统一由
@@ -1153,6 +1183,10 @@ evidence；routing fallback 不得改写 persisted resolved task 或评测 task�
 caption
 ```
 
+模型基础 payload 只包含 `task` 与原始 `question`；不发送坐标、box format、
+空 constraints 或 null subtype。图像仍按 `sample.images` 稳定顺序传入，输出
+schema 为 `AgentResult`。
+
 ## 21.3 GroundingAgent
 
 覆盖：
@@ -1171,6 +1205,23 @@ GroundingAgent 消费 `GroundingEvidenceService`：C6 executor 在内部完成
 `needs_visual_assistance == false` 或无计划时走 direct 路径。服务缺失/失败以
 `grounding_evidence_failed:<CODE>` 稳定失败。最终 Grounding Qwen 接收和输出的
 ROI 局部框统一为 `0..999` 整数 `xyxy` JSON，确定性后处理再转换为整图坐标。
+
+direct 基础 payload 只包含 `task`、`question`、整图 coordinate frame 与 box
+format。evidence final-Qwen 使用独立版本化 `grounding_final_v1` prompt；接收按
+`content_image_index/roi_id` 显式绑定的 clean ROI，以及嵌套 `evidence` 中的最小
+ROI records、candidate IDs/categories/ROI-local boxes 和 missing categories。
+catalog version、source/core/expanded geometry 等审计与回映事实不对模型可见，
+但继续进入 request hash 和 `grounding_evidence.json`。最终模型输出严格匹配
+`GroundingQwenResponse`，整图回映仍由确定性生产代码完成。
+
+## 21.3.1 VQA Agent SFT v2
+
+`data/2026-08-24_vqa-agent-io/` 使用 `vqa-agent-sft-v2`。每条记录分离保存
+`visual_task_plan`、完整 `UnifiedSample`、生产 builder 生成的
+`base_user_payload`、`AgentResult` 与 supervision。evidence path 的动态 ROI、
+检测结果和完整 multimodal messages 不伪装成基础 payload。转换与校验入口是
+`scripts/migrate_vqa_agent_sft_v2.py`；它原子写入并校验 sample ID、question、
+答案、split 与图片映射不变，同时重算 manifest SHA256。
 
 ## 21.4 CountingAgent
 
@@ -4024,3 +4075,29 @@ CLI：`--model-id`（默认 `models/qwen3_vl_8b/weights`）/
 `--device`（默认 cpu）/`--local-files-only`（默认 true）/
 `--verify-forward`。公共 stderr 只输出稳定阶段与异常类型；导出 manifest
 不记录 secret、机器绝对路径（作为逻辑身份）或原始异常全文。
+
+```text
+scripts/finetune_qwen35_9b_visual_planner_lora.py
+scripts/run_qwen35_9b_visual_planner_lora.sh
+```
+
+Qwen3.5-9B visual planner 的离线 LLM LoRA SFT 工具（任务文档见
+`docs/train/05_FINETUNE_QWEN35_9B_VISUAL_PLANNER_LORA.md`）。直接消费
+`phase2-train-visualplanning-refined-v4/training/{train,val}.jsonl` 中已经冻结的
+system + ordered image blocks + raw question + assistant target JSON，不重新解释
+`datasets/` provenance，也不改变 split/样本纳入规则。processor/chat template 使用同一
+Qwen3.5 checkpoint，`enable_thinking=False`；system/user/视觉与 generation prefix 的
+labels 为 `-100`，assistant JSON + 结束 token 做标准 autoregressive token-mean CE；
+`region_request.roi_xyxy` 坐标作为普通 JSON 数字 token 接受同一 CE，不增加 ROI head，
+也不计算 L1/GIoU。所有 task 共享同一 LM head，不做默认 task weighting。
+
+训练冻结完整 vision 与 LLM base，按 Qwen3.5 hybrid decoder 真实结构显式枚举
+linear-attention 的 `in_proj_qkv/in_proj_z/in_proj_a/in_proj_b/out_proj`、full-attention 的
+`q/k/v/o_proj` 以及每层 MLP `gate/up/down_proj`；当前 32 层 9B checkpoint 共 248 个
+LoRA target，PEFT `modules_to_save` 为空且不得出现 auxiliary ROI head。启动前硬审计
+完整命中与 trainable 闭合，默认本地加载、BF16、gradient
+checkpointing，输出 PEFT checkpoint/final adapter、参数审计和不含机器绝对模型身份的
+训练 manifest。adapter config 用完整路径正则而非会被 PEFT 压缩的 projection 叶子名，
+保证保存/重载后仍不命中视觉同名模块。Shell wrapper 通过可配置 Conda env 启动，不保存
+SSH credential。resume 只接受同一 output dir 下完整的 Trainer/PEFT checkpoint，并按
+manifest 比较 base config/data checksum、选择规模、LoRA 与全部权重影响参数，冲突拒绝。

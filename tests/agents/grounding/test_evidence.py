@@ -143,9 +143,9 @@ def _view(
     )
 
 
-def _executor(qwen, *, yolo=None, policy=None) -> GroundingEvidenceExecutor:
+def _executor(qwen, *, yolo=None, policy=None, catalog_data=None) -> GroundingEvidenceExecutor:
     return GroundingEvidenceExecutor(
-        catalog=EvidenceCatalog(_CATALOG_DATA),
+        catalog=EvidenceCatalog(catalog_data or _CATALOG_DATA),
         qwen_client=qwen,
         prompt=PromptBinding(text="Locate the requested object.", version="test-v1"),
         policy=policy or GroundingEvidencePolicy(
@@ -171,6 +171,12 @@ def _run(
             _plan(),
             _sample(tmp_path, source_size),
             {"img1": Image.open(tmp_path / "img.png")},
+            base_user_payload={
+                "task": "grounding",
+                "question": "Locate the building.",
+                "coordinate_frame": "normalized_0_999_top_left",
+                "box_format": "integer_xyxy_json",
+            },
             fallback_image_id="img1",
             artifact_dir=tmp_path / "artifacts",
             budget=None,
@@ -198,6 +204,32 @@ def test_v2_executor_calls_each_model_once_and_returns_whole_image_box(tmp_path:
     payload = result.bundle.model_dump_json()
     assert "confidence" not in payload
     assert "base64" not in payload
+    model_payload = json.loads(qwen.calls[0]["messages"][1]["content"][-1]["text"])
+    assert model_payload == {
+        "task": "grounding",
+        "question": "Locate the building.",
+        "coordinate_frame": "roi_normalized_0_999_top_left",
+        "box_format": "integer_xyxy_json",
+        "evidence": {
+            "visual_inputs": [
+                {"content_image_index": 0, "roi_id": "full", "role": "clean_roi"}
+            ],
+            "rois": [
+                {"roi_id": "full", "image_id": "img1", "crop_size": [100, 80]}
+            ],
+            "candidates": [
+                {
+                    "candidate_id": "full-box-1",
+                    "category": "building-outline",
+                    "roi_id": "full",
+                    "box": [100, 125, 400, 500],
+                }
+            ],
+            "missing_categories": [],
+        },
+    }
+    for forbidden in ("catalog_version", "source_size", "core_xyxy", "expanded_xyxy"):
+        assert forbidden not in json.dumps(model_payload)
 
 
 def test_v2_executor_uses_exact_quantized_roi_pixels(tmp_path: Path) -> None:
@@ -216,6 +248,27 @@ def test_v2_executor_uses_exact_quantized_roi_pixels(tmp_path: Path) -> None:
     )
     assert yolo.calls[0].size == (1024, 896)
     assert result.bundle.rois[0].core_xyxy == (1024, 640, 2048, 1536)
+
+
+def test_model_invisible_catalog_identity_changes_grounding_request_hash(
+    tmp_path: Path,
+) -> None:
+    first_qwen = _FakeQwen(
+        {"selected_box_ids": ["full-box-1"], "fallback_boxes": []}
+    )
+    second_qwen = _FakeQwen(
+        {"selected_box_ids": ["full-box-1"], "fallback_boxes": []}
+    )
+    _run(_executor(first_qwen, yolo=_FakeYolo()), tmp_path)
+    changed_catalog = {**_CATALOG_DATA, "catalog_version": "test-catalog-v2"}
+    _run(
+        _executor(second_qwen, yolo=_FakeYolo(), catalog_data=changed_catalog),
+        tmp_path,
+    )
+    first_call = first_qwen.calls[0]
+    second_call = second_qwen.calls[0]
+    assert first_call["messages"] == second_call["messages"]
+    assert first_call["request_meta"].request_hash != second_call["request_meta"].request_hash
 
 
 def test_uncalibrated_detector_allows_authorized_missing_leaf_fallback(tmp_path: Path) -> None:
@@ -245,6 +298,12 @@ def test_invalid_materialized_view_fails_before_model_calls(tmp_path: Path) -> N
                 _plan(),
                 _sample(tmp_path),
                 {"other": Image.open(tmp_path / "img.png")},
+                base_user_payload={
+                    "task": "grounding",
+                    "question": "Locate the building.",
+                    "coordinate_frame": "normalized_0_999_top_left",
+                    "box_format": "integer_xyxy_json",
+                },
                 fallback_image_id="img1",
                 artifact_dir=tmp_path / "artifacts",
                 budget=None,

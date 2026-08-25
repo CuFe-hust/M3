@@ -66,9 +66,8 @@ _DEFAULT_PROMPT_TEXT = (
     "copy all evidence-item boxes into boxes in the same order. Coordinates "
     "are integer whole-image 0..999 raster coordinates in JSON with the origin at the "
     "top-left, positive x to the right, and positive y downward. A box is one "
-    "flat array [x1,y1,x2,y2], never a pair of corner arrays. Use an empty "
-    "evidence list only when the answer genuinely has no localizable visual "
-    "support. Do not include hidden reasoning."
+    "flat array [x1,y1,x2,y2], never a pair of corner arrays. Do not include "
+    "confidence values or hidden reasoning."
 )
 
 _DEFAULT_PROMPT_VERSION = "general_vqa_v3"
@@ -114,16 +113,25 @@ class GeneralVQAAgent(VisualAgentBase):
             or PromptBinding(text=_DEFAULT_PROMPT_TEXT, version=_DEFAULT_PROMPT_VERSION),
         )
 
-    def build_user_payload(self, sample: UnifiedSample) -> dict[str, Any]:
-        """Extend the neutral payload with choice constraints for
-        multiple_choice_vqa; other tasks keep the neutral payload unchanged.
-        为 multiple_choice_vqa 扩展中性载荷（加入选项与单/多选约束）；其他
-        task 保持中性载荷不变。"""
-        payload = super().build_user_payload(sample)
+    @staticmethod
+    def build_user_payload(sample: UnifiedSample) -> dict[str, Any]:
+        """Build the canonical task-aware VQA payload without duplicate facts.
+        构造规范的 task-aware VQA 载荷，不重复表达事实。"""
+        payload: dict[str, Any] = {
+            "question": sample.question,
+            "task": sample.task,
+        }
         if sample.task == "multiple_choice_vqa":
-            constraints = _choice_constraints(sample)
-            payload["choices"] = _extract_choices(constraints)
-            payload["allow_multiple"] = bool(constraints.get("allow_multiple", False))
+            choices, allow_multiple = _canonical_choices(sample)
+            payload["choices"] = choices
+            payload["allow_multiple"] = allow_multiple
+        if (
+            sample.normalization is not None
+            and sample.normalization.semantic_subtype is not None
+        ):
+            payload["semantic_subtype"] = sample.normalization.semantic_subtype
+        payload["coordinate_frame"] = "normalized_0_999_top_left"
+        payload["box_format"] = "integer_xyxy_json"
         return payload
 
     async def postprocess(
@@ -140,15 +148,7 @@ class GeneralVQAAgent(VisualAgentBase):
         answer_constraint_violation。"""
         if sample.task != "multiple_choice_vqa":
             return result
-        constraints = _choice_constraints(sample)
-        choices = _extract_choices(constraints)
-        if not choices:
-            raise AgentExecutionError(
-                self.name,
-                sample.sample_id,
-                cause="multiple_choice_sample_without_choices",
-            )
-        allow_multiple = bool(constraints.get("allow_multiple", False))
+        choices, allow_multiple = _canonical_choices(sample)
         violation, normalized_answer = _validate_choice_answer(
             result.answer, choices, allow_multiple
         )
@@ -167,6 +167,11 @@ class GeneralVQAAgent(VisualAgentBase):
             raise AgentTaskMismatchError(
                 self.name, sample.task, supported=self.supported_tasks
             )
+        # Validate canonical choice facts before identity lookup, image I/O,
+        # budget consumption, evidence execution, or Qwen. 在身份读取、图像
+        # I/O、预算消耗、证据执行或 Qwen 之前校验规范选项事实。
+        if sample.task == "multiple_choice_vqa":
+            _canonical_choices(sample)
         task_plan = context.visual_task_plan
         if task_plan is not None:
             if not task_plan.needs_visual_assistance:
@@ -247,6 +252,7 @@ class GeneralVQAAgent(VisualAgentBase):
             prompt_version=prompt_sel.version,
             messages=messages,
             image_sha256="|".join(final_hashes),
+            target_spec=self._evidence_hash_identity(plan, execution),
             response_schema=AgentResult.model_json_schema(),
             client_version=identity.client_version,
             model_revision=identity.revision,
@@ -316,7 +322,7 @@ class GeneralVQAAgent(VisualAgentBase):
         content: list[dict[str, Any]] = []
         final_hashes: list[str] = []
         visual_inputs: list[dict[str, Any]] = []
-        roi_geometry: list[dict[str, Any]] = []
+        roi_records: list[dict[str, Any]] = []
         yolo_detections: list[dict[str, Any]] = []
         segformer_hits: list[dict[str, Any]] = []
 
@@ -327,13 +333,13 @@ class GeneralVQAAgent(VisualAgentBase):
             )
             yolo_detections.append(
                 {
-                    "leaf_category": record.leaf_category,
+                    "category": record.leaf_category,
                     "roi_id": record.roi_id,
                     # The final Qwen sees an ROI crop, so expose only its local
                     # geometry in the same integer 0..999 JSON frame as SFT.
                     # 最终 Qwen 看到的是 ROI 裁切图，因此只暴露局部几何，并统一
                     # 为与 SFT 相同的 0..999 整数 JSON 坐标。
-                    "xyxy": _pixel_xyxy_to_999(
+                    "box": _pixel_xyxy_to_999(
                         record.local_xyxy, record.local_roi_size
                     ),
                 }
@@ -342,7 +348,7 @@ class GeneralVQAAgent(VisualAgentBase):
         for record in bundle.segments:
             seg_by_roi.setdefault(record.roi_id, []).append(record.leaf_category)
             segformer_hits.append(
-                {"roi_id": record.roi_id, "leaf_category": record.leaf_category}
+                {"roi_id": record.roi_id, "category": record.leaf_category}
             )
         # Rendered sets follow the stable leaf order (14.12.1): the executor
         # already filtered hits to the requested plan categories and emitted
@@ -351,9 +357,6 @@ class GeneralVQAAgent(VisualAgentBase):
         # rendered 集合遵循稳定 leaf 顺序（14.12.1）：executor 已把命中过滤到
         # 请求的 plan 类别并按 plan leaf 顺序输出检测，因此对检测列表去重即可
         # 保持该顺序，无需 agent 重新决定 capability。
-        rendered_yolo_leaves = list(
-            dict.fromkeys(record.leaf_category for record in bundle.detections)
-        )
         rendered_segformer_leaves = [
             leaf for leaf in bundle.leaf_states
             if any((record.roi_id, leaf) in execution.masks
@@ -375,12 +378,10 @@ class GeneralVQAAgent(VisualAgentBase):
         for record in bundle.rois:
             raw_crop = render_roi_crop(images[record.image_id], record)
             clean = make_preview(raw_crop)
-            roi_geometry.append(
+            roi_records.append(
                 {
                     "roi_id": record.roi_id,
                     "image_id": record.image_id,
-                    "source_size": list(record.source_size),
-                    "crop_xyxy": list(record.expanded_xyxy),
                     "crop_size": list(record.crop_size),
                 }
             )
@@ -441,39 +442,51 @@ class GeneralVQAAgent(VisualAgentBase):
         # 保持 SFT 的 0..999 整数 JSON 约定。
         payload["coordinate_frame"] = "roi_normalized_0_999_top_left"
         payload["box_format"] = "integer_xyxy_json"
-        payload["images"] = [
-            {
-                "image_id": image_ref.image_id,
-                "width": images[image_ref.image_id].size[0],
-                "height": images[image_ref.image_id].size[1],
-            }
-            for image_ref in sample.images
-        ]
-        payload["rois"] = roi_geometry
-        payload["requested_leaves"] = list(plan.object_categories)
-        payload["rendered_yolo_leaves"] = rendered_yolo_leaves
-        payload["rendered_segformer_leaves"] = rendered_segformer_leaves
-        payload["missing_leaves"] = list(bundle.missing_leaves)
-        payload["yolo_detections"] = yolo_detections
-        payload["segformer_hits"] = segformer_hits
-        payload["visual_inputs"] = visual_inputs
-        payload["mask_legend"] = [
-            {"leaf_category": leaf, "color_rgb": list(execution.palette[leaf])}
-            for leaf in rendered_segformer_leaves
-        ]
-        # Frozen protocol identity: any palette/catalog/preprocessing change
-        # must alter the request hash (14.13). 冻结协议身份：调色表/catalog/
-        # 预处理的任何变化都必须改变请求 hash（14.13）。
-        payload["evidence_identity"] = {
-            "catalog_version": bundle.catalog_version,
-            "preprocessing_version": bundle.preprocessing_version,
-            "palette_version": PALETTE_VERSION,
-            "visual_content_version": VISUAL_CONTENT_VERSION,
+        payload["evidence"] = {
+            "visual_inputs": visual_inputs,
+            "rois": roi_records,
+            "requested_categories": list(plan.object_categories),
+            "detections": yolo_detections,
+            "segmentation_hits": segformer_hits,
+            "missing_categories": list(bundle.missing_leaves),
+            "mask_legend": [
+                {"category": leaf, "color_rgb": list(execution.palette[leaf])}
+                for leaf in rendered_segformer_leaves
+            ],
         }
         content.append(
             {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
         )
         return content, final_hashes
+
+    @staticmethod
+    def _evidence_hash_identity(
+        plan: VisualTaskPlan,
+        execution: EvidenceExecution,
+    ) -> dict[str, Any]:
+        """Return non-model-visible evidence identity for request hashing.
+        返回仅用于请求哈希、模型不可见的证据身份。"""
+        bundle = execution.bundle
+        return {
+            "protocol": {
+                "catalog_version": bundle.catalog_version,
+                "preprocessing_version": bundle.preprocessing_version,
+                "palette_version": PALETTE_VERSION,
+                "visual_content_version": VISUAL_CONTENT_VERSION,
+            },
+            "source_geometry": [
+                {
+                    "roi_id": record.roi_id,
+                    "image_id": record.image_id,
+                    "source_size": list(record.source_size),
+                    "core_xyxy": list(record.core_xyxy),
+                    "expanded_xyxy": list(record.expanded_xyxy),
+                    "crop_size": list(record.crop_size),
+                }
+                for record in bundle.rois
+            ],
+            "planned_categories": list(plan.object_categories),
+        }
 
     def _pure_mask(
         self,
@@ -519,51 +532,64 @@ def _structured_prompt(prompt: PromptBinding, agent_name: str) -> str:
         prompt.text
         + f"\n\nReturn valid JSON only. Set agent_name to {agent_name!r}; "
         "put the concise final answer in answer, retain relevant labeled boxes or points "
-        "in evidence_items, copy evidence boxes into boxes, use concise factual evidence "
-        "strings, and set status to 'completed'."
+        "in evidence_items, copy evidence boxes into boxes, omit confidence values, "
+        "and set status to 'completed'."
     )
 
 
-def _choice_constraints(sample: UnifiedSample) -> dict[str, Any]:
-    """Answer constraints for a multiple-choice sample.
-    多选题样本的答案约束。"""
-    if sample.normalization is None:
-        return {}
-    return sample.normalization.answer_constraints
+def _canonical_choices(sample: UnifiedSample) -> tuple[list[str], bool]:
+    """Read canonical multiple-choice facts or fail before model-side work.
+    读取规范多选事实；缺失时在模型侧工作开始前稳定失败。"""
+    normalization = sample.normalization
+    if normalization is None or len(normalization.choices) < 2:
+        raise AgentExecutionError(
+            "general_vqa_agent",
+            sample.sample_id,
+            cause="multiple_choice_sample_without_choices",
+        )
+    return list(normalization.choices), normalization.allow_multiple
 
 
 def _normalize_choice(value: str) -> str:
     return value.strip().casefold()
 
 
-def _choice_text(choice: str) -> str:
-    """Strip a leading option letter prefix (A., B), C - ...).
-    去除选项首字母前缀（A.、B)、C - ...）。"""
-    text = choice.strip()
-    match = re.match(r"^([A-Za-z])[.)、\s-]\s*(.*)$", text)
-    if match:
-        return match.group(2).strip()
-    return text
+_OPTION_PREFIX = re.compile(
+    r"^\s*(?:\(([A-Za-z])\)|([A-Za-z])(?:[.)、:-]|\s+))\s*(.*?)\s*$"
+)
+
+
+def _parse_choice(choice: str) -> tuple[str | None, str]:
+    """Parse an optional choice label and its display text.
+    解析可选的选项字母及其显示文本。"""
+    match = _OPTION_PREFIX.match(choice)
+    if match is None:
+        return None, choice.strip()
+    label = (match.group(1) or match.group(2)).upper()
+    return label, match.group(3).strip()
 
 
 def _match_choice(value: str, choices: list[str]) -> str | None:
     """Match an answer item to a choice: by normalized full text, by the
-    prefix-stripped text, or by the leading option letter (A/B/...).
-    将答案项匹配到选项：按归一化全文、去前缀文本或选项首字母（A/B/...）。"""
+    prefix-stripped text, or by an explicit/positional option letter.
+    将答案项匹配到选项：按归一化全文、去前缀文本或显式/位置选项字母。"""
     normalized = _normalize_choice(value)
+    parsed = [_parse_choice(choice) for choice in choices]
     for choice in choices:
         if _normalize_choice(choice) == normalized:
             return choice
-    for choice in choices:
-        if _normalize_choice(_choice_text(choice)) == normalized:
+    for choice, (_, text) in zip(choices, parsed):
+        if _normalize_choice(text) == normalized:
             return choice
     letter = value.strip().upper()
     if len(letter) == 1 and "A" <= letter <= "Z":
-        for choice in choices:
-            if choice.strip().upper() == letter:
+        for choice, (label, _) in zip(choices, parsed):
+            if label == letter:
                 return choice
-            if _normalize_choice(choice).startswith(letter.lower()):
-                return choice
+        if all(label is None for label, _ in parsed):
+            index = ord(letter) - ord("A")
+            if index < len(choices):
+                return choices[index]
     return None
 
 
@@ -580,6 +606,17 @@ def _validate_choice_answer(
             return None, None
         return f"answer {answer!r} does not map to a single choice", None
     parts = [part.strip() for part in re.split(r"[,;，；]", answer) if part.strip()]
+    labels = {label for label, _ in map(_parse_choice, choices) if label is not None}
+    compact = answer.strip().upper()
+    if (
+        len(parts) == 1
+        and len(compact) > 1
+        and compact.isalpha()
+        and all(letter in labels for letter in compact)
+    ):
+        # Some datasets serialize multi-select labels compactly as "ABC".
+        # 一些数据集将多选字母紧凑序列化为 "ABC"。
+        parts = list(compact)
     if not parts:
         return "empty multiple-choice answer", None
     matched: list[str] = []
@@ -592,16 +629,3 @@ def _validate_choice_answer(
     # Stable order follows the choice list. / 稳定顺序遵循选项列表。
     ordered = [choice for choice in choices if choice in matched]
     return None, ", ".join(ordered)
-
-
-def _extract_choices(constraints: dict[str, Any]) -> list[str]:
-    """Extract string choices from answer constraints. The constraints are
-    answer-domain restrictions (e.g. closed_vocabulary values), never the
-    ground truth itself, so nothing is leaked.
-    从答案约束提取字符串选项。约束是答案域限制（如 closed_vocabulary
-    values），本身并非 ground truth，因此不泄漏任何内容。"""
-    for key in ("choices", "values"):
-        value = constraints.get(key)
-        if isinstance(value, list) and all(isinstance(item, str) for item in value):
-            return list(value)
-    return []

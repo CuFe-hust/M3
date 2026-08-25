@@ -82,21 +82,17 @@ class VisualAgentBase:
         return self._prompt
 
     def build_user_payload(self, sample: UnifiedSample) -> dict[str, Any]:
-        """Build the JSON user payload sent alongside images. Never leaks
-        ground truth and never branches on the dataset name.
-        构造与图像一同发送的 JSON 用户载荷。绝不泄漏 ground truth，
-        也绝不按数据集名分支。"""
-        payload: dict[str, Any] = {
+        """Build only the universally meaningful user facts.
+
+        Production subclasses own their task-specific fields. This shared
+        primitive never adds coordinates, constraints, or nullable subtype
+        placeholders. 仅构造普遍有意义的用户事实；生产子类负责各自任务字段，
+        共享原语不添加坐标、约束或可空 subtype 占位。
+        """
+        return {
             "question": sample.question,
             "task": sample.task,
-            "coordinate_frame": "normalized_0_999_top_left",
-            "box_format": "integer_xyxy_json",
-            "answer_constraints": {},
         }
-        if sample.normalization is not None:
-            payload["semantic_subtype"] = sample.normalization.semantic_subtype
-            payload["answer_constraints"] = sample.normalization.answer_constraints
-        return payload
 
     async def postprocess(self, sample: UnifiedSample, result: AgentResult) -> AgentResult:
         """Post-process the raw model result. Override for geometry fixes.
@@ -154,8 +150,8 @@ class VisualAgentBase:
             prompt_sel.text
             + f"\n\nReturn valid JSON only. Set agent_name to {self.name!r}; "
             "put the concise final answer in answer, retain relevant labeled boxes or points "
-            "in evidence_items, copy evidence boxes into boxes, use concise factual evidence "
-            "strings, and set status to 'completed'. When boxes are returned, use integer "
+            "in evidence_items, copy evidence boxes into boxes, omit confidence values, "
+            "and set status to 'completed'. When boxes are returned, use integer "
             "0..999 whole-image xyxy coordinates in JSON, with each box as a flat "
             "[x1,y1,x2,y2] array."
         )

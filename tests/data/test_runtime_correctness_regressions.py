@@ -280,12 +280,14 @@ def test_xlrs_multi_answer_does_not_scan_row_text(tmp_path: Path) -> None:
     ]
     adapter = XLRSAdapter(dataset_loader=_xlrs_loader(rows))
     sample = next(adapter.iter_samples(tmp_path, "train", "multiple_choice_vqa"))
-    assert sample.metadata["allow_multiple"] is False
+    assert sample.normalization is not None
+    assert sample.normalization.allow_multiple is False
     rows2 = [{"question": "Q", "choices": ["A", "B", "C", "D"], "answer": "B",
               "image": "img_1.png", "allow_multiple": True}]
     sample2 = next(XLRSAdapter(dataset_loader=_xlrs_loader(rows2)).iter_samples(
         tmp_path, "train", "multiple_choice_vqa"))
-    assert sample2.metadata["allow_multiple"] is True
+    assert sample2.normalization is not None
+    assert sample2.normalization.allow_multiple is True
 
 
 def test_xlrs_probe_reports_real_row_count(tmp_path: Path) -> None:

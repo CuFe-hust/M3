@@ -301,6 +301,29 @@ def test_materialize_sample_assigns_canonical_roles() -> None:
     assert [item.role for item in single.images] == ["image"]
 
 
+def test_materialize_sample_preserves_canonical_choice_facts() -> None:
+    normalization = TaskNormalization(
+        source_task="source_vqa",
+        normalized_task="multiple_choice_vqa",
+        normalizer="test",
+        version="1",
+        choices=["(A) Road", "(B) Water"],
+        allow_multiple=False,
+    )
+    draft = SampleDraft(
+        sample_id="draft-mc",
+        dataset="demo",
+        split="val",
+        images=[ImageRef(image_id="a", path="a.png", role="image")],
+        question="Which class is shown?",
+        normalization=normalization,
+    )
+    sample = materialize_sample(draft, "multiple_choice_vqa")
+    assert sample.normalization is not None
+    assert sample.normalization.choices == ["(A) Road", "(B) Water"]
+    assert sample.normalization.allow_multiple is False
+
+
 def test_materialize_sample_fails_closed_for_unknown_or_invalid_task() -> None:
     draft = SampleDraft(
         sample_id="draft-1",
@@ -361,6 +384,41 @@ def test_task_normalization_uses_structured_fields() -> None:
     assert norm.spatial_query == {"target": "vehicle"}
     assert norm.answer_constraints == {"vocabulary": ["0..999"], "closed": False}
     assert norm.count_target_hint == {"canonical_label": "small_vehicle"}
+
+
+def test_multiple_choice_normalization_requires_canonical_choices() -> None:
+    with pytest.raises(ValidationError, match="at least two choices"):
+        TaskNormalization(
+            source_task="source_vqa",
+            normalized_task="multiple_choice_vqa",
+            normalizer="test",
+            version="1",
+        )
+    with pytest.raises(ValidationError, match="must be unique"):
+        TaskNormalization(
+            source_task="source_vqa",
+            normalized_task="multiple_choice_vqa",
+            normalizer="test",
+            version="1",
+            choices=["Road", " road "],
+        )
+
+
+def test_legacy_choice_constraints_are_promoted_for_read_compatibility() -> None:
+    normalization = TaskNormalization.model_validate(
+        {
+            "source_task": "legacy_vqa",
+            "normalized_task": "multiple_choice_vqa",
+            "normalizer": "legacy",
+            "version": "1",
+            "answer_constraints": {
+                "choices": ["(A) Road", "(B) Water"],
+                "allow_multiple": True,
+            },
+        }
+    )
+    assert normalization.choices == ["(A) Road", "(B) Water"]
+    assert normalization.allow_multiple is True
 
 
 def test_task_normalization_rejects_invalid_task_and_confidence() -> None:

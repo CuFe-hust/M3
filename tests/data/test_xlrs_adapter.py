@@ -101,10 +101,12 @@ def test_vqa_lite_task_outputs_choices_and_multi_answer_hint(tmp_path: Path) -> 
     samples = list(adapter.iter_samples(root, "train", "multiple_choice_vqa"))
     assert len(samples) == 2
     assert all(sample.task == "multiple_choice_vqa" for sample in samples)
-    assert samples[0].metadata["choices"] == ["A", "B", "C", "D"]
-    assert samples[0].metadata["allow_multiple"] is True
-    assert samples[1].metadata["choices"] == ["x", "y", "z", "w"]  # A–E key fallback
-    assert samples[1].metadata["allow_multiple"] is False
+    assert samples[0].normalization is not None
+    assert samples[1].normalization is not None
+    assert samples[0].normalization.choices == ["A", "B", "C", "D"]
+    assert samples[0].normalization.allow_multiple is True
+    assert samples[1].normalization.choices == ["x", "y", "z", "w"]  # A–E key fallback
+    assert samples[1].normalization.allow_multiple is False
 
 
 def test_three_tasks_all_produce_unified_samples(tmp_path: Path) -> None:

@@ -4,7 +4,8 @@
 >
 > 状态：已实施；fresh planner 与历史 resume 语义已完成接线。
 >
-> Doc 19 已将 fresh identity 升级为 `visual-task-plan-v4`；v3 仅作为可读取的
+> Doc 19 曾将 fresh identity 升级为 `visual-task-plan-v4`，doc 20 又将当前 fresh
+> identity 升级为 `visual-task-plan-v5`；v3/v4 仅作为可读取的
 > 历史 resume 格式保留。
 >
 > Baseline inspected: `2191ac6aa60eff4aab5a4a5381622681ed81afdb` plus the
