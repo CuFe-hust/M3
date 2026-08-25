@@ -6,6 +6,10 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from training.multimodal_sft.change_target_migration import ChangeTargetMigrationError, migrate_reference_corpus
 
