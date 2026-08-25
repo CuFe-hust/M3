@@ -59,11 +59,17 @@ class AdapterRegistry:
 
     def get(self, name: str) -> MultimodalModelAdapter:
         try:
-            return self._entries[name].factory()
+            adapter = self._entries[name].factory()
         except KeyError as exc:
             raise UnsupportedModelAdapter(
                 f"unknown model adapter {name!r}; available: {', '.join(self.available())}"
             ) from exc
+        if not isinstance(adapter, MultimodalModelAdapter):
+            raise UnsupportedModelAdapter(
+                "ADAPTER_CONTRACT_INCOMPLETE",
+                details={"adapter": name},
+            )
+        return adapter
 
     def probe(
         self,
@@ -86,7 +92,7 @@ class AdapterRegistry:
         failures: list[dict[str, Any]] = []
         for entry in self._entries.values():
             try:
-                probe = entry.factory().probe(model_id, local_files_only=local_files_only)
+                probe = self.get(entry.name).probe(model_id, local_files_only=local_files_only)
             except Exception as exc:  # adapter probes must not make auto selection guess
                 failures.append({"adapter": entry.name, "error": type(exc).__name__})
                 continue

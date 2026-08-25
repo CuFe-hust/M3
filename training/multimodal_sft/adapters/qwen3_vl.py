@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
-from ..contracts import AdapterContractError, AdapterProbe, ModelStructure
+from ..contracts import AdapterContractError, AdapterProbe, CanonicalEpisode, ModelStructure, PreparedMultimodalEpisode
 from . import _hf
 from . import qwen_multimodal
 
@@ -39,7 +39,7 @@ class Qwen3VLAdapter:
         processor = _hf.auto_processor(model_id, local_files_only=local_files_only)
         return model, processor, probe
 
-    def encode(self, processor: Any, episode: Any, *, max_seq_length: int = 4096, return_tensors: str = "pt") -> dict[str, Any]:
+    def encode(self, processor: Any, episode: PreparedMultimodalEpisode | CanonicalEpisode, *, max_seq_length: int = 4096, return_tensors: str = "pt") -> Mapping[str, Any]:
         return qwen_multimodal.encode_multimodal_episode(processor, episode, max_seq_length=max_seq_length, return_tensors=return_tensors)
 
     def collate(self, encoded_examples: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -104,8 +104,25 @@ class Qwen3VLAdapter:
     def save_checkpoint(self, model: Any, processor: Any, output_dir: str | Path) -> None:
         _hf.save_checkpoint(model, processor, output_dir)
 
-    def export_checkpoint(self, **kwargs: Any) -> dict[str, Any]:
-        return _hf.export_peft_checkpoint(self, **kwargs)
+    def export_checkpoint(
+        self,
+        *,
+        model_id: str | Path,
+        checkpoint_dir: str | Path,
+        output_dir: str | Path,
+        local_files_only: bool = True,
+        verify_forward: bool = False,
+        change_fixture: str | Path | None = None,
+    ) -> Mapping[str, Any]:
+        return _hf.export_peft_checkpoint(
+            self,
+            model_id=model_id,
+            checkpoint_dir=checkpoint_dir,
+            output_dir=output_dir,
+            local_files_only=local_files_only,
+            verify_forward=verify_forward,
+            change_fixture=change_fixture,
+        )
 
     def reload_exported(self, output_dir: str | Path, *, local_files_only: bool = True) -> tuple[Any, Any]:
         t = _hf.transformers()

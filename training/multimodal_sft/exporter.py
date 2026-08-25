@@ -33,15 +33,14 @@ class GenericExporter:
             raise ExportContractError(
                 f"checkpoint adapter={manifest.get('adapter_name')!r} does not match {expected!r}"
             )
-        export = getattr(self.adapter, "export_checkpoint", None)
-        if not callable(export):
-            raise ExportContractError("selected adapter does not implement export_checkpoint")
-        return export(
-            model_id=model_id,
-            checkpoint_dir=checkpoint_dir,
-            output_dir=output_dir,
-            local_files_only=local_files_only,
-            verify_forward=verify_forward,
-            change_fixture=change_fixture,
-        )
-
+        try:
+            return self.adapter.export_checkpoint(
+                model_id=model_id,
+                checkpoint_dir=checkpoint_dir,
+                output_dir=output_dir,
+                local_files_only=local_files_only,
+                verify_forward=verify_forward,
+                change_fixture=change_fixture,
+            )
+        except AttributeError as exc:
+            raise ExportContractError("selected adapter does not implement export_checkpoint") from exc

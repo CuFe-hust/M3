@@ -24,7 +24,7 @@ from .checkpoint import (
     write_manifest,
 )
 from .contracts import DataProfile, MultimodalModelAdapter
-from .identity import base_weight_identity, materialize_processor_identity, processor_content_identity
+from .identity import base_weight_identity, materialize_processor_identity
 from .optimizer import OptimizerConfig, autocast_context, build_cosine_scheduler, build_optimizer_groups, clip_gradients
 from .parameter_plan import ParameterPlan, TuningPolicy, build_parameter_plan
 
@@ -363,21 +363,11 @@ class GenericTrainerCore:
         expected = dict(manifest.get("processor", {}))
         if not expected.get("content_sha256") or not expected.get("encoding_contract_version"):
             raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
-        load_fn = getattr(self.adapter, "load_processor", None)
-        if not callable(load_fn):
-            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
         try:
-            canonical = load_fn(processor_dir, local_files_only=True)
-        except TypeError:
-            canonical = load_fn(processor_dir)
-        canonical_identity_fn = getattr(self.adapter, "saved_processor_identity", None)
-        if callable(canonical_identity_fn):
-            canonical_identity = dict(canonical_identity_fn(canonical, processor_dir))
-        else:
-            canonical_identity = dict(processor_content_identity(processor_dir, canonical))
-            semantic_fn = getattr(self.adapter, "processor_identity", None)
-            if callable(semantic_fn):
-                canonical_identity.update(dict(semantic_fn(canonical)))
+            canonical = self.adapter.load_processor(processor_dir, local_files_only=True)
+            canonical_identity = dict(self.adapter.saved_processor_identity(canonical, processor_dir))
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN") from exc
         semantic_keys = ("class", "tokenizer_class", "chat_template_sha256", "special_tokens_sha256", "special_token_ids")
         if any(expected.get(key) != canonical_identity.get(key) for key in semantic_keys):
             raise ValueError("RESUME_CHECKPOINT_PROCESSOR_IDENTITY_MISMATCH")
@@ -418,14 +408,7 @@ class GenericTrainerCore:
         rng_payload = self._capture_rng_state()
         target.mkdir(parents=True, exist_ok=True)
         save_checkpoint(model, processor, target)
-        saved_identity_fn = getattr(self.adapter, "saved_processor_identity", None)
-        if callable(saved_identity_fn):
-            saved_processor_identity = dict(saved_identity_fn(processor, target / "processor"))
-        else:
-            saved_processor_identity = dict(processor_content_identity(target / "processor", processor))
-            object_identity_fn = getattr(self.adapter, "processor_identity", None)
-            if callable(object_identity_fn):
-                saved_processor_identity.update({"encoding_contract_version": object_identity_fn(processor).get("encoding_contract_version")})
+        saved_processor_identity = dict(self.adapter.saved_processor_identity(processor, target / "processor"))
         manifest_to_write = dict(manifest)
         manifest_to_write["processor"] = saved_processor_identity
         save_trainable_state(model, target / "model_trainable_state.safetensors", plan)

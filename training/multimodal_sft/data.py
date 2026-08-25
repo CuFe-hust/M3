@@ -11,7 +11,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
-from .contracts import CanonicalEpisode
+from .contracts import CanonicalEpisode, DataProfile
 
 
 class DataProfileError(ValueError):
@@ -51,7 +51,7 @@ class JsonlDataProfile:
             metadata=metadata,
         )
 
-    def read(self, path: str | Path) -> Iterable[CanonicalEpisode]:
+    def read(self, path: str | Path) -> Iterable[Any]:
         source = Path(path)
         if not source.is_file():
             raise DataProfileError(f"data file does not exist: {source}")
@@ -85,7 +85,7 @@ class JsonlDataProfile:
         return {"data_profile": self.name}
 
 
-def profile_for(name: str, *, data_manifest: str | Path | None = None, prompt_ref: str | None = None, prompt_file: str | Path | None = None) -> Any:
+def profile_for(name: str, *, data_manifest: str | Path | None = None, prompt_ref: str | None = None, prompt_file: str | Path | None = None) -> DataProfile:
     """Return an explicit task profile; model adapters are not consulted."""
 
     if name == "change_agent":
@@ -95,4 +95,3 @@ def profile_for(name: str, *, data_manifest: str | Path | None = None, prompt_re
         from .profiles.phase2 import Phase2DataProfile
         return Phase2DataProfile()
     raise DataProfileError(f"unsupported data profile: {name}")
-

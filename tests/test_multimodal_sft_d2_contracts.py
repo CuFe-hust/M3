@@ -49,6 +49,12 @@ class _BatchAdapter:
     def processor_identity(self, processor):
         return {"class": "batch_fixture", "chat_template_sha256": "fixture", "encoding_contract_version": "fixture_v1"}
 
+    def load_processor(self, processor_dir, *, local_files_only=True):
+        return {"max_seq_length": 321}
+
+    def saved_processor_identity(self, processor, processor_dir):
+        return {**self.processor_identity(processor), "content_sha256": "batch-fixture-content", "files": []}
+
     def prepare_forward_inputs(self, batch):
         return batch
 

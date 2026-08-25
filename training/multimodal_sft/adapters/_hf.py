@@ -578,16 +578,16 @@ def export_peft_checkpoint(
         raise AdapterContractError(str(exc)) from exc
     if actual_weight != expected_weight:
         raise AdapterContractError("EXPORT_BASE_WEIGHT_IDENTITY_MISMATCH")
-    load_checkpoint_processor = getattr(adapter, "load_processor", None)
-    if callable(load_checkpoint_processor):
-        checkpoint_processor = load_checkpoint_processor(checkpoint_processor_dir, local_files_only=local_files_only)
-    else:
-        checkpoint_processor = auto_processor(checkpoint_processor_dir, local_files_only=local_files_only)
-    saved_processor_identity_fn = getattr(adapter, "saved_processor_identity", None)
-    if callable(saved_processor_identity_fn):
-        actual_processor_identity = dict(saved_processor_identity_fn(checkpoint_processor, checkpoint_processor_dir))
-    else:
-        actual_processor_identity = dict(processor_content_identity(checkpoint_processor_dir, checkpoint_processor))
+    try:
+        checkpoint_processor = adapter.load_processor(
+            checkpoint_processor_dir,
+            local_files_only=local_files_only,
+        )
+        actual_processor_identity = dict(
+            adapter.saved_processor_identity(checkpoint_processor, checkpoint_processor_dir)
+        )
+    except AttributeError as exc:
+        raise AdapterContractError("EXPORT_ADAPTER_PROCESSOR_INTERFACE_INCOMPLETE") from exc
     expected_processor_identity = manifest.get("processor", {})
     if not expected_processor_identity or not processor_semantic_equal(expected_processor_identity, actual_processor_identity):
         raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
@@ -657,12 +657,13 @@ def export_peft_checkpoint(
         raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
     if exported_processor_identity.get("content_sha256") != actual_processor_identity.get("content_sha256"):
         raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
-    reload_export = getattr(adapter, "reload_exported", None)
-    if not callable(reload_export):
-        raise AdapterContractError("EXPORT_ADAPTER_MISSING_OFFLINE_RELOAD")
-    reloaded_model, reloaded_processor = reload_export(
-        output, local_files_only=local_files_only
-    )
+    try:
+        reloaded_model, reloaded_processor = adapter.reload_exported(
+            output,
+            local_files_only=local_files_only,
+        )
+    except AttributeError as exc:
+        raise AdapterContractError("EXPORT_ADAPTER_MISSING_OFFLINE_RELOAD") from exc
     if not processor_semantic_equal(actual_processor_identity, processor_semantic_identity(reloaded_processor)):
         raise AdapterContractError("EXPORT_PROCESSOR_IDENTITY_MISMATCH")
     verification = {
@@ -671,19 +672,19 @@ def export_peft_checkpoint(
         "synthetic_two_image_forward": "NOT_RUN",
         "change_fixture_forward": "NOT_REQUESTED",
     }
-    verify = getattr(adapter, "verify_export_forward", None)
     if verify_forward:
-        if not callable(verify):
-            raise AdapterContractError("EXPORT_ADAPTER_MISSING_FORWARD_VERIFIER")
-        verification.update(
-            dict(
-                verify(
+        try:
+            verification.update(
+                dict(
+                    adapter.verify_export_forward(
                     reloaded_model,
                     reloaded_processor,
                     change_fixture=change_fixture,
+                    )
                 )
             )
-        )
+        except AttributeError as exc:
+            raise AdapterContractError("EXPORT_ADAPTER_MISSING_FORWARD_VERIFIER") from exc
     result = {
         "schema_version": 2,
         "export_type": "multimodal_sft_deployment",

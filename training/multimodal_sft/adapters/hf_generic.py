@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts import AdapterContractError, AdapterProbe, ModelStructure
+from ..identity import processor_content_identity
 from . import _hf
 
 
@@ -39,6 +40,14 @@ class GenericHFAdapter:
 
     def processor_identity(self, processor: Any) -> dict[str, Any]:
         return {"class": f"{type(processor).__module__}.{type(processor).__name__}", "encoding_contract_version": "unproven"}
+
+    def load_processor(self, processor_dir: str | Path, *, local_files_only: bool = True) -> Any:
+        return _hf.auto_processor(processor_dir, local_files_only=local_files_only)
+
+    def saved_processor_identity(self, processor: Any, processor_dir: str | Path) -> dict[str, Any]:
+        identity = dict(processor_content_identity(processor_dir, processor))
+        identity["encoding_contract_version"] = "unproven"
+        return identity
 
     def discover_structure(self, model: Any) -> ModelStructure:
         raise AdapterContractError("generic adapter cannot infer a safe model structure")
@@ -73,5 +82,20 @@ class GenericHFAdapter:
     def validate_checkpoint_ownership(self, model: Any, checkpoint_dir: str | Path, parameter_plan: Any) -> dict[str, Any]:
         return _hf.validate_checkpoint_ownership(model, checkpoint_dir, parameter_plan)
 
-    def export_checkpoint(self, **kwargs: Any) -> dict[str, Any]:
+    def export_checkpoint(
+        self,
+        *,
+        model_id: str | Path,
+        checkpoint_dir: str | Path,
+        output_dir: str | Path,
+        local_files_only: bool = True,
+        verify_forward: bool = False,
+        change_fixture: str | Path | None = None,
+    ) -> dict[str, Any]:
         raise AdapterContractError("generic exporter requires an adapter-specific checkpoint implementation")
+
+    def reload_exported(self, output_dir: str | Path, *, local_files_only: bool = True) -> tuple[Any, Any]:
+        raise AdapterContractError("hf_generic_multimodal requires a proven export reload contract")
+
+    def verify_export_forward(self, model: Any, processor: Any, *, change_fixture: str | Path | None = None) -> dict[str, Any]:
+        raise AdapterContractError("hf_generic_multimodal requires a proven forward verification contract")

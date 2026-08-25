@@ -3,6 +3,11 @@
 Nothing in this module imports Transformers, PyTorch, PEFT or a model family.
 That boundary is intentional: a new model family must be implemented in an
 adapter, not by adding branches to the generic trainer.
+
+``DataProfile`` owns the source-record boundary and prepares model-neutral
+runtime episodes. ``MultimodalModelAdapter`` owns processor/model encoding,
+tuning topology, checkpoint state, processor identity, resume reload and
+deployment export verification.
 """
 
 from __future__ import annotations
@@ -143,8 +148,8 @@ class DataProfile(Protocol):
 
     name: str
 
-    def read(self, path: str | Path) -> Iterable[CanonicalEpisode]:
-        """Read canonical episodes without knowing a model family."""
+    def read(self, path: str | Path) -> Iterable[Any]:
+        """Read profile-owned source records without knowing a model family."""
 
     def validate(self, episode: Any) -> None:
         """Fail closed when the task contract is not satisfied."""
@@ -159,6 +164,10 @@ class DataProfile(Protocol):
         seed: int | str,
     ) -> PreparedMultimodalEpisode | CanonicalEpisode:
         """Resolve task data into a model-neutral runtime episode."""
+
+    def identity_contract(self, image_roots: Any) -> Mapping[str, Any]:
+        """Return stable task/data identity for the training manifest."""
+        ...
 
 
 @runtime_checkable
@@ -183,7 +192,7 @@ class MultimodalModelAdapter(Protocol):
     def encode(
         self,
         processor: Any,
-        episode: CanonicalEpisode,
+        episode: PreparedMultimodalEpisode | CanonicalEpisode,
         *,
         max_seq_length: int = 4096,
         return_tensors: str = "pt",
@@ -197,6 +206,24 @@ class MultimodalModelAdapter(Protocol):
         ...
 
     def processor_identity(self, processor: Any) -> Mapping[str, Any]:
+        """Return adapter-owned semantic identity including encoding contract."""
+        ...
+
+    def load_processor(
+        self,
+        processor_dir: str | Path,
+        *,
+        local_files_only: bool = True,
+    ) -> Any:
+        """Reload the canonical saved processor for resume or export."""
+        ...
+
+    def saved_processor_identity(
+        self,
+        processor: Any,
+        processor_dir: str | Path,
+    ) -> Mapping[str, Any]:
+        """Return semantic plus canonical saved-artifact processor identity."""
         ...
 
     def discover_structure(self, model: Any) -> ModelStructure:
@@ -248,5 +275,25 @@ class MultimodalModelAdapter(Protocol):
         output_dir: str | Path,
         local_files_only: bool = True,
         verify_forward: bool = False,
+        change_fixture: str | Path | None = None,
     ) -> Mapping[str, Any]:
+        ...
+
+    def reload_exported(
+        self,
+        output_dir: str | Path,
+        *,
+        local_files_only: bool = True,
+    ) -> tuple[Any, Any]:
+        """Reload an exported model and processor through the adapter seam."""
+        ...
+
+    def verify_export_forward(
+        self,
+        model: Any,
+        processor: Any,
+        *,
+        change_fixture: str | Path | None = None,
+    ) -> Mapping[str, Any]:
+        """Run adapter-owned offline forward verification."""
         ...
