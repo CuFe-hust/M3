@@ -249,7 +249,8 @@ targeted tests before corpus rebuild=20 passed, 1 skipped
 core regression tests=12 passed, 1 skipped
 compileall=PASS
 git diff --check=PASS
-Spark full pytest=2531 passed, 6 warnings in 39.46s
+Spark full pytest after merging main `a6fec51`=2546 passed, 6 warnings in 34.94s
+Spark full pytest log SHA256=70c7d524605c02e800aaf0f8075b63ddf3c5b78a547cc370813f44c9814dbf99
 ```
 
 Primary evidence root:
