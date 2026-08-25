@@ -88,3 +88,41 @@ def test_nonempty_evidence_and_unexpected_changes_fail_closed(tmp_path: Path) ->
     result = compare_corpora(old_dir=safe_old, new_dir=reference)
     assert result["status"] == "CORPUS_MIGRATION_UNEXPECTED_DIFF"
     assert result["unexpected_paths"] == {"/target/result/answer": 1}
+
+
+def test_confidence_only_is_safely_removed_and_pair_split_changes_are_blocked(tmp_path: Path) -> None:
+    row = _row()
+    row["target"]["result"]["evidence_items"] = [
+        {
+            "label": "building", "box": [1, 2, 3, 4], "point": None,
+            "image_id": None, "coordinate_frame": "normalized_0_999_top_left",
+            "confidence": 0.8,
+        },
+    ]
+    row["target"]["result"].pop("evidence")
+    row["target"]["result"]["boxes"] = [[1, 2, 3, 4]]
+    row["target"]["result"]["geometry"] = {
+        "evidence_quality": ["trusted_box"], "repair_severity": "none",
+    }
+    old = _old_corpus(tmp_path / "old", row)
+    audit = audit_target_contract(
+        train=old / "train.jsonl", validation=old / "validation.jsonl", manifest=old / "manifest.json",
+    )
+    assert audit["migration_allowed"] is True
+    assert audit["counts"]["evidence_item_confidence_fields"] == 1
+    assert audit["diff_paths"]["/target/result/evidence_items/0/confidence"] == 1
+    reference = tmp_path / "reference"
+    migrate_reference_corpus(old_dir=old, output_dir=reference)
+    migrated = json.loads((reference / "train.jsonl").read_text(encoding="utf-8"))
+    assert "confidence" not in migrated["target"]["result"]["evidence_items"][0]
+
+    for field, value, expected_path in (
+        ("parent_sample_id", "other-pair", "/parent_sample_id"),
+        ("split", "validation", "/split"),
+    ):
+        changed = dict(migrated)
+        changed[field] = value
+        (reference / "train.jsonl").write_text(json.dumps(changed, separators=(",", ":")) + "\n", encoding="utf-8")
+        result = compare_corpora(old_dir=old, new_dir=reference)
+        assert result["status"] == "CORPUS_MIGRATION_UNEXPECTED_DIFF"
+        assert result["unexpected_paths"] == {expected_path: 1}

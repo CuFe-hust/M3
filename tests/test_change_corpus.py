@@ -35,6 +35,9 @@ def test_authoritative_builder_preserves_pair_split_and_emits_v2(tmp_path: Path)
     manifest = build_corpus(spec, output, str(prompt))
 
     assert manifest["schema_version"] == 2
+    assert len(manifest["builder_git"]["commit"]) == 40
+    assert len(manifest["builder_git"]["tree"]) == 40
+    assert isinstance(manifest["builder_git"]["working_tree_clean"], bool)
     assert manifest["target_contract"] == change_target_contract_identity()
     assert manifest["counts"]["unique_train_pairs"] == 1
     assert manifest["counts"]["unique_validation_pairs"] == 1

@@ -12,6 +12,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 from collections import Counter
 from pathlib import Path
@@ -51,6 +52,32 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def builder_git_identity() -> dict[str, Any]:
+    """Bind a formal corpus to the committed builder implementation."""
+
+    repository = Path(__file__).resolve().parents[2]
+
+    def git(*args: str) -> str:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repository), *args],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except (OSError, subprocess.CalledProcessError) as exc:
+            raise ChangeCorpusBuildError("BUILDER_GIT_IDENTITY_UNAVAILABLE") from exc
+        return result.stdout.strip()
+
+    commit = git("rev-parse", "HEAD")
+    tree = git("rev-parse", "HEAD^{tree}")
+    return {
+        "commit": commit,
+        "tree": tree,
+        "working_tree_clean": not bool(git("status", "--porcelain", "--untracked-files=no")),
+    }
 
 
 def normalize_text(value: Any) -> str:
@@ -438,6 +465,7 @@ def _build_into(spec_path: Path, output: Path, prompt_ref: str) -> dict[str, Any
     manifest = {
         "schema_version": CHANGE_SFT_EPISODE_SCHEMA_VERSION,
         "tool": "scripts/build_change_qwen_sft_corpus.py",
+        "builder_git": builder_git_identity(),
         "source_spec_sha256": sha256_file(spec_path),
         "canonical_dataset": {"captions_sha256": sha256_file(Path(spec["canonical_dataset"]["captions"])), "image_root": spec["canonical_dataset"]["image_root"]},
         "change_prompt": {"ref": prompt_ref, "sha256": sha256_bytes(prompt_text.encode("utf-8"))},
