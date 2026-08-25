@@ -8,6 +8,10 @@ from types import SimpleNamespace
 import pytest
 
 from training.multimodal_sft.contracts import PreparedMultimodalEpisode
+from training.multimodal_sft.change_target_contract import (
+    CHANGE_TARGET_CONTRACT_VERSION,
+    change_target_contract_identity,
+)
 from training.multimodal_sft.data import JsonlDataProfile
 from training.multimodal_sft.image_roots import ImageRootError, ImageRootRegistry
 from training.multimodal_sft.profiles.change_agent import ChangeAgentDataError, ChangeAgentDataProfile
@@ -31,11 +35,11 @@ def _change_row() -> dict:
         {"image_source": "changechat", "path": "t2.png", "role": "raw_full_t2"},
     ]
     return {
-        "schema_version": 1, "episode_id": "change/train/sample/change_caption/0", "parent_sample_id": "sample",
+        "schema_version": 2, "episode_id": "change/train/sample/change_caption/0", "parent_sample_id": "sample",
         "dataset": "ChangeChat", "split": "train", "task": "change_caption", "input_contract": "semantic_pair_v1",
         "question": "", "images": images,
         "request_payload": {"decision_stage": "initial", "task": "change_caption", "image_manifest": [{"index": "0", "role": "raw_full_t1"}, {"index": "1", "role": "raw_full_t2"}]},
-        "target": {"response_schema": "ChangeInitialResult", "result": _answer_result("no change")},
+        "target": {"response_schema": "ChangeInitialResult", "contract_version": CHANGE_TARGET_CONTRACT_VERSION, "result": _answer_result("no change")},
     }
 
 
@@ -49,7 +53,7 @@ def _write_change_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
     manifest = tmp_path / "manifest.json"
     prompt_digest = hashlib.sha256(prompt.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
-    manifest.write_text(json.dumps({"change_prompt": {"ref": "prompt.md", "sha256": prompt_digest}, "outputs": {"train.jsonl_sha256": digest(train), "validation.jsonl_sha256": digest(train)}}, indent=2) + "\n", encoding="utf-8")
+    manifest.write_text(json.dumps({"change_prompt": {"ref": "prompt.md", "sha256": prompt_digest}, "target_contract": change_target_contract_identity(), "outputs": {"train.jsonl_sha256": digest(train), "validation.jsonl_sha256": digest(train)}}, indent=2) + "\n", encoding="utf-8")
     return train, prompt, manifest
 
 
@@ -65,6 +69,9 @@ def test_change_profile_prepares_real_source_schema_and_t1_t2(tmp_path: Path) ->
     assert prepared.messages[0]["content"].endswith("Set agent_name to change_agent and status to completed.")
     assert prepared.messages[1]["content"][1]["text"] == "AUTHORITATIVE RAW T1 - earlier full scene"
     assert prepared.metadata["request_payload"]["decision_stage"] == "initial"
+    assistant_result = json.loads(prepared.messages[-1]["content"][0]["text"])
+    assert "evidence" not in assistant_result
+    assert all("confidence" not in item for item in assistant_result["evidence_items"])
     assert profile.render_messages(rows[0]) == prepared.messages
 
 
@@ -145,10 +152,32 @@ def test_change_prompt_repo_fallback_is_independent_of_cwd(tmp_path: Path, monke
     prompt = Path("prompts/change_dual_path_v9.md").resolve()
     digest = hashlib.sha256(prompt.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
     manifest = tmp_path / "manifest.json"
-    manifest.write_text(json.dumps({"change_prompt": {"ref": "change_dual_path_v9", "sha256": digest}, "outputs": {"train.jsonl_sha256": "x", "validation.jsonl_sha256": "x"}}) + "\n", encoding="utf-8")
+    manifest.write_text(json.dumps({"change_prompt": {"ref": "change_dual_path_v9", "sha256": digest}, "target_contract": change_target_contract_identity(), "outputs": {"train.jsonl_sha256": "x", "validation.jsonl_sha256": "x"}}) + "\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     profile = ChangeAgentDataProfile(data_manifest=manifest)
     assert profile._prompt_text() == prompt.read_text(encoding="utf-8")
+
+
+def test_change_profile_fails_closed_on_manifest_and_row_contract(tmp_path: Path) -> None:
+    train, prompt, manifest = _write_change_fixture(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    del payload["target_contract"]
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ChangeAgentDataError, match="TARGET_CONTRACT_IDENTITY_MISSING"):
+        ChangeAgentDataProfile(data_manifest=manifest, prompt_file=prompt)
+
+    train, prompt, manifest = _write_change_fixture(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["target_contract"]["sha256"] = "0" * 64
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ChangeAgentDataError, match="TARGET_CONTRACT_IDENTITY_MISMATCH"):
+        ChangeAgentDataProfile(data_manifest=manifest, prompt_file=prompt)
+
+    row = _change_row()
+    profile = ChangeAgentDataProfile(data_manifest=_write_change_fixture(tmp_path)[2], prompt_file=prompt)
+    row["target"]["result"]["evidence"] = []
+    with pytest.raises(ChangeAgentDataError, match="NONCANONICAL_TARGET_RESULT"):
+        profile.validate(row)
 
 
 def test_image_root_registry_rejects_unknown_escape_missing_and_decode(tmp_path: Path) -> None:

@@ -14,7 +14,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from agents.change.prompt_contract import INITIAL_RESPONSE_SUFFIX, evidence_label
-from agents.change.schema import ChangeInitialResult
+from training.multimodal_sft.change_target_contract import (
+    CHANGE_SFT_EPISODE_SCHEMA_VERSION,
+    CHANGE_TARGET_CONTRACT_NAME,
+    CHANGE_TARGET_CONTRACT_VERSION,
+    canonical_change_initial_result,
+)
 from training.multimodal_sft.image_roots import ImageRootRegistry
 from training.multimodal_sft.profiles.change_agent import ChangeAgentDataProfile
 
@@ -32,7 +37,7 @@ def AugmentationConfig(*args: Any, **kwargs: Any) -> Any:
     return _phase2().AugmentationConfig(*args, **kwargs)
 
 
-CHANGE_SFT_SCHEMA_VERSION = 1
+CHANGE_SFT_SCHEMA_VERSION = CHANGE_SFT_EPISODE_SCHEMA_VERSION
 CHANGE_PAIR_AUGMENTATION_UNSUPPORTED = "CHANGE_PAIR_AUGMENTATION_UNSUPPORTED"
 _ALLOWED_TASKS = {"change_caption", "change_qa"}
 _ALLOWED_CONTRACTS = {"semantic_pair_v1", "runtime_initial_v1"}
@@ -110,17 +115,25 @@ def validate_change_episode(episode: Mapping[str, Any]) -> None:
     if manifest != expected_manifest:
         raise ChangeSFTDataError("image_manifest_mismatch", episode_id)
     target = episode.get("target")
-    if not isinstance(target, dict) or target.get("response_schema") != "ChangeInitialResult":
+    if not isinstance(target, dict) or target.get("response_schema") != CHANGE_TARGET_CONTRACT_NAME:
+        raise ChangeSFTDataError("invalid_target_schema", episode_id)
+    if target.get("contract_version") != CHANGE_TARGET_CONTRACT_VERSION:
+        raise ChangeSFTDataError("target_contract_version_mismatch", episode_id)
+    raw = target.get("result")
+    if not isinstance(raw, Mapping):
         raise ChangeSFTDataError("invalid_target_schema", episode_id)
     try:
-        ChangeInitialResult.model_validate(target.get("result"))
+        canonical = canonical_change_initial_result(raw)
     except Exception as error:  # pydantic error is not a stable public contract.
         raise ChangeSFTDataError("invalid_target_schema", episode_id) from error
+    if raw != canonical:
+        raise ChangeSFTDataError("noncanonical_target_result", episode_id)
 
 
 def render_change_messages(episode: Mapping[str, Any], prompt_text: str) -> list[dict]:
     """Render the initial runtime-shaped ChangeAgent conversation."""
     validate_change_episode(episode)
+    canonical_result = canonical_change_initial_result(episode["target"]["result"])
     images = episode["images"]
     user: list[dict] = [
         {"type": "text", "text": "Decision stage: initial. Compare the next two authoritative raw images first."},
@@ -132,7 +145,7 @@ def render_change_messages(episode: Mapping[str, Any], prompt_text: str) -> list
     return [
         {"role": "system", "content": prompt_text + "\n\n" + INITIAL_RESPONSE_SUFFIX},
         {"role": "user", "content": user},
-        {"role": "assistant", "content": [{"type": "text", "text": _safe_json(episode["target"]["result"])}]},
+        {"role": "assistant", "content": [{"type": "text", "text": _safe_json(canonical_result)}]},
     ]
 
 

@@ -8,6 +8,13 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from agents.change.prompt_contract import INITIAL_RESPONSE_SUFFIX, evidence_label
+from training.multimodal_sft.change_target_contract import (
+    CHANGE_SFT_EPISODE_SCHEMA_VERSION,
+    CHANGE_TARGET_CONTRACT_NAME,
+    CHANGE_TARGET_CONTRACT_VERSION,
+    canonical_change_initial_result,
+    change_target_contract_identity,
+)
 from training.multimodal_sft.contracts import ImageRef, PreparedMultimodalEpisode
 from training.multimodal_sft.image_roots import ImageRootRegistry
 
@@ -42,6 +49,12 @@ class ChangeAgentDataProfile:
             raise ChangeAgentDataError("DATA_MANIFEST_INVALID") from exc
         if not isinstance(payload, dict) or not isinstance(payload.get("change_prompt"), dict):
             raise ChangeAgentDataError("DATA_MANIFEST_INVALID")
+        contract = payload.get("target_contract")
+        if not isinstance(contract, dict):
+            raise ChangeAgentDataError("TARGET_CONTRACT_IDENTITY_MISSING")
+        expected = change_target_contract_identity()
+        if any(contract.get(key) != expected[key] for key in expected):
+            raise ChangeAgentDataError("TARGET_CONTRACT_IDENTITY_MISMATCH")
         return payload
 
     @staticmethod
@@ -114,7 +127,7 @@ class ChangeAgentDataProfile:
 
     def validate(self, episode: Mapping[str, Any]) -> None:
         episode_id = str(episode.get("episode_id") or "")
-        if episode.get("schema_version") != 1:
+        if episode.get("schema_version") != CHANGE_SFT_EPISODE_SCHEMA_VERSION:
             raise ChangeAgentDataError("SCHEMA_VERSION", episode_id)
         if episode.get("task") not in {"change_caption", "change_qa"}:
             raise ChangeAgentDataError("UNKNOWN_TASK", episode_id)
@@ -128,19 +141,33 @@ class ChangeAgentDataProfile:
             raise ChangeAgentDataError("INVALID_ROLE_ORDER", episode_id)
         if not isinstance(episode.get("request_payload"), dict):
             raise ChangeAgentDataError("REQUEST_PAYLOAD_INVALID", episode_id)
+        self._canonical_target_result(episode)
+
+    def _canonical_target_result(self, episode: Mapping[str, Any]) -> dict[str, Any]:
+        """Require an already-canonical v2 target. / 要求已规范化的 v2 目标。"""
+
+        episode_id = str(episode.get("episode_id") or "")
         target = episode.get("target")
-        if not isinstance(target, dict) or target.get("response_schema") != "ChangeInitialResult":
+        if not isinstance(target, dict) or target.get("response_schema") != CHANGE_TARGET_CONTRACT_NAME:
+            raise ChangeAgentDataError("INVALID_TARGET_SCHEMA", episode_id)
+        if target.get("contract_version") != CHANGE_TARGET_CONTRACT_VERSION:
+            raise ChangeAgentDataError("TARGET_CONTRACT_VERSION_MISMATCH", episode_id)
+        raw = target.get("result")
+        if not isinstance(raw, Mapping):
             raise ChangeAgentDataError("INVALID_TARGET_SCHEMA", episode_id)
         try:
-            from agents.change.schema import ChangeInitialResult
-            ChangeInitialResult.model_validate(target.get("result"))
+            canonical = canonical_change_initial_result(raw)
         except Exception as exc:  # noqa: BLE001 - stable profile boundary
             raise ChangeAgentDataError("INVALID_TARGET_SCHEMA", episode_id) from exc
+        if raw != canonical:
+            raise ChangeAgentDataError("NONCANONICAL_TARGET_RESULT", episode_id)
+        return canonical
 
     def render_messages(self, episode: Mapping[str, Any]) -> tuple[dict[str, Any], ...]:
         """Render the exact training conversation without loading image bytes."""
 
         self.validate(episode)
+        canonical_result = self._canonical_target_result(episode)
         prompt_text = self._prompt_text()
         user: list[dict[str, Any]] = [{"type": "text", "text": "Decision stage: initial. Compare the next two authoritative raw images first."}]
         for image in episode["images"]:
@@ -150,11 +177,12 @@ class ChangeAgentDataProfile:
         return (
             {"role": "system", "content": prompt_text + "\n\n" + INITIAL_RESPONSE_SUFFIX},
             {"role": "user", "content": user},
-            {"role": "assistant", "content": [{"type": "text", "text": json.dumps(episode["target"]["result"], ensure_ascii=False, separators=(",", ":"))}]},
+            {"role": "assistant", "content": [{"type": "text", "text": json.dumps(canonical_result, ensure_ascii=False, separators=(",", ":"))}]},
         )
 
     def prepare(self, episode: Mapping[str, Any], *, image_roots: Any, split: str, epoch: int, seed: int | str) -> PreparedMultimodalEpisode:
         self.validate(episode)
+        canonical_result = self._canonical_target_result(episode)
         if str(episode.get("split")) != split:
             raise ChangeAgentDataError("SPLIT_MISMATCH", str(episode.get("episode_id") or ""))
         registry = image_roots if isinstance(image_roots, ImageRootRegistry) else ImageRootRegistry(dict(image_roots or {}))
@@ -170,18 +198,34 @@ class ChangeAgentDataProfile:
             episode_id=str(episode["episode_id"]), task_profile=self.name, messages=messages,
             images=tuple(resolved_images), image_roles=tuple(ref.role for ref in refs),
             target_schema="ChangeInitialResult",
-            metadata={"image_refs": tuple(refs), "request_payload": episode["request_payload"], "target": episode["target"], "prompt_ref": self._manifest["change_prompt"]["ref"] if self._manifest else None, "epoch": int(epoch), "seed": str(seed)},
+            metadata={
+                "image_refs": tuple(refs),
+                "request_payload": episode["request_payload"],
+                "target": {
+                    "response_schema": CHANGE_TARGET_CONTRACT_NAME,
+                    "contract_version": CHANGE_TARGET_CONTRACT_VERSION,
+                    "result": canonical_result,
+                },
+                "prompt_ref": self._manifest["change_prompt"]["ref"] if self._manifest else None,
+                "epoch": int(epoch),
+                "seed": str(seed),
+            },
         )
 
     def identity_contract(self, image_roots: Any) -> dict[str, Any]:
         registry = image_roots if isinstance(image_roots, ImageRootRegistry) else ImageRootRegistry(dict(image_roots or {}))
         if self._manifest is None:
-            return {"data_profile": self.name, "image_root_contract": registry.contract()}
+            return {
+                "data_profile": self.name,
+                "target_contract": change_target_contract_identity(),
+                "image_root_contract": registry.contract(),
+            }
         train = self._last_files.get("train")
         validation = self._last_files.get("validation")
         self._prompt_text()
         return {
             "data_profile": self.name,
+            "target_contract": change_target_contract_identity(),
             "data_manifest_sha256": self._sha256_file(self.data_manifest) if self.data_manifest else None,
             "train_file_sha256": self._sha256_file(train) if train else None,
             "validation_file_sha256": self._sha256_file(validation) if validation else None,

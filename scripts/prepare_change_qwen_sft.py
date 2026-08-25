@@ -16,16 +16,22 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
 
-from agents.change.schema import CANONICAL_NO_CHANGE, ChangeInitialResult
-
-
-CHANGE_SFT_SCHEMA_VERSION = 1
+from agents.change.schema import CANONICAL_NO_CHANGE
+from training.multimodal_sft.change_target_contract import (
+    CHANGE_SFT_EPISODE_SCHEMA_VERSION,
+    CHANGE_TARGET_CONTRACT_NAME,
+    CHANGE_TARGET_CONTRACT_VERSION,
+    canonical_change_initial_result,
+    change_target_contract_descriptor,
+    change_target_contract_identity,
+)
 
 
 REJECTION_CODES = {
     "missing_t1", "missing_t2", "unsafe_image_path", "unknown_task", "missing_question",
     "missing_answer", "invalid_role_order", "invalid_target_schema", "excluded_parent_sample",
     "context_dependent_multiturn", "duplicate_episode_id", "split_leakage",
+    "noncanonical_target_result", "target_contract_mismatch",
 }
 
 
@@ -37,9 +43,17 @@ def _validate_output_episode(episode: dict[str, Any]) -> None:
         raise ValueError("missing_question")
     if tuple(image.get("role") for image in episode.get("images", [])[:2]) != ("raw_full_t1", "raw_full_t2"):
         raise ValueError("invalid_role_order")
-    if episode.get("target", {}).get("response_schema") != "ChangeInitialResult":
+    if episode.get("schema_version") != CHANGE_SFT_EPISODE_SCHEMA_VERSION:
+        raise ValueError("target_contract_mismatch")
+    target = episode.get("target", {})
+    if target.get("response_schema") != CHANGE_TARGET_CONTRACT_NAME:
         raise ValueError("invalid_target_schema")
-    ChangeInitialResult.model_validate(episode["target"]["result"])
+    if target.get("contract_version") != CHANGE_TARGET_CONTRACT_VERSION:
+        raise ValueError("target_contract_mismatch")
+    raw = target.get("result")
+    canonical = canonical_change_initial_result(raw)
+    if raw != canonical:
+        raise ValueError("noncanonical_target_result")
 
 
 def _sha256_bytes(value: bytes) -> str:
@@ -104,11 +118,10 @@ def _pair_paths(record: dict[str, Any], split: str) -> tuple[str | None, str | N
 
 
 def _answer_result(answer: str) -> dict[str, Any]:
-    result = {
-        "agent_name": "change_agent", "answer": answer, "boxes": [], "evidence": [],
+    return canonical_change_initial_result({
+        "agent_name": "change_agent", "answer": answer, "boxes": [],
         "evidence_items": [], "geometry": {}, "status": "completed",
-    }
-    return ChangeInitialResult.model_validate(result).model_dump(mode="json")
+    })
 
 
 def _episode(
@@ -126,11 +139,15 @@ def _episode(
         "image_manifest": [{"index": "0", "role": "raw_full_t1"}, {"index": "1", "role": "raw_full_t2"}],
     }
     return {
-        "schema_version": CHANGE_SFT_SCHEMA_VERSION, "episode_id": episode_id,
+        "schema_version": CHANGE_SFT_EPISODE_SCHEMA_VERSION, "episode_id": episode_id,
         "parent_sample_id": parent_id, "dataset": dataset, "split": split, "task": task,
         "input_contract": "semantic_pair_v1", "question": question, "images": images,
         "request_payload": payload,
-        "target": {"response_schema": "ChangeInitialResult", "result": _answer_result(answer)},
+        "target": {
+            "response_schema": CHANGE_TARGET_CONTRACT_NAME,
+            "contract_version": CHANGE_TARGET_CONTRACT_VERSION,
+            "result": _answer_result(answer),
+        },
         "augmentation_policy": {"temporal_geometry": "locked_identity", "photometric": "disabled"},
         "provenance": provenance,
     }
@@ -301,15 +318,19 @@ def main(argv: list[str] | None = None) -> int:
     rejected_payload = "".join(_safe_json(item) + "\n" for item in rejections)
     (args.output_dir / "rejected.jsonl").write_text(rejected_payload, encoding="utf-8", newline="\n")
     manifest = {
-        "schema_version": CHANGE_SFT_SCHEMA_VERSION, "tool": "scripts/prepare_change_qwen_sft.py",
+        "schema_version": CHANGE_SFT_EPISODE_SCHEMA_VERSION, "tool": "scripts/prepare_change_qwen_sft.py",
         "source_type": args.source_type, "seed": args.seed,
         "source": {"basename": args.source.name, "sha256": _sha256_file(args.source)},
         "change_prompt": {"ref": prompt_ref, "sha256": _sha256_bytes(prompt_text.encode("utf-8"))},
+        "target_contract": change_target_contract_identity(),
         "outputs": {"train.jsonl_sha256": train_sha, "validation.jsonl_sha256": val_sha,
                     "rejected.jsonl_sha256": _sha256_bytes(rejected_payload.encode("utf-8"))},
         "counts": {split: {"total": len(values), "by_task": dict(Counter(ep["task"] for ep in values))} for split, values in episodes.items()},
         "rejected": {"total": len(rejections), "by_reason": dict(Counter(item["reason"] for item in rejections))},
     }
+    contract_payload = json.dumps(change_target_contract_descriptor(), ensure_ascii=False, indent=2) + "\n"
+    (args.output_dir / "target_contract.json").write_text(contract_payload, encoding="utf-8", newline="\n")
+    manifest["outputs"]["target_contract.json_sha256"] = _sha256_bytes(contract_payload.encode("utf-8"))
     (args.output_dir / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"train.jsonl: {len(episodes['train'])} episodes")
     print(f"validation.jsonl: {len(episodes['validation'])} episodes")
