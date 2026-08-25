@@ -104,7 +104,8 @@ def test_question_and_choices_facts_are_preserved(tmp_path: Path) -> None:
     sample = next(MMERealWorldAdapter().iter_samples(root, "test", "multiple_choice_vqa"))
     assert sample.task == "multiple_choice_vqa"
     assert sample.question == "How many ships are visible?"
-    assert sample.metadata["choices"] == ["0", "1", "2", "3", "4"]
+    assert sample.normalization is not None
+    assert sample.normalization.choices == ["0", "1", "2", "3", "4"]
     assert sample.ground_truth is not None
     assert sample.ground_truth.answers == ["B"]
     assert sample.ground_truth.raw["choices"] == ["0", "1", "2", "3", "4"]
@@ -113,7 +114,7 @@ def test_question_and_choices_facts_are_preserved(tmp_path: Path) -> None:
     assert "B" not in sample.question
 
 
-def test_metadata_holds_subtask_and_allow_multiple(tmp_path: Path) -> None:
+def test_normalization_holds_choices_and_allow_multiple(tmp_path: Path) -> None:
     root = tmp_path / "mme_meta"
     _make_image(root / "img_1.png")
     _write_json(root / "MME_RealWorld.json", [
@@ -122,8 +123,10 @@ def test_metadata_holds_subtask_and_allow_multiple(tmp_path: Path) -> None:
     ])
     samples = list(MMERealWorldAdapter().iter_samples(root, "test", "multiple_choice_vqa"))
     by_id = {sample.sample_id: sample for sample in samples}
-    assert by_id["rs_a"].metadata["allow_multiple"] is False
-    assert by_id["rs_b"].metadata["allow_multiple"] is True
+    assert by_id["rs_a"].normalization is not None
+    assert by_id["rs_b"].normalization is not None
+    assert by_id["rs_a"].normalization.allow_multiple is False
+    assert by_id["rs_b"].normalization.allow_multiple is True
     assert by_id["rs_a"].metadata["subtask"] == "remote sensing"
 
 

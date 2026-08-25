@@ -101,7 +101,7 @@ class _FakeClient:
         }
         if self.localizer_points is not None:
             payload["evidence_items"] = [
-                {"label": "car", "point": point, "confidence": 0.9}
+                {"label": "car", "point": point}
                 for point in self.localizer_points
             ]
         return response_model.model_validate(payload)
@@ -360,7 +360,7 @@ def test_count_recovers_proposal_header(tmp_path: Path) -> None:
     image_bytes = _encode_image(request.image)
     system_prompt = "Propose a count." + (
         "\n\nReturn valid JSON only. Set agent_name to 'counting_agent'; put the "
-        "concise final answer in answer, use empty boxes/evidence when they are not "
+            "concise final answer in answer, use empty boxes when they are not "
         "needed, and set status to 'completed'."
     )
     messages = [

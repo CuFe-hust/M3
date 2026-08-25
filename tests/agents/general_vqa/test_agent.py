@@ -20,6 +20,7 @@ from PIL import Image
 from agents.base import AgentContext, AgentExecution, VisualPlanBindings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.general_vqa import GeneralVQAAgent
+from agents.general_vqa.agent import _match_choice, _validate_choice_answer
 from agents.general_vqa.evidence.executor import EvidenceExecution
 from agents.general_vqa.evidence.rendering import segformer_palette
 from agents.general_vqa.evidence.schema import (
@@ -77,7 +78,8 @@ def _sample(root: Path, *, task: str = "general_vqa") -> UnifiedSample:
             normalized_task=task,  # type: ignore[arg-type]
             normalizer="test",
             version="1",
-            answer_constraints={"choices": ["yes", "no"]},
+            choices=["yes", "no"],
+            allow_multiple=False,
         )
     return UnifiedSample(
         sample_id="s1",
@@ -205,7 +207,64 @@ def test_multiple_choice_constraints_remain_on_direct_path(tmp_path: Path) -> No
     )
     payload = json.loads(client.calls[0]["messages"][1]["content"][-1]["text"])
     assert payload["choices"] == ["yes", "no"]
+    assert payload["allow_multiple"] is False
+    assert "answer_constraints" not in payload
     assert execution.payload.answer == "yes"
+
+
+@pytest.mark.parametrize("answer", ["B", "Water", "(B) Water"])
+def test_parenthesized_choice_answers_are_accepted(answer: str) -> None:
+    choices = ["(A) Road", "(B) Water"]
+    assert _validate_choice_answer(answer, choices, False) == (None, None)
+
+
+def test_letter_maps_by_position_for_unlabeled_choices() -> None:
+    choices = ["Road", "Airport", "Water"]
+    assert _match_choice("A", choices) == "Road"
+    assert _match_choice("B", choices) == "Airport"
+
+
+def test_compact_multiple_choice_letters_are_accepted() -> None:
+    choices = ["(A) Road", "(B) Water", "(C) Forest"]
+    assert _validate_choice_answer("AC", choices, True) == (
+        None,
+        "(A) Road, (C) Forest",
+    )
+
+
+@pytest.mark.parametrize(
+    ("task", "subtype"),
+    [
+        ("general_vqa", "attribute"),
+        ("scene_classification", "scene_classification"),
+        ("spatial_relation", "spatial_relation"),
+    ],
+)
+def test_direct_payload_is_task_aware(
+    tmp_path: Path, task: str, subtype: str
+) -> None:
+    client = _RecordingClient()
+    sample = _sample(tmp_path, task=task)
+    sample = sample.model_copy(
+        update={
+            "normalization": TaskNormalization(
+                source_task="source",
+                normalized_task=task,  # type: ignore[arg-type]
+                semantic_subtype=subtype,
+                normalizer="test",
+                version="1",
+            )
+        }
+    )
+    asyncio.run(GeneralVQAAgent(client).run(sample, _context(tmp_path, client)))
+    payload = json.loads(client.calls[0]["messages"][1]["content"][-1]["text"])
+    assert payload == {
+        "question": "What is in the image?",
+        "task": task,
+        "semantic_subtype": subtype,
+        "coordinate_frame": "normalized_0_999_top_left",
+        "box_format": "integer_xyxy_json",
+    }
 
 
 def test_unsupported_task_fails_before_model_call(tmp_path: Path) -> None:
@@ -497,21 +556,16 @@ def test_three_branch_content_renders_frozen_protocol(tmp_path: Path) -> None:
     assert len(images) == 6
     assert all("image_url" in block and "url" in block["image_url"] for block in images)
     payload = json.loads(text["text"])
-    assert payload["requested_leaves"] == ["small-vehicle", "building", "water"]
-    assert payload["rendered_yolo_leaves"] == ["small_vehicle", "water"]
-    assert payload["rendered_segformer_leaves"] == ["building", "water"]
-    assert payload["missing_leaves"] == []
-    assert payload["mask_legend"] == [
-        {"leaf_category": "building", "color_rgb": list(palette["building"])},
-        {"leaf_category": "water", "color_rgb": list(palette["water"])},
+    evidence = payload["evidence"]
+    assert evidence["requested_categories"] == ["small-vehicle", "building", "water"]
+    assert evidence["missing_categories"] == []
+    assert evidence["mask_legend"] == [
+        {"category": "building", "color_rgb": list(palette["building"])},
+        {"category": "water", "color_rgb": list(palette["water"])},
     ]
-    assert payload["evidence_identity"] == {
-        "catalog_version": "test-catalog-v1",
-        "preprocessing_version": "greedy-1024-stretch-v1",
-        "palette_version": "v1",
-        "visual_content_version": "v2",
-    }
-    assert payload["visual_inputs"] == [
+    assert "evidence_identity" not in payload
+    assert all("source_size" not in roi and "crop_xyxy" not in roi for roi in evidence["rois"])
+    assert evidence["visual_inputs"] == [
         {"content_image_index": 0, "roi_id": "r_yolo", "role": "annotated_roi"},
         {
             "content_image_index": 1,
@@ -528,8 +582,8 @@ def test_three_branch_content_renders_frozen_protocol(tmp_path: Path) -> None:
         {"content_image_index": 5, "roi_id": "r_none", "role": "clean_roi"},
     ]
     assert execution.trace["visual_content_version"] == "v2"
-    assert len(payload["yolo_detections"]) == 2
-    assert len(payload["segformer_hits"]) == 2
+    assert len(evidence["detections"]) == 2
+    assert len(evidence["segmentation_hits"]) == 2
     # The bundle is persisted as additional results, unchanged by rendering.
     # bundle 作为附加结果持久化，不因渲染而改变。
     persisted = execution.additional_results["vqa_evidence.json"]
@@ -749,8 +803,8 @@ def test_evidence_request_hash_changes_with_each_semantic_input(
     # Clean ROI pixels are also part of the final message and digest.
     # 干净 ROI 像素同样属于最终消息并进入摘要。
     assert_differs("clean ROI pixels", clean_pixel=True)
-    # Catalog version lives in evidence_identity. catalog 版本在
-    # evidence_identity 中。
+    # Catalog version is model-invisible but remains in the request-hash
+    # target spec. catalog 版本对模型不可见，但继续进入请求哈希 target spec。
     bundle = _four_branch_bundle()
     bundle.catalog_version = "test-catalog-v2"
     assert_differs("catalog version", bundle=bundle)
@@ -765,10 +819,10 @@ def test_evidence_request_hash_changes_with_each_semantic_input(
     bundle = _four_branch_bundle()
     bundle.rois[0] = _roi("r_yolo", (0, 0, 5, 3))
     assert_differs("roi geometry", bundle=bundle)
-    # Palette version lives in evidence_identity; keep it last so the
-    # monkeypatch never leaks into the other isolated cases.
-    # 调色表版本在 evidence_identity 中；保持最后执行，避免 monkeypatch 泄漏
-    # 到其他隔离用例。
+    # Palette version is model-invisible but remains in the request-hash
+    # target spec; keep it last so monkeypatch does not leak.
+    # 调色表版本对模型不可见但继续进入请求哈希 target spec；保持最后执行，
+    # 避免 monkeypatch 泄漏。
     monkeypatch.setattr("agents.general_vqa.agent.PALETTE_VERSION", "v2")
     assert_differs("palette version")
 

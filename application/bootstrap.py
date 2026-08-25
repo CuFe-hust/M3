@@ -1312,7 +1312,8 @@ def _build_grounding_evidence_service(
             catalog=evidence_catalog,
             qwen_client=qwen_client,
             prompt=PromptBinding(
-                text=catalog["grounding"], version=catalog.version("grounding")
+                text=catalog["grounding_final"],
+                version=catalog.version("grounding_final"),
             ),
             policy=executor_policy,
             yolo_client=yolo_client,

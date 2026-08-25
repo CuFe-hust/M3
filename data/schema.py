@@ -259,7 +259,41 @@ class TaskNormalization(BaseModel):
     reason_codes: list[str] = Field(default_factory=list)
     spatial_query: dict[str, JsonValue] | None = None
     answer_constraints: dict[str, JsonValue] = Field(default_factory=dict)
+    choices: list[str] = Field(default_factory=list)
+    allow_multiple: bool = False
     count_target_hint: dict[str, JsonValue] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_choice_constraints(cls, value: Any) -> Any:
+        """Promote persisted pre-v2 choices into the canonical fields.
+
+        This is a read-compatibility seam only. Production adapters and Agent
+        payload builders never read choices from answer_constraints.
+        仅用于读取兼容：把持久化的 v2 前选项提升到规范字段。生产 adapter
+        与 Agent payload builder 绝不从 answer_constraints 读取 choices。
+        """
+        if not isinstance(value, dict):
+            return value
+        if value.get("normalized_task") != "multiple_choice_vqa":
+            return value
+        if value.get("choices"):
+            return value
+        constraints = value.get("answer_constraints")
+        if not isinstance(constraints, dict):
+            return value
+        choices = constraints.get("choices")
+        if not (
+            isinstance(choices, list)
+            and all(isinstance(choice, str) for choice in choices)
+        ):
+            return value
+        migrated = dict(value)
+        migrated["choices"] = list(choices)
+        allow_multiple = constraints.get("allow_multiple", False)
+        if isinstance(allow_multiple, bool):
+            migrated["allow_multiple"] = allow_multiple
+        return migrated
 
     @field_validator("spatial_query", "answer_constraints", "count_target_hint", mode="before")
     @classmethod
@@ -272,12 +306,20 @@ class TaskNormalization(BaseModel):
 
     @model_validator(mode="after")
     def validate_structured_fields(self) -> "TaskNormalization":
-        """Keep all free-form fields JSON-safe. / 所有自由字段保持 JSON 安全。"""
+        """Keep free-form fields JSON-safe and validate canonical choices.
+        保持自由字段 JSON 安全并校验规范选择项。"""
         if self.spatial_query is not None:
             _assert_json_safe(self.spatial_query, "normalization.spatial_query")
         _assert_json_safe(self.answer_constraints, "normalization.answer_constraints")
         if self.count_target_hint is not None:
             _assert_json_safe(self.count_target_hint, "normalization.count_target_hint")
+        if any(not choice.strip() for choice in self.choices):
+            raise ValueError("normalization choices must be non-empty strings")
+        normalized_choices = [choice.strip().casefold() for choice in self.choices]
+        if len(normalized_choices) != len(set(normalized_choices)):
+            raise ValueError("normalization choices must be unique")
+        if self.normalized_task == "multiple_choice_vqa" and len(self.choices) < 2:
+            raise ValueError("multiple_choice_vqa normalization requires at least two choices")
         return self
 
 
@@ -385,6 +427,7 @@ class SampleDraft(BaseModel):
     explicit_task: TaskName | None = None
     ground_truth: GroundTruth | None = None
     metadata: dict[str, JsonValue] = Field(default_factory=dict)
+    normalization: TaskNormalization | None = None
 
     @field_validator("metadata", mode="before")
     @classmethod
@@ -430,6 +473,17 @@ def materialize_sample(draft: SampleDraft, task: str) -> UnifiedSample:
         image.model_copy(update={"role": role})
         for image, role in zip(draft.images, roles)
     ]
+    normalization = draft.normalization
+    if normalization is not None and normalization.normalized_task != task:
+        try:
+            normalization = normalization.model_copy(
+                update={"normalized_task": task}
+            )
+            normalization = TaskNormalization.model_validate(
+                normalization.model_dump(mode="json")
+            )
+        except ValidationError as exc:
+            raise SampleMaterializationError("TASK_NORMALIZATION_INCOMPATIBLE") from exc
     try:
         return UnifiedSample(
             sample_id=draft.sample_id,
@@ -440,7 +494,7 @@ def materialize_sample(draft: SampleDraft, task: str) -> UnifiedSample:
             question=draft.question,
             ground_truth=draft.ground_truth,
             metadata=draft.metadata,
-            normalization=None,
+            normalization=normalization,
         )
     except ValidationError as exc:
         raise SampleMaterializationError("SAMPLE_CONTRACT_VIOLATION") from exc

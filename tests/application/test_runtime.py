@@ -869,7 +869,6 @@ def test_to_public_answer_agent_result_mapping() -> None:
                 VisualEvidence(
                     label="road",
                     box=[1, 2, 3, 4],
-                    confidence=0.9,
                     image_id="image-0",
                 )
             ],

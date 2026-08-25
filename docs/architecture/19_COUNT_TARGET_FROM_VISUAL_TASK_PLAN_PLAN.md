@@ -1,5 +1,14 @@
 # 19 — Counting Target from VisualTaskPlan（讨论后修订 Plan）
 
+> Historical implementation plan: this document introduced `visual-task-plan-v4`.
+> Doc 20 subsequently superseded the active protocol; current fresh execution uses
+> `visual-task-plan-v5`. The v4 names and examples below are retained as historical
+> design records, not as statements of the current runtime contract.
+>
+> 历史实施计划：本文引入了 `visual-task-plan-v4`。doc 20 随后替代了现役协议；
+> 当前 fresh execution 使用 `visual-task-plan-v5`。下文的 v4 名称与示例作为历史设计
+> 记录保留，不表示当前 runtime 契约。
+
 > Status: **implemented through entrypoint/resume/artifact plumbing**
 
 > 状态：**已完成入口、resume、artifact 与 trace 接线；后续阶段按实施包继续验证**

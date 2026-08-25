@@ -8,6 +8,7 @@ AgentResult/agent_result.json、trace 含稳定 agent class/route/prompt version
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,7 +48,7 @@ class _RecordingClient:
         )
 
     async def complete_json(self, *, messages, response_model, request_meta, max_tokens=None):
-        self.calls.append({"request_hash": request_meta.request_hash})
+        self.calls.append({"messages": messages, "request_hash": request_meta.request_hash})
         return response_model.model_validate(
             {"agent_name": "caption_agent", "answer": "A coastal city.", "status": "completed"}
         )
@@ -95,6 +96,13 @@ def test_run_returns_agent_execution(tmp_path: Path) -> None:
     assert execution.payload.answer == "A coastal city."
     assert execution.result_filename == "agent_result.json"
     assert len(client.calls) == 1
+
+
+def test_caption_payload_is_minimal(tmp_path: Path) -> None:
+    client = _RecordingClient()
+    asyncio.run(CaptionAgent(client).run(_sample(tmp_path), _context(tmp_path)))
+    payload = json.loads(client.calls[0]["messages"][1]["content"][-1]["text"])
+    assert payload == {"task": "caption", "question": "Describe the scene."}
 
 
 def test_trace_contains_stable_class_route_and_prompt_version(tmp_path: Path) -> None:

@@ -326,7 +326,6 @@ class ChangeAgent:
                     update={
                         "answer": CANONICAL_NO_CHANGE,
                         "boxes": [],
-                        "evidence": [],
                         "evidence_items": [],
                     }
                 )
@@ -676,18 +675,15 @@ class ChangeAgent:
         candidate_map = {item.candidate_id: item for item in candidates}
         selected = [candidate_map[item_id] for item_id in confirmed if item_id in candidate_map]
         answer = _building_rescue_fallback_caption(selected, confirmed)
-        evidence: list[str] = []
         evidence_items: list[VisualEvidence] = []
         boxes: list[list[int]] = []
         for candidate in selected:
             boxes.append(list(candidate.normalized_box))
-            evidence.extend(candidate.artifact_files)
             for temporal, relative in zip(("t1", "t2"), candidate.artifact_files):
                 evidence_items.append(
                     VisualEvidence(
                         label=f"confirmed {candidate.direction} building context {temporal}",
                         box=list(candidate.normalized_box),
-                        confidence=candidate.score,
                         image_id=relative,
                     )
                 )
@@ -702,7 +698,6 @@ class ChangeAgent:
             update={
                 "answer": answer,
                 "boxes": boxes,
-                "evidence": evidence[:12],
                 "evidence_items": evidence_items,
                 "geometry": geometry,
                 "status": "completed",
@@ -824,13 +819,13 @@ class ChangeAgent:
             outcome: Literal["positive", "negative", "unresolved"] = "positive"
             status = "completed"
             answer = result.answer
-            boxes, evidence, evidence_items = result.boxes, result.evidence, result.evidence_items
+            boxes, evidence_items = result.boxes, result.evidence_items
             merge.update(final_rule="VALID_PERSISTENT_POSITIVE", final_semantic_decision="persistent_change")
         elif valid_global_negative:
             outcome = "negative"
             status = "completed"
             answer = CANONICAL_NO_CHANGE if task == "change_caption" else result.answer
-            boxes, evidence, evidence_items = [], [], []
+            boxes, evidence_items = [], []
             merge.update(
                 final_rule="GLOBAL_NEGATIVE_OVERRIDES_LOCAL_INSUFFICIENT",
                 final_semantic_decision="no_change",
@@ -840,7 +835,7 @@ class ChangeAgent:
             outcome = "negative"
             status = "completed"
             answer = CANONICAL_NO_CHANGE if task == "change_caption" else result.answer
-            boxes, evidence, evidence_items = [], [], []
+            boxes, evidence_items = [], []
             merge.update(
                 final_rule="ALL_LOCAL_REVIEWS_RESOLVED_NONPERSISTENT",
                 final_semantic_decision="no_change",
@@ -850,10 +845,10 @@ class ChangeAgent:
             outcome = "unresolved"
             status = "partial"
             answer = "Unable to confirm a persistent semantic change from the available evidence." if task == "change_caption" else result.answer
-            boxes, evidence, evidence_items = result.boxes, result.evidence, result.evidence_items
+            boxes, evidence_items = result.boxes, result.evidence_items
             merge.update(final_rule="UNRESOLVED_VALIDATED_REVIEW_STATE", final_semantic_decision="unresolved")
         return AgentResult(
-            agent_name=self.name, answer=answer, boxes=boxes, evidence=evidence,
+            agent_name=self.name, answer=answer, boxes=boxes,
             evidence_items=evidence_items, geometry=dict(result.geometry), status=status,
         ), outcome, merge
 

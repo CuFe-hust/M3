@@ -62,6 +62,7 @@ class GroundingEvidenceService(Protocol):
         sample: UnifiedSample,
         images: Any,
         *,
+        base_user_payload: dict[str, Any],
         fallback_image_id: str,
         artifact_dir: Path,
         budget: CallBudget | None,

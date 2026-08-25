@@ -35,9 +35,19 @@ class VisualEvidence(BaseModel):
     label: str = Field(min_length=1)
     box: list[int] | None = None
     point: list[int] | None = None
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
     image_id: str | None = None
     coordinate_frame: Literal["normalized_0_999_top_left"] = "normalized_0_999_top_left"
+
+    @model_validator(mode="before")
+    @classmethod
+    def drop_legacy_confidence(cls, value: Any) -> Any:
+        """Read legacy artifacts without republishing their confidence field.
+        兼容读取历史产物，但不再向外序列化其置信度字段。"""
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        data.pop("confidence", None)
+        return data
 
     @model_validator(mode="after")
     def validate_geometry(self) -> "VisualEvidence":
@@ -70,7 +80,6 @@ class AgentResult(BaseModel):
     # 模型侧框与 Phase 2 SFT 使用相同的 0..999 整数 xyxy JSON 几何；运行时
     # 消费者仍接收统一的列表形式。
     boxes: list[list[int]] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list, max_length=12)
     evidence_items: list[VisualEvidence] = Field(default_factory=list, max_length=200)
     geometry: dict[str, Any] = Field(default_factory=dict)
     status: Literal["completed", "partial", "failed"] = "completed"
@@ -83,6 +92,11 @@ class AgentResult(BaseModel):
         if not isinstance(value, dict):
             return value
         data = dict(value)
+        # Legacy persisted results may contain text evidence. Accept it only
+        # as migration input; the current contract never republishes it.
+        # 历史持久化结果可能含文本 evidence；仅作为迁移输入接受，当前契约
+        # 永不再次输出该字段。
+        data.pop("evidence", None)
         raw_boxes = data.get("boxes")
         normalized_boxes, normalizations = _normalize_model_boxes(raw_boxes)
         items = data.get("evidence_items")
@@ -99,6 +113,7 @@ class AgentResult(BaseModel):
                     evidence_quality.append("invalid")
                     continue
                 item = dict(raw_item)
+                item.pop("confidence", None)
                 box, point = item.get("box"), item.get("point")
                 if _is_coordinate_pair(box) and _is_coordinate_pair(point):
                     normalized_box = _normalize_box_geometry([*box, *point], normalizations)

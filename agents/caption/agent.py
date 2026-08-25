@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Any
 
 from agents.base import AgentContext, AgentExecution
 from agents.schema import AgentName
@@ -49,6 +50,11 @@ class CaptionAgent(VisualAgentBase):
             prompt=prompt
             or PromptBinding(text=_DEFAULT_PROMPT_TEXT, version=_DEFAULT_PROMPT_VERSION),
         )
+
+    def build_user_payload(self, sample: UnifiedSample) -> dict[str, Any]:
+        """Build the minimal caption instruction payload.
+        构造最小 caption 指令载荷。"""
+        return {"task": sample.task, "question": sample.question}
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
         """Run the shared pipeline and enrich the trace with a stable agent

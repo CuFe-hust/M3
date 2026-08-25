@@ -220,7 +220,7 @@ def test_user_payload_never_leaks_ground_truth(tmp_path: Path) -> None:
     assert "answers" not in payload_text
 
 
-def test_user_payload_contains_task_and_constraints(tmp_path: Path) -> None:
+def test_shared_user_payload_contains_only_universal_facts(tmp_path: Path) -> None:
     root = tmp_path / "data"
     client = _RecordingClient()
     norm = TaskNormalization(
@@ -233,9 +233,10 @@ def test_user_payload_contains_task_and_constraints(tmp_path: Path) -> None:
     asyncio.run(_base(client).run(sample, _context(root)))
     payload_text = client.calls[0]["messages"][1]["content"][-1]["text"]
     assert '"task": "spatial_relation"' in payload_text
-    assert '"semantic_subtype": "extreme_category"' in payload_text
-    assert "closed_vocabulary" in payload_text
-    assert '"coordinate_frame": "normalized_0_999_top_left"' in payload_text
+    assert '"question": "Is the statement correct?"' in payload_text
+    assert "semantic_subtype" not in payload_text
+    assert "answer_constraints" not in payload_text
+    assert "coordinate_frame" not in payload_text
 
 
 def test_budget_consumed_exactly_once_before_call(tmp_path: Path) -> None:

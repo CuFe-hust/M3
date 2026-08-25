@@ -26,12 +26,12 @@ class ChangeInitialResult(AgentResult):
         if not isinstance(value, dict):
             return value
         data = dict(value)
+        data.pop("evidence", None)
         if (
             data.get("agent_name") == "change_agent"
             and str(data.get("answer", "")).strip() == CANONICAL_NO_CHANGE
         ):
             data["boxes"] = []
-            data["evidence"] = []
             data["evidence_items"] = []
             geometry = dict(data.get("geometry") or {})
             normalizations = list(geometry.get("change_input_normalizations") or [])
@@ -470,7 +470,6 @@ class ChangeAdjudicationResult(BaseModel):
     candidate_reviews: list[ChangeCandidateReview]
     answer: str
     boxes: list[list[int]] = Field(default_factory=list)
-    evidence: list[str] = Field(default_factory=list)
     evidence_items: list[VisualEvidence] = Field(default_factory=list)
     geometry: dict[str, JsonValue] = Field(default_factory=dict)
     status: Literal["completed", "partial"] = "completed"
@@ -484,12 +483,12 @@ class ChangeAdjudicationResult(BaseModel):
             return value
         data = dict(value)
         data.pop("$schema", None)
+        data.pop("evidence", None)
         if (
             data.get("agent_name") == "change_agent"
             and str(data.get("answer", "")).strip() == CANONICAL_NO_CHANGE
         ):
             data["boxes"] = []
-            data["evidence"] = []
             data["evidence_items"] = []
             geometry = dict(data.get("geometry") or {})
             normalizations = list(geometry.get("change_input_normalizations") or [])

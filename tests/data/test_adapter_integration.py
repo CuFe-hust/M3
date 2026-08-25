@@ -158,7 +158,8 @@ def test_xlrs_release_root_resolution_with_loader(tmp_path: Path) -> None:
     probe = adapter.probe(unified, task="multiple_choice_vqa")
     assert probe.sample_count > 0
     samples = _validate_all(adapter.iter_samples(unified, "train", "multiple_choice_vqa"), release)
-    assert samples[0].metadata["choices"] == ["A", "B", "C", "D"]
+    assert samples[0].normalization is not None
+    assert samples[0].normalization.choices == ["A", "B", "C", "D"]
 
 
 def test_xlrs_split_mismatch_fails_before_loading(tmp_path: Path) -> None:

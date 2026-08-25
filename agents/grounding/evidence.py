@@ -442,6 +442,7 @@ class GroundingEvidenceExecutor:
         sample: UnifiedSample,
         images: Mapping[str, Image.Image],
         *,
+        base_user_payload: Mapping[str, Any],
         fallback_image_id: str,
         artifact_dir: Path,
         budget: CallBudget | None = None,
@@ -486,6 +487,7 @@ class GroundingEvidenceExecutor:
             records,
             candidates,
             missing_leaves,
+            base_user_payload=base_user_payload,
             artifact_dir=artifact_dir,
             budget=budget,
             audits=audits,
@@ -762,6 +764,7 @@ class GroundingEvidenceExecutor:
         candidates: list[GroundingCandidateRecord],
         missing_leaves: list[str],
         *,
+        base_user_payload: Mapping[str, Any],
         artifact_dir: Path,
         budget: CallBudget | None,
         audits: list[GroundingCallAudit],
@@ -792,30 +795,43 @@ class GroundingEvidenceExecutor:
             data_urls.append(image_to_data_url(data, "image/png"))
             image_digests.append(image_sha256(data))
 
-        user_payload = {
+        expected_base = {
+            "task": sample.task,
             "question": sample.question,
-            "catalog_version": self._catalog.catalog_version,
-            "coordinate_frame": "roi_normalized_0_999_top_left",
+            "coordinate_frame": "normalized_0_999_top_left",
             "box_format": "integer_xyxy_json",
+        }
+        if dict(base_user_payload) != expected_base:
+            raise GroundingEvidenceError("BASE_PAYLOAD_INVALID")
+        user_payload = dict(base_user_payload)
+        user_payload["coordinate_frame"] = "roi_normalized_0_999_top_left"
+        user_payload["evidence"] = {
+            "visual_inputs": [
+                {
+                    "content_image_index": index,
+                    "roi_id": record.roi_id,
+                    "role": "clean_roi",
+                }
+                for index, record in enumerate(records)
+            ],
             "rois": [
                 {
                     "roi_id": record.roi_id,
                     "image_id": record.image_id,
-                    "source_size": list(record.source_size),
                     "crop_size": list(record.crop_size),
                 }
                 for record in records
             ],
             "candidates": [
                 {
-                    "box_id": candidate.box_id,
-                    "leaf_category": candidate.leaf_category,
+                    "candidate_id": candidate.box_id,
+                    "category": candidate.leaf_category,
                     "roi_id": candidate.roi_id,
-                    "xyxy": _normalized_box_to_999(candidate.roi_normalized_xyxy),
+                    "box": _normalized_box_to_999(candidate.roi_normalized_xyxy),
                 }
                 for candidate in candidates
             ],
-            "missing_leaves": missing_leaves,
+            "missing_categories": list(missing_leaves),
         }
         content: list[dict[str, object]] = [
             *[{"type": "image_url", "image_url": {"url": url}} for url in data_urls],
@@ -832,6 +848,14 @@ class GroundingEvidenceExecutor:
             prompt_version=self._prompt.version,
             messages=messages,
             image_sha256=image_digest,
+            target_spec={
+                "evidence_identity": {
+                    "catalog_version": self._catalog.catalog_version,
+                },
+                "source_geometry": [
+                    record.model_dump(mode="json") for record in records
+                ],
+            },
             response_schema=GroundingQwenResponse.model_json_schema(),
             client_version=identity.client_version,
             model_revision=identity.revision,

@@ -788,7 +788,7 @@ def _task_detail(
             question=sample.question if sample is not None else None,
             prediction=payload.answer,
             reference_answers=references,
-            evidence_text=list(payload.evidence),
+            evidence_text=[],
             evidence_item_count=len(payload.evidence_items),
             geometry_repair_severity=severity,
         )
@@ -797,7 +797,7 @@ def _task_detail(
             question=sample.question if sample is not None else None,
             prediction=payload.answer,
             reference_answers=references,
-            evidence_text=list(payload.evidence),
+            evidence_text=[],
             evidence_item_count=len(payload.evidence_items),
             geometry_summary=_geometry_summary(payload.geometry),
             geometry_repair_severity=severity,

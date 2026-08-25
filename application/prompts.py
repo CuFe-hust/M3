@@ -22,6 +22,7 @@ _BINDINGS: dict[str, tuple[str, str]] = {
     "change_building_rescue": ("change_building_rescue_v1.md", "v3"),
     "general": ("general_vqa_v3.md", "v3"),
     "grounding": ("general_vqa_v3.md", "v3"),
+    "grounding_final": ("grounding_final_v1.md", "v1"),
     "caption": ("caption_v1.md", "v1"),
     "seam": ("seam_review_v2.md", "v2"),
     "visual_task_plan": ("visual_task_plan_v5.md", "v5"),

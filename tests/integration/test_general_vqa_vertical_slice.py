@@ -71,7 +71,7 @@ def _sample(
             source_task=task,
             normalized_task=task,  # type: ignore[arg-type]
             normalizer="test", version="1",
-            answer_constraints=constraints,
+            choices=list(constraints.get("values", [])),
         )
     return UnifiedSample(
         sample_id="slice-1",

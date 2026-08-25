@@ -38,9 +38,25 @@ def test_evidence_point_must_be_2_values_in_range() -> None:
     assert ok.point == [10, 20]
 
 
-def test_evidence_rejects_extra_fields() -> None:
+def test_evidence_rejects_unknown_extra_fields() -> None:
     with pytest.raises(ValidationError):
         VisualEvidence.model_validate({"label": "x", "box": [1, 2, 3, 4], "score": 0.9})
+
+
+def test_removed_fields_are_accepted_only_as_legacy_input() -> None:
+    result = AgentResult.model_validate(
+        {
+            "agent_name": "general_vqa_agent",
+            "answer": "ok",
+            "evidence": ["legacy text"],
+            "evidence_items": [
+                {"label": "x", "box": [1, 2, 3, 4], "confidence": 0.9}
+            ],
+        }
+    )
+    dumped = result.model_dump(mode="json")
+    assert "evidence" not in dumped
+    assert "confidence" not in dumped["evidence_items"][0]
 
 
 # ── AgentName / Agent 名 ────────────────────────────────────────────────────
