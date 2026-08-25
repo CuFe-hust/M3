@@ -33,6 +33,9 @@ from training.multimodal_sft.change_target_contract import (
 
 SOURCE_SPEC_SCHEMA_VERSION = 1
 ALLOWED_TASKS = {"change_caption", "change_qa"}
+FORMAL_TRAIN_ORDERING_POLICY = "sha256_episode_id_v1"
+FORMAL_TRAIN_ORDERING_SEED = 1234
+VALIDATION_ORDERING_POLICY = "builder_source_order_v1"
 
 
 class ChangeCorpusBuildError(ValueError):
@@ -40,6 +43,20 @@ class ChangeCorpusBuildError(ValueError):
         self.code = code
         self.detail = detail
         super().__init__(f"{code}: {detail}" if detail else code)
+
+
+def formal_train_order_key(
+    episode: dict[str, Any],
+    *,
+    seed: int = FORMAL_TRAIN_ORDERING_SEED,
+) -> tuple[str, str]:
+    """Return a cross-process deterministic pseudo-random train ordering key."""
+
+    episode_id = str(episode.get("episode_id") or "")
+    if not episode_id:
+        raise ChangeCorpusBuildError("EPISODE_ID_REQUIRED_FOR_ORDERING")
+    digest = hashlib.sha256(f"{int(seed)}\0{episode_id}".encode("utf-8")).hexdigest()
+    return digest, episode_id
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -447,6 +464,12 @@ def _build_into(spec_path: Path, output: Path, prompt_ref: str) -> dict[str, Any
                 rejected.append({"source_id": source["id"], "source_row_index": index, "reason": exc.code})
                 row_map.append({"source_id": source["id"], "source_row_index": index, "status": "rejected", "reason": exc.code})
         summary.append(item_summary)
+    train.sort(
+        key=lambda episode: formal_train_order_key(
+            episode,
+            seed=FORMAL_TRAIN_ORDERING_SEED,
+        )
+    )
     train_pairs = {row["parent_sample_id"] for row in train}
     validation_pairs = {row["parent_sample_id"] for row in validation}
     if train_pairs & validation_pairs:
@@ -470,6 +493,14 @@ def _build_into(spec_path: Path, output: Path, prompt_ref: str) -> dict[str, Any
         "canonical_dataset": {"captions_sha256": sha256_file(Path(spec["canonical_dataset"]["captions"])), "image_root": spec["canonical_dataset"]["image_root"]},
         "change_prompt": {"ref": prompt_ref, "sha256": sha256_bytes(prompt_text.encode("utf-8"))},
         "target_contract": change_target_contract_identity(),
+        "ordering": {
+            "train": {
+                "policy": FORMAL_TRAIN_ORDERING_POLICY,
+                "seed": FORMAL_TRAIN_ORDERING_SEED,
+                "key": "episode_id",
+            },
+            "validation": {"policy": VALIDATION_ORDERING_POLICY},
+        },
         "exclusions": {key: value for key, value in exclusions.items() if key != "mapped_ids"},
         "global_split_policy": spec["split_policy"], "source_file_sha256": source_shas, "pair_registry_sha256": registry_sha,
         "outputs": {"train.jsonl_sha256": train_sha, "validation.jsonl_sha256": validation_sha, "rejected.jsonl_sha256": rejected_sha, "pair_registry.jsonl_sha256": registry_sha, "changechat_row_map.jsonl_sha256": row_map_sha, "source_summary.json_sha256": sha256_bytes(source_summary_payload.encode("utf-8")), "target_contract.json_sha256": sha256_bytes(descriptor_payload.encode("utf-8"))},
