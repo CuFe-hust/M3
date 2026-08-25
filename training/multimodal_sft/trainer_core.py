@@ -24,7 +24,7 @@ from .checkpoint import (
     write_manifest,
 )
 from .contracts import DataProfile, MultimodalModelAdapter
-from .identity import base_weight_identity, processor_content_identity
+from .identity import base_weight_identity, materialize_processor_identity, processor_content_identity
 from .optimizer import OptimizerConfig, autocast_context, build_cosine_scheduler, build_optimizer_groups, clip_gradients
 from .parameter_plan import ParameterPlan, TuningPolicy, build_parameter_plan
 
@@ -336,6 +336,58 @@ class GenericTrainerCore:
             resolved["image_root_contract"] = roots_contract
         return {**resolved, **dict(config.data_contract), "batch_size": int(config.batch_size), "max_seq_length": int(config.max_seq_length), "repeat_group_key": config.repeat_group_key, "repeat_weights": dict(config.repeat_weights)}
 
+    def _runtime_processor_identity(self, processor: Any) -> dict[str, Any]:
+        semantic_fn = getattr(self.adapter, "processor_identity", None)
+        semantic = dict(semantic_fn(processor)) if callable(semantic_fn) else {}
+        encoding_contract = semantic.get("encoding_contract_version")
+        if not encoding_contract:
+            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
+        content = materialize_processor_identity(
+            processor,
+            encoding_contract_version=str(encoding_contract),
+        )
+        # Adapter semantics are authoritative for the project encoding
+        # contract; saved bytes remain authoritative for content identity.
+        content.update({key: value for key, value in semantic.items() if key not in {"content_sha256", "files"}})
+        return content
+
+    def _load_canonical_resume_processor(
+        self,
+        checkpoint_dir: Path,
+        manifest: Mapping[str, Any],
+        runtime_processor: Any,
+    ) -> tuple[Any, dict[str, Any]]:
+        processor_dir = checkpoint_dir / "processor"
+        if not processor_dir.is_dir():
+            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
+        expected = dict(manifest.get("processor", {}))
+        if not expected.get("content_sha256") or not expected.get("encoding_contract_version"):
+            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
+        load_fn = getattr(self.adapter, "load_processor", None)
+        if not callable(load_fn):
+            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
+        try:
+            canonical = load_fn(processor_dir, local_files_only=True)
+        except TypeError:
+            canonical = load_fn(processor_dir)
+        canonical_identity_fn = getattr(self.adapter, "saved_processor_identity", None)
+        if callable(canonical_identity_fn):
+            canonical_identity = dict(canonical_identity_fn(canonical, processor_dir))
+        else:
+            canonical_identity = dict(processor_content_identity(processor_dir, canonical))
+            semantic_fn = getattr(self.adapter, "processor_identity", None)
+            if callable(semantic_fn):
+                canonical_identity.update(dict(semantic_fn(canonical)))
+        semantic_keys = ("class", "tokenizer_class", "chat_template_sha256", "special_tokens_sha256", "special_token_ids")
+        if any(expected.get(key) != canonical_identity.get(key) for key in semantic_keys):
+            raise ValueError("RESUME_CHECKPOINT_PROCESSOR_IDENTITY_MISMATCH")
+        if expected.get("content_sha256") != canonical_identity.get("content_sha256"):
+            raise ValueError("RESUME_CHECKPOINT_PROCESSOR_IDENTITY_MISMATCH")
+        if expected.get("encoding_contract_version") != canonical_identity.get("encoding_contract_version"):
+            raise ValueError("RESUME_CHECKPOINT_PROCESSOR_IDENTITY_MISMATCH")
+        runtime_identity = self._runtime_processor_identity(runtime_processor)
+        return canonical, runtime_identity
+
     def _manifest(self, *, model_identity: Mapping[str, Any], plan: ParameterPlan, policy: TuningPolicy, config: TrainingConfig, training_plan: Mapping[str, Any], global_step: int, epoch_index: int, next_micro_batch_index: int, last_loss: float | None, eval_loss: float | None, preflight: Mapping[str, Any], processor: Any | None = None, next_sample_index: int = 0, next_batch_index: int = 0) -> dict[str, Any]:
         processor_identity = {}
         identity_fn = getattr(self.adapter, "processor_identity", None)
@@ -476,7 +528,8 @@ class GenericTrainerCore:
             resume_manifest = read_compatible_manifest(resume_root, legacy_manifest_names=("phase2_training_manifest.json",))
             if "checkpoint_type" not in resume_manifest:
                 raise ValueError("legacy checkpoint requires an adapter-specific compatibility restore")
-            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=effective_model_identity, task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan, processor_identity=processor_identity)
+            processor, runtime_processor_identity = self._load_canonical_resume_processor(resume_root, resume_manifest, processor)
+            validate_resume_compatibility(resume_manifest, adapter_name=str(getattr(self.adapter, "name", type(self.adapter).__name__)), model_identity=effective_model_identity, task_profile=self.data_profile.name, tuning_policy=selected_policy.as_dict(), parameter_plan=plan.as_dict(), data_contract=self._effective_data_contract(config), training_plan=training_plan, processor_identity=runtime_processor_identity)
             restore = getattr(self.adapter, "restore_trainable_state", None)
             if not callable(restore):
                 raise ValueError("selected adapter does not implement trainable-state restore")

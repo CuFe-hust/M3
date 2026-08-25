@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -174,6 +175,32 @@ def processor_content_identity(
         "special_token_ids": {},
     }
     return {**semantic, "content_sha256": tree["sha256"], "files": tree["files"]}
+
+
+def materialize_processor_identity(
+    processor: Any,
+    *,
+    encoding_contract_version: str | None = None,
+) -> dict[str, Any]:
+    """Fingerprint an in-memory processor using the canonical saved-artifact tree.
+
+    Resume callers must not infer content identity from object attributes alone.
+    This helper gives processors without a known source directory the same
+    content contract as checkpoint and export paths.
+    """
+
+    save_pretrained = getattr(processor, "save_pretrained", None)
+    if not callable(save_pretrained):
+        raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
+    with tempfile.TemporaryDirectory(prefix="processor-identity-") as temporary:
+        try:
+            save_pretrained(temporary)
+        except Exception as exc:  # noqa: BLE001 - identity must fail closed
+            raise ValueError("RESUME_PROCESSOR_IDENTITY_UNPROVEN") from exc
+        identity = processor_content_identity(temporary, processor)
+    if encoding_contract_version is not None:
+        identity["encoding_contract_version"] = str(encoding_contract_version)
+    return identity
 
 
 def processor_semantic_equal(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:

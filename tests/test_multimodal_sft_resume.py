@@ -10,6 +10,7 @@ torch = pytest.importorskip("torch")
 from training.multimodal_sft.checkpoint import checkpoint_complete
 from training.multimodal_sft.contracts import CanonicalEpisode, ModelStructure
 from training.multimodal_sft.data import JsonlDataProfile
+from training.multimodal_sft.identity import processor_content_identity, processor_semantic_identity
 from training.multimodal_sft.parameter_plan import ParameterPlan
 from training.multimodal_sft.trainer_core import GenericTrainerCore, TrainingConfig
 
@@ -23,6 +24,16 @@ class _TinyModel(torch.nn.Module):
     def forward(self, x):
         value = self.language(x) + self.connector(x)
         return SimpleNamespace(loss=(value + torch.rand_like(value) * 0.01 - 1.0).pow(2).mean())
+
+
+class _TinyProcessor:
+    def __init__(self, version: str = "a") -> None:
+        self.version = version
+
+    def save_pretrained(self, output_dir: str | Path) -> None:
+        target = Path(output_dir)
+        target.mkdir(parents=True, exist_ok=True)
+        (target / "processor_config.json").write_text(json.dumps({"version": self.version}, sort_keys=True) + "\n", encoding="utf-8")
 
 
 class _TinyAdapter:
@@ -42,6 +53,16 @@ class _TinyAdapter:
     def validate_trainable_parameters(self, model, parameter_plan):
         assert any(parameter.requires_grad for parameter in model.parameters())
 
+    def processor_identity(self, processor):
+        return {**processor_semantic_identity(processor), "encoding_contract_version": "tiny_v1"}
+
+    def load_processor(self, processor_dir, *, local_files_only=True):
+        payload = json.loads((Path(processor_dir) / "processor_config.json").read_text(encoding="utf-8"))
+        return _TinyProcessor(str(payload["version"]))
+
+    def saved_processor_identity(self, processor, processor_dir):
+        return {**processor_content_identity(processor_dir, processor), "encoding_contract_version": "tiny_v1"}
+
     def encode(self, processor, episode, *, return_tensors="pt"):
         return {"x": torch.tensor([[float(episode.metadata["x"])]])}
 
@@ -53,7 +74,7 @@ class _TinyAdapter:
         adapter_dir.mkdir(parents=True, exist_ok=True)
         torch.save({name: value.detach().clone() for name, value in model.named_parameters() if name.startswith("language.")}, adapter_dir / "adapter_model.safetensors")
         (adapter_dir / "adapter_config.json").write_text("{}\n", encoding="utf-8")
-        (Path(output_dir) / "processor").mkdir(exist_ok=True)
+        processor.save_pretrained(Path(output_dir) / "processor")
 
     def save_trainable_state(self, model, output_path, parameter_plan):
         state = {name: value.detach().clone() for name, value in model.named_parameters() if name in parameter_plan.full_train_parameter_names}
@@ -85,7 +106,7 @@ def _episodes(count: int) -> list[CanonicalEpisode]:
     return [CanonicalEpisode("phase2", ({"role": "user", "content": "x"},), metadata={"x": index + 1}) for index in range(count)]
 
 
-def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_from: Path | None = None, save_steps: int = 0, save_total_limit: int | None = None, stop_after_checkpoint: int | None = None):
+def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_from: Path | None = None, save_steps: int = 0, save_total_limit: int | None = None, stop_after_checkpoint: int | None = None, processor_version: str = "a"):
     model = _TinyModel()
     torch.manual_seed(123)
     for parameter in model.parameters():
@@ -93,7 +114,7 @@ def _run(tmp_path: Path, *, count: int, max_steps: int | None = None, resume_fro
     trainer = GenericTrainerCore(adapter=_TinyAdapter(), data_profile=JsonlDataProfile("phase2"))
     result = trainer.fit(
         model=model,
-        processor=object(),
+        processor=_TinyProcessor(processor_version),
         episodes=_episodes(count),
         config=TrainingConfig(output_dir=tmp_path, epochs=1, max_steps=max_steps, resume_from=resume_from, save_steps=save_steps, save_total_limit=save_total_limit, lora_lr=1e-2, connector_lr=1e-2, max_grad_norm=100.0, _test_stop_after_checkpoint_step=stop_after_checkpoint),
         policy="lora_plus_projector",
@@ -174,3 +195,12 @@ def test_canonical_checkpoint_requires_rng_state(tmp_path: Path) -> None:
     assert not checkpoint_complete(tmp_path)
     with pytest.raises(ValueError, match="incomplete"):
         _run(tmp_path, count=3, max_steps=1, resume_from=tmp_path)
+
+
+def test_resume_rejects_runtime_processor_content_drift(tmp_path: Path) -> None:
+    interrupted_dir = tmp_path / "interrupted"
+    with pytest.raises(RuntimeError, match="TEST_STOP_AFTER_CHECKPOINT"):
+        _run(interrupted_dir, count=6, max_steps=3, save_steps=2, stop_after_checkpoint=2, processor_version="a")
+    checkpoint = interrupted_dir / "checkpoint-2"
+    with pytest.raises(ValueError, match="RESUME_PROCESSOR_CONTENT_MISMATCH"):
+        _run(interrupted_dir, count=6, max_steps=3, resume_from=checkpoint, processor_version="b")

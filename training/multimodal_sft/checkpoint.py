@@ -302,8 +302,16 @@ def validate_resume_compatibility(
         expected = identity_fingerprint(training_plan)
         if manifest.get("training_plan_sha256") != expected or dict(manifest.get("training_plan", {})) != dict(training_plan):
             raise CheckpointContractError("RESUME_TRAINING_PLAN_MISMATCH")
-    if processor_identity:
+    if processor_identity is not None:
         expected_processor = dict(manifest.get("processor", {}))
+        expected_content = expected_processor.get("content_sha256")
+        actual_content = processor_identity.get("content_sha256")
+        if not expected_content or not actual_content:
+            raise CheckpointContractError("RESUME_PROCESSOR_IDENTITY_UNPROVEN")
         semantic_keys = ("class", "tokenizer_class", "chat_template_sha256", "special_tokens_sha256", "special_token_ids")
         if any(expected_processor.get(key) != processor_identity.get(key) for key in semantic_keys):
             raise CheckpointContractError("RESUME_PROCESSOR_IDENTITY_MISMATCH")
+        if expected_content != actual_content:
+            raise CheckpointContractError("RESUME_PROCESSOR_CONTENT_MISMATCH")
+        if expected_processor.get("encoding_contract_version") != processor_identity.get("encoding_contract_version"):
+            raise CheckpointContractError("RESUME_PROCESSOR_ENCODING_CONTRACT_MISMATCH")
