@@ -51,6 +51,10 @@ def test_vrsbench_caption_only_probe_and_iterate() -> None:
     samples = _validate_all(adapter.iter_samples(root, "validation", "caption"), root)
     assert samples[0].ground_truth is not None
     assert samples[0].ground_truth.answers == ["A harbor with ships.", "A busy harbor scene."]
+    # The official fixture carries a no-period source question; the adapter
+    # still emits the exact canonical question for every caption sample.
+    # 官方 fixture 带无句点源 question；adapter 仍输出精确规范化问句。
+    assert samples[0].question == "Describe the image in detail."
 
 
 def test_vrsbench_grounding_only_probe_and_iterate() -> None:

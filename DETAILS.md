@@ -617,6 +617,24 @@ no dataset-root escape
 
 `AdapterProbe` 在真正运行前给出数据布局证据。
 
+## 10.1 VRSBench caption canonical question
+
+VRSBench `caption` 样本的 `UnifiedSample.question` 由 adapter 在样本构造边界
+固定为精确字符串：
+
+```text
+Describe the image in detail.
+```
+
+- 该值由 `VRSBenchAdapter` 统一提供（模块常量 `CAPTION_QUESTION`），registry、
+  dataset runtime、caption 评测脚本及其他复用 `iter_samples(...)` 的入口得到
+  同一输入；源行是否包含 `question`、是否带句点或内容不同，均不能覆盖该固定值。
+- 源行仍完整保留在 `GroundTruth.raw["source_row"]` 供审计。
+- `stable_sample_id(...)` 与 `UnifiedSample.question` 使用同一固定问句，因此
+  无安全 source ID 的 caption 样本 ID 基于规范化问句哈希生成；旧 caption run
+  的 sample ID 不提供隐式 resume 迁移，既有 run/artifact 不被改写。
+- XLRS-Bench caption 继续读取并校验自己的行内 `question`，不受本契约影响。
+
 ---
 
 # 11. Dataset Registry

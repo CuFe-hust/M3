@@ -21,6 +21,14 @@ from data.schema import GroundTruth, ImageRef, UnifiedSample, stable_sample_id
 
 ADAPTER_VERSION = "official-eval-v1"
 SUPPORTED_TASKS = frozenset({"general_vqa", "caption", "grounding"})
+# Canonical question for every VRSBench caption sample, fixed at the adapter
+# boundary so registry / dataset runtime / caption evaluation share one input.
+# The source row is preserved in GroundTruth.raw["source_row"] for audit and
+# can never override this value.
+# 所有 VRSBench caption 样本的规范化固定问句，由 adapter 边界统一提供，
+# 保证 registry / dataset runtime / caption 评测得到同一输入；源行仍保留在
+# GroundTruth.raw["source_row"] 供审计，且不允许覆盖该固定值。
+CAPTION_QUESTION = "Describe the image in detail."
 # Official release filenames per task (audited explicit list). / 各任务官方发布文件名。
 ANNOTATION_FILENAMES = {
     "general_vqa": ("VRSBench_EVAL_vqa.json",),
@@ -279,20 +287,25 @@ class VRSBenchAdapter:
         if answer_value is None:
             raise DatasetProbeError(f"VRSBench caption row {index} has no caption field")
         answers = _caption_texts(answer_value, index)
+        # Both UnifiedSample.question and stable_sample_id(...) must use the
+        # same canonical value so persisted sample content and logical identity
+        # stay consistent. / UnifiedSample.question 与 stable_sample_id(...)
+        # 必须使用同一固定问句，保证持久化样本内容与逻辑身份一致。
+        question = CAPTION_QUESTION
         return UnifiedSample(
             sample_id=stable_sample_id(
                 dataset=self.name,
                 split=split,
                 source_id=None,
                 relative_image_paths=[image_path.relative_to(root)],
-                question="",
+                question=question,
                 source_index=index,
             ),
             dataset=self.name,
             split="validation",
             task="caption",
             images=[ImageRef(image_id=image_id, path=image_path.relative_to(root), role="image")],
-            question="",
+            question=question,
             ground_truth=GroundTruth(
                 answers=answers,
                 raw={
