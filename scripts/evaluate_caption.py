@@ -139,6 +139,21 @@ async def _run_fresh(
     root = Path(args.root).expanduser().resolve()
     adapter = runtime.registry.get(args.dataset)
     adapter.probe(root, _RUN_TASK)
+
+    def sample_image_root(sample: Any) -> Path:
+        """Resolve the image root one sample's ImageRef paths are relative
+        to. XLRS materializes bytes/PIL images into an external cache and
+        records image_root_kind in metadata, so planner previews and agents
+        must resolve against that root, never the dataset root. Other
+        adapters (VRSBench) keep paths relative to the dataset root.
+        解析单样本 ImageRef 路径所相对的图片根：XLRS 把 bytes/PIL 图片物化
+        到外部 cache 并在 metadata 记录 image_root_kind，planner 预览与
+        agent 必须按该根解析，而不是数据集根；其他 adapter（VRSBench）的
+        路径相对数据集根。"""
+        if "image_root_kind" not in sample.metadata:
+            return root
+        return adapter.image_root_for_sample(sample, root)
+
     planner = runtime.components.visual_task_planner
     budget_factory = runtime.components.call_budget_factory
     agent = runtime.components.agent_registry.get(_AGENT_NAME)

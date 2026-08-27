@@ -424,20 +424,32 @@ def render_yolo_annotation(
     image: Image.Image,
     boxes: Sequence[tuple[str, tuple[float, float, float, float]]],
     *,
+    source_size: tuple[int, int] | None = None,
     resample: Image.Resampling = Image.Resampling.LANCZOS,
 ) -> Image.Image:
     """Annotate one image with the frozen high-contrast YOLO boxes: shrink
     only to <=1080 first (never upscale), then a black 5px outer stroke, a
     magenta 3px inner stroke, and a black label plate with a magenta border
     and white leaf text — confidence never appears. Boxes are given in the
-    input image's pixel frame and scale with the preview. A new image is
-    always returned; the source is never modified. 用冻结高对比 YOLO 框标注
-    一张图像：先只缩到 <=1080（绝不放大），再画黑色 5px 外描边、品红 3px
-    内描边，以及黑底、品红边框、白色叶子文字的标签底板——confidence 绝不
-    出现。框以输入图像像素帧给出，随预览等比缩放。始终返回新图像；绝不
-    修改源。"""
+    input image's pixel frame and scale with the preview. When the caller
+    already shrunk the image (e.g. a NEAREST pre-shrunk pure mask) it must
+    pass ``source_size`` — the pixel frame the boxes live in — so the boxes
+    scale onto the preview instead of being drawn at scale 1.0 on the smaller
+    canvas. A new image is always returned; the source is never modified.
+    用冻结高对比 YOLO 框标注一张图像：先只缩到 <=1080（绝不放大），再画黑色
+    5px 外描边、品红 3px 内描边，以及黑底、品红边框、白色叶子文字的标签底板
+    ——confidence 绝不出现。框以输入图像像素帧给出，随预览等比缩放。调用方
+    若已预先缩小图像（如 NEAREST 预缩的纯色 mask），必须传 ``source_size``
+    ——框所在的像素帧——使框按预览缩放，而不是以 scale 1.0 画在更小的画布上。
+    始终返回新图像；绝不修改源。"""
     preview = make_preview(image, resample=resample)
-    if preview.size == image.size:
+    if source_size is not None:
+        src_width, src_height = source_size
+        if src_width <= 0 or src_height <= 0:
+            raise ValueError("source_size must be positive")
+        scale_x = preview.width / src_width
+        scale_y = preview.height / src_height
+    elif preview.size == image.size:
         scale_x = scale_y = 1.0
     else:
         scale_x = preview.width / image.width
@@ -468,15 +480,27 @@ def _draw_label_plate(
     text. 在框上方绘制叶子标签底板（框贴顶时画在框内）；底板为黑色、品红
     边框、白色文字。"""
     left, top, right, _ = box
-    plate_left = int(left)
-    plate_top = int(top)
+    image_width = draw.im.size[0]
+    image_height = draw.im.size[1]
     text_width, text_height = draw.textbbox((0, 0), leaf, font=font)[2:4]
     plate_width = text_width + 2 * _LABEL_PLATE_PADDING
     plate_height = text_height + 2 * _LABEL_PLATE_PADDING
+    # Clamp the plate inside the image. A degenerate/near-edge YOLO box must
+    # not produce an inverted rectangle (x1 < x0 or y1 < y0).
+    # 把底板限制在图像内。退化/贴边 YOLO 框绝不能产生反转矩形（x1 < x0 或 y1 < y0）。
+    max_left = max(0, image_width - plate_width - 1)
+    plate_left = min(max(0, int(left)), max_left)
+    plate_top = int(top)
     if plate_top - plate_height - 2 >= 0:
         plate_top = plate_top - plate_height - 2
-    plate_right = min(draw.im.size[0] - 1, plate_left + plate_width)
-    plate_bottom = min(draw.im.size[1] - 1, plate_top + plate_height)
+    max_top = max(0, image_height - plate_height - 1)
+    plate_top = min(max(0, plate_top), max_top)
+    plate_right = min(image_width - 1, plate_left + plate_width)
+    plate_bottom = min(image_height - 1, plate_top + plate_height)
+    if plate_right < plate_left:
+        plate_right = plate_left
+    if plate_bottom < plate_top:
+        plate_bottom = plate_top
     draw.rectangle(
         (plate_left, plate_top, plate_right, plate_bottom),
         fill=_MASK_BACKGROUND,

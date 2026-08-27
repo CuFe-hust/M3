@@ -490,13 +490,34 @@ class ObjectEvidenceExecutor:
     def _call_yolo_tile(
         self,
         tile_image: Image.Image,
+        tile_record: EvidenceTileRecord | None = None,
     ) -> tuple[list[ObjectDetectionOutput] | None, str | None]:
         """One YOLO call on one prepared 1024x1024 tile, isolated in this
         worker: exceptions become a stable type-name code, and every returned
         detection must reference the strict 1024-square model input or the
-        tile call fails closed. 对一张已准备的 1024x1024 tile 执行一次 YOLO
-        调用，并在 worker 内隔离：异常转稳定类型名；所有返回检测必须引用严格
-        1024 方形模型输入，否则该 tile 调用严格失败。"""
+        tile call fails closed. When M3_GPU_MONITOR=1 the CUDA memory hook
+        records before/after/after_error events with the tile geometry.
+        对一张已准备的 1024x1024 tile 执行一次 YOLO 调用，并在 worker 内隔离：
+        异常转稳定类型名；所有返回检测必须引用严格 1024 方形模型输入，否则该
+        tile 调用严格失败。M3_GPU_MONITOR=1 时 CUDA 显存 hook 记录
+        before/after/after_error 事件并附带 tile 几何。"""
+        try:
+            from scripts.gpu_memory_monitor import log_cuda_memory_event
+        except Exception:
+            log_cuda_memory_event = None
+        meta: dict[str, Any] = {}
+        if tile_record is not None:
+            meta = {
+                "tile_id": tile_record.tile_id,
+                "roi_id": tile_record.roi_id,
+                "source_tile_xyxy": list(tile_record.source_tile_xyxy),
+                "source_tile_size": list(tile_record.source_tile_size),
+                "model_input_size": list(tile_record.model_input_size),
+                "resize_applied": tile_record.resize_applied,
+                "tile_image_size": list(tile_image.size),
+            }
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event("yolo", "before", **meta)
         try:
             outputs = self._yolo_client.detect(
                 tile_image,
@@ -507,7 +528,13 @@ class ObjectEvidenceExecutor:
                 max_detections=self._policy.max_detections,
             )
         except Exception as exc:
+            if log_cuda_memory_event is not None:
+                log_cuda_memory_event(
+                    "yolo", "after_error", error=type(exc).__name__, **meta
+                )
             return None, type(exc).__name__
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event("yolo", "after", **meta)
         if not outputs:
             return [], None
         for output in outputs:
@@ -522,18 +549,42 @@ class ObjectEvidenceExecutor:
         self,
         client: SemanticMaskClient,
         model_input: Image.Image,
+        roi_id: str | None = None,
+        binding: str | None = None,
     ) -> tuple[SemanticMaskOutput | None, str | None]:
         """One segment call on one prepared 1024x1024 model input of the pad
         protocol, isolated in this worker: exceptions become a stable
         type-name code, and the returned map must stay aligned to the
-        1024-square model input or the call fails closed. 对 pad 协议下的一张
-        已准备 1024x1024 模型输入执行一次 segment 调用，并在 worker 内隔离：
-        异常转稳定类型名；返回 map 必须保持与 1024 方形模型输入对齐，否则该
-        调用严格失败。"""
+        1024-square model input or the call fails closed. When
+        M3_GPU_MONITOR=1 the CUDA memory hook records before/after/after_error
+        events with the ROI/binding identity. 对 pad 协议下的一张已准备
+        1024x1024 模型输入执行一次 segment 调用，并在 worker 内隔离：异常转
+        稳定类型名；返回 map 必须保持与 1024 方形模型输入对齐，否则该调用
+        严格失败。M3_GPU_MONITOR=1 时 CUDA 显存 hook 记录
+        before/after/after_error 事件并附带 ROI/binding 身份。"""
+        try:
+            from scripts.gpu_memory_monitor import log_cuda_memory_event
+        except Exception:
+            log_cuda_memory_event = None
+        meta: dict[str, Any] = {}
+        if roi_id is not None:
+            meta = {
+                "roi_id": roi_id,
+                "binding": binding,
+                "model_input_size": list(model_input.size),
+            }
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event("segformer", "before", **meta)
         try:
             output = client.segment(model_input)
         except Exception as exc:
+            if log_cuda_memory_event is not None:
+                log_cuda_memory_event(
+                    "segformer", "after_error", error=type(exc).__name__, **meta
+                )
             return None, type(exc).__name__
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event("segformer", "after", **meta)
         if output.original_size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
             return None, "unexpected_model_input_size"
         return output, None
@@ -576,8 +627,8 @@ class ObjectEvidenceExecutor:
         if not yolo_leaves:
             return set(), []
         futures = [
-            pool.submit(self._call_yolo_tile, tile_image)
-            for _, tile_image, _ in tile_plan
+            pool.submit(self._call_yolo_tile, tile_image, tile_record)
+            for tile_record, tile_image, _ in tile_plan
         ]
         results = [future.result() for future in futures]
         candidates: dict[
@@ -799,8 +850,10 @@ class ObjectEvidenceExecutor:
                 self._call_segformer_roi,
                 self._segmenter_clients[binding],
                 model_input,
+                record.roi_id,
+                binding,
             )
-            for _, binding, _, _, model_input in groups
+            for record, binding, _, _, model_input in groups
         ]
         results = [future.result() for future in futures]
         segments: list[SegFormerEvidenceRecord] = []

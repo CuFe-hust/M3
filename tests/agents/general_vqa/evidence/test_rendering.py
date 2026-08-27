@@ -593,3 +593,50 @@ def test_restore_segformer_mask_rejects_non_integer_or_off_inputs() -> None:
     negative.putpixel((3, 4), -7)
     with pytest.raises(ValueError, match="non-negative"):
         restore_segformer_class_id_mask(negative, preprocess)
+
+
+def test_render_yolo_annotation_edge_boxes_do_not_invert_plate() -> None:
+    """Boxes touching the right/bottom edges or the top-left corner must not
+    produce an inverted label plate (x1 < x0 / y1 < y0): the plate clamps
+    inside the image instead of raising ValueError.
+    贴右/下边缘或左上角的框绝不能产生反转 label plate（x1 < x0 / y1 < y0）：
+    底板被限制在图像内，而不是抛 ValueError。"""
+    source = _image((200, 100))
+    annotated = render_yolo_annotation(
+        source,
+        [
+            ("small_vehicle", (190, 10, 199, 90)),  # right edge
+            ("building", (10, 90, 100, 99)),        # bottom edge
+            ("water", (0, 0, 5, 5)),                # top-left corner
+        ],
+    )
+    assert annotated.size == source.size
+    assert _scan(annotated, (10, 60, 40, 90), (255, 255, 255))  # plate text still drawn
+
+
+def test_render_yolo_annotation_pre_shrunk_image_scales_boxes_from_source_size() -> None:
+    """When the caller passes an already-shrunk image (e.g. a NEAREST pure
+    mask) with boxes in the source pixel frame, source_size must scale the
+    boxes onto the preview; without it they render at scale 1.0 on the
+    smaller canvas (off-image boxes, plates piled on the bottom edge).
+    调用方传入已缩小图像（如 NEAREST 纯色 mask）而框位于源像素帧时，必须用
+    source_size 把框缩放到预览上；否则框以 scale 1.0 画在更小画布上（框越界、
+    标签底板堆在底部边缘）。"""
+    source = Image.new("RGB", (3072, 3072), (7, 8, 9))
+    preview = source.resize((1080, 1080), Image.Resampling.NEAREST)
+    # Box at source (666, 152)-(780, 264) must land at preview (234, 53)-(274, 93).
+    # 源坐标 (666, 152)-(780, 264) 的框必须落在预览 (234, 53)-(274, 93)。
+    annotated = render_yolo_annotation(
+        preview,
+        [("small_vehicle", (666.0, 152.0, 780.0, 264.0))],
+        source_size=(3072, 3072),
+        resample=Image.Resampling.NEAREST,
+    )
+    assert annotated.size == (1080, 1080)
+    assert _scan(annotated, (232, 50, 278, 100), (255, 0, 255))
+    # Not at the unscaled position on the shrunk canvas.
+    # 不得出现在缩小画布上的未缩放位置。
+    assert not _scan(annotated, (660, 148, 790, 268), (255, 0, 255))
+    # No plate pile at the bottom edge either.
+    # 底部边缘也不得有标签底板堆积。
+    assert not _scan(annotated, (0, 1040, 1080, 1080), (255, 0, 255))

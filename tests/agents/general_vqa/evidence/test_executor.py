@@ -32,7 +32,10 @@ from agents.general_vqa.evidence.executor import (
 )
 from agents.general_vqa.evidence.geometry import MODEL_INPUT_SIZE
 from agents.general_vqa.evidence.rendering import materialize_quantized_roi
-from agents.general_vqa.evidence.schema import EvidencePreprocessing
+from agents.general_vqa.evidence.schema import (
+    EvidencePreprocessing,
+    EvidenceTileRecord,
+)
 from agents.schema import MaterializedVisualView, VisualTaskPlan
 from models.base import (
     ModelCacheIdentity,
@@ -1090,3 +1093,85 @@ def test_legacy_v1_preprocessing_keeps_yolo_only_branch_working() -> None:
     assert len(yolo.calls) == 1
     assert execution.bundle.leaf_states["small-vehicle"] == "hit"
     assert execution.bundle.preprocessing_version == "greedy-1024-stretch-v1"
+
+
+# ── GPU monitor hook / 显存监控 hook ────────────────────────────────────
+
+
+def _monitor_events(monkeypatch: object) -> list[tuple[str, str, dict]]:
+    """Install a recording fake for log_cuda_memory_event and return the
+    captured (kind, event, extra) sequence. The real hook needs a CUDA device,
+    so tests patch it and assert the wiring/meta instead of the JSONL side
+    effect. 安装记录型 log_cuda_memory_event fake 并返回捕获的
+    (kind, event, extra) 序列。真实 hook 需要 CUDA 设备，因此测试 patch 它并
+    断言接线与元数据，而非 JSONL 副作用。"""
+
+    calls: list[tuple[str, str, dict]] = []
+
+    def fake(kind: str, event: str, **extra: object) -> None:
+        calls.append((kind, event, extra))
+
+    monkeypatch.setattr("scripts.gpu_memory_monitor.log_cuda_memory_event", fake)
+    return calls
+
+
+def test_gpu_monitor_hook_emits_before_after_with_meta(
+    monkeypatch: object,
+) -> None:
+    """Both worker paths emit before/after events carrying tile/ROI metadata;
+    a failing worker still emits after_error with the stable error type.
+    两条 worker 路径都发出带 tile/ROI 元数据的 before/after 事件；失败 worker
+    仍发出带稳定错误类型的 after_error。"""
+    calls = _monitor_events(monkeypatch)
+    yolo = _FakeYolo(("small_vehicle",), error=RuntimeError("boom"))
+    segmenter = _FakeSegmenter(labels={0: "vehicle"}, grid_source="empty")
+    executor = _executor(
+        yolo=yolo,
+        segmenters={"seg_001": segmenter},
+        catalog_data=_SEG_CATALOG_DATA,
+    )
+    tile = _image((1024, 1024))
+    tile_record = EvidenceTileRecord(
+        tile_id="roi-1-r0-c0",
+        roi_id="roi-1",
+        row=0,
+        column=0,
+        source_tile_xyxy=(0, 0, 1024, 1024),
+        source_tile_size=(1024, 1024),
+        scale_x=1.0,
+        scale_y=1.0,
+        resize_applied=False,
+    )
+    assert executor._call_yolo_tile(tile, tile_record)[1] == "RuntimeError"
+    assert executor._call_segformer_roi(
+        segmenter, tile, roi_id="roi-1", binding="seg_001"
+    )[1] is None
+    assert [entry[:2] for entry in calls] == [
+        ("yolo", "before"),
+        ("yolo", "after_error"),
+        ("segformer", "before"),
+        ("segformer", "after"),
+    ]
+    yolo_before = calls[0][2]
+    assert yolo_before["tile_id"] == "roi-1-r0-c0"
+    assert yolo_before["roi_id"] == "roi-1"
+    assert yolo_before["source_tile_size"] == [1024, 1024]
+    assert yolo_before["tile_image_size"] == [1024, 1024]
+    assert calls[1][2]["error"] == "RuntimeError"
+    seg_after = calls[3][2]
+    assert seg_after["roi_id"] == "roi-1"
+    assert seg_after["binding"] == "seg_001"
+    assert seg_after["model_input_size"] == [1024, 1024]
+
+
+def test_gpu_monitor_hook_import_failure_is_silent(monkeypatch: object) -> None:
+    """When scripts.gpu_memory_monitor cannot be imported the worker still
+    runs normally: monitoring is strictly best-effort.
+    scripts.gpu_memory_monitor 无法导入时 worker 仍正常运行：监控严格尽力而为。"""
+    import sys
+
+    monkeypatch.setitem(sys.modules, "scripts.gpu_memory_monitor", None)
+    executor = _executor(yolo=_FakeYolo(("small_vehicle",)))
+    tile = _image((1024, 1024))
+    assert executor._call_yolo_tile(tile, None)[1] is None
+    assert len(executor._call_yolo_tile(tile, None)[0] or []) > 0
