@@ -4,6 +4,8 @@
 - 官方 release 目录可从统一 XLRS 根解析；官方 split 被强制；
 - 本地优先：HF disk 布局走 load_from_disk；仅 allow_download=True 才走下载；
   probe 绝不隐式下载、绝不使用假 sample_count；
+- 惰性流式：加载器只返回可 len()/迭代的容器（datasets.Dataset），绝不转成
+  list 驻留内存；probe 只物化前 20 行 + len()，iter_samples 逐行流式 yield；
 - 每行图片统一解析根：全部 path-backed → release root；任一图片需要物化 →
   整行统一物化/复制到外部 cache（内容哈希命名、原子写、不写 dataset root）；
 - 每样本 metadata.image_root_kind 明确解析根，不依赖迭代器状态；
@@ -12,12 +14,13 @@
 
 from __future__ import annotations
 
+import itertools
 import re
 import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
 from data.adapters.base import AdapterProbe, DatasetProbeError
 from data.adapters.xlrs_image_cache import (
@@ -71,7 +74,21 @@ _AUDITED_MULTI_ANSWER_TYPES = frozenset()
 _ANSWER_SEPARATOR = re.compile(r"[\s,，、]+")
 _CAPTION_TEXT_KEYS = ("caption", "text", "raw")
 
-RowLoader = Callable[[Path, str], list[dict[str, Any]]]
+class LazyRows(Protocol):
+    """Minimal lazy row container: cheap len() plus streaming iteration.
+    datasets.Dataset satisfies this structurally; lists do too (tests inject
+    lists). Never materialize the whole container into a list — XLRS rows
+    carry image bytes that would explode memory.
+    最小惰性行容器：廉价 len() 与流式迭代。datasets.Dataset 结构满足该协议，
+    list 也满足（测试注入 list）。绝不把整个容器物化成 list——XLRS 行携带
+    图片 bytes，整体物化会导致内存爆炸。"""
+
+    def __len__(self) -> int: ...
+
+    def __iter__(self) -> Iterator[dict[str, Any]]: ...
+
+
+RowLoader = Callable[[Path, str], LazyRows]
 
 
 @dataclass(frozen=True)
@@ -158,8 +175,11 @@ class XLRSAdapter:
                 raise DatasetProbeError(
                     f"zero XLRS records for task={task!r} under {release_root}"
                 )
+            # Only the first 20 rows are materialized for field discovery;
+            # the container itself is never turned into a list.
+            # 字段发现只物化前 20 行；容器本身绝不转成 list。
             observed = tuple(
-                sorted({key for row in rows[:20] for key in row})
+                sorted({key for row in itertools.islice(rows, 20) for key in row})
             )
             return AdapterProbe(
                 dataset=self.name,
@@ -284,7 +304,7 @@ class XLRSAdapter:
             f"(tried {root} and {root / RELEASE_DIRS[task]})"
         )
 
-    def _rows(self, release_root: Path, task: str) -> list[dict[str, Any]]:
+    def _rows(self, release_root: Path, task: str) -> LazyRows:
         if self._has_local(release_root, task):
             loader = self._loader or self._load_from_disk
             return loader(release_root, task)
@@ -296,9 +316,10 @@ class XLRSAdapter:
         loader = self._loader or self._load_from_hub
         return loader(release_root, task)
 
-    def _rows_local_only(self, release_root: Path, task: str) -> list[dict[str, Any]]:
-        """Local-only row loading used by probe(); probe never downloads.
-        probe 使用的仅本地加载；probe 绝不下载。"""
+    def _rows_local_only(self, release_root: Path, task: str) -> LazyRows:
+        """Local-only row loading used by probe(); probe never downloads and
+        never materializes the full container. probe 使用的仅本地加载；probe
+        绝不下载，也绝不物化整个容器。"""
         if not self._has_local(release_root, task):
             raise DatasetProbeError(
                 f"offline: no local XLRS {task} release under {release_root}"
@@ -307,9 +328,14 @@ class XLRSAdapter:
         return loader(release_root, task)
 
     @staticmethod
-    def _load_from_disk(release_root: Path, task: str) -> list[dict[str, Any]]:
-        """Load a local HF release layout; datasets is imported lazily.
-        加载本地 HF release 布局；datasets 延迟导入。"""
+    def _load_from_disk(release_root: Path, task: str) -> LazyRows:
+        """Load a local HF release layout lazily; datasets is imported lazily.
+        Returns the datasets.Dataset itself (cheap len(), per-row streaming
+        iteration) instead of a materialized list — rows carry image bytes
+        that would explode memory if the whole table were converted to dicts.
+        惰性加载本地 HF release 布局；datasets 延迟导入。直接返回
+        datasets.Dataset 本身（廉价 len()、逐行流式迭代），不再转成 list——
+        行内图片 bytes 若整体转 dict 会使内存爆炸。"""
         try:
             from datasets import load_from_disk
         except ImportError as error:
@@ -321,12 +347,14 @@ class XLRSAdapter:
             dataset = load_from_disk(release_root)[split]
         else:
             dataset = load_from_disk(release_root / split)
-        return [dict(row) for row in dataset]
+        return dataset
 
     @staticmethod
-    def _load_from_hub(release_root: Path, task: str) -> list[dict[str, Any]]:
+    def _load_from_hub(release_root: Path, task: str) -> LazyRows:
         """Download from Hugging Face; only reachable with allow_download=True.
-        从 Hugging Face 下载；仅 allow_download=True 时可达。"""
+        Returns the datasets.Dataset lazily like the disk loader.
+        从 Hugging Face 下载；仅 allow_download=True 时可达。与 disk 加载器
+        一样惰性返回 datasets.Dataset。"""
         try:
             from datasets import load_dataset
         except ImportError as error:
@@ -334,7 +362,7 @@ class XLRSAdapter:
                 "Install the datasets package to download XLRS releases."
             ) from error
         dataset = load_dataset(HF_REPOS[task], split=RELEASE_SPLITS[task])
-        return [dict(row) for row in dataset]
+        return dataset
 
     # ── row sanitation / 行清洗 ─────────────────────────────────────────────
 

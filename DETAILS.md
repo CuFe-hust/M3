@@ -635,6 +635,18 @@ Describe the image in detail.
   的 sample ID 不提供隐式 resume 迁移，既有 run/artifact 不被改写。
 - XLRS-Bench caption 继续读取并校验自己的行内 `question`，不受本契约影响。
 
+## 10.2 XLRS 惰性加载
+
+`XLRSAdapter` 的本地/远程行加载统一为**惰性容器**（`datasets.Dataset`
+或结构等价的 `LazyRows`：廉价 `len()` + 逐行流式迭代），绝不把整表
+`[dict(row) for row in dataset]` 转成 list 驻留内存——XLRS 行携带大体积
+图片 bytes，整体物化曾导致 RSS 飙升到 147GB。
+
+- `_load_from_disk` / `_load_from_hub` 直接返回 `datasets.Dataset`；
+- `probe` 只物化前 20 行用于字段发现，`sample_count` 走 `len()`；
+- `iter_samples` 逐行流式 `yield`，消费一行物化一行；
+- `dataset_loader` 注入契约保持兼容（list 也满足 `LazyRows` 结构）。
+
 ---
 
 # 11. Dataset Registry

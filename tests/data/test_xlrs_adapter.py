@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,97 @@ def _loader_for(rows: list[dict]):
     def loader(root: Path, task: str) -> list[dict]:
         return rows
     return loader
+
+
+class _LazyRows:
+    """Fake lazy container: cheap len() plus streaming iteration that counts
+    how many rows were actually materialized. Mirrors datasets.Dataset.
+    假惰性容器：廉价 len() 与流式迭代，并统计实际物化的行数。模拟
+    datasets.Dataset 的行为。"""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+        self.materialized = 0
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __iter__(self) -> Iterator[dict]:
+        for row in self._rows:
+            self.materialized += 1
+            yield row
+
+
+def _caption_row(index: int) -> dict:
+    return {
+        "question": f"Describe the scene {index}.",
+        "caption": [f"A harbor {index}."],
+        "image": "img_1.png",
+    }
+
+
+# ── 惰性加载 / lazy loading ────────────────────────────────────────────────
+
+
+def test_probe_only_materializes_first_20_rows(tmp_path: Path) -> None:
+    root = _root_with_image(tmp_path)
+    container = _LazyRows([_caption_row(i) for i in range(25)])
+
+    adapter = XLRSAdapter(dataset_loader=lambda root, task: container)
+    probe = adapter.probe(root, task="caption")
+
+    assert probe.sample_count == 25  # full count via cheap len() / 全量计数走廉价 len()
+    assert container.materialized == 20  # field discovery only touches 20 rows
+    assert "question" in probe.observed_fields
+
+
+def test_iter_samples_streams_rows_one_at_a_time(tmp_path: Path) -> None:
+    root = _root_with_image(tmp_path)
+    container = _LazyRows([_caption_row(i) for i in range(5)])
+
+    adapter = XLRSAdapter(dataset_loader=lambda root, task: container)
+    samples = adapter.iter_samples(root, "train", "caption")
+
+    first = next(samples)
+    assert container.materialized == 1  # nothing beyond the requested row is pulled
+    rest = list(samples)
+    assert len(rest) == 4
+    assert container.materialized == 5
+    assert first.question == "Describe the scene 0."
+
+
+def test_load_from_disk_returns_lazy_dataset(tmp_path: Path) -> None:
+    datasets = pytest.importorskip("datasets")
+    unified = tmp_path / "xlrs_real"
+    release = unified / "XLRS-Bench_caption_en"
+    _make_image(release / "img_1.png")
+    ds = datasets.Dataset.from_dict(
+        {
+            "question": ["Describe the scene.", "Describe the harbor."],
+            "caption": [["A harbor."], ["A busy harbor."]],
+            "image": ["img_1.png", "img_1.png"],
+        }
+    )
+    ds.save_to_disk(release / "train")
+
+    rows = XLRSAdapter._load_from_disk(release, "caption")
+    # The lazy container, not a materialized list of dicts. / 惰性容器而非 dict 列表。
+    assert not isinstance(rows, list)
+    assert isinstance(rows, datasets.Dataset)
+    assert len(rows) == 2
+    assert next(iter(rows))["question"] == "Describe the scene."
+
+    # End-to-end: default loader streams a real on-disk release. / 端到端：
+    # 默认加载器流式读取真实磁盘 release。
+    adapter = XLRSAdapter()
+    probe = adapter.probe(unified, task="caption")
+    assert probe.sample_count == 2
+    samples = list(adapter.iter_samples(unified, "train", "caption"))
+    assert [sample.question for sample in samples] == [
+        "Describe the scene.",
+        "Describe the harbor.",
+    ]
+    assert all(sample.images[0].path.as_posix() == "img_1.png" for sample in samples)
 
 
 # ── 三任务产出 / three tasks produce UnifiedSample ─────────────────────────
