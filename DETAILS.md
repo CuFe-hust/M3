@@ -1193,8 +1193,8 @@ spatial_relation
 
 v5 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
 GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
-`VqaEvidenceBundle`（executor 提供 bundle + 内存掩膜 + 内存调色表），按冻结
-三分支协议（14.12.3）组装唯一一次 final Qwen 调用。逐 ROI 稳定输出：
+`VqaEvidenceBundle`（executor 提供 bundle + preview 空间证据 + 内存调色表），
+按冻结三分支协议（14.12.3）组装唯一一次 final Qwen 调用。逐 ROI 稳定输出：
 
 ```text
 仅 YOLO      -> 标注 ROI
@@ -1202,6 +1202,20 @@ GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
 两者都有     -> YOLO-on-pure-mask + clean ROI
 均无         -> clean ROI
 ```
+
+有界流式物化（doc 26）：Agent 通过 `models.images` 的只读 region seam
+（`ImageRegionSource`）逐框读取源图像，executor 的 YOLO tile 计划只保存轻量
+几何记录，worker 在执行前才读取自己的 tile 框，提交窗口固定为
+`max_tile_concurrency`（活跃物化 tile ≤ 并发上限），结果按稳定 index slot
+归并、绝不按完成顺序；YOLO 路径全程不创建完整 ROI 裁切或提前物化的 tile
+列表。SegFormer 在 1024×1024 model mask 上通过纯几何查找表直接采样
+`<=1080` preview class grid（不恢复 W×H/Wp×Hp 的 class-id/boolean/RGBA
+mask），叶子命中判定在 model mask 前缀矩形（旧恢复网格的精确来源）上完成，
+与旧整分辨率判定逐点一致；最终纯色 mask 在 preview 空间合成。第一版 Pillow
+backend 对 JPEG/PNG 仍是整图解码（非真实随机窗口 I/O），但已消除完整 ROI
+副本、全部 tile 副本与全分辨率 mask 峰值。最终模型可见 PNG 与旧管线逐字节
+一致，因此视觉内容版本、预处理身份与 request hash 均不变，旧 cache 继续
+有效（26 §11.2 有证据决策）。
 
 每个 ROI 的图像顺序固定为 mask first、clean ROI second；文本 payload 的
 `visual_inputs` 以 `content_image_index`、`roi_id` 和角色描述每个 image block，
@@ -2482,6 +2496,14 @@ yolo-v1-segformer-pad-v1（fresh 默认）
   `LEGACY_VQA_EVIDENCE_PREPROCESSING_UNSUPPORTED` 稳定失败，绝不静默切换
   成新语义；历史 succeeded 样本 resume 仅补评测、零模型调用。
 
+执行器内部实现版本（doc 26 rollout）：`bounded-streaming-v1` 是有界流式
+物化（region seam 逐框读取 + 固定提交窗口 + preview 空间 SegFormer 恢复）
+的执行器实现身份，**不改变**上表两个组合版本字符串。parity 测试（含
+end-to-end mask PNG 字节比较）证明最终模型可见像素逐字节不变，因此视觉
+内容版本保持 `v2`、预处理身份与 request hash 均不变，旧 cache 继续有效；
+无手工保留旧 identity 制造 cache hit 的行为。回滚时不得混用新旧 cache
+identity（26 §15）。
+
 ### VQA assistance scope（doc 24）
 
 `vqa_assistance_scope` 是独立于 tile 预处理身份的第二个冻结运行身份，值为
@@ -3639,9 +3661,13 @@ padding 到 1024 的最小倍数（`padded = ceil(W/1024)*1024 × ceil(H/1024)*1
 padding 恒在 `[0, 1023]`），再整体 LANCZOS 缩放到单张 1024×1024 模型输入；
 每个（ROI，binding）恰好一次 SegFormer 推理，离散 class-id map 用 NEAREST
 恢复到 padded 尺寸后确定性裁切 `[0:W, 0:H]`，最终 mask 与 YOLO ROI-local
-框严格同坐标系。几何记录 `SegFormerPreprocessRecord` 强制最小上取整，
+框严格同坐标系（doc 26 rollout 之后，该“恢复+裁切”只作为测试 oracle 存在，
+生产路径改为 preview 空间直接采样，见 21.1 有界流式物化说明）。几何记录
+`SegFormerPreprocessRecord` 强制最小上取整，
 过度 padding 稳定失败；tile 并发有界（默认 ≤4，`max_tile_concurrency`
-可配置），单次执行生命周期使用单一 worker pool。无重叠 partition 只保证
+可配置），单次执行生命周期使用单一 worker pool，tile 图像按固定提交窗口
+按需物化（活跃 tile ≤ 并发上限），全程不创建完整 ROI 裁切或全部 tile 列表。
+无重叠 partition 只保证
 每个 ROI 像素属于一个 source tile；它不等价于“对象不会跨 tile”或“不会产生
 重复检测”。YOLO 候选逆映射到整图后另做基于 IoU 的全局去重，但边界目标仍
 可能被切开或漏检；余块拉伸也会改变纵横比。大 ROI 在新 SegFormer 协议下

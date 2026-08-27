@@ -12,7 +12,7 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol, runtime_checkable
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
@@ -155,6 +155,76 @@ def crop_image_box(
     if x1 > width or y1 > height:
         raise ValueError("box must be inside the image")
     return normalized.crop((x0, y0, x1, y1))
+
+
+@runtime_checkable
+class ImageRegionSource(Protocol):
+    """Read-only per-image region seam for bounded evidence execution: the
+    consumer reads exactly the integer pixel boxes it needs, never a full
+    decoded copy by contract, and closes the source after one sample.
+    ``read_box`` returns an independent RGB image with strict bounds
+    validation; ``size`` is the EXIF/RGB-normalized full-image size.
+    Application/workflow creates the source from a verified
+    ``ImageRef.path + data_root``; agents consume only this seam and never
+    choose a JPEG/TIFF backend. The source lifecycle is exactly one sample
+    and must be closed explicitly.
+    只读逐图像区域 seam，用于有界证据执行：消费者只读取其需要的整数像素框，
+    契约上绝不整图复制，并在单样本结束后显式关闭。``read_box`` 返回边界严格
+    校验的独立 RGB 图像；``size`` 是 EXIF/RGB 规范化后的整图尺寸。
+    application/workflow 从已验证的 ``ImageRef.path + data_root`` 创建 source；
+    Agent 只消费本 seam，绝不选择 JPEG/TIFF backend。source 生命周期恰好
+    一个 sample，必须显式关闭。"""
+
+    @property
+    def size(self) -> tuple[int, int]: ...
+
+    def read_box(self, box: tuple[int, int, int, int]) -> Image.Image: ...
+
+    def close(self) -> None: ...
+
+
+class PillowImageRegionSource:
+    """First Pillow backend of the region seam: the whole file is decoded
+    once (EXIF/RGB-normalized) on open and every ``read_box`` crops from
+    that in-memory image. This is NOT true random-access windowed I/O for
+    JPEG/PNG — a tiled TIFF backend may later provide real disk-window reads
+    behind the same protocol. Even with full-file decode, bounded evidence
+    execution no longer materializes full ROI copies, all tile copies, or
+    full-resolution masks. 区域 seam 的第一个 Pillow backend：打开时整文件
+    解码一次（EXIF/RGB 规范化），每次 ``read_box`` 从该内存图像裁切。这对
+    JPEG/PNG 不是真正的随机窗口 I/O——后续 tiled TIFF backend 可在同一协议
+    后提供真实磁盘窗口读取。即使整图解码，有界证据执行也不再物化完整 ROI
+    副本、全部 tile 副本或全分辨率 mask。"""
+
+    def __init__(self, path: Path) -> None:
+        self._image = read_normalized_image(path)
+        self._closed = False
+
+    @property
+    def size(self) -> tuple[int, int]:
+        self._check_open()
+        return self._image.size
+
+    def read_box(self, box: tuple[int, int, int, int]) -> Image.Image:
+        self._check_open()
+        return crop_image_box(self._image, box)
+
+    def close(self) -> None:
+        self._image = None  # type: ignore[assignment]
+        self._closed = True
+
+    def _check_open(self) -> None:
+        if self._closed:
+            raise ValueError("image region source is closed")
+
+
+def open_image_region_source(path: Path) -> ImageRegionSource:
+    """Open the generic read-only region source for one image file. The
+    first Pillow backend decodes the whole file on open; tiled formats may
+    later provide true windowed reads behind the same seam. 打开一张图像文件
+    的通用只读区域 source。首个 Pillow backend 在打开时整图解码；后续 tiled
+    格式可在同一 seam 后提供真实窗口读取。"""
+    return PillowImageRegionSource(path)
 
 # Max normalized coordinate per frame; the image edge maps to this value.
 # 每种坐标制式允许的最大归一化坐标，图片边缘对应此值。

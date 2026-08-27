@@ -277,7 +277,7 @@ class _FakeEvidenceService:
             bundle=bundle,
             layer_states=(),
             outcomes=(),
-            masks={},
+            preview_evidence=(),
             palette={},
         )
 
