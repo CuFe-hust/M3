@@ -1431,11 +1431,18 @@ def test_visual_planning_segmenter_only_composes_segformer_only_executor(
     assert vqa._policy is None
     assert set(vqa._segmenter_clients) == {"segmenter_oem_001"}
     # The frozen preprocessing identity is mirrored into the agents-local
-    # contract, including the overridden concurrency bound.
-    # 冻结预处理身份镜像进 agents 局部契约，包括被覆盖的并发上限。
-    assert vqa._preprocessing.version == "greedy-1024-stretch-v1"
+    # contract, including the overridden concurrency bound; fresh composition
+    # defaults to the combined yolo-v1-segformer-pad-v1 identity.
+    # 冻结预处理身份镜像进 agents 局部契约，包括被覆盖的并发上限；新鲜组装
+    # 默认使用 yolo-v1-segformer-pad-v1 组合身份。
+    assert vqa._preprocessing.version == "yolo-v1-segformer-pad-v1"
     assert vqa._preprocessing.tile_size == 1024
     assert vqa._preprocessing.max_tile_concurrency == 2
+    assert vqa._preprocessing.yolo_version == "greedy-1024-stretch-v1"
+    assert vqa._preprocessing.segformer_version == "pad-multiple-1024-resize-square-v1"
+    assert vqa._preprocessing.segformer_padding_mode == "constant-black-right-bottom"
+    assert vqa._preprocessing.segformer_rgb_interpolation == "lanczos"
+    assert vqa._preprocessing.segformer_mask_inverse_interpolation == "nearest"
     # The counting-disabled OEM expert gets its own lazy client; no real
     # model was constructed and nothing was loaded.
     # counting 中禁用的 OEM expert 获得独立惰性 client；未构造真实模型、

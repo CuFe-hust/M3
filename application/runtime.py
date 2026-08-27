@@ -139,10 +139,24 @@ def evidence_preprocessing_identity(
     settings: AppSettings,
 ) -> EvidencePreprocessingIdentity:
     """Freeze the settings-level preprocessing config into the persisted run
-    identity; fresh runs write this explicitly so resume never guesses.
+    identity; fresh runs write this explicitly so resume never guesses. The
+    combined version discriminates the complete algorithm: a v1 identity is
+    written without v2-only fields and a v2 identity carries every field
+    explicitly, so the persisted object never upgrades legacy JSON.
     把 settings 级预处理配置冻结为持久化运行身份；新鲜运行显式写入，使
-    resume 绝不猜测。"""
+    resume 绝不猜测。组合 version 判别完整算法：v1 身份不写 v2 专属字段，v2
+    身份显式携带全部字段，使持久化对象绝不升级旧 JSON。"""
     pre = settings.visual_planning.preprocessing
+    if pre.version == "greedy-1024-stretch-v1":
+        return EvidencePreprocessingIdentity(
+            version=pre.version,
+            tile_size=pre.tile_size,
+            partition_policy=pre.partition_policy,
+            remainder_resize=pre.remainder_resize,
+            rgb_interpolation=pre.rgb_interpolation,
+            mask_inverse_interpolation=pre.mask_inverse_interpolation,
+            max_tile_concurrency=pre.max_tile_concurrency,
+        )
     return EvidencePreprocessingIdentity(
         version=pre.version,
         tile_size=pre.tile_size,
@@ -151,6 +165,11 @@ def evidence_preprocessing_identity(
         rgb_interpolation=pre.rgb_interpolation,
         mask_inverse_interpolation=pre.mask_inverse_interpolation,
         max_tile_concurrency=pre.max_tile_concurrency,
+        yolo_version=pre.yolo_version,
+        segformer_version=pre.segformer_version,
+        segformer_padding_mode=pre.segformer_padding_mode,
+        segformer_rgb_interpolation=pre.segformer_rgb_interpolation,
+        segformer_mask_inverse_interpolation=pre.segformer_mask_inverse_interpolation,
     )
 
 

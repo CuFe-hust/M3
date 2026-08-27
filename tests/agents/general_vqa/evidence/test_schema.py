@@ -10,12 +10,14 @@ import pytest
 from pydantic import ValidationError
 
 from agents.general_vqa.evidence.schema import (
+    EvidencePreprocessing,
     EvidenceState,
     EvidenceTileRecord,
     LayerStateRecord,
     ModelCallAudit,
     RoiEvidenceRecord,
     SegFormerEvidenceRecord,
+    SegFormerPreprocessRecord,
     VqaEvidenceBundle,
     YoloDetectionRecord,
 )
@@ -493,3 +495,141 @@ def test_bundle_accepts_legacy_artifacts_without_tile_fields() -> None:
         "roi-1-r1-c0",
     ]
     filled.model_dump_json()  # fully JSON-safe / 完全 JSON 安全
+
+
+# ── SegFormer pad preprocessing (26 §3.1/§5.2) / SegFormer pad 预处理 ─────
+
+
+def _pad_record(**overrides) -> SegFormerPreprocessRecord:
+    data = {
+        "roi_id": "roi-1",
+        "source_size": (2000, 1536),
+        "padded_size": (2048, 2048),
+        "padding_right": 48,
+        "padding_bottom": 512,
+        "scale_x": 1024 / 2048,
+        "scale_y": 1024 / 2048,
+    }
+    data.update(overrides)
+    return SegFormerPreprocessRecord(**data)
+
+
+@pytest.mark.parametrize(
+    "source_size,padded_size,padding_right,padding_bottom",
+    [
+        ((1024, 1024), (1024, 1024), 0, 0),
+        ((1024, 2048), (1024, 2048), 0, 0),
+        ((976, 1024), (1024, 1024), 48, 0),
+        ((1025, 1025), (2048, 2048), 1023, 1023),
+        ((2000, 1536), (2048, 2048), 48, 512),
+        ((1, 1), (1024, 1024), 1023, 1023),
+    ],
+)
+def test_pad_record_enforces_minimal_ceiling_padding(
+    source_size: tuple[int, int],
+    padded_size: tuple[int, int],
+    padding_right: int,
+    padding_bottom: int,
+) -> None:
+    record = SegFormerPreprocessRecord(
+        roi_id="roi-1",
+        source_size=source_size,
+        padded_size=padded_size,
+        padding_right=padding_right,
+        padding_bottom=padding_bottom,
+        scale_x=1024 / padded_size[0],
+        scale_y=1024 / padded_size[1],
+    )
+    assert record.model_input_size == (1024, 1024)
+    assert record.padding_mode == "constant-black-right-bottom"
+    assert record.rgb_interpolation == "lanczos"
+    assert record.mask_inverse_interpolation == "nearest"
+    record.model_dump_json()  # fully JSON-safe / 完全 JSON 安全
+
+
+def test_pad_record_rejects_over_padding_and_inconsistent_geometry() -> None:
+    """The validator recomputes the minimal ceiling padding: over-padding or
+    any hidden offset fails closed. validator 重新计算最小上取整 padding：过度
+    padding 或任何隐式偏移都严格失败。"""
+    with pytest.raises(ValidationError, match="minimal 1024 multiples"):
+        SegFormerPreprocessRecord(
+            roi_id="r",
+            source_size=(1000, 800),
+            padded_size=(2048, 1024),
+            padding_right=1048,
+            padding_bottom=224,
+            scale_x=1024 / 2048,
+            scale_y=1024 / 1024,
+        )
+    with pytest.raises(ValidationError, match="minimal 1024 multiples"):
+        _pad_record(padded_size=(3072, 2048), padding_right=1072, padding_bottom=512)
+    with pytest.raises(ValidationError, match="padding_right must equal"):
+        _pad_record(padding_right=47)
+    with pytest.raises(ValidationError, match="padding_bottom must equal"):
+        _pad_record(padding_bottom=511)
+    with pytest.raises(ValidationError, match="scale_x must equal"):
+        _pad_record(scale_x=1.0)
+    with pytest.raises(ValidationError, match="scale_y must equal"):
+        _pad_record(scale_y=0.25)
+    with pytest.raises(ValidationError, match="strict 1024x1024"):
+        _pad_record(model_input_size=(512, 512))
+    with pytest.raises(ValidationError, match="positive"):
+        _pad_record(source_size=(0, 1536))
+    with pytest.raises(ValidationError, match="positive"):
+        _pad_record(source_size=(2000, -1))
+    with pytest.raises(ValidationError):
+        _pad_record(padding_right=-1)
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        _pad_record(confidence=0.9)
+
+
+def test_pad_record_is_json_safe_and_path_free() -> None:
+    text = _pad_record().model_dump_json()
+    for token in ("data:image", "base64", "sk-", "C:\\", "/Users", "/models"):
+        assert token not in text
+
+
+def test_evidence_preprocessing_defaults_to_fresh_v2_identity() -> None:
+    preprocessing = EvidencePreprocessing()
+    assert preprocessing.version == "yolo-v1-segformer-pad-v1"
+    assert preprocessing.yolo_version == "greedy-1024-stretch-v1"
+    assert preprocessing.segformer_version == "pad-multiple-1024-resize-square-v1"
+    assert preprocessing.segformer_padding_mode == "constant-black-right-bottom"
+    assert preprocessing.segformer_rgb_interpolation == "lanczos"
+    assert preprocessing.segformer_mask_inverse_interpolation == "nearest"
+    assert preprocessing.max_tile_concurrency == 4
+
+
+def _v1_preprocessing() -> EvidencePreprocessing:
+    return EvidencePreprocessing(
+        version="greedy-1024-stretch-v1",
+        yolo_version=None,
+        segformer_version=None,
+        segformer_padding_mode=None,
+        segformer_rgb_interpolation=None,
+        segformer_mask_inverse_interpolation=None,
+    )
+
+
+def test_evidence_preprocessing_v1_never_carries_v2_fields() -> None:
+    assert _v1_preprocessing().version == "greedy-1024-stretch-v1"
+    with pytest.raises(ValidationError, match="must not carry v2-only"):
+        EvidencePreprocessing(version="greedy-1024-stretch-v1")
+    with pytest.raises(ValidationError, match="requires every v2 field"):
+        EvidencePreprocessing(segformer_version=None)
+    with pytest.raises(ValidationError, match="requires every v2 field"):
+        EvidencePreprocessing(
+            version="yolo-v1-segformer-pad-v1",
+            yolo_version=None,
+        )
+
+
+def test_bundle_carries_and_validates_segformer_preprocess_records() -> None:
+    filled = _bundle(segformer_preprocess=[_pad_record()])
+    assert [record.roi_id for record in filled.segformer_preprocess] == ["roi-1"]
+    filled.model_dump_json()
+    # Old artifacts without the field parse with an empty list.
+    # 旧 artifact 缺该字段时解析为空列表。
+    assert _bundle().segformer_preprocess == []
+    with pytest.raises(ValidationError, match="unknown roi_id"):
+        _bundle(segformer_preprocess=[_pad_record(roi_id="ghost")])

@@ -1,13 +1,16 @@
 """Contract tests for the v2 VQA evidence executor.
 
 v2 VQA 证据执行器契约测试：执行器只消费 VisualTaskPlan 与已物化源像素视图，
-按冻结 1024×1024 tile 协议调度 YOLO/SegFormer，有界并发、稳定合并、逐 tile
-审计，聚合顺序 hit > error > unavailable > missing > unsupported。本文件同时
-证明活动 job 峰值受 max_tile_concurrency 约束、乱序完成产生相同 bundle、
-单 tile 失败隔离、以及逻辑 client 一次 execution 只构造一次（组合根负责）。
+按冻结 1024×1024 tile 协议调度 YOLO、按 pad-multiple-1024-resize-square
+协议调度 SegFormer（每个（ROI，binding）恰好一次调用），有界并发、稳定合并、
+逐调用审计，聚合顺序 hit > error > unavailable > missing > unsupported。
+本文件同时证明活动 job 峰值受 max_tile_concurrency 约束、乱序完成产生相同
+bundle、单（ROI，binding）失败隔离、以及逻辑 client 一次 execution 只构造
+一次（组合根负责）。
 
-第 14.9/14.10/14.11 节：tile 调用次数按 tile 不按类别；YOLO confidence 仅
-内部消费；SegFormer 掩膜逐 ROI 独立保留、无洞拼接；跨 ROI 去重在
+第 14.9/14.10/14.11 节与 26 §6：YOLO 调用次数按 tile、SegFormer 按
+（ROI，binding），都不按类别增长；YOLO confidence 仅内部消费；SegFormer
+掩膜逐 ROI 独立保留、恢复后严格裁回 ROI crop 尺寸；跨 ROI 去重在
 whole-image 坐标。
 """
 
@@ -745,10 +748,16 @@ def test_non_yolo_leaves_make_zero_yolo_calls() -> None:
     assert mask.getpixel((150, 100)) == 0
 
 
-# ── SegFormer aggregation (14.11) / SegFormer 聚合 ───────────────────────
+# ── SegFormer aggregation (14.11 / 26 §6) ────────────────────────────────
 
 
-def test_segformer_stitches_class_masks_per_binding() -> None:
+def test_segformer_calls_once_per_roi_binding() -> None:
+    """Fresh SegFormer runs once per (ROI, binding) on the whole ROI under
+    the pad protocol — never per leaf and never per YOLO tile — and the
+    restored class map is cropped back to the exact ROI crop size.
+    新鲜 SegFormer 在 pad 协议下按（ROI，binding）对整张 ROI 各调用一次——
+    绝不按 leaf、也绝不按 YOLO tile——恢复后的 class map 裁切回精确 ROI
+    crop 尺寸。"""
     seg_001 = _FakeSegmenter(labels={1: "vehicle"})
     seg_002 = _FakeSegmenter(labels={2: "building"})
     execution = _execute(
@@ -769,21 +778,91 @@ def test_segformer_stitches_class_masks_per_binding() -> None:
     assert building.size == (2000, 1024)
     assert vehicle.getpixel((150, 100)) == 255  # red box / 红框
     assert vehicle.getpixel((550, 450)) == 0    # blue box stays background / 蓝框保持背景
-    assert vehicle.getpixel((1500, 500)) == 0   # stretched remainder / 拉伸余块
+    assert vehicle.getpixel((1500, 500)) == 0   # gray remainder / 灰色区域
     assert building.getpixel((550, 450)) == 255
     assert building.getpixel((150, 100)) == 0
-    assert len(seg_001.calls) == 2  # one per tile of the ROI / 每个 ROI tile 一次
-    assert len(seg_002.calls) == 2
-    # Audits merge in roi order -> binding order -> tile order.
-    # 审计按 roi order -> binding order -> tile order 合并。
+    # One strict 1024-square call per (ROI, binding): the whole ROI is padded
+    # to 1024 multiples and resized once, never tiled.
+    # 每个（ROI，binding）恰好一次严格 1024 方形调用：整张 ROI 一次性 padding
+    # 到 1024 倍数并缩放，绝不切 tile。
+    assert len(seg_001.calls) == 1
+    assert len(seg_002.calls) == 1
+    assert seg_001.calls[0].size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
+    assert seg_002.calls[0].size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
+    # The geometry record carries the pad geometry of the 2000x1024 ROI.
+    # 几何记录携带 2000x1024 ROI 的 pad 几何。
+    [preprocess] = execution.bundle.segformer_preprocess
+    assert preprocess.roi_id == "full"
+    assert preprocess.source_size == (2000, 1024)
+    assert preprocess.padded_size == (2048, 1024)
+    assert preprocess.padding_right == 48
+    assert preprocess.padding_bottom == 0
+    assert preprocess.model_input_size == (1024, 1024)
+    assert preprocess.padding_mode == "constant-black-right-bottom"
+    assert preprocess.rgb_interpolation == "lanczos"
+    assert preprocess.mask_inverse_interpolation == "nearest"
+    # Audits merge in roi order -> binding order with no fabricated tile id.
+    # 审计按 roi order -> binding order 合并，且不伪造 tile id。
     seg_audits = _audit(execution, layer="segformer")
     assert [(a["roi_id"], a["logical_model_id"], a["tile_id"])
             for a in seg_audits] == [
-        ("full", "seg-test-v1", "full-r0-c0"),
-        ("full", "seg-test-v1", "full-r0-c1"),
-        ("full", "seg-test-v1", "full-r0-c0"),
-        ("full", "seg-test-v1", "full-r0-c1"),
+        ("full", "seg-test-v1", None),
+        ("full", "seg-test-v1", None),
     ]
+    assert all(a["input_size"] == (1024, 1024) for a in seg_audits)
+
+
+def test_one_restored_class_map_serves_all_requested_leaves_of_a_binding() -> None:
+    """One (ROI, binding) call restores the class map once and serves every
+    still-missing requested leaf of that binding — never one call per leaf.
+    一次（ROI，binding）调用只恢复一次 class map，并为该 binding 下全部仍
+    缺失的请求叶子生成 mask——绝不按 leaf 重复调用。"""
+    catalog_data = {
+        "catalog_version": "test-catalog-seg-same-binding-v1",
+        "aliases": {},
+        "parents": {},
+        "leaves": {
+            "vehicle": {
+                "yolo_labels": [],
+                "yolo_enabled": False,
+                "segformer_labels": ["vehicle"],
+                "segformer_binding": "seg_001",
+                "segformer_enabled": True,
+            },
+            "water": {
+                "yolo_labels": [],
+                "yolo_enabled": False,
+                "segformer_labels": ["water"],
+                "segformer_binding": "seg_001",
+                "segformer_enabled": True,
+            },
+        },
+        "task_capabilities": {
+            task: ["vehicle", "water"]
+            for task in ("counting", "fine_grained_counting", "general_vqa", "grounding")
+        },
+    }
+    seg = _FakeSegmenter(labels={1: "vehicle", 2: "water"})
+    execution = _execute(
+        _executor(segmenters={"seg_001": seg}, catalog_data=catalog_data),
+        plan=_plan(("vehicle", "water")),
+        images={"img1": _region_image((2000, 1024))},
+        views=(_view(source_size=(2000, 1024)),),
+    )
+    assert len(seg.calls) == 1
+    assert execution.bundle.leaf_states == {"vehicle": "hit", "water": "hit"}
+    vehicle = execution.masks[("full", "vehicle")]
+    water = execution.masks[("full", "water")]
+    assert vehicle.getpixel((150, 100)) == 255
+    assert vehicle.getpixel((550, 450)) == 0
+    assert water.getpixel((550, 450)) == 255
+    assert water.getpixel((150, 100)) == 0
+    # One geometry record for the ROI, one audit for the single call.
+    # ROI 一条几何记录，单次调用一条审计。
+    assert len(execution.bundle.segformer_preprocess) == 1
+    seg_audits = _audit(execution, layer="segformer")
+    assert len(seg_audits) == 1
+    assert seg_audits[0]["tile_id"] is None
 
 
 def test_unrequested_classes_stay_background() -> None:
@@ -800,7 +879,7 @@ def test_unrequested_classes_stay_background() -> None:
     assert mask.getpixel((150, 100)) == 255
     assert mask.getpixel((550, 450)) == 0
     assert "building" not in execution.masks
-    assert len(seg.calls) == 2
+    assert len(seg.calls) == 1
 
 
 def test_class_map_mismatch_fails_closed() -> None:
@@ -871,14 +950,14 @@ def test_empty_segformer_mask_is_missing() -> None:
     )
 
 
-def test_segformer_tile_failure_is_isolated_fail_closed() -> None:
-    # Vehicle's second tile fails: incomplete evidence must not crash the
-    # execution, must not fabricate a hole-free mask, and must not corrupt the
-    # other binding's evidence. 车辆第二个 tile 失败：不完整证据不得使执行崩溃、
-    # 不得伪造无洞 mask、不得污染另一个 binding 的证据。
+def test_segformer_roi_failure_is_isolated_fail_closed() -> None:
+    # Vehicle's (ROI, binding) call fails: incomplete evidence must not crash
+    # the execution, must not fabricate a mask, and must not corrupt the other
+    # binding's evidence. 车辆（ROI，binding）调用失败：不完整证据不得使执行
+    # 崩溃、不得伪造 mask、不得污染另一个 binding 的证据。
     seg_001 = _FakeSegmenter(
         labels={1: "vehicle"},
-        error_for={1: RuntimeError("secret seg leak")},
+        error_for={0: RuntimeError("secret seg leak")},
     )
     seg_002 = _FakeSegmenter(labels={2: "building"})
     execution = _execute(
@@ -903,11 +982,12 @@ def test_segformer_tile_failure_is_isolated_fail_closed() -> None:
     seg_audits = _audit(execution, layer="segformer")
     failed = [a for a in seg_audits if a["status"] == "failed"]
     assert len(failed) == 1
-    assert failed[0]["tile_id"] == "full-r0-c1"
+    assert failed[0]["roi_id"] == "full"
+    assert failed[0]["tile_id"] is None
     assert failed[0]["error_code"] == "RuntimeError"
 
 
-def test_segformer_audit_order_is_roi_then_binding_then_tile() -> None:
+def test_segformer_audit_order_is_roi_then_binding() -> None:
     seg_001 = _FakeSegmenter(labels={1: "vehicle"}, grid_source="empty")
     seg_002 = _FakeSegmenter(labels={2: "building"}, grid_source="empty")
     views = (
@@ -925,21 +1005,88 @@ def test_segformer_audit_order_is_roi_then_binding_then_tile() -> None:
     )
     seg_audits = _audit(execution, layer="segformer")
     assert [(a["roi_id"], a["tile_id"]) for a in seg_audits] == [
-        ("quantized_roi-0", "quantized_roi-0-r0-c0"),
-        ("quantized_roi-0", "quantized_roi-0-r0-c0"),
-        ("quantized_roi-1", "quantized_roi-1-r0-c0"),
-        ("quantized_roi-1", "quantized_roi-1-r0-c0"),
+        ("quantized_roi-0", None),
+        ("quantized_roi-0", None),
+        ("quantized_roi-1", None),
+        ("quantized_roi-1", None),
     ]
 
 
 def test_segformer_concurrency_peak_is_bounded() -> None:
-    seg = _FakeSegmenter(labels={1: "vehicle"}, grid_source="empty", latch_count=4)
+    # Two ROIs make two (ROI, binding) groups; a latch of 2 proves they run
+    # in parallel and never exceed the pool bound.
+    # 两个 ROI 形成两个（ROI，binding）组；闩锁 2 证明并行执行且不超过池上限。
+    seg = _FakeSegmenter(labels={1: "vehicle"}, grid_source="empty", latch_count=2)
+    views = (
+        _view(source_size=(2048, 1536), mode="quantized_roi",
+              requested_roi=(500, 500, 999, 999)),
+        _view(source_size=(2048, 1536), mode="quantized_roi",
+              requested_roi=(0, 0, 499, 499)),
+    )
     execution = _execute(
         _executor(segmenters={"seg_001": seg}, catalog_data=_SEG_CATALOG_DATA),
         plan=_plan(("vehicle",)),
         images={"img1": _image((2048, 1536))},
-        views=(_view(source_size=(2048, 1536)),),
+        views=views,
     )
-    assert len(seg.calls) == 4
-    assert seg.peak == 4
+    assert len(seg.calls) == 2
+    assert seg.peak == 2
     assert execution.bundle.leaf_states["vehicle"] == "missing"
+
+
+def test_legacy_v1_preprocessing_fails_closed_for_segformer() -> None:
+    """Under the legacy v1 identity a fresh SegFormer call is never made:
+    every still-missing segformer-capable leaf records the stable
+    legacy_segformer_protocol_unsupported error and no segment call happens.
+    在旧 v1 身份下绝不发起新鲜 SegFormer 调用：每个仍缺失且具备 segformer
+    能力的叶子记录稳定 legacy_segformer_protocol_unsupported 错误，且零
+    segment 调用。"""
+    v1 = EvidencePreprocessing(
+        version="greedy-1024-stretch-v1",
+        yolo_version=None,
+        segformer_version=None,
+        segformer_padding_mode=None,
+        segformer_rgb_interpolation=None,
+        segformer_mask_inverse_interpolation=None,
+    )
+    seg = _FakeSegmenter(labels={1: "vehicle"})
+    execution = _execute(
+        _executor(segmenters={"seg_001": seg}, catalog_data=_SEG_CATALOG_DATA,
+                  preprocessing=v1),
+        plan=_plan(("vehicle",)),
+        images={"img1": _region_image((2000, 1024))},
+        views=(_view(source_size=(2000, 1024)),),
+    )
+    assert seg.calls == []
+    assert execution.bundle.segments == []
+    assert execution.bundle.leaf_states["vehicle"] == "error"
+    assert any(
+        outcome.leaf_category == "vehicle"
+        and outcome.layer == "segformer"
+        and outcome.state == "error"
+        and outcome.error_code == "legacy_segformer_protocol_unsupported"
+        for outcome in execution.outcomes
+    )
+
+
+def test_legacy_v1_preprocessing_keeps_yolo_only_branch_working() -> None:
+    """Under the legacy v1 identity the unchanged YOLO phase still runs: v1
+    only rejects fresh SegFormer calls, never the YOLO tile path.
+    在旧 v1 身份下不变的 YOLO 阶段仍可运行：v1 只拒绝新鲜 SegFormer 调用，
+    绝不拒绝 YOLO tile 路径。"""
+    v1 = EvidencePreprocessing(
+        version="greedy-1024-stretch-v1",
+        yolo_version=None,
+        segformer_version=None,
+        segformer_padding_mode=None,
+        segformer_rgb_interpolation=None,
+        segformer_mask_inverse_interpolation=None,
+    )
+    yolo = _FakeYolo(("small_vehicle",))
+    execution = _execute(
+        _executor(yolo=yolo, preprocessing=v1),
+        plan=_plan(("small-vehicle",)),
+    )
+    assert len(yolo.calls) == 1
+    assert execution.bundle.leaf_states["small-vehicle"] == "hit"
+    assert execution.bundle.preprocessing_version == "greedy-1024-stretch-v1"

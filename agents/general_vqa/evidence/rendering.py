@@ -33,7 +33,11 @@ from agents.general_vqa.evidence.geometry import (
     MODEL_INPUT_SIZE,
     compute_preview_size,
 )
-from agents.general_vqa.evidence.schema import EvidenceTileRecord, RoiEvidenceRecord
+from agents.general_vqa.evidence.schema import (
+    EvidenceTileRecord,
+    RoiEvidenceRecord,
+    SegFormerPreprocessRecord,
+)
 from models.images import (
     crop_image_box,
     image_to_data_url,
@@ -163,6 +167,99 @@ def restore_class_id_mask(
         tile_record.source_tile_size,
         resample=Image.Resampling.NEAREST,
     )
+
+
+def prepare_segformer_roi(
+    roi_image: Image.Image,
+    *,
+    roi_id: str,
+    source_size: tuple[int, int],
+) -> tuple[SegFormerPreprocessRecord, Image.Image]:
+    """Materialize the single strict 1024×1024 RGB model input of the fresh
+    SegFormer pad protocol (26 §3.1-3.3): pad the whole ROI on the right and
+    bottom with constant black to the minimal 1024 multiples, then resize the
+    padded canvas to 1024 square with LANCZOS. The ROI origin stays (0, 0)
+    with no coordinate shift, so restore/crop and the YOLO ROI-local boxes
+    stay aligned. A new image is always returned; the ROI source is never
+    modified. 物化新鲜 SegFormer pad 协议（26 §3.1-3.3）的单一严格 1024×1024
+    RGB 模型输入：整张 ROI 在右侧与底部以固定黑色 padding 到 1024 最小倍数，
+    再把 padded canvas 用 LANCZOS 缩放到 1024 方形。ROI 原点保持 (0, 0)、无
+    坐标平移，因此恢复/裁切与 YOLO ROI-local 框保持对齐。始终返回新图像；
+    绝不修改 ROI 源。"""
+
+    width, height = source_size
+    if width <= 0 or height <= 0:
+        raise ValueError(f"source_size must be positive, got {source_size!r}")
+    if roi_image.size != source_size:
+        raise ValueError(
+            f"ROI image size {roi_image.size!r} does not match source_size "
+            f"{source_size!r}"
+        )
+    padded_width = ((width + 1023) // 1024) * 1024
+    padded_height = ((height + 1023) // 1024) * 1024
+    canvas = Image.new("RGB", (padded_width, padded_height), (0, 0, 0))
+    canvas.paste(roi_image.convert("RGB"), (0, 0))
+    model_input = canvas.resize(
+        (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+        resample=Image.Resampling.LANCZOS,
+    )
+    preprocess = SegFormerPreprocessRecord(
+        roi_id=roi_id,
+        source_size=(width, height),
+        padded_size=(padded_width, padded_height),
+        padding_right=padded_width - width,
+        padding_bottom=padded_height - height,
+        model_input_size=(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+        scale_x=MODEL_INPUT_SIZE / padded_width,
+        scale_y=MODEL_INPUT_SIZE / padded_height,
+        padding_mode="constant-black-right-bottom",
+        rgb_interpolation="lanczos",
+        mask_inverse_interpolation="nearest",
+    )
+    return preprocess, model_input
+
+
+def restore_segformer_class_id_mask(
+    model_mask: Image.Image,
+    preprocess: SegFormerPreprocessRecord,
+) -> Image.Image:
+    """Restore one strict 1024×1024 integer class-id model mask to the source
+    ROI size: NEAREST back to the padded canvas, then crop [0:W, 0:H] so the
+    padding region can never appear in the final mask. The input must be a
+    strict 1024 square integer grid ("L" or "I" mode); bilinear/LANCZOS are
+    never used on class ids, which could fabricate class values. The returned
+    grid is exactly preprocess.source_size, aligned to the ROI-local frame.
+    将一个严格 1024×1024 整数 class-id model mask 恢复到源 ROI 尺寸：NEAREST
+    缩回 padded canvas，再裁切 [0:W, 0:H] 使 padding 区域绝不出现在最终 mask。
+    输入必须是严格 1024 方形整数网格（"L" 或 "I" 模式）；class id 绝不使用
+    bilinear/LANCZOS，以免杜撰类别值。返回网格尺寸恰为 preprocess.source_size，
+    与 ROI 局部坐标系对齐。"""
+
+    if model_mask.mode not in ("L", "I"):
+        raise ValueError(
+            f"model mask mode {model_mask.mode!r} must be an integer class-id grid"
+        )
+    if model_mask.size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        raise ValueError("model mask must be a strict 1024x1024 model input")
+    minimum, _ = model_mask.getextrema()
+    if minimum < 0:
+        raise ValueError("model mask class ids must be non-negative")
+    width, height = preprocess.source_size
+    padded_width, padded_height = preprocess.padded_size
+    if (padded_width, padded_height) == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        restored = model_mask.copy()
+    else:
+        restored = model_mask.resize(
+            (padded_width, padded_height),
+            resample=Image.Resampling.NEAREST,
+        )
+    cropped = restored.crop((0, 0, width, height))
+    if cropped.size != (width, height):
+        raise ValueError(
+            f"restored mask size {cropped.size!r} must equal source_size "
+            f"{(width, height)!r}"
+        )
+    return cropped
 
 
 def stitch_class_id_masks(

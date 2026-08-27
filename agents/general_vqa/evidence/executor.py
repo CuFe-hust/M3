@@ -13,7 +13,7 @@ Frozen state machine / 冻结状态机：
     for each tile: run YOLO once, then filter all requested leaves
     for each still-missing leaf:
         if catalog has approved SegFormer capability:
-            run SegFormer inference once per (binding, tile), then filter
+            run SegFormer inference once per (binding, ROI), then filter
         if still missing:
             leave the leaf for the single final-Qwen visual fallback
     preserve all successful evidence from other leaves
@@ -28,8 +28,10 @@ job index 提交，主线程按稳定 tile 顺序聚合，绝不按完成顺序�
 
 VQA-only constraints / VQA 专属约束：
 
-- YOLO/SegFormer 调用次数按 tile，不按类别增长；模型输入永远是 1024×1024
-  tile，剩余部分 LANCZOS 拉伸；
+- YOLO 调用次数按 tile，SegFormer 按（ROI，binding），都不按类别增长；
+  YOLO 模型输入永远是 1024×1024 tile，剩余部分 LANCZOS 拉伸；SegFormer
+  模型输入是整张 ROI 右侧/底部黑色 padding 到 1024 倍数后整体 LANCZOS
+  缩放的 1024×1024 方形（pad-multiple-1024-resize-square-v1）；
 - 只保留目录请求标签，未请求输出全部丢弃；
 - YOLO confidence 仅供阈值/去重/冲突裁决，绝不进入最终 bundle 或公共 trace；
 - SegFormer 只保留 mask/存在性证据，不转 box、不生成 instance count；mask
@@ -69,10 +71,10 @@ from agents.general_vqa.evidence.geometry import (
 )
 from agents.general_vqa.evidence.rendering import (
     prepare_model_tile,
+    prepare_segformer_roi,
     render_roi_crop,
-    restore_class_id_mask,
+    restore_segformer_class_id_mask,
     segformer_palette,
-    stitch_class_id_masks,
 )
 from agents.general_vqa.evidence.schema import (
     EvidenceLayer,
@@ -83,6 +85,7 @@ from agents.general_vqa.evidence.schema import (
     ModelCallAudit,
     RoiEvidenceRecord,
     SegFormerEvidenceRecord,
+    SegFormerPreprocessRecord,
     VqaEvidenceBundle,
     YoloDetectionRecord,
 )
@@ -388,6 +391,7 @@ class ObjectEvidenceExecutor:
         self._audits: list[ModelCallAudit] = []
         self._outcomes: list[RoiLeafOutcome] = []
         self._masks: dict[tuple[str, str], Any] = {}
+        self._segformer_preprocess: list[SegFormerPreprocessRecord] = []
 
         if not plan.needs_visual_assistance:
             raise ValueError("v2 evidence executor requires visual assistance")
@@ -407,13 +411,14 @@ class ObjectEvidenceExecutor:
                 pool, tile_plan, records, leaves, images
             )
             segments = self._segformer_phase(
-                pool, tile_plan, records, leaves, hit_leaves
+                pool, records, leaves, hit_leaves, images
             )
         layer_states, final_states, missing = self._aggregate(leaves)
         bundle = VqaEvidenceBundle(
             catalog_version=self._catalog.catalog_version,
             preprocessing_version=self._preprocessing.version,
             tiles=[tile_record for tile_record, _, _ in tile_plan],
+            segformer_preprocess=self._segformer_preprocess,
             rois=[record for record in records],
             detections=detections,
             segments=segments,
@@ -513,19 +518,20 @@ class ObjectEvidenceExecutor:
                 return None, "unexpected_model_input_size"
         return outputs, None
 
-    def _call_segformer_tile(
+    def _call_segformer_roi(
         self,
         client: SemanticMaskClient,
-        tile_image: Image.Image,
+        model_input: Image.Image,
     ) -> tuple[SemanticMaskOutput | None, str | None]:
-        """One segment call on one prepared 1024x1024 tile, isolated in this
-        worker: exceptions become a stable type-name code, and the returned
-        map must stay aligned to the 1024-square model tile or the tile call
-        fails closed. 对一张已准备的 1024x1024 tile 执行一次 segment 调用，并
-        在 worker 内隔离：异常转稳定类型名；返回 map 必须保持与 1024 方形模型
-        tile 对齐，否则该 tile 调用严格失败。"""
+        """One segment call on one prepared 1024x1024 model input of the pad
+        protocol, isolated in this worker: exceptions become a stable
+        type-name code, and the returned map must stay aligned to the
+        1024-square model input or the call fails closed. 对 pad 协议下的一张
+        已准备 1024x1024 模型输入执行一次 segment 调用，并在 worker 内隔离：
+        异常转稳定类型名；返回 map 必须保持与 1024 方形模型输入对齐，否则该
+        调用严格失败。"""
         try:
-            output = client.segment(tile_image)
+            output = client.segment(model_input)
         except Exception as exc:
             return None, type(exc).__name__
         if output.original_size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
@@ -691,23 +697,28 @@ class ObjectEvidenceExecutor:
     def _segformer_phase(
         self,
         pool: ThreadPoolExecutor,
-        tile_plan: list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]],
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
         hit_leaves: set[str],
+        images: Mapping[str, Image.Image],
     ) -> list[SegFormerEvidenceRecord]:
         """Resolve each still-missing leaf through its verified segmenter
-        binding: one call per (binding, ROI tile) into the shared bounded
-        pool, merged in roi order -> binding order -> row -> column. Only
-        requested leaves become evidence — unrequested classes stay
-        background, no box/count is derived, no cross-checkpoint comparison
-        happens, and a YOLO hit is never re-run or overwritten. The output
-        class map must match the catalog raw labels or the leaf fails closed.
-        通过已验证 segmenter binding 解析每个仍缺失叶子：每个（binding，ROI
-        tile）调用一次（共享有界 pool），按 roi order -> binding order ->
-        row -> column 合并。只有请求叶子成为证据——未请求类别保持背景，不派生
-        框/计数，不做跨 checkpoint 比较，YOLO 命中绝不重跑或覆盖。输出 class
-        map 必须与 catalog raw labels 一致，否则叶子严格失败。"""
+        binding: one call per (ROI, binding) into the shared bounded pool,
+        merged in roi order -> binding order. Only requested leaves become
+        evidence — unrequested classes stay background, no box/count is
+        derived, no cross-checkpoint comparison happens, and a YOLO hit is
+        never re-run or overwritten. The output class map must match the
+        catalog raw labels or the leaf fails closed. The fresh SegFormer
+        protocol is the pad-multiple-1024-resize-square one only: under the
+        legacy v1 version every leaf that would need a fresh SegFormer call
+        fails closed instead of silently running the new protocol under the
+        old version label. 通过已验证 segmenter binding 解析每个仍缺失叶子：
+        每个（ROI，binding）调用一次（共享有界 pool），按 roi order -> binding
+        order 合并。只有请求叶子成为证据——未请求类别保持背景，不派生框/计数，
+        不做跨 checkpoint 比较，YOLO 命中绝不重跑或覆盖。输出 class map 必须
+        与 catalog raw labels 一致，否则叶子严格失败。新鲜 SegFormer 协议仅限
+        pad-multiple-1024-resize-square：在旧 v1 版本下，任何需要新鲜
+        SegFormer 调用的叶子都严格失败，绝不悄悄在旧版本标签下运行新协议。"""
         binding_leaves: dict[str, dict[str, list[str]]] = {}
         binding_order: list[str] = []
         for record in records:
@@ -736,162 +747,195 @@ class ObjectEvidenceExecutor:
                 ).append(leaf)
         if not binding_order:
             return []
-        # Per (binding, ROI) dispatch over that ROI's tiles into the shared
-        # pool; results are merged by stable tile index afterwards.
-        # 按（binding，ROI）把该 ROI 的 tiles 派发到共享 pool；之后按稳定
-        # tile index 合并。
-        group_results: dict[
-            tuple[str, str], list[tuple[SemanticMaskOutput | None, str | None]]
-        ] = {}
-        for binding in binding_order:
-            client = self._segmenter_clients[binding]
-            for roi_id in binding_leaves[binding]:
-                indexes = [
-                    index
-                    for index, (_, _, record) in enumerate(tile_plan)
-                    if record.roi_id == roi_id
-                ]
-                futures = [
-                    pool.submit(self._call_segformer_tile, client, tile_plan[index][1])
-                    for index in indexes
-                ]
-                group_results[(binding, roi_id)] = [
-                    future.result() for future in futures
-                ]
-        segments: list[SegFormerEvidenceRecord] = []
+        if self._preprocessing.version == "greedy-1024-stretch-v1":
+            # The legacy stretch protocol is read-only for historical
+            # artifacts; a fresh SegFormer call under it would silently run
+            # the new pad protocol under the old version label. Fail closed
+            # for every leaf that would need such a call.
+            # 旧 stretch 协议只用于历史 artifact 只读解释；在其下发起新鲜
+            # SegFormer 调用等于在旧版本标签下悄悄运行新 pad 协议。对所有
+            # 需要此类调用的叶子严格失败。
+            for binding in binding_order:
+                for roi_id, roi_leaves in binding_leaves[binding].items():
+                    for leaf in roi_leaves:
+                        self._outcomes.append(
+                            RoiLeafOutcome(
+                                roi_id,
+                                leaf,
+                                "segformer",
+                                "error",
+                                "legacy_segformer_protocol_unsupported",
+                            )
+                        )
+            return []
+        # One deterministic strict 1024x1024 model input per (ROI, binding)
+        # group, materialized synchronously before any model call; the stable
+        # plan order is the only merge order, never completion order. The
+        # geometry record is per ROI, the call is per (ROI, binding).
+        # 每个（ROI，binding）组一个确定性严格 1024×1024 模型输入，在任何模型
+        # 调用前同步物化；这份稳定 plan 顺序是唯一合并顺序，绝不使用完成顺序。
+        # 几何记录按 ROI，调用按（ROI，binding）。
+        groups: list[
+            tuple[
+                RoiEvidenceRecord,
+                str,
+                list[str],
+                SegFormerPreprocessRecord,
+                Image.Image,
+            ]
+        ] = []
         for record in records:
+            crop = render_roi_crop(images[record.image_id], record)
             for binding in binding_order:
                 roi_leaves = binding_leaves[binding].get(record.roi_id)
                 if not roi_leaves:
                     continue
-                results = group_results[(binding, record.roi_id)]
-                indexes = [
-                    index
-                    for index, (_, _, item) in enumerate(tile_plan)
-                    if item.roi_id == record.roi_id
-                ]
-                id_to_label: Mapping[int, str] | None = None
-                for position, (output, failed_code) in enumerate(results):
-                    tile_record = tile_plan[indexes[position]][0]
-                    logical_model_id, digest = _segformer_audit_identity(
-                        output, self._segmenter_clients[binding]
-                    )
-                    self._audits.append(
-                        ModelCallAudit(
-                            layer="segformer",
-                            roi_id=record.roi_id,
-                            tile_id=tile_record.tile_id,
-                            input_size=(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
-                            logical_model_id=logical_model_id,
-                            weights_sha256=digest,
-                            status="failed" if failed_code is not None else "succeeded",
-                            error_code=failed_code,
-                        )
-                    )
-                    if id_to_label is None and output is not None:
-                        id_to_label = output.id_to_label
-                # Strict class-map verification: every requested leaf's raw
-                # labels must exist in the model's authoritative label map.
-                # 严格 class map 校验：每个请求叶子的 raw labels 必须存在于
-                # 模型权威标签映射中。
-                label_map = id_to_label if isinstance(id_to_label, Mapping) else {}
-                leaf_class_ids: dict[str, frozenset[int]] = {}
-                mismatched: set[str] = set()
+                preprocess, model_input = prepare_segformer_roi(
+                    crop, roi_id=record.roi_id, source_size=record.crop_size
+                )
+                groups.append((record, binding, roi_leaves, preprocess, model_input))
+        futures = [
+            pool.submit(
+                self._call_segformer_roi,
+                self._segmenter_clients[binding],
+                model_input,
+            )
+            for _, binding, _, _, model_input in groups
+        ]
+        results = [future.result() for future in futures]
+        segments: list[SegFormerEvidenceRecord] = []
+        for (record, binding, roi_leaves, preprocess, _), (output, failed_code) in zip(
+            groups, results
+        ):
+            self._segformer_preprocess.append(preprocess)
+            logical_model_id, digest = _segformer_audit_identity(
+                output, self._segmenter_clients[binding]
+            )
+            self._audits.append(
+                ModelCallAudit(
+                    layer="segformer",
+                    roi_id=record.roi_id,
+                    tile_id=None,
+                    input_size=(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+                    logical_model_id=logical_model_id,
+                    weights_sha256=digest,
+                    status="failed" if failed_code is not None else "succeeded",
+                    error_code=failed_code,
+                )
+            )
+            if failed_code is not None or output is None:
+                # The whole (ROI, binding) call failed: only this ROI's leaves
+                # on this binding record the stable error; other ROIs,
+                # bindings and the already-successful YOLO evidence stay
+                # untouched, and no half mask or guessed background is used.
+                # 整次（ROI，binding）调用失败：仅该 ROI 中依赖该 binding 的
+                # 叶子记录稳定 error；其他 ROI、binding 与已成功的 YOLO evidence
+                # 不受影响，绝不使用半张 mask 或猜测 background。
                 for leaf in roi_leaves:
-                    labels = set(self._catalog.leaf_segformer_labels(leaf) or ())
-                    class_ids = frozenset(
-                        class_id
-                        for class_id, label in label_map.items()
-                        if label in labels
-                    )
-                    if class_ids:
-                        leaf_class_ids[leaf] = class_ids
-                    else:
-                        mismatched.add(leaf)
-                for leaf in mismatched:
                     self._outcomes.append(
                         RoiLeafOutcome(
                             record.roi_id,
                             leaf,
                             "segformer",
                             "error",
-                            "class_map_mismatch",
+                            failed_code or "unknown_call_failure",
                         )
                     )
-                if id_to_label is None:
-                    # Every tile call failed; nothing can be extracted.
-                    # 所有 tile 调用失败；无任何可提取内容。
-                    first_failed = next(
-                        code for _, code in results if code is not None
+                continue
+            # Strict class-map verification: every requested leaf's raw labels
+            # must exist in the model's authoritative label map.
+            # 严格 class map 校验：每个请求叶子的 raw labels 必须存在于模型
+            # 权威标签映射中。
+            id_to_label = output.id_to_label
+            label_map = id_to_label if isinstance(id_to_label, Mapping) else {}
+            leaf_class_ids: dict[str, frozenset[int]] = {}
+            mismatched: set[str] = set()
+            for leaf in roi_leaves:
+                labels = set(self._catalog.leaf_segformer_labels(leaf) or ())
+                class_ids = frozenset(
+                    class_id
+                    for class_id, label in label_map.items()
+                    if label in labels
+                )
+                if class_ids:
+                    leaf_class_ids[leaf] = class_ids
+                else:
+                    mismatched.add(leaf)
+            for leaf in mismatched:
+                self._outcomes.append(
+                    RoiLeafOutcome(
+                        record.roi_id,
+                        leaf,
+                        "segformer",
+                        "error",
+                        "class_map_mismatch",
                     )
-                    for leaf in roi_leaves:
-                        if leaf not in mismatched:
-                            self._outcomes.append(
-                                RoiLeafOutcome(
-                                    record.roi_id,
-                                    leaf,
-                                    "segformer",
-                                    "error",
-                                    first_failed,
-                                )
-                            )
-                    continue
-                # Per-leaf extraction: boolean grid -> NEAREST restore -> ROI
-                # stitch; only a non-empty mask becomes a hit record.
-                # 逐叶子提取：布尔网格 -> NEAREST 恢复 -> ROI 拼接；只有非空
-                # mask 才产生 hit 记录。
+                )
+            # Restore the whole class-id map once (NEAREST to padded size,
+            # crop [0:W, 0:H]), then extract boolean masks for every leaf, so
+            # class ids are never re-interpolated per leaf and the final mask
+            # sizes are equal by construction.
+            # 先整体恢复 class-id map 一次（NEAREST 到 padded 尺寸，裁切
+            # [0:W, 0:H]），再为每个叶子提取 boolean mask，使 class id 绝不逐
+            # 叶子重复插值，各叶子最终 mask 尺寸天然一致。
+            try:
+                grid = _to_class_grid(output.class_id_map)
+                restored = restore_segformer_class_id_mask(grid, preprocess)
+            except ValueError:
                 for leaf in roi_leaves:
-                    if leaf in mismatched:
-                        continue
-                    grouped: list[tuple[EvidenceTileRecord, Image.Image]] = []
-                    tile_failed: str | None = None
-                    for position, (output, failed_code) in enumerate(results):
-                        tile_record = tile_plan[indexes[position]][0]
-                        if failed_code is not None:
-                            tile_failed = tile_failed or failed_code
-                            continue
-                        assert output is not None
-                        try:
-                            grid = _to_class_grid(output.class_id_map)
-                            boolean = _leaf_boolean_grid(grid, leaf_class_ids[leaf])
-                            restored = restore_class_id_mask(boolean, tile_record)
-                        except ValueError:
-                            tile_failed = tile_failed or "mask_geometry"
-                            continue
-                        grouped.append((tile_record, restored))
-                    if tile_failed is not None:
-                        # Incomplete evidence: a failed tile leaves a hole in
-                        # the ROI mask, and the no-hole stitch contract refuses
-                        # to guess background for it. One leaf's tile failure
-                        # must not crash the execution or corrupt other leaves.
-                        # 证据不完整：失败的 tile 在 ROI mask 上留下洞，无洞
-                        # 拼接契约拒绝为它猜测背景。单个叶子的 tile 失败不得使
-                        # 执行崩溃或污染其他叶子。
+                    if leaf not in mismatched:
                         self._outcomes.append(
                             RoiLeafOutcome(
                                 record.roi_id,
                                 leaf,
                                 "segformer",
                                 "error",
-                                tile_failed,
+                                "mask_geometry",
                             )
                         )
-                        continue
-                    canvas = stitch_class_id_masks(grouped, record.crop_size)
-                    if canvas.getextrema()[1] > 0:
-                        segments.append(
-                            SegFormerEvidenceRecord(
-                                leaf_category=leaf, roi_id=record.roi_id
+                continue
+            if restored.size != record.crop_size:
+                for leaf in roi_leaves:
+                    if leaf not in mismatched:
+                        self._outcomes.append(
+                            RoiLeafOutcome(
+                                record.roi_id,
+                                leaf,
+                                "segformer",
+                                "error",
+                                "mask_geometry",
                             )
                         )
-                        self._masks[(record.roi_id, leaf)] = canvas.convert("L")
-                        self._outcomes.append(
-                            RoiLeafOutcome(record.roi_id, leaf, "segformer", "hit")
+                continue
+            for leaf in roi_leaves:
+                if leaf in mismatched:
+                    continue
+                boolean = _leaf_boolean_grid(restored, leaf_class_ids[leaf])
+                if boolean.getextrema()[1] > 0:
+                    segments.append(
+                        SegFormerEvidenceRecord(
+                            leaf_category=leaf, roi_id=record.roi_id
                         )
-                    else:
-                        self._outcomes.append(
-                            RoiLeafOutcome(record.roi_id, leaf, "segformer", "missing")
-                        )
+                    )
+                    self._masks[(record.roi_id, leaf)] = boolean
+                    self._outcomes.append(
+                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "hit")
+                    )
+                else:
+                    self._outcomes.append(
+                        RoiLeafOutcome(record.roi_id, leaf, "segformer", "missing")
+                    )
+        # One geometry record per ROI with at least one fresh SegFormer call,
+        # in ROI order; the record is binding-independent.
+        # 每个发生过新鲜 SegFormer 调用的 ROI 一条几何记录，按 ROI 顺序；该
+        # 记录与 binding 无关。
+        deduped: list[SegFormerPreprocessRecord] = []
+        seen_roi: set[str] = set()
+        for preprocess in self._segformer_preprocess:
+            if preprocess.roi_id not in seen_roi:
+                seen_roi.add(preprocess.roi_id)
+                deduped.append(preprocess)
+        self._segformer_preprocess = deduped
         return segments
 
     def _aggregate(

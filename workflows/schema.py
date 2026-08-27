@@ -89,19 +89,31 @@ class SampleRunStatus(BaseModel):
 
 
 class EvidencePreprocessingIdentity(BaseModel):
-    """Frozen evidence-tile preprocessing identity persisted in the run
-    request. Fresh runs write ``greedy-1024-stretch-v1`` explicitly; legacy
-    runs without the field parse as None/legacy-unversioned and never
-    masquerade as the new version. A structured sub-object — never six loose
-    fields — so resume compares one identity instead of guessing parameters.
-    冻结的 evidence tile 预处理身份，持久化在 run request 中。新鲜运行显式
-    写入 ``greedy-1024-stretch-v1``；历史缺字段运行解析为 None/legacy-
-    unversioned，绝不伪装成新版本。使用结构化子对象——而非六个松散字段——
-    使 resume 比较一个身份而不是猜测参数。"""
+    """Frozen evidence preprocessing identity persisted in the run request.
+    Fresh runs write one of the two frozen combined versions explicitly:
+    ``greedy-1024-stretch-v1`` (both phases on the legacy stretch tiles) or
+    ``yolo-v1-segformer-pad-v1`` (YOLO on greedy tiles, SegFormer on the
+    pad-multiple-1024-resize-square protocol). Legacy runs without the field
+    parse as None/legacy-unversioned and never masquerade as a version. The
+    version discriminates the complete algorithm combination: a v1 object
+    never carries v2-only fields and a v2 object requires every field
+    explicitly — schema defaults never upgrade old JSON or fill v2 fields.
+    A structured sub-object — never loose fields — so resume compares one
+    identity instead of guessing parameters.
+    冻结的 evidence 预处理身份，持久化在 run request 中。新鲜运行显式写入两个
+    冻结组合版本之一：``greedy-1024-stretch-v1``（两个阶段都走旧 stretch
+    tiles）或 ``yolo-v1-segformer-pad-v1``（YOLO 走 greedy tiles，SegFormer
+    走 pad-multiple-1024-resize-square 协议）。历史缺字段运行解析为
+    None/legacy-unversioned，绝不伪装成某个版本。version 判别完整算法组合：
+    v1 对象绝不携带 v2 专属字段，v2 对象要求每个字段显式存在——schema 默认值
+    绝不升级旧 JSON 或补齐 v2 字段。使用结构化子对象——而非松散字段——使
+    resume 比较一个身份而不是猜测参数。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    version: Literal["greedy-1024-stretch-v1", "yolo-v1-segformer-pad-v1"] = (
+        "greedy-1024-stretch-v1"
+    )
     tile_size: Literal[1024] = 1024
     partition_policy: Literal["greedy-row-major-no-overlap"] = (
         "greedy-row-major-no-overlap"
@@ -110,6 +122,59 @@ class EvidencePreprocessingIdentity(BaseModel):
     rgb_interpolation: Literal["lanczos"] = "lanczos"
     mask_inverse_interpolation: Literal["nearest"] = "nearest"
     max_tile_concurrency: int = Field(default=4, ge=1, le=32)
+    # v2-only explicit fields: never defaulted, so old v1 JSON stays v1 and a
+    # v2 object missing any field fails parsing instead of guessing.
+    # 仅 v2 的显式字段：绝不提供默认值，因此旧 v1 JSON 保持 v1，而缺字段的
+    # v2 对象解析失败而非猜测。
+    yolo_version: Literal["greedy-1024-stretch-v1"] | None = None
+    segformer_version: Literal["pad-multiple-1024-resize-square-v1"] | None = None
+    segformer_padding_mode: Literal["constant-black-right-bottom"] | None = None
+    segformer_rgb_interpolation: Literal["lanczos"] | None = None
+    segformer_mask_inverse_interpolation: Literal["nearest"] | None = None
+
+    @model_validator(mode="after")
+    def validate_version_consistency(self) -> "EvidencePreprocessingIdentity":
+        """The same version string never represents two algorithms: v1 must
+        stay free of v2-only fields, and v2 requires every field explicitly
+        present (model_fields_set) — never filled by schema defaults.
+        一个版本字符串不得代表两种算法：v1 必须不带 v2 专属字段；v2 要求每个
+        字段显式存在（model_fields_set）——绝不靠 schema 默认值补齐。"""
+        v2_fields = (
+            "yolo_version",
+            "segformer_version",
+            "segformer_padding_mode",
+            "segformer_rgb_interpolation",
+            "segformer_mask_inverse_interpolation",
+        )
+        if self.version == "greedy-1024-stretch-v1":
+            if any(getattr(self, name) is not None for name in v2_fields):
+                raise ValueError(
+                    "greedy-1024-stretch-v1 identity must not carry v2-only fields"
+                )
+            return self
+        missing = (
+            {
+                "version",
+                "tile_size",
+                "partition_policy",
+                "remainder_resize",
+                "rgb_interpolation",
+                "mask_inverse_interpolation",
+                "max_tile_concurrency",
+                *v2_fields,
+            }
+            - self.model_fields_set
+        )
+        if missing:
+            raise ValueError(
+                "yolo-v1-segformer-pad-v1 identity requires explicit fields: "
+                + ", ".join(sorted(missing))
+            )
+        if any(getattr(self, name) is None for name in v2_fields):
+            raise ValueError(
+                "yolo-v1-segformer-pad-v1 identity requires every v2 field"
+            )
+        return self
 
 
 class DatasetRunSummary(BaseModel):

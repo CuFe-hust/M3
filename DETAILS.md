@@ -1184,7 +1184,9 @@ confidence 不给最终 Qwen。渲染图像摘要（包括 mask 与 clean ROI �
 source geometry 与 evidence protocol identity 仍共同覆盖 request hash（14.13）。两类图像
 只以内存 PNG 传输，不新增磁盘 artifact。
 `vqa_evidence.json` 作为 additional result 持久化 bundle（严格 JSON-safe，
-含 preprocessing version、tiles 与逐 tile call audit，无掩膜数组/无 secret）。
+含预处理 version、YOLO tiles、SegFormer `segformer_preprocess` 几何记录与
+逐调用 call audit（SegFormer 按（ROI，binding），`tile_id=None`），无掩膜
+数组/无 secret）。
 `needs_visual_assistance == false` 或未注入计划时走 direct 路径。模型侧框统一使用
 `0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
 
@@ -2418,13 +2420,30 @@ identity 与持久化 identity 完全一致；冲突稳定拒绝，绝不换用�
 缺少该字段的 run 明确解释为 legacy base-only，不猜成当前 adapter。已经 succeeded 且可直接
 复用的 count-image 结果保持零模型调用。
 
-### VQA evidence 预处理身份（14.14）
+### VQA evidence 预处理身份（14.14 / doc 26）
 
-- 新身份（`greedy-1024-stretch-v1`）succeeded 样本 resume 零模型调用，绝不
-  修复或重写推理期证据产物（含 `vqa_evidence.json`）；
-- 新身份 failed/partial 重跑沿用持久化 preprocessing 身份；调用方显式提供
-  的不同身份（含篡改的 tile policy）以 `resume evidence preprocessing
-  mismatch` 稳定拒绝；
+`evidence_preprocessing` 冻结完整算法组合身份（26 §5.3），两个互斥版本：
+
+```text
+greedy-1024-stretch-v1
+    YOLO: greedy 1024 tiles + remainder stretch
+    SegFormer: greedy 1024 tiles + remainder stretch（仅历史只读解释）
+
+yolo-v1-segformer-pad-v1（fresh 默认）
+    YOLO: greedy-1024-stretch-v1（不变）
+    SegFormer: pad-multiple-1024-resize-square-v1
+```
+
+- 新鲜运行由 application 显式写入 `yolo-v1-segformer-pad-v1` 并携带全部 v2
+  必填字段（含 `yolo_version` / `segformer_version` 等 backend-specific
+  字段）；v2 对象缺少任一字段解析失败，schema 默认值绝不补齐；
+- 旧 v1 JSON 缺少所有 v2 字段时仍是 v1，绝不自动升级为 pad 协议；同一版本
+  字符串不得代表两种算法；
+- 两个版本的 succeeded 样本 resume 均零模型调用，绝不修复或重写推理期证据
+  产物（含 `vqa_evidence.json`）；
+- 非终态/明确重跑样本使用当前（新）协议；调用方显式提供的不同身份（含
+  篡改的 tile policy）以 `resume evidence preprocessing mismatch` 稳定拒绝，
+  v1/v2 双向冲突都在任何模型调用前失败；
 - 历史无身份（None）运行的 VQA evidence 非成功重跑以
   `LEGACY_VQA_EVIDENCE_PREPROCESSING_UNSUPPORTED` 稳定失败，绝不静默切换
   成新语义；历史 succeeded 样本 resume 仅补评测、零模型调用。
@@ -3578,16 +3597,28 @@ Grounding 与 VQA 的发布条件不同：Grounding executor 始终组装并使 
 18 个 grounding leaves 可规划；detector policy 未校准时只关闭其 YOLO phase，最终
 Grounding Qwen 的定位 seam 仍存在。Counting 的可执行 leaves 则由独立的 enabled
 expert inventory 决定。检测器一律惰性接线，组合期绝不加载 YOLO 权重。
-证据预处理身份冻结为 `greedy-1024-stretch-v1`：每个 ROI 按确定性贪心
+证据预处理身份冻结为组合版本（doc 26）：YOLO 每个 ROI 按确定性贪心
 row-major 无重叠切 1024×1024 tile，余块 LANCZOS 拉伸，掩膜逆变换 NEAREST；
-tile 并发有界（默认 ≤4，`max_tile_concurrency` 可配置），单次执行生命周期
-使用单一 worker pool。无重叠 partition 只保证每个 ROI 像素属于一个 source
-tile；它不等价于“对象不会跨 tile”或“不会产生重复检测”。YOLO 候选逆映射到
-整图后另做基于 IoU 的全局去重，但边界目标仍可能被切开或漏检；余块拉伸也会
-改变纵横比。v5 显式 ROI 在源图上生成 1024 整数倍边长的理想正方形后直接与
-图像求交，不平移、不缩小；边界裁切后的实际视图可以是长方形，也不保证宽高为
-1024 的整数倍。历史 `visual_plan.json` / `joint_visual_plan.json` 仅供 reporting
-只读展示。真实 Qwen3-VL、YOLO 和 SegFormer live gate 仍需单独验证。
+SegFormer 不再共用 tile 路径，fresh 默认协议
+`pad-multiple-1024-resize-square-v1` 把整张 ROI 仅在右侧/底部以固定黑色
+padding 到 1024 的最小倍数（`padded = ceil(W/1024)*1024 × ceil(H/1024)*1024`，
+padding 恒在 `[0, 1023]`），再整体 LANCZOS 缩放到单张 1024×1024 模型输入；
+每个（ROI，binding）恰好一次 SegFormer 推理，离散 class-id map 用 NEAREST
+恢复到 padded 尺寸后确定性裁切 `[0:W, 0:H]`，最终 mask 与 YOLO ROI-local
+框严格同坐标系。几何记录 `SegFormerPreprocessRecord` 强制最小上取整，
+过度 padding 稳定失败；tile 并发有界（默认 ≤4，`max_tile_concurrency`
+可配置），单次执行生命周期使用单一 worker pool。无重叠 partition 只保证
+每个 ROI 像素属于一个 source tile；它不等价于“对象不会跨 tile”或“不会产生
+重复检测”。YOLO 候选逆映射到整图后另做基于 IoU 的全局去重，但边界目标仍
+可能被切开或漏检；余块拉伸也会改变纵横比。大 ROI 在新 SegFormer 协议下
+整体压缩到 1024×1024：小目标可能因下采样而消失、非正方形 padded canvas
+会被拉伸成正方形、tile seam 消失、调用次数与显存/吞吐特征变化、边缘预测
+可能受固定 padding 颜色影响——这些是预期的模型行为变化而非几何 bug，
+真实精度变化需用已批准本地权重做 live gate 单独验证。v5 显式 ROI 在源图上
+生成 1024 整数倍边长的理想正方形后直接与图像求交，不平移、不缩小；边界
+裁切后的实际视图可以是长方形，也不保证宽高为 1024 的整数倍。历史
+`visual_plan.json` / `joint_visual_plan.json` 仅供 reporting 只读展示。
+真实 Qwen3-VL、YOLO 和 SegFormer live gate 仍需单独验证。
 
 ### 79.5 Live validation
 
