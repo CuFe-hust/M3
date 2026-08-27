@@ -161,6 +161,48 @@ def test_load_from_disk_returns_lazy_dataset(tmp_path: Path) -> None:
     assert all(sample.images[0].path.as_posix() == "img_1.png" for sample in samples)
 
 
+def test_extracted_caption_release_loads_without_datasets(tmp_path: Path) -> None:
+    unified = tmp_path / "xlrs_bench"
+    release = unified / "XLRS-Bench_caption_en"
+    _make_image(release / "train" / "images" / "000000.jpg")
+    _write_json(
+        release / "train" / "captions.json",
+        [
+            {
+                "id": 13,
+                "question_id": 13,
+                "question": "Describe the image in detail.",
+                "answer": ["A busy harbor with cranes and containers."],
+                "image": "train/images/000000.jpg",
+            }
+        ],
+    )
+
+    adapter = XLRSAdapter()
+    probe = adapter.probe(unified, task="caption")
+    sample = next(adapter.iter_samples(unified, "train", "caption"))
+
+    assert probe.sample_count == 1
+    assert {"answer", "image", "question"} <= set(probe.observed_fields)
+    assert sample.task == "caption"
+    assert sample.question == "Describe the image in detail."
+    assert sample.images[0].path.as_posix() == "train/images/000000.jpg"
+    assert sample.ground_truth is not None
+    assert sample.ground_truth.answers == [
+        "A busy harbor with cranes and containers."
+    ]
+
+
+def test_extracted_caption_release_rejects_invalid_annotations(tmp_path: Path) -> None:
+    release = tmp_path / "XLRS-Bench_caption_en"
+    annotations = release / "train" / "captions.json"
+    annotations.parent.mkdir(parents=True)
+    annotations.write_text('{"not": "a row array"}\n', encoding="utf-8")
+
+    with pytest.raises(DatasetProbeError, match="JSON array of objects"):
+        XLRSAdapter().probe(release, task="caption")
+
+
 # ── 三任务产出 / three tasks produce UnifiedSample ─────────────────────────
 
 

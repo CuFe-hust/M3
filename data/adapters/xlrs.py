@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import itertools
+import json
 import re
 import tempfile
 from collections.abc import Callable, Iterator
@@ -73,6 +74,38 @@ _EXPLICIT_MULTI_ANSWER_KEYS = ("allow_multiple", "multi_answer")
 _AUDITED_MULTI_ANSWER_TYPES = frozenset()
 _ANSWER_SEPARATOR = re.compile(r"[\s,，、]+")
 _CAPTION_TEXT_KEYS = ("caption", "text", "raw")
+
+
+class _CaptionJsonRows:
+    """Rows from the extracted ``train/captions.json`` release.
+
+    The JSON annotations contain paths and text only, never decoded image
+    payloads. Keeping this small annotation table in memory is bounded by the
+    annotation file, while image loading remains per-row and on demand.
+    从解压后的 ``train/captions.json`` 发布读取行。JSON 标注只含路径和文本，
+    不含解码后的图片载荷；内存占用受标注文件大小约束，图片仍按行按需加载。
+    """
+
+    def __init__(self, path: Path) -> None:
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            raise DatasetProbeError(
+                f"invalid XLRS caption annotations at {path}"
+            ) from error
+        if not isinstance(payload, list) or any(
+            not isinstance(row, dict) for row in payload
+        ):
+            raise DatasetProbeError(
+                f"XLRS caption annotations at {path} must be a JSON array of objects"
+            )
+        self._rows = payload
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        return iter(self._rows)
 
 class LazyRows(Protocol):
     """Minimal lazy row container: cheap len() plus streaming iteration.
@@ -286,7 +319,13 @@ class XLRSAdapter:
 
     def _has_local(self, root: Path, task: str) -> bool:
         split = RELEASE_SPLITS[task]
-        return (root / "dataset_dict.json").is_file() or (root / split / "state.json").is_file()
+        if (root / "dataset_dict.json").is_file() or (
+            root / split / "state.json"
+        ).is_file():
+            return True
+        return task == "caption" and (
+            root / split / "captions.json"
+        ).is_file()
 
     def _resolve_release_root(self, root: Path, task: str) -> Path:
         if self._has_local(root, task):
@@ -329,20 +368,31 @@ class XLRSAdapter:
 
     @staticmethod
     def _load_from_disk(release_root: Path, task: str) -> LazyRows:
-        """Load a local HF release layout lazily; datasets is imported lazily.
+        """Load an extracted caption release or local HF layout.
+
+        Extracted caption releases use ``train/captions.json`` plus
+        ``train/images`` and need no optional dependency. HF releases remain
+        lazy and import datasets only when selected.
+        加载解压后的 caption 发布或本地 HF 布局。解压发布使用
+        ``train/captions.json`` 与 ``train/images``，无需可选依赖；HF 发布仍
+        保持惰性，并仅在选中该布局时导入 datasets。
+
         Returns the datasets.Dataset itself (cheap len(), per-row streaming
         iteration) instead of a materialized list — rows carry image bytes
         that would explode memory if the whole table were converted to dicts.
         惰性加载本地 HF release 布局；datasets 延迟导入。直接返回
         datasets.Dataset 本身（廉价 len()、逐行流式迭代），不再转成 list——
         行内图片 bytes 若整体转 dict 会使内存爆炸。"""
+        split = RELEASE_SPLITS[task]
+        annotations = release_root / split / "captions.json"
+        if task == "caption" and annotations.is_file():
+            return _CaptionJsonRows(annotations)
         try:
             from datasets import load_from_disk
         except ImportError as error:
             raise RuntimeError(
                 "Install the datasets package to load local XLRS releases."
             ) from error
-        split = RELEASE_SPLITS[task]
         if (release_root / "dataset_dict.json").is_file():
             dataset = load_from_disk(release_root)[split]
         else:

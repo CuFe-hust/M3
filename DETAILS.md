@@ -642,7 +642,11 @@ Describe the image in detail.
 `[dict(row) for row in dataset]` 转成 list 驻留内存——XLRS 行携带大体积
 图片 bytes，整体物化曾导致 RSS 飙升到 147GB。
 
-- `_load_from_disk` / `_load_from_hub` 直接返回 `datasets.Dataset`；
+- HF disk / hub 布局由 `_load_from_disk` / `_load_from_hub` 直接返回
+  `datasets.Dataset`；
+- 解压后的 XLRS caption 发布也可直接读取
+  `XLRS-Bench_caption_en/train/captions.json`，图片路径相对 release 根解析
+  （例如 `train/images/000000.jpg`）；该布局不要求安装 `datasets`；
 - `probe` 只物化前 20 行用于字段发现，`sample_count` 走 `len()`；
 - `iter_samples` 逐行流式 `yield`，消费一行物化一行；
 - `dataset_loader` 注入契约保持兼容（list 也满足 `LazyRows` 结构）。
