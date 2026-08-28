@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Model-agnostic multimodal SFT trainer")
     parser.add_argument("--model-id", "--model-path", "--model_id", "--model_path", dest="model_id", required=True)
     parser.add_argument("--model-adapter", default="auto")
-    parser.add_argument("--data-profile", default="phase2", choices=("phase2", "change_agent"))
+    parser.add_argument("--data-profile", default="phase2", choices=("phase2", "change_agent", "grounding"))
     parser.add_argument("--train-file", "--train-manifest", "--train_file", dest="train_file")
     parser.add_argument("--validation-manifest", "--eval-file", "--eval_file", dest="validation_manifest")
     parser.add_argument("--output-dir", default="outputs/multimodal_sft")

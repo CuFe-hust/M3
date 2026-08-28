@@ -94,4 +94,7 @@ def profile_for(name: str, *, data_manifest: str | Path | None = None, prompt_re
     if name == "phase2":
         from .profiles.phase2 import Phase2DataProfile
         return Phase2DataProfile()
+    if name == "grounding":
+        from .profiles.grounding import GroundingAgentDataProfile
+        return GroundingAgentDataProfile()
     raise DataProfileError(f"unsupported data profile: {name}")
