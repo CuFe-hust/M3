@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -50,6 +51,7 @@ class _FakeScorer:
         self.scores = [0.5, 0.4, 0.3, 0.2] if args and args[0] == 4 else 0.42
 
     def compute_score(self, references, candidates):
+        print("third-party scorer diagnostic")
         return self.scores, None
 
 
@@ -78,7 +80,7 @@ def _inject_fake_caption_modules(monkeypatch) -> None:
         monkeypatch.setitem(sys.modules, full, module)
 
 
-def test_evaluate_caption_with_fake_scorers(monkeypatch) -> None:
+def test_evaluate_caption_with_fake_scorers(monkeypatch, capsys) -> None:
     _inject_fake_caption_modules(monkeypatch)
     results = evaluate_caption(_REFERENCES, _CANDIDATES)
     assert results["total"] == 2
@@ -89,6 +91,7 @@ def test_evaluate_caption_with_fake_scorers(monkeypatch) -> None:
     assert results["METEOR"] == 0.42
     assert results["ROUGE_L"] == 0.42
     assert results["CIDEr"] == 0.42
+    assert capsys.readouterr().out == ""
 
 
 def test_missing_caption_runtime_is_scoped_to_meteor(monkeypatch) -> None:
@@ -110,9 +113,21 @@ def test_missing_caption_runtime_is_scoped_to_meteor(monkeypatch) -> None:
 def test_caption_module_import_has_no_network_side_effects() -> None:
     """Importing the module itself never imports pycocoevalcap or touches the
     network. 模块导入本身不导入 pycocoevalcap、不触碰网络。"""
-    import evaluation.metrics.caption as caption_module
-
-    assert "pycocoevalcap" not in sys.modules
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import evaluation.metrics.caption; "
+                "raise SystemExit('pycocoevalcap' in sys.modules)"
+            ),
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
     source = (REPO_ROOT / "evaluation/metrics/caption.py").read_text(encoding="utf-8")
     for token in ("urlopen", "requests", "socket", "httpx", "api.deepseek", "http://", "https://"):
         assert token not in source, token
