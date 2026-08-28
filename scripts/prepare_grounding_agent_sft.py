@@ -115,12 +115,15 @@ def convert(args: argparse.Namespace) -> int:
             "status": "completed",
         }
         AgentResult.model_validate(target_result)
+        relative_image = str(row.get("image") or "")
+        if args.image_prefix:
+            relative_image = f"{args.image_prefix.rstrip('/')}/{Path(relative_image).name}"
         output.append({
             "episode_id": episode_id,
             "split": str(row.get("split", args.split)),
             "task_profile": "grounding",
             "image_source": args.image_source,
-            "image": str(row.get("image") or ""),
+            "image": relative_image,
             "question": str(row.get("question") or row.get("prompt") or ""),
             "planner_output": planner_output(planner_row, episode_id),
             "evidence_items": items,
@@ -158,6 +161,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--require-planner", action="store_true")
     parser.add_argument("--require-evidence", action="store_true")
     parser.add_argument("--split", default="train")
+    parser.add_argument("--image-prefix", help="Rewrite image paths to prefix/basename, e.g. Images_train for VRSBench")
     return parser
 
 
