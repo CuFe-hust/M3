@@ -80,3 +80,15 @@ models/*.tgz
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Local caption/visual-planner SFT & analysis artifacts (large payloads, never commit).
+# 本地 caption/视觉规划 SFT 与分析产物（大体积载荷，绝不提交）。
+data/2026-08-24_vqa-agent-io/
+data/20260824-caption-train-annotations/
+data/20260824-changehead-posttrain-annotations/
+data/20260827_grounding_extraction/
+data/20260827_grounding_extraction_no_images.zip
+data/20260827_visual_planner_finetune/
+data/20260827_visual_planner_finetune_results/
+data/20260828_visual_planner_test/
+data/test/

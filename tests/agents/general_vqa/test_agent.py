@@ -6,6 +6,7 @@ VisualTaskPlan 与 MaterializedVisualView，不再构造旧视觉计划或候选
 
 from __future__ import annotations
 
+import array
 import asyncio
 import base64
 import io
@@ -21,8 +22,17 @@ from agents.base import AgentContext, AgentExecution, VisualPlanBindings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.general_vqa import GeneralVQAAgent
 from agents.general_vqa.agent import _match_choice, _validate_choice_answer
-from agents.general_vqa.evidence.executor import EvidenceExecution
-from agents.general_vqa.evidence.rendering import segformer_palette
+from agents.general_vqa.evidence.executor import (
+    EvidenceExecution,
+    SegFormerPreviewEvidence,
+)
+from agents.general_vqa.evidence.rendering import (
+    class_id_grid_from_any,
+    leaf_boolean_grid,
+    make_preview,
+    render_pure_mask,
+    segformer_palette,
+)
 from agents.general_vqa.evidence.schema import (
     LayerStateRecord,
     RoiEvidenceRecord,
@@ -137,6 +147,47 @@ def _view() -> MaterializedVisualView:
     )
 
 
+def _preview_evidence_from_masks(
+    roi_id: str,
+    masks: dict[tuple[str, str], Image.Image],
+    *,
+    binding: str = "seg_001",
+) -> tuple[SegFormerPreviewEvidence, ...]:
+    """Build a preview-space evidence wrapper from full-size per-leaf boolean
+    masks, for agent-level rendering tests: each leaf gets one class id, the
+    grid marks every masked pixel with that id, and the preview equals the
+    mask size (test ROIs are <= 1080). 从全尺寸逐叶子 boolean mask 构造
+    preview 空间证据包装，供 agent 级渲染测试：每个叶子一个 class id，grid
+    在掩膜像素处标记该 id，preview 与 mask 尺寸一致（测试 ROI 均 <= 1080）。"""
+    leaves = sorted({leaf for (roi, leaf) in masks if roi == roi_id})
+    if not leaves:
+        return ()
+    width, height = next(iter(masks.values())).size
+    leaf_class_ids = {leaf: frozenset({index + 1}) for index, leaf in enumerate(leaves)}
+    grid = Image.new("I", (width, height), 0)
+    for leaf in leaves:
+        mask = masks[(roi_id, leaf)]
+        values = array.array("i", grid.tobytes())
+        class_id = next(iter(leaf_class_ids[leaf]))
+        combined = array.array(
+            "i",
+            (
+                class_id if mask_value else value
+                for value, mask_value in zip(values, mask.tobytes())
+            ),
+        )
+        grid = Image.frombytes("I", (width, height), combined.tobytes())
+    return (
+        SegFormerPreviewEvidence(
+            roi_id=roi_id,
+            binding=binding,
+            preview_size=(width, height),
+            class_id_grid=grid,
+            leaf_class_ids=leaf_class_ids,
+        ),
+    )
+
+
 class _FakeVqaEvidenceService:
     def __init__(
         self,
@@ -159,11 +210,17 @@ class _FakeVqaEvidenceService:
                 "materialized_views": materialized_views,
             }
         )
+        preview_evidence = []
+        roi_ids = {record.roi_id for record in self.bundle.rois}
+        for roi_id in roi_ids:
+            preview_evidence.extend(
+                _preview_evidence_from_masks(roi_id, self.masks)
+            )
         return EvidenceExecution(
             bundle=self.bundle,
             layer_states=(),
             outcomes=(),
-            masks=self.masks,
+            preview_evidence=tuple(preview_evidence),
             palette=self.palette,
         )
 
@@ -848,3 +905,219 @@ def test_import_does_not_load_legacy_packages() -> None:
 
     assert "spacers_agent" not in sys.modules
     assert "eval" not in sys.modules
+
+
+
+
+# ── end-to-end legacy-parity oracle (26 §11.1 / Gate 4) ──────────────────
+# The final model-visible mask PNG produced by the real executor + agent must
+# be byte-identical to the legacy restore-then-shrink pipeline, for a
+# downscaled preview (medium ROI) — this is the evidence behind the
+# version/cache decision (visual content version stays v2, no cache
+# invalidation).
+# 真实 executor + agent 产出的最终模型可见 mask PNG 必须与旧“恢复后缩小”
+# 管线字节级一致（针对缩小的 preview / 中型 ROI）——这是 version/cache 决策
+# （视觉内容版本保持 v2、不使缓存失效）的依据。
+
+
+def _legacy_restore_oracle(
+    model_mask: Image.Image,
+    source_size: tuple[int, int],
+) -> Image.Image:
+    """Legacy full-resolution restore oracle: NEAREST to the padded canvas,
+    then crop [0:W, 0:H] (test-only). 旧整分辨率恢复 oracle：NEAREST 到
+    padded canvas 后裁切 [0:W, 0:H]（仅测试）。"""
+    width, height = source_size
+    padded_width = ((width + 1023) // 1024) * 1024
+    padded_height = ((height + 1023) // 1024) * 1024
+    restored = model_mask
+    if (padded_width, padded_height) != model_mask.size:
+        restored = model_mask.resize(
+            (padded_width, padded_height), resample=Image.Resampling.NEAREST
+        )
+    return restored.crop((0, 0, width, height))
+
+
+def _red_dominant_grid(image: Image.Image) -> list[list[int]]:
+    """Deterministic class grid from RGB pixels: red >= 100 becomes class 1.
+    由 RGB 像素构造的确定性 class grid：red >= 100 为 class 1。"""
+    width, height = image.size
+    data = image.tobytes()
+    grid: list[list[int]] = []
+    for y in range(height):
+        row = [0] * width
+        offset = y * width * 3
+        for pixel in range(0, width * 3, 3):
+            if data[offset + pixel] >= 100:
+                row[pixel // 3] = 1
+        grid.append(row)
+    return grid
+
+
+def test_end_to_end_mask_png_is_byte_identical_to_legacy_pipeline(
+    tmp_path: Path,
+) -> None:
+    """26 §11.1 / Gate 4: for a medium ROI (1500x800 -> preview 1080x576) the
+    real executor's preview-space evidence renders the exact same pure-mask
+    PNG bytes as the legacy restore-then-shrink pipeline, with the same leaf
+    hit decision and the same palette. 26 §11.1 / Gate 4：中型 ROI
+    （1500x800 -> preview 1080x576）下，真实 executor 的 preview 空间证据渲染
+    出的纯色 mask PNG 与旧“恢复后缩小”管线字节级一致，命中判定与调色表也
+    一致。"""
+    import io as _io
+
+    from agents.base import VisualPlanBindings
+    from agents.evidence_catalog import EvidenceCatalog
+    from agents.general_vqa.evidence.executor import ObjectEvidenceExecutor
+    from agents.general_vqa.evidence.schema import EvidencePreprocessing
+    from models.base import SemanticMaskOutput
+    from models.images import open_image_region_source
+
+    roi_size = (1500, 800)
+    source_image = Image.new("RGB", roi_size, (30, 40, 50))
+    blob = Image.new("RGB", (400, 300), (200, 30, 40))
+    source_image.paste(blob, (100, 80))
+
+    catalog = EvidenceCatalog(
+        {
+            "catalog_version": "test-e2e-catalog-v1",
+            "aliases": {},
+            "parents": {},
+            "leaves": {
+                "building": {
+                    "yolo_labels": [],
+                    "yolo_enabled": False,
+                    "segformer_labels": ["building"],
+                    "segformer_binding": "seg_001",
+                    "segformer_enabled": True,
+                },
+            },
+            "task_capabilities": {
+                "counting": ["building"],
+                "fine_grained_counting": ["building"],
+                "general_vqa": ["building"],
+                "grounding": ["building"],
+            },
+        }
+    )
+
+    class _FixedMaskSegmenter:
+        """Deterministic fake segmenter: red-dominant model-input pixels
+        become class 1. 确定性假分割器：模型输入中红色主导像素为 class 1。"""
+
+        id_to_label = {1: "building"}
+
+        @property
+        def cache_identity(self) -> ModelCacheIdentity:
+            return ModelCacheIdentity(
+                model="seg-e2e-v1",
+                generation={"weights_sha256": "c" * 64},
+                client_version="test",
+            )
+
+        def segment(self, image: Image.Image) -> SemanticMaskOutput:
+            return SemanticMaskOutput(
+                class_id_map=_red_dominant_grid(image),
+                id_to_label=self.id_to_label,
+                original_size=(1024, 1024),
+                weights_sha256="c" * 64,
+                diagnostics={"logical_model_id": "seg-e2e-v1"},
+            )
+
+    executor = ObjectEvidenceExecutor(
+        catalog=catalog,
+        policy=None,
+        yolo_client=None,
+        yolo_device=None,
+        yolo_image_size=None,
+        segmenter_clients={"seg_001": _FixedMaskSegmenter()},
+        preprocessing=EvidencePreprocessing(max_tile_concurrency=2),
+    )
+    plan = _plan(["building"], assistance=True)
+    view = MaterializedVisualView(
+        image_id="img1",
+        view_mode="full_image",
+        source_size=roi_size,
+        crop_xyxy=(0, 0, *roi_size),
+        crop_size=roi_size,
+    )
+    source_path = tmp_path / "e2e.png"
+    source_image.save(source_path, format="PNG")
+    # Create the sample first, then overwrite its image file with the
+    # intentionally large source so the view geometry (1500x800) matches the
+    # decoded image. 先创建样本，再用有意设置的大图覆盖其图像文件，使视图
+    # 几何（1500x800）与解码图像一致。
+    sample = _sample(tmp_path)
+    source_image.save(tmp_path / "img.png", format="PNG")
+    client = _RecordingClient()
+    palette = segformer_palette(["building"])
+    agent = GeneralVQAAgent(client)
+
+    # New pipeline: real executor (preview space) + real agent rendering.
+    # 新管线：真实 executor（preview 空间）+ 真实 agent 渲染。
+    asyncio.run(
+        agent.run(
+            sample,
+            _context(
+                tmp_path,
+                client,
+                plan=plan,
+                views=(view,),
+                bindings=VisualPlanBindings(vqa_evidence=executor),
+            ),
+        )
+    )
+    image_blocks = [
+        block
+        for block in client.calls[0]["messages"][1]["content"]
+        if block["type"] == "image_url"
+    ]
+    # SegFormer-only branch: pure mask first, clean ROI second.
+    # 仅 SegFormer 分支：纯色 mask 在前，干净 ROI 在后。
+    assert len(image_blocks) == 2
+    new_mask_png = _io.BytesIO(
+        base64.b64decode(image_blocks[0]["image_url"]["url"].split(",", 1)[1])
+    )
+    assert Image.open(new_mask_png).size == (1080, 576)
+
+    # Legacy oracle: build the model input exactly like prepare_segformer_roi,
+    # derive the same model mask, restore full-res, extract the leaf boolean,
+    # compose the WxH pure mask and NEAREST-shrink it to the preview.
+    # 旧 oracle：与 prepare_segformer_roi 完全一致地构造模型输入、派生同一
+    # model mask、整分辨率恢复、提取叶子 boolean、合成 WxH 纯色 mask 并
+    # NEAREST 缩小到 preview。
+    source = open_image_region_source(source_path)
+    try:
+        roi_crop = source.read_box((0, 0, *roi_size))
+    finally:
+        source.close()
+    padded_width = ((1500 + 1023) // 1024) * 1024
+    padded_height = ((800 + 1023) // 1024) * 1024
+    canvas = Image.new("RGB", (padded_width, padded_height), (0, 0, 0))
+    canvas.paste(roi_crop.convert("RGB"), (0, 0))
+    model_input = canvas.resize((1024, 1024), resample=Image.Resampling.LANCZOS)
+    model_mask = Image.frombytes(
+        "I",
+        (1024, 1024),
+        array.array(
+            "i",
+            [
+                value
+                for row in _red_dominant_grid(model_input)
+                for value in row
+            ],
+        ).tobytes(),
+    )
+    restored = _legacy_restore_oracle(model_mask, roi_size)
+    legacy_boolean = Image.new("L", roi_size, 0)
+    for y in range(roi_size[1]):
+        for x in range(roi_size[0]):
+            if restored.getpixel((x, y)) == 1:
+                legacy_boolean.putpixel((x, y), 255)
+    legacy_pure = render_pure_mask(roi_size, [("building", legacy_boolean)], palette)
+    legacy_preview = make_preview(legacy_pure, resample=Image.Resampling.NEAREST)
+    legacy_png = _io.BytesIO()
+    legacy_preview.save(legacy_png, format="PNG")
+
+    assert Image.open(new_mask_png).size == legacy_preview.size
+    assert new_mask_png.getvalue() == legacy_png.getvalue()

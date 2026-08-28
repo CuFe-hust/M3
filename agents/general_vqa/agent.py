@@ -26,13 +26,14 @@ from agents.base import (
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.general_vqa.evidence.executor import (
     EvidenceExecution,
+    SegFormerPreviewEvidence,
     _pixel_xyxy_to_999,
 )
 from agents.general_vqa.evidence.rendering import (
     PALETTE_VERSION,
+    leaf_boolean_grid,
     make_preview,
     render_pure_mask,
-    render_roi_crop,
     render_yolo_annotation,
 )
 from agents.general_vqa.evidence.schema import RoiEvidenceRecord
@@ -51,8 +52,10 @@ from models.base import (
     build_request_hash,
 )
 from models.images import (
+    ImageRegionSource,
     image_to_data_url,
     image_sha256,
+    open_image_region_source,
 )
 
 # Neutral default prompt text (English mirror of the baseline general_vqa_v3
@@ -218,16 +221,16 @@ class GeneralVQAAgent(VisualAgentBase):
                 sample.sample_id,
                 cause="object_evidence_vqa requires at least one image",
             )
-        images = self._read_evidence_images(sample, context)
+        sources = self._open_evidence_sources(sample, context)
         try:
             execution = service.execute(
                 plan,
-                images,
+                sources,
                 fallback_image_id=sample.images[0].image_id,
                 materialized_views=context.visual_views,
             )
             content, final_hashes = self._build_evidence_content(
-                sample, plan, execution, images
+                sample, plan, execution, sources
             )
         except Exception as exc:
             raise AgentExecutionError(
@@ -235,6 +238,12 @@ class GeneralVQAAgent(VisualAgentBase):
                 sample.sample_id,
                 cause=f"vqa_evidence_failed:{type(exc).__name__}",
             ) from exc
+        finally:
+            # The region sources are single-sample resources and are always
+            # closed, success or failure. 区域 source 是单样本资源，无论成败
+            # 都必须显式关闭。
+            for source in sources.values():
+                source.close()
 
         prompt_sel = self.select_prompt(sample)
         messages: list[dict[str, Any]] = [
@@ -297,12 +306,48 @@ class GeneralVQAAgent(VisualAgentBase):
             },
         )
 
+    def _open_evidence_sources(
+        self,
+        sample: UnifiedSample,
+        context: AgentContext,
+    ) -> dict[str, ImageRegionSource]:
+        """Open one read-only region source per sample image through the
+        escape-guarded seam, keyed by image_id; I/O failures map to stable
+        codes and never leak machine paths. The Agent consumes only the
+        generic seam — it never chooses a JPEG/TIFF backend. Sources are
+        single-sample resources and must be closed by the caller.
+        通过防逃逸 seam 为每条样本图像打开一个只读 region source，按 image_id
+        索引；I/O 失败映射为稳定 code，绝不泄漏机器路径。Agent 只消费通用
+        seam——绝不选择 JPEG/TIFF backend。source 是单样本资源，调用方必须
+        关闭。"""
+        sources: dict[str, ImageRegionSource] = {}
+        try:
+            for image_ref in sample.images:
+                candidate_path, _ = self._read_image(
+                    image_ref.path, context, sample_id=sample.sample_id
+                )
+                try:
+                    sources[image_ref.image_id] = open_image_region_source(
+                        candidate_path
+                    )
+                except (OSError, ValueError) as exc:
+                    raise AgentExecutionError(
+                        self.name,
+                        sample.sample_id,
+                        cause=f"image_decode_failed:{type(exc).__name__}",
+                    ) from exc
+        except Exception:
+            for source in sources.values():
+                source.close()
+            raise
+        return sources
+
     def _build_evidence_content(
         self,
         sample: UnifiedSample,
         plan: VisualTaskPlan,
         execution: EvidenceExecution,
-        images: Mapping[str, Image.Image],
+        images: Mapping[str, ImageRegionSource],
     ) -> tuple[list[dict[str, Any]], list[str]]:
         """Assemble the single final-Qwen user content per the frozen
         three-branch protocol (14.12-14.13). Per ROI: YOLO-only -> annotated
@@ -357,10 +402,9 @@ class GeneralVQAAgent(VisualAgentBase):
         # rendered 集合遵循稳定 leaf 顺序（14.12.1）：executor 已把命中过滤到
         # 请求的 plan 类别并按 plan leaf 顺序输出检测，因此对检测列表去重即可
         # 保持该顺序，无需 agent 重新决定 capability。
+        seg_hit_leaves = {record.leaf_category for record in bundle.segments}
         rendered_segformer_leaves = [
-            leaf for leaf in bundle.leaf_states
-            if any((record.roi_id, leaf) in execution.masks
-                   for record in bundle.rois)
+            leaf for leaf in bundle.leaf_states if leaf in seg_hit_leaves
         ]
 
         def append_visual(image: Image.Image, *, roi_id: str, role: str) -> None:
@@ -376,7 +420,7 @@ class GeneralVQAAgent(VisualAgentBase):
             )
 
         for record in bundle.rois:
-            raw_crop = render_roi_crop(images[record.image_id], record)
+            raw_crop = images[record.image_id].read_box(record.expanded_xyxy)
             clean = make_preview(raw_crop)
             roi_records.append(
                 {
@@ -502,14 +546,47 @@ class GeneralVQAAgent(VisualAgentBase):
         seg_leaves: list[str],
         execution: EvidenceExecution,
     ) -> Image.Image:
-        """Compose the per-ROI SegFormer pure mask in stable hit order.
-        按稳定命中顺序合成逐 ROI SegFormer 纯色 mask。"""
+        """Compose the per-ROI SegFormer pure mask in stable hit order,
+        directly in preview space: every leaf's boolean mask is extracted
+        from the ROI's preview class-id grid, so no WxH mask is ever created.
+        The palette and the later-leaf-overwrites-earlier-leaf precedence are
+        unchanged. 按稳定命中顺序直接在 preview 空间合成逐 ROI SegFormer 纯色
+        mask：每个叶子的 boolean mask 都从该 ROI 的 preview class-id grid 提取，
+        绝不创建 WxH mask。调色表与后叶覆盖前叶的优先级不变。"""
+        evidences = [
+            evidence
+            for evidence in execution.preview_evidence
+            if evidence.roi_id == record.roi_id
+        ]
+        if not evidences:
+            raise ValueError(
+                f"no preview evidence for hit ROI {record.roi_id!r}"
+            )
+        leaf_masks: list[tuple[str, Image.Image]] = []
+        for leaf in seg_leaves:
+            evidence = next(
+                (
+                    evidence
+                    for evidence in evidences
+                    if leaf in evidence.leaf_class_ids
+                ),
+                None,
+            )
+            if evidence is None:
+                raise ValueError(
+                    f"no preview evidence for hit leaf {leaf!r} of ROI {record.roi_id!r}"
+                )
+            leaf_masks.append(
+                (
+                    leaf,
+                    leaf_boolean_grid(
+                        evidence.class_id_grid, evidence.leaf_class_ids[leaf]
+                    ),
+                )
+            )
         return render_pure_mask(
-            record.crop_size,
-            [
-                (leaf, execution.masks[(record.roi_id, leaf)])
-                for leaf in seg_leaves
-            ],
+            evidences[0].preview_size,
+            leaf_masks,
             execution.palette,
         )
 

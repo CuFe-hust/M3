@@ -22,9 +22,19 @@ States / 状态：hit / missing / unsupported / unavailable / error / not_run；
 不存在 valid_empty（成功但筛选为空 = missing）。已 hit 的叶子绝不重跑或覆盖。
 
 Bounded scheduling / 有界调度：一次 execution 生命周期内单个
-``ThreadPoolExecutor(max_workers=max_tile_concurrency)``；全部 ROI tile
-records/images 在调用模型前同步确定性生成；YOLO 与 SegFormer jobs 均按稳定
-job index 提交，主线程按稳定 tile 顺序聚合，绝不按完成顺序。
+``ThreadPoolExecutor(max_workers=max_tile_concurrency)``；tile 计划只保存轻量
+几何记录，worker 在执行前才从 region source 读取对应像素框（26 阶段 A/B），
+提交窗口固定为 ``max_tile_concurrency``，任一任务完成后释放其 tile 图像并
+提交下一个几何记录；YOLO 与 SegFormer jobs 均按稳定 job index 提交，输出写
+入稳定 index slot，主线程按稳定 tile 顺序聚合，绝不按完成顺序。
+
+SegFormer preview 空间恢复（26 阶段 D/E）：不再把 1024×1024 class-id map
+NEAREST 恢复到 Wp×Hp 再裁切 W×H，而是用纯几何查找表直接把 preview 每个
+像素映射到 model mask 索引并采样，得到 <=1080 的 preview class grid；
+叶子命中判定在 model mask 前缀矩形（[0..mx]×[0..my]，旧恢复网格的精确来源）
+上完成，保持与旧整分辨率判定完全一致。`EvidenceExecution` 只保存 preview
+空间证据（一张 class-id grid 加 leaf→class-id 映射），绝不保存 W×H/Wp×Hp
+mask。
 
 VQA-only constraints / VQA 专属约束：
 
@@ -55,25 +65,31 @@ from __future__ import annotations
 
 import array
 import math
-from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from PIL import Image
 
 from agents.evidence_catalog import EvidenceCatalog
 from agents.general_vqa.evidence.geometry import (
     MODEL_INPUT_SIZE,
+    compute_preview_size,
     local_to_global,
     model_xyxy_to_roi_xyxy,
     partition_roi,
+    segformer_model_extent,
+    segformer_preview_lookups,
+    tile_global_xyxy,
 )
 from agents.general_vqa.evidence.rendering import (
-    prepare_model_tile,
+    class_id_grid_from_any,
+    class_ids_in_prefix_rect,
+    leaf_boolean_grid,
+    normalize_model_tile,
     prepare_segformer_roi,
-    render_roi_crop,
-    restore_segformer_class_id_mask,
+    sample_class_id_grid,
     segformer_palette,
 )
 from agents.general_vqa.evidence.schema import (
@@ -96,57 +112,28 @@ from models.base import (
     SemanticMaskClient,
     SemanticMaskOutput,
 )
+from models.images import ImageRegionSource
 
 
-def _to_class_grid(class_id_map: Any) -> Image.Image:
-    """Convert any two-dimensional integer class-id structure into an in-memory
-    "I" grid without importing NumPy or torch: either a shape-bearing array or
-    a list of equal-width rows. Non-integer values fail closed.
-    在不导入 NumPy 或 torch 的情况下，把任意二维整数 class-id 结构转换为内存
-    "I" 网格：支持带 shape 的数组或等宽行 list。非整数值严格失败。"""
-
-    shape = getattr(class_id_map, "shape", None)
-    if shape is not None:
-        if len(shape) != 2:
-            raise ValueError("class_id_map must be two-dimensional")
-        height, width = int(shape[0]), int(shape[1])
-        flattened = class_id_map.reshape(-1)
-        values = (
-            flattened.tolist() if hasattr(flattened, "tolist") else list(flattened)
-        )
-    elif isinstance(class_id_map, (list, tuple)) and class_id_map:
-        height = len(class_id_map)
-        width = len(class_id_map[0])
-        if any(
-            not isinstance(row, (list, tuple)) or len(row) != width
-            for row in class_id_map
-        ):
-            raise ValueError("class_id_map rows must have equal width")
-        values = [value for row in class_id_map for value in row]
-    else:
-        raise ValueError("class_id_map must be a two-dimensional integer grid")
-    if width <= 0 or height <= 0:
-        raise ValueError("class_id_map dimensions must be positive")
-    for value in values:
-        integer = int(value)
-        if integer != value:
-            raise ValueError("class_id_map contains a non-integer class ID")
-    data = array.array("i", (int(value) for value in values))
-    return Image.frombytes("I", (width, height), data.tobytes())
+T = TypeVar("T")
 
 
-def _leaf_boolean_grid(grid: Image.Image, class_ids: frozenset[int]) -> Image.Image:
-    """Boolean presence grid of one leaf over an integer class-id grid: pixels
-    whose class id belongs to the leaf become 255. Unrequested classes stay 0
-    (background) and never reach the segments/legend. PIL's point() with a
-    callable is a no-op on I-mode images, so the grid is scanned via raw bytes
-    instead. 一张整数 class-id grid 上某叶子的布尔存在网格：类别 id 属于该叶子
-    的像素为 255。未请求类别保持 0（背景），绝不进入 segments/legend。PIL
-    的 point() 在 I 模式下对 callable 是空操作，因此改为扫描原始字节。"""
+@dataclass(frozen=True)
+class SegFormerPreviewEvidence:
+    """One per-(ROI, binding) preview-space SegFormer evidence: a <=1080
+    integer class-id grid directly sampled from the 1024 model mask plus the
+    verified leaf->class-id mapping. In-memory only, never persisted; the
+    final Agent composes preview-space leaf masks from it instead of ever
+    materializing a WxH/WpxHp mask. 每个（ROI，binding）一条 preview 空间
+    SegFormer 证据：从 1024 model mask 直接采样的 <=1080 整数 class-id grid
+    加已验证的 leaf→class-id 映射。仅内存、绝不持久化；最终 Agent 从它合成
+    preview 空间 leaf mask，绝不物化 WxH/WpxHp mask。"""
 
-    values = array.array("i", grid.tobytes())
-    present = bytes(255 if class_id in class_ids else 0 for class_id in values)
-    return Image.frombytes("L", grid.size, present)
+    roi_id: str
+    binding: str
+    preview_size: tuple[int, int]
+    class_id_grid: Image.Image
+    leaf_class_ids: Mapping[str, frozenset[int]]
 
 
 def _pixel_xyxy_to_999(
@@ -211,18 +198,21 @@ class RoiLeafOutcome:
 @dataclass(frozen=True)
 class EvidenceExecution:
     """Result of one executor pass: the JSON-safe bundle plus in-memory-only
-    diagnostics. masks and outcomes never enter persisted artifacts; the
-    bundle is the only thing the final Qwen call consumes. The executor
+    diagnostics. preview_evidence and outcomes never enter persisted
+    artifacts; the bundle is the only thing the final Qwen call consumes.
+    preview_evidence holds preview-space class-id grids (<=1080) instead of
+    WxH/WpxHp masks, so bounded memory holds by construction. The executor
     deliberately exposes no sample-level status field — that decision is
     unfrozen and belongs to the runtime. 一次执行的结果：JSON 安全 bundle 加
-    纯内存诊断。masks 与 outcomes 绝不进入持久化产物；bundle 是最终 Qwen
-    调用唯一消费的东西。执行器刻意不暴露任何 sample 级状态字段——该决定
-    未冻结，属于运行时。"""
+    纯内存诊断。preview_evidence 与 outcomes 绝不进入持久化产物；bundle 是
+    最终 Qwen 调用唯一消费的东西。preview_evidence 保存 preview 空间
+    class-id grid（<=1080）而非 WxH/WpxHp mask，使有界内存在构造上成立。
+    执行器刻意不暴露任何 sample 级状态字段——该决定未冻结，属于运行时。"""
 
     bundle: VqaEvidenceBundle
     layer_states: tuple[LayerStateRecord, ...]
     outcomes: tuple[RoiLeafOutcome, ...]
-    masks: Mapping[tuple[str, str], Any]
+    preview_evidence: tuple[SegFormerPreviewEvidence, ...] = ()
     # Deterministic SegFormer mask palette (frozen 14.12.2), computed once per
     # executor from catalog segformer-capable leaves in catalog order. It is
     # in-memory-only: never persisted, but folded into the final-Qwen request
@@ -356,13 +346,16 @@ class ObjectEvidenceExecutor:
     def execute(
         self,
         plan: VisualTaskPlan,
-        images: Mapping[str, Image.Image],
+        images: Mapping[str, ImageRegionSource],
         *,
         fallback_image_id: str,
         materialized_views: tuple[MaterializedVisualView, ...],
     ) -> EvidenceExecution:
-        """Execute evidence against the already materialized views.
-        使用已物化的视图执行证据流程。"""
+        """Execute evidence against the already materialized views and their
+        read-only region sources. Sources are consumed box-by-box on demand;
+        nothing here ever materializes a full ROI copy or an eager tile list.
+        使用已物化的视图及其只读 region source 执行证据流程。source 按需逐框
+        消费；此处绝不物化完整 ROI 副本或提前生成的 tile 列表。"""
         return self._execute_plan(
             plan,
             images,
@@ -373,7 +366,7 @@ class ObjectEvidenceExecutor:
     def _execute_plan(
         self,
         plan: VisualTaskPlan,
-        images: Mapping[str, Image.Image],
+        images: Mapping[str, ImageRegionSource],
         *,
         fallback_image_id: str,
         materialized_views: tuple[MaterializedVisualView, ...],
@@ -390,7 +383,7 @@ class ObjectEvidenceExecutor:
         execution 生命周期使用单个有界 worker pool，在组装 bundle 前关闭。"""
         self._audits: list[ModelCallAudit] = []
         self._outcomes: list[RoiLeafOutcome] = []
-        self._masks: dict[tuple[str, str], Any] = {}
+        self._preview_evidence: list[SegFormerPreviewEvidence] = []
         self._segformer_preprocess: list[SegFormerPreprocessRecord] = []
 
         if not plan.needs_visual_assistance:
@@ -402,7 +395,7 @@ class ObjectEvidenceExecutor:
             task="general_vqa",
         )
         records = self._materialized_regions(materialized_views, images)
-        tile_plan = self._materialize_tiles(records, images)
+        tile_plan = self._plan_tiles(records)
 
         with ThreadPoolExecutor(
             max_workers=self._preprocessing.max_tile_concurrency
@@ -417,7 +410,7 @@ class ObjectEvidenceExecutor:
         bundle = VqaEvidenceBundle(
             catalog_version=self._catalog.catalog_version,
             preprocessing_version=self._preprocessing.version,
-            tiles=[tile_record for tile_record, _, _ in tile_plan],
+            tiles=[tile_record for tile_record, _ in tile_plan],
             segformer_preprocess=self._segformer_preprocess,
             rois=[record for record in records],
             detections=detections,
@@ -430,14 +423,14 @@ class ObjectEvidenceExecutor:
             bundle=bundle,
             layer_states=tuple(layer_states),
             outcomes=tuple(self._outcomes),
-            masks=dict(self._masks),
+            preview_evidence=tuple(self._preview_evidence),
             palette=dict(self._palette),
         )
 
     def _materialized_regions(
         self,
         views: tuple[MaterializedVisualView, ...],
-        images: Mapping[str, Image.Image],
+        images: Mapping[str, ImageRegionSource],
     ) -> list[RoiEvidenceRecord]:
         """Convert frozen views into exact evidence geometry.
         将冻结的视图转换为精确证据几何。"""
@@ -445,8 +438,8 @@ class ObjectEvidenceExecutor:
             raise ValueError("materialized views must not be empty")
         records: list[RoiEvidenceRecord] = []
         for index, view in enumerate(views):
-            image = images.get(view.image_id)
-            if image is None or image.size != view.source_size:
+            source = images.get(view.image_id)
+            if source is None or source.size != view.source_size:
                 raise ValueError("materialized view source size does not match image")
             roi_id = (
                 "full"
@@ -466,24 +459,83 @@ class ObjectEvidenceExecutor:
             )
         return records
 
-    def _materialize_tiles(
+    def _plan_tiles(
         self,
         records: list[RoiEvidenceRecord],
-        images: Mapping[str, Image.Image],
-    ) -> list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]]:
-        """Synchronously materialize every ROI crop and its deterministic
-        1024x1024 tiles before any model call; this stable plan order is the
-        only merge order, never completion order. 在任何模型调用前同步物化每
-        个 ROI 裁切及其确定性 1024x1024 tiles；这份稳定 plan 顺序是唯一合并
-        顺序，绝不使用完成顺序。"""
-        plan: list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]] = []
+    ) -> list[tuple[EvidenceTileRecord, RoiEvidenceRecord]]:
+        """Deterministic lightweight tile plan: geometry records only, no
+        pixel payloads. Every tile keeps its stable sequence index (row-major
+        plan order); workers read their own box from the region source just
+        before execution and the merge always follows this plan order, never
+        completion order. 确定性轻量 tile 计划：只含几何记录，无像素载荷。每
+        个 tile 保持其稳定 sequence index（row-major plan 顺序）；worker 在
+        执行前才从 region source 读取自己的框，合并永远按本 plan 顺序，绝不
+        按完成顺序。"""
+        plan: list[tuple[EvidenceTileRecord, RoiEvidenceRecord]] = []
         for record in records:
-            crop = render_roi_crop(images[record.image_id], record)
             for tile_record in partition_roi(
                 record, tile_size=self._preprocessing.tile_size
             ):
-                plan.append((tile_record, prepare_model_tile(crop, tile_record), record))
+                plan.append((tile_record, record))
         return plan
+
+    def _read_model_tile(
+        self,
+        source: ImageRegionSource,
+        record: RoiEvidenceRecord,
+        tile_record: EvidenceTileRecord,
+    ) -> Image.Image:
+        """Read exactly one tile box from the region source and normalize it
+        into a strict 1024x1024 RGB model tile. The whole-image box is the
+        pure deterministic translation of the crop-local tile box; full tiles
+        pass through untouched, remainders stretch with LANCZOS —
+        pixel-identical to the legacy crop-then-tile path.
+        从 region source 精确读取一个 tile 框并规范化为严格 1024×1024 RGB
+        model tile。整图像素框是裁切局部 tile 框的纯确定性平移；完整 tile
+        原样通过，余块 LANCZOS 拉伸——与旧 crop-then-tile 路径逐像素一致。"""
+        box = tile_global_xyxy(record, tile_record)
+        tile = source.read_box(box)
+        return normalize_model_tile(tile, tile_record)
+
+    @staticmethod
+    def _bounded_run(
+        pool: ThreadPoolExecutor,
+        jobs: Sequence[Callable[[], T]],
+        *,
+        max_in_flight: int,
+    ) -> list[T]:
+        """Run jobs through the shared bounded pool with at most
+        ``max_in_flight`` active at any moment, collecting results in stable
+        job order (never completion order). The next job is submitted only
+        after a running one completes, so each job's heavy payload (e.g. a
+        tile image) is released on return before the next one is materialized
+        — actively materialized payloads stay <= max_in_flight. 通过共享有界
+        pool 运行任务，任意时刻最多 ``max_in_flight`` 个活动，结果按稳定 job
+        顺序收集（绝不按完成顺序）。只有在前一任务完成后才提交下一个，因此
+        每个任务的重量载荷（如 tile 图像）在返回时即释放、随后才物化下一个
+        ——活跃物化载荷保持 <= max_in_flight。"""
+        if max_in_flight < 1:
+            raise ValueError("max_in_flight must be at least 1")
+        results: list[T] = [None] * len(jobs)  # type: ignore[list-item]
+        iterator = iter(enumerate(jobs))
+        pending: dict[Future[Any], int] = {}
+
+        def submit() -> None:
+            try:
+                index, job = next(iterator)
+            except StopIteration:
+                return
+            pending[pool.submit(job)] = index
+
+        for _ in range(min(max_in_flight, len(jobs))):
+            submit()
+        while pending:
+            done, _ = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                index = pending.pop(future)
+                results[index] = future.result()
+                submit()
+        return results
 
     # ── worker jobs / worker 任务 ───────────────────────────────────────
 
@@ -594,20 +646,26 @@ class ObjectEvidenceExecutor:
     def _yolo_phase(
         self,
         pool: ThreadPoolExecutor,
-        tile_plan: list[tuple[EvidenceTileRecord, Image.Image, RoiEvidenceRecord]],
+        tile_plan: list[tuple[EvidenceTileRecord, RoiEvidenceRecord]],
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
-        images: Mapping[str, Image.Image],
+        images: Mapping[str, ImageRegionSource],
     ) -> tuple[set[str], list[YoloDetectionRecord]]:
-        """One detector call per prepared tile, dispatched into the shared
-        bounded pool and merged in stable tile order. A leaf with no YOLO
-        capability never triggers a call; requests with no YOLO-capable leaf
-        at all make zero calls. Confidence stays internal: thresholding,
-        per-(roi, leaf) top-k retention, and the cross-ROI dedup in
-        whole-image coordinates. 对每个已准备 tile 各调用一次 detector，派发到
-        共享有界 pool 并按稳定 tile 顺序合并。无 YOLO 能力的叶子绝不触发调用；
-        请求中完全没有 YOLO 能力叶子时零调用。confidence 仅内部消费：阈值、
-        逐（ROI，叶子）top-k 保留与 whole-image 坐标下的跨 ROI 去重。"""
+        """One detector call per planned tile, dispatched through the shared
+        bounded pool with a fixed submission window and merged in stable tile
+        order. Each job reads its own tile box from the region source just
+        before execution and releases the tile image when it returns, so
+        actively materialized tiles never exceed ``max_tile_concurrency``.
+        A leaf with no YOLO capability never triggers a call; requests with no
+        YOLO-capable leaf at all make zero calls. Confidence stays internal:
+        thresholding, per-(roi, leaf) top-k retention, and the cross-ROI dedup
+        in whole-image coordinates. 对计划中每个 tile 各调用一次 detector，经
+        共享有界 pool 以固定提交窗口派发并按稳定 tile 顺序合并。每个 job 在
+        执行前才从 region source 读取自己的 tile 框、返回时释放 tile 图像，
+        因此活跃物化 tile 绝不超过 ``max_tile_concurrency``。无 YOLO 能力的
+        叶子绝不触发调用；请求中完全没有 YOLO 能力叶子时零调用。confidence
+        仅内部消费：阈值、逐（ROI，叶子）top-k 保留与 whole-image 坐标下的
+        跨 ROI 去重。"""
         yolo_leaves = [
             leaf for leaf in leaves if self._catalog.capability_enabled(leaf, "yolo")
         ]
@@ -626,16 +684,18 @@ class ObjectEvidenceExecutor:
             return set(), []
         if not yolo_leaves:
             return set(), []
-        futures = [
-            pool.submit(self._call_yolo_tile, tile_image, tile_record)
-            for tile_record, tile_image, _ in tile_plan
+        jobs = [
+            self._make_yolo_job(images[record.image_id], record, tile_record)
+            for tile_record, record in tile_plan
         ]
-        results = [future.result() for future in futures]
+        results = self._bounded_run(
+            pool, jobs, max_in_flight=self._preprocessing.max_tile_concurrency
+        )
         candidates: dict[
             tuple[str, str], list[tuple[float, ObjectDetectionOutput, int]]
         ] = {}
         failed_tiles: dict[tuple[str, str], str] = {}
-        for index, (tile_record, _, record) in enumerate(tile_plan):
+        for index, (tile_record, record) in enumerate(tile_plan):
             outputs, failed_code = results[index]
             logical_model_id, digest = _audit_identity(
                 outputs or [], self._yolo_client
@@ -671,7 +731,7 @@ class ObjectEvidenceExecutor:
                 : self._policy.max_detections
             ]
             for confidence, output, index in retained:
-                tile_record, _, record = tile_plan[index]
+                tile_record, record = tile_plan[index]
                 try:
                     local_box = model_xyxy_to_roi_xyxy(output.xyxy, tile_record)
                 except ValueError:
@@ -720,6 +780,24 @@ class ObjectEvidenceExecutor:
                     )
         return hit_leaves, self._dedup_global(detected)
 
+    def _make_yolo_job(
+        self,
+        source: ImageRegionSource,
+        record: RoiEvidenceRecord,
+        tile_record: EvidenceTileRecord,
+    ) -> Callable[[], tuple[list[ObjectDetectionOutput] | None, str | None]]:
+        """One lazy YOLO job: read the tile box and run the detector inside
+        the worker, so the tile image lives only for the duration of the job
+        and is released when it returns. The job carries no pixel payload.
+        一个惰性 YOLO job：在 worker 内读取 tile 框并运行 detector，使 tile
+        图像只存活于任务期间、返回即释放。job 不携带任何像素载荷。"""
+
+        def job() -> tuple[list[ObjectDetectionOutput] | None, str | None]:
+            tile_image = self._read_model_tile(source, record, tile_record)
+            return self._call_yolo_tile(tile_image, tile_record)
+
+        return job
+
     def _dedup_global(
         self,
         detected: list[tuple[float, YoloDetectionRecord]],
@@ -751,7 +829,7 @@ class ObjectEvidenceExecutor:
         records: list[RoiEvidenceRecord],
         leaves: tuple[str, ...],
         hit_leaves: set[str],
-        images: Mapping[str, Image.Image],
+        images: Mapping[str, ImageRegionSource],
     ) -> list[SegFormerEvidenceRecord]:
         """Resolve each still-missing leaf through its verified segmenter
         binding: one call per (ROI, binding) into the shared bounded pool,
@@ -763,13 +841,21 @@ class ObjectEvidenceExecutor:
         protocol is the pad-multiple-1024-resize-square one only: under the
         legacy v1 version every leaf that would need a fresh SegFormer call
         fails closed instead of silently running the new protocol under the
-        old version label. 通过已验证 segmenter binding 解析每个仍缺失叶子：
-        每个（ROI，binding）调用一次（共享有界 pool），按 roi order -> binding
-        order 合并。只有请求叶子成为证据——未请求类别保持背景，不派生框/计数，
-        不做跨 checkpoint 比较，YOLO 命中绝不重跑或覆盖。输出 class map 必须
-        与 catalog raw labels 一致，否则叶子严格失败。新鲜 SegFormer 协议仅限
+        old version label. Restoration is preview-space only: a <=1080
+        class-id grid is sampled directly from the 1024 model mask through
+        pure lookups, and the hit decision reads the model-mask prefix
+        rectangle that is the exact source of the legacy full-resolution
+        restored grid — no WxH/WpxHp mask is ever materialized.
+        通过已验证 segmenter binding 解析每个仍缺失叶子：每个（ROI，binding）
+        调用一次（共享有界 pool），按 roi order -> binding order 合并。只有
+        请求叶子成为证据——未请求类别保持背景，不派生框/计数，不做跨
+        checkpoint 比较，YOLO 命中绝不重跑或覆盖。输出 class map 必须与
+        catalog raw labels 一致，否则叶子严格失败。新鲜 SegFormer 协议仅限
         pad-multiple-1024-resize-square：在旧 v1 版本下，任何需要新鲜
-        SegFormer 调用的叶子都严格失败，绝不悄悄在旧版本标签下运行新协议。"""
+        SegFormer 调用的叶子都严格失败，绝不悄悄在旧版本标签下运行新协议。
+        恢复仅在 preview 空间完成：通过纯查找从 1024 model mask 直接采样
+        <=1080 class-id grid，命中判定读取 model-mask 前缀矩形（旧整分辨率
+        恢复网格的精确来源）——全程绝不物化 WxH/WpxHp mask。"""
         binding_leaves: dict[str, dict[str, list[str]]] = {}
         binding_order: list[str] = []
         for record in records:
@@ -820,12 +906,15 @@ class ObjectEvidenceExecutor:
                         )
             return []
         # One deterministic strict 1024x1024 model input per (ROI, binding)
-        # group, materialized synchronously before any model call; the stable
-        # plan order is the only merge order, never completion order. The
-        # geometry record is per ROI, the call is per (ROI, binding).
+        # group, prepared synchronously before any model call; the ROI crop
+        # is read transiently from the region source and dropped after
+        # preparation. The stable plan order is the only merge order, never
+        # completion order. The geometry record is per ROI, the call is per
+        # (ROI, binding).
         # 每个（ROI，binding）组一个确定性严格 1024×1024 模型输入，在任何模型
-        # 调用前同步物化；这份稳定 plan 顺序是唯一合并顺序，绝不使用完成顺序。
-        # 几何记录按 ROI，调用按（ROI，binding）。
+        # 调用前同步准备；ROI 裁切从 region source 瞬时读取、准备后即释放。
+        # 这份稳定 plan 顺序是唯一合并顺序，绝不使用完成顺序。几何记录按 ROI，
+        # 调用按（ROI，binding）。
         groups: list[
             tuple[
                 RoiEvidenceRecord,
@@ -836,7 +925,12 @@ class ObjectEvidenceExecutor:
             ]
         ] = []
         for record in records:
-            crop = render_roi_crop(images[record.image_id], record)
+            crop = images[record.image_id].read_box(record.expanded_xyxy)
+            if crop.size != record.crop_size:
+                raise ValueError(
+                    f"ROI crop drift: geometry predicts {record.crop_size!r} but "
+                    f"pixel crop rendered {crop.size!r}"
+                )
             for binding in binding_order:
                 roi_leaves = binding_leaves[binding].get(record.roi_id)
                 if not roi_leaves:
@@ -924,16 +1018,18 @@ class ObjectEvidenceExecutor:
                         "class_map_mismatch",
                     )
                 )
-            # Restore the whole class-id map once (NEAREST to padded size,
-            # crop [0:W, 0:H]), then extract boolean masks for every leaf, so
-            # class ids are never re-interpolated per leaf and the final mask
-            # sizes are equal by construction.
-            # 先整体恢复 class-id map 一次（NEAREST 到 padded 尺寸，裁切
-            # [0:W, 0:H]），再为每个叶子提取 boolean mask，使 class id 绝不逐
-            # 叶子重复插值，各叶子最终 mask 尺寸天然一致。
+            # Preview-space restoration (26 Gate 3): sample the <=1080
+            # class-id preview grid directly from the strict 1024 model mask
+            # through pure NEAREST lookups, and decide leaf hits on the
+            # model-mask prefix rectangle that is the exact source of the
+            # legacy full-resolution restored grid. No WxH/WpxHp class-id or
+            # boolean mask is ever created.
+            # Preview 空间恢复（26 Gate 3）：通过纯 NEAREST 查找从严格 1024
+            # model mask 直接采样 <=1080 class-id preview grid，并在 model-mask
+            # 前缀矩形（旧整分辨率恢复网格的精确来源）上判定叶子命中。全程
+            # 绝不创建 WxH/WpxHp 的 class-id 或 boolean mask。
             try:
-                grid = _to_class_grid(output.class_id_map)
-                restored = restore_segformer_class_id_mask(grid, preprocess)
+                grid = class_id_grid_from_any(output.class_id_map)
             except ValueError:
                 for leaf in roi_leaves:
                     if leaf not in mismatched:
@@ -947,7 +1043,10 @@ class ObjectEvidenceExecutor:
                             )
                         )
                 continue
-            if restored.size != record.crop_size:
+            extent = segformer_model_extent(preprocess)
+            try:
+                seen = class_ids_in_prefix_rect(grid, extent)
+            except ValueError:
                 for leaf in roi_leaves:
                     if leaf not in mismatched:
                         self._outcomes.append(
@@ -960,17 +1059,20 @@ class ObjectEvidenceExecutor:
                             )
                         )
                 continue
+            preview_size = compute_preview_size(record.crop_size)
+            x_lookup, y_lookup = segformer_preview_lookups(preprocess, preview_size)
+            preview_grid = sample_class_id_grid(grid, x_lookup, y_lookup)
+            group_hit_leaves: list[str] = []
             for leaf in roi_leaves:
                 if leaf in mismatched:
                     continue
-                boolean = _leaf_boolean_grid(restored, leaf_class_ids[leaf])
-                if boolean.getextrema()[1] > 0:
+                if leaf_class_ids[leaf] & seen:
                     segments.append(
                         SegFormerEvidenceRecord(
                             leaf_category=leaf, roi_id=record.roi_id
                         )
                     )
-                    self._masks[(record.roi_id, leaf)] = boolean
+                    group_hit_leaves.append(leaf)
                     self._outcomes.append(
                         RoiLeafOutcome(record.roi_id, leaf, "segformer", "hit")
                     )
@@ -978,6 +1080,18 @@ class ObjectEvidenceExecutor:
                     self._outcomes.append(
                         RoiLeafOutcome(record.roi_id, leaf, "segformer", "missing")
                     )
+            if group_hit_leaves:
+                self._preview_evidence.append(
+                    SegFormerPreviewEvidence(
+                        roi_id=record.roi_id,
+                        binding=binding,
+                        preview_size=preview_size,
+                        class_id_grid=preview_grid,
+                        leaf_class_ids={
+                            leaf: leaf_class_ids[leaf] for leaf in group_hit_leaves
+                        },
+                    )
+                )
         # One geometry record per ROI with at least one fresh SegFormer call,
         # in ROI order; the record is binding-independent.
         # 每个发生过新鲜 SegFormer 调用的 ROI 一条几何记录，按 ROI 顺序；该

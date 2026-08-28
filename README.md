@@ -1600,6 +1600,8 @@ application/
 
 ```text
 README.md
+docs/PROJECT_GUIDE.md    # 项目说明书
+docs/CODE_INDEX.md       # 功能代码索引
 ```
 
 ### 编码代理

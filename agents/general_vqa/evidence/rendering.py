@@ -20,11 +20,13 @@ Frozen protocol (14.12) / 冻结协议（14.12）：
 
 from __future__ import annotations
 
+import array
 import hashlib
 import io
 import math
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
@@ -110,23 +112,17 @@ def render_roi_crop(
     return crop
 
 
-def prepare_model_tile(
-    roi_image: Image.Image,
+def normalize_model_tile(
+    tile: Image.Image,
     tile_record: EvidenceTileRecord,
 ) -> Image.Image:
-    """Materialize one strict 1024×1024 RGB model tile from the ROI-local
-    crop: exact crop of source_tile_xyxy, full tiles pass through untouched,
-    remainders stretch with LANCZOS. A new image is always returned; the ROI
-    source is never modified. 从 ROI 局部裁切物化一个严格 1024×1024 RGB model
-    tile：精确裁切 source_tile_xyxy，完整 tile 原样通过，余块用 LANCZOS 拉伸。
-    始终返回新图像；绝不修改 ROI 源。"""
+    """Normalize one already-cropped source tile into a strict 1024×1024 RGB
+    model tile: full tiles pass through untouched, remainders stretch with
+    LANCZOS; size drift fails closed. Shared by the crop-based tile seam and
+    the region-source bounded reader. 把一张已裁切的源 tile 规范化为严格
+    1024×1024 RGB model tile：完整 tile 原样通过，余块 LANCZOS 拉伸；尺寸
+    漂移严格失败。由基于裁切的 tile seam 与 region-source 有界读取共用。"""
 
-    x0, y0, x1, y1 = tile_record.source_tile_xyxy
-    if x1 > roi_image.width or y1 > roi_image.height:
-        raise ValueError(
-            f"tile box {tile_record.source_tile_xyxy!r} exceeds ROI image size {roi_image.size!r}"
-        )
-    tile = crop_image_box(roi_image, (x0, y0, x1, y1)).convert("RGB")
     if tile.size != tile_record.source_tile_size:
         raise ValueError(
             f"tile crop drift: geometry predicts {tile_record.source_tile_size!r} "
@@ -140,33 +136,24 @@ def prepare_model_tile(
     )
 
 
-def restore_class_id_mask(
-    model_mask: Image.Image,
+def prepare_model_tile(
+    roi_image: Image.Image,
     tile_record: EvidenceTileRecord,
 ) -> Image.Image:
-    """Restore one 1024×1024 integer class-id model mask to the source tile
-    size with NEAREST interpolation — never bilinear/LANCZOS, which could
-    fabricate class ids. The input must be a strict 1024 square integer grid
-    ("L" or "I" mode); continuous probability images are rejected here so the
-    class-id NEAREST helper never sees them. 将一个 1024×1024 整数 class-id
-    model mask 用 NEAREST 插值恢复到源 tile 尺寸——绝不用 bilinear/LANCZOS，
-    以免杜撰出不存在的 class id。输入必须是严格 1024 方形整数网格（"L" 或
-    "I" 模式）；此处拒绝连续概率图，使 class-id NEAREST helper 绝不收到它们。"""
+    """Materialize one strict 1024×1024 RGB model tile from the ROI-local
+    crop: exact crop of source_tile_xyxy, then normalize_model_tile. A new
+    image is always returned; the ROI source is never modified.
+    从 ROI 局部裁切物化一个严格 1024×1024 RGB model tile：精确裁切
+    source_tile_xyxy，再经 normalize_model_tile。始终返回新图像；绝不修改
+    ROI 源。"""
 
-    if model_mask.mode not in ("L", "I"):
+    x0, y0, x1, y1 = tile_record.source_tile_xyxy
+    if x1 > roi_image.width or y1 > roi_image.height:
         raise ValueError(
-            f"model mask mode {model_mask.mode!r} must be an integer class-id grid"
+            f"tile box {tile_record.source_tile_xyxy!r} exceeds ROI image size {roi_image.size!r}"
         )
-    if model_mask.size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
-        raise ValueError(
-            "model mask must be a strict 1024x1024 model tile"
-        )
-    if tile_record.source_tile_size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
-        return model_mask.copy()
-    return model_mask.resize(
-        tile_record.source_tile_size,
-        resample=Image.Resampling.NEAREST,
-    )
+    tile = crop_image_box(roi_image, (x0, y0, x1, y1)).convert("RGB")
+    return normalize_model_tile(tile, tile_record)
 
 
 def prepare_segformer_roi(
@@ -219,23 +206,75 @@ def prepare_segformer_roi(
     return preprocess, model_input
 
 
-def restore_segformer_class_id_mask(
-    model_mask: Image.Image,
-    preprocess: SegFormerPreprocessRecord,
-) -> Image.Image:
-    """Restore one strict 1024×1024 integer class-id model mask to the source
-    ROI size: NEAREST back to the padded canvas, then crop [0:W, 0:H] so the
-    padding region can never appear in the final mask. The input must be a
-    strict 1024 square integer grid ("L" or "I" mode); bilinear/LANCZOS are
-    never used on class ids, which could fabricate class values. The returned
-    grid is exactly preprocess.source_size, aligned to the ROI-local frame.
-    将一个严格 1024×1024 整数 class-id model mask 恢复到源 ROI 尺寸：NEAREST
-    缩回 padded canvas，再裁切 [0:W, 0:H] 使 padding 区域绝不出现在最终 mask。
-    输入必须是严格 1024 方形整数网格（"L" 或 "I" 模式）；class id 绝不使用
-    bilinear/LANCZOS，以免杜撰类别值。返回网格尺寸恰为 preprocess.source_size，
-    与 ROI 局部坐标系对齐。"""
+def class_id_grid_from_any(class_id_map: Any) -> Image.Image:
+    """Convert any two-dimensional integer class-id structure into an
+    in-memory "I" grid without importing NumPy or torch: either a
+    shape-bearing array or a list of equal-width rows. Non-integer values
+    fail closed. 在不导入 NumPy 或 torch 的情况下，把任意二维整数 class-id
+    结构转换为内存 "I" 网格：支持带 shape 的数组或等宽行 list。非整数值严格
+    失败。"""
 
-    if model_mask.mode not in ("L", "I"):
+    shape = getattr(class_id_map, "shape", None)
+    if shape is not None:
+        if len(shape) != 2:
+            raise ValueError("class_id_map must be two-dimensional")
+        height, width = int(shape[0]), int(shape[1])
+        flattened = class_id_map.reshape(-1)
+        values = (
+            flattened.tolist() if hasattr(flattened, "tolist") else list(flattened)
+        )
+    elif isinstance(class_id_map, (list, tuple)) and class_id_map:
+        height = len(class_id_map)
+        width = len(class_id_map[0])
+        if any(
+            not isinstance(row, (list, tuple)) or len(row) != width
+            for row in class_id_map
+        ):
+            raise ValueError("class_id_map rows must have equal width")
+        values = [value for row in class_id_map for value in row]
+    else:
+        raise ValueError("class_id_map must be a two-dimensional integer grid")
+    if width <= 0 or height <= 0:
+        raise ValueError("class_id_map dimensions must be positive")
+    for value in values:
+        integer = int(value)
+        if integer != value:
+            raise ValueError("class_id_map contains a non-integer class ID")
+    data = array.array("i", (int(value) for value in values))
+    return Image.frombytes("I", (width, height), data.tobytes())
+
+
+def leaf_boolean_grid(grid: Image.Image, class_ids: frozenset[int]) -> Image.Image:
+    """Boolean presence grid of one leaf over an integer class-id grid:
+    pixels whose class id belongs to the leaf become 255. Unrequested classes
+    stay 0 (background) and never reach the segments/legend. PIL's point()
+    with a callable is a no-op on I-mode images, so the grid is scanned via
+    raw bytes instead. 一张整数 class-id grid 上某叶子的布尔存在网格：类别 id
+    属于该叶子的像素为 255。未请求类别保持 0（背景），绝不进入
+    segments/legend。PIL 的 point() 在 I 模式下对 callable 是空操作，因此改为
+    扫描原始字节。"""
+
+    values = array.array("i", grid.tobytes())
+    present = bytes(255 if class_id in class_ids else 0 for class_id in values)
+    return Image.frombytes("L", grid.size, present)
+
+
+def sample_class_id_grid(
+    model_mask: Image.Image,
+    x_lookup: tuple[int, ...],
+    y_lookup: tuple[int, ...],
+) -> Image.Image:
+    """Directly sample an integer class-id preview grid from a strict
+    1024x1024 model mask through the composed NEAREST lookups: every preview
+    pixel takes exactly the class id the legacy restore-then-shrink pipeline
+    would have produced, with O(Vw*Vh) memory instead of a WxH/WpxHp grid.
+    Indices come from pure geometry (26 Gate 3) and never touch the padding
+    region. 通过合成 NEAREST 查找从严格 1024×1024 model mask 直接采样整数
+    class-id preview grid：每个 preview 像素恰好取旧“恢复后缩小”管线会产生的
+    class id，内存 O(Vw*Vh) 而非 WxH/WpxHp 网格。索引来自纯几何（26 Gate 3），
+    绝不触碰 padding 区域。"""
+
+    if model_mask.mode != "I":
         raise ValueError(
             f"model mask mode {model_mask.mode!r} must be an integer class-id grid"
         )
@@ -244,70 +283,46 @@ def restore_segformer_class_id_mask(
     minimum, _ = model_mask.getextrema()
     if minimum < 0:
         raise ValueError("model mask class ids must be non-negative")
-    width, height = preprocess.source_size
-    padded_width, padded_height = preprocess.padded_size
-    if (padded_width, padded_height) == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
-        restored = model_mask.copy()
-    else:
-        restored = model_mask.resize(
-            (padded_width, padded_height),
-            resample=Image.Resampling.NEAREST,
-        )
-    cropped = restored.crop((0, 0, width, height))
-    if cropped.size != (width, height):
+    values = array.array("i", model_mask.tobytes())
+    stride = MODEL_INPUT_SIZE
+    preview_width = len(x_lookup)
+    preview_height = len(y_lookup)
+    if preview_width <= 0 or preview_height <= 0:
+        raise ValueError("preview lookups must be non-empty")
+    flat = array.array("i")
+    for y in y_lookup:
+        base = y * stride
+        for x in x_lookup:
+            flat.append(values[base + x])
+    return Image.frombytes("I", (preview_width, preview_height), flat.tobytes())
+
+
+def class_ids_in_prefix_rect(
+    model_mask: Image.Image,
+    extent: tuple[int, int],
+) -> frozenset[int]:
+    """The set of class ids present in the model-mask prefix rectangle
+    [0..mx] x [0..my] — the exact source of the legacy full-resolution
+    restored grid (26 Gate 3). Bounded by 1024x1024 pixels regardless of the
+    source ROI size. 存在于 model-mask 前缀矩形 [0..mx] x [0..my] 内的类别 id
+    集合——旧整分辨率恢复网格的精确来源（26 Gate 3）。无论源 ROI 多大，都
+    以 1024×1024 像素为界。"""
+
+    if model_mask.mode != "I":
         raise ValueError(
-            f"restored mask size {cropped.size!r} must equal source_size "
-            f"{(width, height)!r}"
+            f"model mask mode {model_mask.mode!r} must be an integer class-id grid"
         )
-    return cropped
-
-
-def stitch_class_id_masks(
-    restored_tiles: Sequence[tuple[EvidenceTileRecord, Image.Image]],
-    roi_size: tuple[int, int],
-) -> Image.Image:
-    """Stitch restored per-tile class-id masks back into one ROI-local canvas.
-    Partitions are overlap-free by construction, so every ROI pixel must be
-    written exactly once: a hole, duplicate write, size drift, or out-of-bounds
-    placement fails closed instead of being guessed. The returned canvas is an
-    integer class-id grid ("I" mode) starting from class 0. 将恢复后的逐 tile
-    class-id mask 拼接回一个 ROI 局部 canvas。partition 构造上无重叠，因此每
-    个 ROI 像素必须恰好写入一次：hole、重复写入、尺寸漂移或越界放置都严格
-    失败，绝不猜测修复。返回的 canvas 是以 class 0 为底色的整数 class-id
-    网格（"I" 模式）。"""
-
-    width, height = roi_size
-    if width <= 0 or height <= 0:
-        raise ValueError(f"roi_size must be positive, got {roi_size!r}")
-    canvas = Image.new("I", roi_size, 0)
-    coverage = bytearray(width * height)
-    for tile_record, mask in restored_tiles:
-        x0, y0, x1, y1 = tile_record.source_tile_xyxy
-        if x1 > width or y1 > height:
-            raise ValueError(
-                f"tile box {tile_record.source_tile_xyxy!r} exceeds ROI canvas {roi_size!r}"
-            )
-        if mask.size != tile_record.source_tile_size:
-            raise ValueError(
-                f"restored mask size {mask.size!r} must match tile record {tile_record.source_tile_size!r}"
-            )
-        if mask.mode not in ("L", "I"):
-            raise ValueError(f"restored mask mode {mask.mode!r} must be an integer class-id grid")
-        for y in range(y0, y1):
-            start = y * width + x0
-            region = coverage[start : start + (x1 - x0)]
-            if any(region):
-                raise ValueError(
-                    f"overlapping tile placement for {tile_record.tile_id!r}"
-                )
-        canvas.paste(mask, (x0, y0))
-        for y in range(y0, y1):
-            start = y * width + x0
-            coverage[start : start + (x1 - x0)] = b"\x01" * (x1 - x0)
-    if not all(coverage):
-        missing = sum(1 for value in coverage if value == 0)
-        raise ValueError(f"tile coverage leaves {missing} ROI pixels unwritten")
-    return canvas
+    if model_mask.size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        raise ValueError("model mask must be a strict 1024x1024 model input")
+    max_x, max_y = extent
+    if max_x < 0 or max_y < 0 or max_x >= MODEL_INPUT_SIZE or max_y >= MODEL_INPUT_SIZE:
+        raise ValueError(f"model extent {extent!r} must stay within the 1024 model grid")
+    if max_x == 0 and max_y == 0:
+        # Keep the scan O(1) for the pathological 1x1 ROI. 病态 1x1 ROI 下保持 O(1)。
+        values = array.array("i", model_mask.tobytes())
+        return frozenset({values[0]})
+    cropped = model_mask.crop((0, 0, max_x + 1, max_y + 1))
+    return frozenset(array.array("i", cropped.tobytes()))
 
 
 def make_preview(

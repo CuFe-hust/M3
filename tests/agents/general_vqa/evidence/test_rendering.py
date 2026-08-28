@@ -2,7 +2,8 @@
 
 v2 证据渲染测试：裁切只接受已物化的源像素框，预览只缩小；冻结三分支协议
 （14.12）的 SegFormer 调色表、纯色 mask 合成与 YOLO 高对比标注保持确定性，
-绝不推导框或计数。
+绝不推导框或计数。本文件同时持有旧全分辨率恢复路径的测试 oracle（26 §9.5：
+旧路径只允许位于测试代码），并用它逐像素证明 preview 空间直接采样与其一致。
 """
 
 from __future__ import annotations
@@ -17,8 +18,18 @@ from PIL import Image
 import pytest
 
 import agents.general_vqa.evidence.rendering as rendering_module
-from agents.general_vqa.evidence.geometry import partition_roi
+from agents.general_vqa.evidence.geometry import (
+    MODEL_INPUT_SIZE,
+    compute_preview_size,
+    nearest_lookup,
+    partition_roi,
+    segformer_model_extent,
+    segformer_preview_lookups,
+)
 from agents.general_vqa.evidence.rendering import (
+    class_id_grid_from_any,
+    class_ids_in_prefix_rect,
+    leaf_boolean_grid,
     make_preview,
     prepare_model_tile,
     prepare_segformer_roi,
@@ -26,10 +37,8 @@ from agents.general_vqa.evidence.rendering import (
     render_pure_mask,
     render_roi_crop,
     render_yolo_annotation,
-    restore_class_id_mask,
-    restore_segformer_class_id_mask,
+    sample_class_id_grid,
     segformer_palette,
-    stitch_class_id_masks,
 )
 from agents.general_vqa.evidence.schema import (
     EvidenceTileRecord,
@@ -37,6 +46,80 @@ from agents.general_vqa.evidence.schema import (
     SegFormerPreprocessRecord,
 )
 from models.images import crop_image_box
+
+
+# ── legacy full-resolution restore oracle (26 §9.5) / 旧全分辨率恢复 oracle ──
+# These replicate the pre-bounded-memory runtime path exactly and exist ONLY
+# as test oracles: production runtime must never call them (they materialize
+# WxH / WpxHp grids).
+# 以下精确复刻有界内存改造前的 runtime 路径，只作为测试 oracle 存在：
+# 生产 runtime 绝不调用它们（会物化 WxH / WpxHp 网格）。
+
+
+def _restore_class_id_mask_oracle(
+    model_mask: Image.Image,
+    tile_record: EvidenceTileRecord,
+) -> Image.Image:
+    """Legacy oracle: restore one 1024×1024 integer class-id model mask to
+    the source tile size with NEAREST interpolation. 旧 oracle：将一个
+    1024×1024 整数 class-id model mask 用 NEAREST 恢复到源 tile 尺寸。"""
+    assert model_mask.mode in ("L", "I")
+    assert model_mask.size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
+    if tile_record.source_tile_size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        return model_mask.copy()
+    return model_mask.resize(
+        tile_record.source_tile_size,
+        resample=Image.Resampling.NEAREST,
+    )
+
+
+def _restore_segformer_class_id_mask_oracle(
+    model_mask: Image.Image,
+    preprocess: SegFormerPreprocessRecord,
+) -> Image.Image:
+    """Legacy oracle: NEAREST back to the padded canvas, then crop [0:W, 0:H]
+    so the padding region can never appear in the restored grid. 旧 oracle：
+    NEAREST 缩回 padded canvas 后裁切 [0:W, 0:H]，使 padding 区域绝不出现在
+    恢复网格中。"""
+    assert model_mask.mode in ("L", "I")
+    assert model_mask.size == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE)
+    minimum, _ = model_mask.getextrema()
+    assert minimum >= 0
+    width, height = preprocess.source_size
+    padded_width, padded_height = preprocess.padded_size
+    if (padded_width, padded_height) == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        restored = model_mask.copy()
+    else:
+        restored = model_mask.resize(
+            (padded_width, padded_height),
+            resample=Image.Resampling.NEAREST,
+        )
+    return restored.crop((0, 0, width, height))
+
+
+def _stitch_class_id_masks_oracle(
+    restored_tiles: list[tuple[EvidenceTileRecord, Image.Image]],
+    roi_size: tuple[int, int],
+) -> Image.Image:
+    """Legacy oracle: stitch restored per-tile class-id masks back into one
+    ROI-local integer canvas. 旧 oracle：将恢复后的逐 tile class-id mask 拼接
+    回一个 ROI 局部整数 canvas。"""
+    width, height = roi_size
+    canvas = Image.new("I", roi_size, 0)
+    coverage = bytearray(width * height)
+    for tile_record, mask in restored_tiles:
+        x0, y0, x1, y1 = tile_record.source_tile_xyxy
+        assert x1 <= width and y1 <= height
+        assert mask.size == tile_record.source_tile_size
+        for y in range(y0, y1):
+            start = y * width + x0
+            assert not any(coverage[start : start + (x1 - x0)])
+        canvas.paste(mask, (x0, y0))
+        for y in range(y0, y1):
+            start = y * width + x0
+            coverage[start : start + (x1 - x0)] = b"\x01" * (x1 - x0)
+    assert all(coverage)
+    return canvas
 
 
 def _image(size: tuple[int, int], fill: int = 7) -> Image.Image:
@@ -341,22 +424,22 @@ def test_prepare_model_tile_rejects_box_drift_outside_roi() -> None:
         prepare_model_tile(roi, foreign)
 
 
-def test_restore_class_id_mask_full_tile_is_a_copy() -> None:
+def test_restore_class_id_mask_oracle_full_tile_is_a_copy() -> None:
     model_mask = _coord_mask((1024, 1024), roi_width=2000)
     full = partition_roi(_roi((2000, 1024)))[0]
-    restored = restore_class_id_mask(model_mask, full)
+    restored = _restore_class_id_mask_oracle(model_mask, full)
     assert restored is not model_mask
     assert restored.size == (1024, 1024)
     assert restored.tobytes() == model_mask.tobytes()
 
 
-def test_restore_class_id_mask_downscales_remainder_with_nearest() -> None:
+def test_restore_class_id_mask_oracle_downscales_remainder_with_nearest() -> None:
     roi_size = (2000, 1024)
     remainder = partition_roi(_roi(roi_size))[1]  # (1024, 0, 2000, 1024)
     assert remainder.source_tile_size == (976, 1024)
     source_mask = _coord_mask((976, 1024), roi_width=2000, x0=1024)
     model_mask = source_mask.resize((1024, 1024), resample=Image.Resampling.NEAREST)
-    restored = restore_class_id_mask(model_mask, remainder)
+    restored = _restore_class_id_mask_oracle(model_mask, remainder)
     assert restored.size == (976, 1024)
     for x, y in ((200, 500), (488, 0), (975, 1023), (0, 511)):
         value = restored.getpixel((x, y))
@@ -368,25 +451,17 @@ def test_restore_class_id_mask_downscales_remainder_with_nearest() -> None:
         assert 1024 + x - 2 <= value % 2000 <= 1024 + x + 2, (x, y, value)
 
 
-def test_restore_class_id_mask_rejects_non_integer_or_off_tile_inputs() -> None:
-    full = partition_roi(_roi((1024, 1024)))[0]
-    with pytest.raises(ValueError, match="integer class-id grid"):
-        restore_class_id_mask(Image.new("F", (1024, 1024), 0.5), full)
-    with pytest.raises(ValueError, match="strict 1024x1024"):
-        restore_class_id_mask(_coord_mask((512, 512), roi_width=1024), full)
-
-
-def test_stitch_class_id_masks_places_each_roi_pixel_exactly_once() -> None:
+def test_stitch_class_id_masks_oracle_places_each_roi_pixel_exactly_once() -> None:
     roi_size = (2000, 1024)
     tiles = partition_roi(_roi(roi_size))
     full, remainder = tiles[0], tiles[1]
     full_mask = _coord_mask((1024, 1024), roi_width=2000)
     source_mask = _coord_mask((976, 1024), roi_width=2000, x0=1024)
     model_mask = source_mask.resize((1024, 1024), resample=Image.Resampling.NEAREST)
-    canvas = stitch_class_id_masks(
+    canvas = _stitch_class_id_masks_oracle(
         [
             (full, full_mask),
-            (remainder, restore_class_id_mask(model_mask, remainder)),
+            (remainder, _restore_class_id_mask_oracle(model_mask, remainder)),
         ],
         roi_size,
     )
@@ -403,32 +478,29 @@ def test_stitch_class_id_masks_places_each_roi_pixel_exactly_once() -> None:
     assert canvas.getpixel((1999, 1023)) == 1023 * 2000 + 1999
 
 
-def test_stitch_class_id_masks_fails_closed_on_hole_overlap_and_drift() -> None:
-    roi_size = (2000, 1024)
-    tiles = partition_roi(_roi(roi_size))
-    full, remainder = tiles[0], tiles[1]
-    full_mask = _coord_mask((1024, 1024), roi_width=2000)
-    source_mask = _coord_mask((976, 1024), roi_width=2000, x0=1024)
-    model_mask = source_mask.resize((1024, 1024), resample=Image.Resampling.NEAREST)
-    with pytest.raises(ValueError, match="unwritten"):
-        stitch_class_id_masks([(full, full_mask)], roi_size)
-    with pytest.raises(ValueError, match="overlapping"):
-        stitch_class_id_masks(
-            [
-                (full, full_mask),
-                (full, full_mask),
-            ],
-            roi_size,
-        )
-    with pytest.raises(ValueError, match="must match tile record"):
-        stitch_class_id_masks([(remainder, full_mask)], roi_size)
-    with pytest.raises(ValueError, match="exceeds ROI canvas"):
-        stitch_class_id_masks([(tiles[0], full_mask)], (1000, 1024))
+def test_preview_grid_sampling_rejects_non_integer_or_off_model_inputs() -> None:
+    """The preview-space sampler keeps the same fail-closed validations as
+    the removed production restore path: only strict 1024x1024 non-negative
+    integer grids are accepted. preview 空间采样器保持与已移除的生产恢复路径
+    相同的严格校验：只接受严格 1024×1024 非负整数网格。"""
+    x_lookup = (0, 1)
+    y_lookup = (0, 1)
     with pytest.raises(ValueError, match="integer class-id grid"):
-        stitch_class_id_masks(
-            [(full, Image.new("F", (1024, 1024), 0.5))],
-            roi_size,
+        sample_class_id_grid(Image.new("F", (1024, 1024), 0.5), x_lookup, y_lookup)
+    with pytest.raises(ValueError, match="strict 1024x1024"):
+        sample_class_id_grid(
+            _coord_mask((512, 512), roi_width=1024), x_lookup, y_lookup
         )
+    negative = Image.new("I", (1024, 1024), 0)
+    negative.putpixel((3, 4), -7)
+    with pytest.raises(ValueError, match="non-negative"):
+        sample_class_id_grid(negative, x_lookup, y_lookup)
+    with pytest.raises(ValueError, match="integer class-id grid"):
+        class_ids_in_prefix_rect(Image.new("F", (1024, 1024), 0.5), (10, 10))
+    with pytest.raises(ValueError, match="strict 1024x1024"):
+        class_ids_in_prefix_rect(_coord_mask((512, 512), roi_width=1024), (10, 10))
+    with pytest.raises(ValueError, match="within the 1024 model grid"):
+        class_ids_in_prefix_rect(_coord_mask((1024, 1024), roi_width=1024), (1024, 10))
 
 
 # ── SegFormer pad protocol (26 §3) / SegFormer pad 协议 ───────────────────
@@ -527,12 +599,14 @@ def test_prepare_segformer_roi_rejects_invalid_geometry() -> None:
         prepare_segformer_roi(roi, roi_id="roi-0", source_size=(200, 100))
 
 
-def test_restore_segformer_mask_crops_padding_and_keeps_coordinates() -> None:
+def test_restore_segformer_mask_oracle_crops_padding_and_keeps_coordinates() -> None:
     """NEAREST restore to the padded size followed by a deterministic
     [0:W, 0:H] crop: the final grid is exactly the source ROI size, the crop
-    has no offset, and the padding region can never appear in it.
-    NEAREST 恢复到 padded 尺寸后确定性裁切 [0:W, 0:H]：最终网格恰为源 ROI
-    尺寸，裁切无偏移，padding 区域绝不可能出现。"""
+    has no offset, and the padding region can never appear in it. This is the
+    legacy oracle that the preview-space direct sampling must reproduce
+    pixel-exactly. NEAREST 恢复到 padded 尺寸后确定性裁切 [0:W, 0:H]：最终网格
+    恰为源 ROI 尺寸，裁切无偏移，padding 区域绝不可能出现。这是 preview 空间
+    直接采样必须逐像素复刻的旧 oracle。"""
     source_size = (1500, 800)
     preprocess = _pad_record(source_size)
     assert preprocess.padded_size == (2048, 1024)
@@ -551,7 +625,7 @@ def test_restore_segformer_mask_crops_padding_and_keeps_coordinates() -> None:
     )
     padded_grid = Image.frombytes("I", (2048, 1024), values.tobytes())
     model_mask = padded_grid.resize((1024, 1024), resample=Image.Resampling.NEAREST)
-    restored = restore_segformer_class_id_mask(model_mask, preprocess)
+    restored = _restore_segformer_class_id_mask_oracle(model_mask, preprocess)
     assert restored.size == source_size
     for x, y in ((0, 0), (1499, 799), (700, 400), (1200, 50), (10, 790)):
         value = restored.getpixel((x, y))
@@ -565,34 +639,210 @@ def test_restore_segformer_mask_crops_padding_and_keeps_coordinates() -> None:
             assert restored.getpixel((x, y)) != 777777
 
 
-def test_restore_segformer_mask_exact_1024_source_is_a_copy() -> None:
+def test_restore_segformer_mask_oracle_exact_1024_source_is_a_copy() -> None:
     """A 1024x1024 source has no padding: restore is an exact copy of the
     strict model grid. 1024×1024 源无 padding：恢复是严格模型网格的精确副本。"""
     preprocess = _pad_record((1024, 1024))
     assert (preprocess.padding_right, preprocess.padding_bottom) == (0, 0)
     model_mask = _coord_mask((1024, 1024), roi_width=1024)
-    restored = restore_segformer_class_id_mask(model_mask, preprocess)
+    restored = _restore_segformer_class_id_mask_oracle(model_mask, preprocess)
     assert restored is not model_mask
     assert restored.size == (1024, 1024)
     assert restored.tobytes() == model_mask.tobytes()
 
 
-def test_restore_segformer_mask_rejects_non_integer_or_off_inputs() -> None:
-    preprocess = _pad_record((1500, 800))
-    with pytest.raises(ValueError, match="integer class-id grid"):
-        restore_segformer_class_id_mask(Image.new("F", (1024, 1024), 0.5), preprocess)
-    with pytest.raises(ValueError, match="strict 1024x1024"):
-        restore_segformer_class_id_mask(
-            _coord_mask((512, 512), roi_width=2048), preprocess
+def test_restore_segformer_mask_oracle_crops_padding_and_keeps_coordinates() -> None:
+    """NEAREST restore to the padded size followed by a deterministic
+    [0:W, 0:H] crop: the final grid is exactly the source ROI size, the crop
+    has no offset, and the padding region can never appear in it. This is the
+    legacy oracle that the preview-space direct sampling must reproduce
+    pixel-exactly. NEAREST 恢复到 padded 尺寸后确定性裁切 [0:W, 0:H]：最终网格
+    恰为源 ROI 尺寸，裁切无偏移，padding 区域绝不可能出现。这是 preview 空间
+    直接采样必须逐像素复刻的旧 oracle。"""
+    source_size = (1500, 800)
+    preprocess = _pad_record(source_size)
+    assert preprocess.padded_size == (2048, 1024)
+    assert preprocess.padding_right == 548
+    assert preprocess.padding_bottom == 224
+    padded_width = preprocess.padded_size[0]
+    # Coordinate-encoded padded grid; the padding region gets a distinct id.
+    # 坐标编码的 padded 网格；padding 区域使用独立 id。
+    values = array.array(
+        "i",
+        (
+            777777 if x >= 1500 or y >= 800 else y * padded_width + x
+            for y in range(1024)
+            for x in range(2048)
+        ),
+    )
+    padded_grid = Image.frombytes("I", (2048, 1024), values.tobytes())
+    model_mask = padded_grid.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+    restored = _restore_segformer_class_id_mask_oracle(model_mask, preprocess)
+    assert restored.size == source_size
+    for x, y in ((0, 0), (1499, 799), (700, 400), (1200, 50), (10, 790)):
+        value = restored.getpixel((x, y))
+        assert value // padded_width == y, (x, y, value)
+        assert abs(value % padded_width - x) <= 2, (x, y, value)
+        assert value != 777777
+    # Padding-sourced ids never leak into the crop.
+    # padding 来源的 id 绝不泄漏进裁切区域。
+    for y in range(0, 800, 100):
+        for x in range(0, 1500, 100):
+            assert restored.getpixel((x, y)) != 777777
+
+
+def test_preview_direct_sampling_parity_with_legacy_oracle() -> None:
+    """26 §11.1: for a full-coverage preview (ROI <= 1080) the direct
+    preview-space sampling must reproduce the legacy restore pixel-exactly,
+    and for a downscaled preview it must reproduce the legacy
+    restore-then-NEAREST-shrink pixel-exactly. 26 §11.1：全尺寸 preview
+    （ROI <= 1080）下 preview 空间直接采样必须逐像素复刻旧恢复；缩小 preview
+    下必须逐像素复刻旧“恢复后 NEAREST 缩小”。"""
+    cases = [
+        (1024, 1024),
+        (1025, 1025),
+        (976, 1024),
+        (1500, 800),
+        (2000, 1024),
+        (300, 200),
+        (1, 1),
+        (1080, 1080),
+    ]
+    for source_size in cases:
+        preprocess = _pad_record(source_size)
+        padded_width, padded_height = preprocess.padded_size
+        # Coordinate-encoded padded grid; padding gets a distinct id so any
+        # leakage into the sampled class ids is detectable. Note: the model
+        # INPUT itself is a LANCZOS blend of the padded canvas, so boundary
+        # class ids influenced by padding are expected model behavior in both
+        # the legacy and the direct path — parity is the guarantee, not the
+        # absence of the marker at every pixel.
+        # 坐标编码 padded 网格；padding 用独立 id，任何泄漏进采样 class id 都
+        # 可检测。注意：模型输入本身是 padded canvas 的 LANCZOS 混合，因此
+        # 边界处受 padding 影响的 class id 在旧路径与直接路径中都是预期的
+        # 模型行为——保证的是 parity，而非每个像素都不含该标记。
+        values = array.array(
+            "i",
+            (
+                7000000
+                if x >= source_size[0] or y >= source_size[1]
+                else y * padded_width + x
+                for y in range(padded_height)
+                for x in range(padded_width)
+            ),
         )
-    with pytest.raises(ValueError, match="strict 1024x1024"):
-        restore_segformer_class_id_mask(
-            _coord_mask((1024, 512), roi_width=2048), preprocess
+        padded_grid = Image.frombytes("I", (padded_width, padded_height), values.tobytes())
+        model_mask = padded_grid.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+        restored = _restore_segformer_class_id_mask_oracle(model_mask, preprocess)
+        preview_size = compute_preview_size(source_size)
+        legacy_preview = restored.resize(preview_size, resample=Image.Resampling.NEAREST)
+        x_lookup, y_lookup = segformer_preview_lookups(preprocess, preview_size)
+        direct = sample_class_id_grid(model_mask, x_lookup, y_lookup)
+        assert direct.size == preview_size
+        assert direct.tobytes() == legacy_preview.tobytes(), (
+            f"preview class grid drifted for source_size {source_size!r}"
         )
-    negative = Image.new("I", (1024, 1024), 0)
-    negative.putpixel((3, 4), -7)
-    with pytest.raises(ValueError, match="non-negative"):
-        restore_segformer_class_id_mask(negative, preprocess)
+
+
+def test_preview_direct_sampling_never_reads_padding_region() -> None:
+    """Every composed lookup index stays strictly inside the ROI region of
+    the model mask: the maximum sampled model column is below
+    ceil(W * 1024 / Wp) for any preview size. 每个合成查找索引都严格落在 model
+    mask 的 ROI 区域内：任意 preview 尺寸下最大采样 model 列都小于
+    ceil(W * 1024 / Wp)。"""
+    for source_size in ((1500, 800), (2000, 1024), (1, 1), (1025, 1025)):
+        preprocess = _pad_record(source_size)
+        preview_size = compute_preview_size(source_size)
+        x_lookup, y_lookup = segformer_preview_lookups(preprocess, preview_size)
+        width, height = preprocess.source_size
+        padded_width, padded_height = preprocess.padded_size
+        roi_last_model_x = (width * 1024 + padded_width - 1) // padded_width
+        roi_last_model_y = (height * 1024 + padded_height - 1) // padded_height
+        assert max(x_lookup) < roi_last_model_x, (source_size, max(x_lookup))
+        assert max(y_lookup) < roi_last_model_y, (source_size, max(y_lookup))
+        # The prefix-rect extent matches the same ROI boundary.
+        # 前缀矩形 extent 与同一 ROI 边界一致。
+        mx, my = segformer_model_extent(preprocess)
+        assert mx < roi_last_model_x
+        assert my < roi_last_model_y
+        assert mx == max(nearest_lookup(MODEL_INPUT_SIZE, padded_width)[:width])
+        assert my == max(nearest_lookup(MODEL_INPUT_SIZE, padded_height)[:height])
+
+
+def test_class_ids_in_prefix_rect_matches_legacy_restored_grid() -> None:
+    """The prefix-rectangle class set is exactly the class set of the legacy
+    full-resolution restored grid, for both padded and unpadded sources.
+    前缀矩形类别集合与旧整分辨率恢复网格的类别集合完全一致（含 padding 与
+    无 padding 源）。"""
+    for source_size in ((1500, 800), (1024, 1024), (2000, 1024), (1, 1)):
+        preprocess = _pad_record(source_size)
+        padded_width, padded_height = preprocess.padded_size
+        values = array.array(
+            "i",
+            (
+                999
+                if x >= source_size[0] or y >= source_size[1]
+                else (x * 7 + y * 13) % 5
+                for y in range(padded_height)
+                for x in range(padded_width)
+            ),
+        )
+        padded_grid = Image.frombytes("I", (padded_width, padded_height), values.tobytes())
+        model_mask = padded_grid.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+        restored = _restore_segformer_class_id_mask_oracle(model_mask, preprocess)
+        seen = class_ids_in_prefix_rect(model_mask, segformer_model_extent(preprocess))
+        assert seen == frozenset(array.array("i", restored.tobytes()))
+
+
+def test_nearest_lookup_replicates_pillow_resize() -> None:
+    """The pure NEAREST lookup replicates Pillow's affine-nearest resize
+    exactly (ImagingScaleAffine), including the exact-integer boundary
+    behavior, for upscale, downscale and identity axes. 纯 NEAREST 查找精确
+    复刻 Pillow 的仿射 nearest resize（ImagingScaleAffine），包括精确整数
+    边界行为，覆盖放大、缩小与恒等轴。"""
+    for src, dst in (
+        (4, 10),
+        (10, 3),
+        (100, 37),
+        (1024, 976),
+        (976, 1024),
+        (1024, 2048),
+        (2048, 1024),
+        (1080, 2000),
+        (2000, 1080),
+        (1024, 1024),
+        (1, 5),
+        (5, 1),
+    ):
+        probe = Image.frombytes("I", (src, 1), array.array("i", range(src)).tobytes())
+        out = probe.resize((dst, 1), Image.Resampling.NEAREST)
+        assert list(array.array("i", out.tobytes())) == list(nearest_lookup(src, dst)), (
+            src,
+            dst,
+        )
+    # Exhaustive small-size sweep: every axis pair in [1, 24] x [1, 24].
+    # 穷举小尺寸扫描：所有 [1, 24] x [1, 24] 轴对。
+    for src in range(1, 25):
+        for dst in range(1, 25):
+            probe = Image.frombytes("I", (src, 1), array.array("i", range(src)).tobytes())
+            out = probe.resize((dst, 1), Image.Resampling.NEAREST)
+            assert list(array.array("i", out.tobytes())) == list(nearest_lookup(src, dst))
+
+
+def test_nearest_lookup_is_bounded_memory_for_huge_geometry() -> None:
+    """26 §12.3: a 207,533,568-pixel source geometry builds its lookup with
+    O(target) memory — no Pillow bomb check, no large allocation. 26 §12.3：
+    2.08 亿像素源几何以 O(target) 内存生成查找——无 Pillow bomb 检查、无大
+    内存分配。"""
+    lookup = nearest_lookup(207533568, 1080)
+    assert len(lookup) == 1080
+    assert lookup[-1] == 207437487
+    # The composed preview lookups over the same ROI stay in the model grid.
+    # 同一 ROI 的合成 preview 查找仍保持在 model grid 内。
+    preprocess = _pad_record((207533568 // 1080, 1080))
+    x_lookup, y_lookup = segformer_preview_lookups(preprocess, (1080, 1080))
+    assert max(x_lookup) < MODEL_INPUT_SIZE
+    assert max(y_lookup) < MODEL_INPUT_SIZE
 
 
 def test_render_yolo_annotation_edge_boxes_do_not_invert_plate() -> None:
