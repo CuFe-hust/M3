@@ -118,9 +118,11 @@ def convert(args: argparse.Namespace) -> int:
         relative_image = str(row.get("image") or "")
         if args.image_prefix:
             relative_image = f"{args.image_prefix.rstrip('/')}/{Path(relative_image).name}"
+        raw_split = str(row.get("split", args.split))
+        output_split = "validation" if raw_split == "val" else raw_split
         output.append({
             "episode_id": episode_id,
-            "split": str(row.get("split", args.split)),
+            "split": output_split,
             "task_profile": "grounding",
             "image_source": args.image_source,
             "image": relative_image,
