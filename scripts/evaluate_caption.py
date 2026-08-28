@@ -1,31 +1,35 @@
 #!/usr/bin/env python
-"""evaluate_caption.py — dataset -> visual planner -> caption agent -> metrics.
+"""evaluate_caption.py — preset-plan caption evaluation over prepared JSONL.
 
-单脚本 caption 评测入口，全部复用既有公开接口，不复制指标/模型构造/路由
-逻辑：
+单脚本 caption 评测入口（预设 plan 模式），全部复用既有公开接口，不复制
+指标/模型构造/路由逻辑：
 
-1. 数据集输入：data 层既有 adapter（VRSBench val caption、XLRS-Bench
-   caption en 等）的 UnifiedSample；脚本把每条样本的 question 统一注入为
-   "Describe the image in detail."（不改 adapter、不影响 sample_id）。
-2. 执行：复用 Runtime 组装好的组件——每条 fresh 样本经过唯一
-   VisualTaskPlanner（visual-task-plan-v5）规划（输入只含归一化图像预览 +
-   question），物化后由 caption agent（复用 AgentRegistry 的 caption_agent
-   与绑定 Qwen 客户端）执行；plan.task 非 caption 的样本如实计数跳过。
-3. 产物：写入与系统 run 相同布局的 runs/<run_id>/tasks/caption/samples/
+1. 数据集输入：脚本不经过 data adapter，直接读取
+   scripts/prepare_caption_payload.py 产出的标准 JSONL（每行已是 caption
+   user-payload 形式：sample_id / dataset / split / image / user_payload /
+   references / metadata），逐行重建 UnifiedSample。
+2. 规划：每条样本使用预设的 caption 标准 VisualTaskPlan
+   （version=visual-task-plan-v5, task=caption, needs_visual_assistance=false，
+   reason_codes=["preset_caption_standard"]），不调用 VisualTaskPlanner
+   模型；只调用 planner.materialize_views(...)（纯确定性，不调模型）物化
+   full_image 视图。
+3. 执行：caption agent（复用 AgentRegistry 的 caption_agent 与绑定 Qwen
+   客户端）执行；visual_task_plan 只注入 AgentContext（运行上下文），
+   不进 user payload（v2 约定）。
+4. 产物：写入与系统 run 相同布局的 runs/<run_id>/tasks/caption/samples/
    <key>/（agent_result.json、caption_evaluation.json、status.json、
    predictions.jsonl），可直接被 --run-id 复用与系统 reporting 读取。
-4. 指标：evaluation.metrics.caption.evaluate_caption —— 语料级 BLEU_1..4 /
+5. 指标：evaluation.metrics.caption.evaluate_caption —— 语料级 BLEU_1..4 /
    METEOR / ROUGE_L / CIDEr（pycocoevalcap，METEOR 需 Java）。CIDEr
    （pycocoevalcap Cider）自带 min 计数裁剪与高斯长度惩罚，即 CIDEr-D
    行为。脚本补充 Avg_L（候选平均词数，仅诊断）。
-5. CLAIR 无封闭公式，需固定裁判模型/Prompt 打分，只能作为辅助指标，
-   本脚本不内置（如需可复用 evaluation.judges.deepseek.DeepSeekJudgeClient）。
 
 --run-id 给定时跳过推理，直接对已有 run 产物计算指标。
 
 用法：
-  python scripts/evaluate_caption.py --dataset VRSBench --root <root> --split val
-  python scripts/evaluate_caption.py --dataset XLRS-Bench --root <root> --split <split>
+  python scripts/evaluate_caption.py --input <prepared.jsonl> \
+      --root <dataset_root> --image-root <image_root> \
+      --dataset XLRS-Bench --split train
   python scripts/evaluate_caption.py --run-id <run_id> [--output report.json]
 """
 
@@ -53,7 +57,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from application.runtime import Runtime  # noqa: E402
 from application.settings import load_settings  # noqa: E402
 from agents.base import AgentContext  # noqa: E402
-from data.schema import materialize_sample  # noqa: E402
+from agents.schema import VisualTaskPlan  # noqa: E402
+from data.schema import (  # noqa: E402
+    GroundTruth,
+    ImageRef,
+    UnifiedSample,
+    materialize_sample,
+)
 from evaluation.metrics.caption import evaluate_caption  # noqa: E402
 from evaluation.records import (  # noqa: E402
     CaptionDeterministicMetrics,
@@ -71,11 +81,14 @@ EXIT_OK = 0
 EXIT_RUNTIME = 1
 EXIT_INTERRUPTED = 130
 
-# Unified question injected into every caption sample before planning.
-# 规划前注入到每条 caption 样本的统一 question。
+# Unified question fixed by the prepared JSONL user payload. / 预处理 JSONL
+# 的 user payload 中固定的统一问句。
 CAPTION_QUESTION = "Describe the image in detail."
 _AGENT_NAME = "caption_agent"
 _RUN_TASK = "caption"
+# Preset caption plan reason code; the plan is never sent to the model.
+# 预设 caption plan 的 reason code；该 plan 永不发送给模型。
+_PRESET_REASON = "preset_caption_standard"
 
 
 def _collect_caption_records(
@@ -122,37 +135,76 @@ def _average_length(candidates: dict[str, list[str]]) -> float:
     return sum(len(tokens) for tokens in lengths) / len(lengths) if lengths else 0.0
 
 
+def _row_to_sample(row: dict[str, Any]) -> UnifiedSample:
+    """Rebuild one UnifiedSample from a prepared JSONL row (no adapter).
+    从预处理 JSONL 行重建一条 UnifiedSample（不经 adapter）。"""
+
+    payload = row.get("user_payload") or {}
+    question = str(payload.get("question") or CAPTION_QUESTION)
+    image = str(row.get("image", "")).strip()
+    if not image:
+        raise ValueError(f"row {row.get('sample_id')}: missing image")
+    sample_id = str(row.get("sample_id", ""))
+    if not sample_id:
+        raise ValueError("row missing sample_id")
+    metadata = dict(row.get("metadata") or {})
+    metadata.setdefault("source", str(row.get("dataset", "")))
+    return UnifiedSample(
+        sample_id=sample_id,
+        dataset=str(row.get("dataset", "")),
+        split=str(row.get("split", "")),
+        task=_RUN_TASK,
+        images=[
+            ImageRef(
+                image_id=f"{sample_id}-0",
+                path=image,
+                role="image",
+            )
+        ],
+        question=question,
+        ground_truth=GroundTruth(
+            answers=list(row.get("references") or []),
+            raw={"schema_version": row.get("schema_version"), "source_row": row},
+        ),
+        metadata=metadata,
+    )
+
+
+def _preset_caption_plan() -> VisualTaskPlan:
+    """Standard preset caption plan; never sent to the model (v2 convention).
+    标准预设 caption plan；永不发送给模型（v2 约定）。"""
+
+    return VisualTaskPlan(
+        version="visual-task-plan-v5",
+        task=_RUN_TASK,
+        needs_visual_assistance=False,
+        reason_codes=[_PRESET_REASON],
+    )
+
+
 async def _run_fresh(
     args: argparse.Namespace,
     settings: Any,
     project_root: Path,
 ) -> tuple[str, dict[str, int]]:
-    """Run one caption pass in-process: adapter samples -> question injection
-    -> visual planner -> caption agent, persisting system-layout artifacts.
-    进程内执行一次 caption 评测：adapter 样本 → question 注入 → visual
-    planner → caption agent，持久化系统同布局产物。"""
+    """Run one caption pass in-process: prepared JSONL -> preset plan ->
+    caption agent, persisting system-layout artifacts.
+    进程内执行一次 caption 评测：预处理 JSONL → 预设 plan → caption agent，
+    持久化系统同布局产物。"""
 
     api_key = os.environ.get(settings.models.deepseek.api_key_env) or None
     runtime = Runtime.create(
         settings=settings, project_root=project_root, api_key=api_key
     )
     root = Path(args.root).expanduser().resolve()
-    adapter = runtime.registry.get(args.dataset)
-    adapter.probe(root, _RUN_TASK)
-
-    def sample_image_root(sample: Any) -> Path:
-        """Resolve the image root one sample's ImageRef paths are relative
-        to. XLRS materializes bytes/PIL images into an external cache and
-        records image_root_kind in metadata, so planner previews and agents
-        must resolve against that root, never the dataset root. Other
-        adapters (VRSBench) keep paths relative to the dataset root.
-        解析单样本 ImageRef 路径所相对的图片根：XLRS 把 bytes/PIL 图片物化
-        到外部 cache 并在 metadata 记录 image_root_kind，planner 预览与
-        agent 必须按该根解析，而不是数据集根；其他 adapter（VRSBench）的
-        路径相对数据集根。"""
-        if "image_root_kind" not in sample.metadata:
-            return root
-        return adapter.image_root_for_sample(sample, root)
+    image_root = (
+        Path(args.image_root).expanduser().resolve()
+        if args.image_root
+        else root
+    )
+    input_path = Path(args.input).expanduser().resolve()
+    if not input_path.is_file():
+        raise ValueError(f"prepared input not found: {input_path}")
 
     planner = runtime.components.visual_task_planner
     budget_factory = runtime.components.call_budget_factory
@@ -170,39 +222,39 @@ async def _run_fresh(
     predictions: list[dict[str, Any]] = []
     skipped: dict[str, int] = defaultdict(int)
 
-    iterator = adapter.iter_samples(root, args.split, _RUN_TASK)
+    with input_path.open(encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle if line.strip()]
     if args.start_index:
-        iterator = itertools.islice(iterator, args.start_index, None)
+        rows = itertools.islice(rows, args.start_index, None)
     if args.limit:
-        iterator = itertools.islice(iterator, args.limit)
+        rows = itertools.islice(rows, args.limit)
 
-    for sample in iterator:
-        sample.question = CAPTION_QUESTION  # 注入统一 question
-        sample_dir = samples_root / storage_key(sample.sample_id)
+    for row in rows:
+        sample_id = str(row.get("sample_id", ""))
+        sample_dir = samples_root / storage_key(sample_id)
         sample_dir.mkdir(parents=True, exist_ok=True)
-        budget = budget_factory.create_for_sample(sample.sample_id)
+        budget = budget_factory.create_for_sample(sample_id)
         try:
-            plan, views = await planner.plan_with_views(
+            sample = _row_to_sample(row)
+        except Exception as error:
+            skipped[f"row_invalid:{type(error).__name__}"] += 1
+            continue
+        plan = _preset_caption_plan()
+        try:
+            views = planner.materialize_views(
+                plan,
                 sample,
-                data_root=root,
-                artifact_dir=sample_dir,
-                budget=budget,
+                data_root=image_root,
             )
         except Exception as error:
-            skipped[f"plan_failed:{type(error).__name__}"] += 1
-            continue
-        if plan.task != _RUN_TASK:
-            # The model-selected task is authoritative; only caption samples
-            # can run through the caption agent. 模型选定 task 权威；只有
-            # caption 样本才走 caption agent。
-            skipped[f"plan_task:{plan.task}"] += 1
+            skipped[f"view_failed:{type(error).__name__}"] += 1
             continue
         materialized = materialize_sample(sample, plan.task)
         context = AgentContext(
             artifact_dir=sample_dir,
             qwen_client=qwen_client,
             call_budget=budget,
-            data_root=root,
+            data_root=image_root,
             judge_client=None,
             visual_bindings=runtime.components.visual_bindings,
             visual_task_plan=plan,
@@ -342,7 +394,11 @@ def run_evaluate_caption(args: argparse.Namespace) -> int:
             "run_dir": str(run_dir),
             "dataset": args.dataset,
             "split": args.split,
+            "input": str(Path(args.input).expanduser().resolve())
+            if args.input
+            else None,
             "question": CAPTION_QUESTION,
+            "planning_mode": "preset_caption_standard",
             "record_count": len(references),
             "skipped": skipped,
             "metrics": metrics,
@@ -375,12 +431,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="evaluate_caption.py",
-        description="dataset -> visual planner -> caption agent -> caption metrics",
+        description="preset-plan caption evaluation over prepared JSONL",
     )
     parser.add_argument("--config", default=None, help="settings YAML path")
     parser.add_argument("--dataset", default=None, help="dataset key, e.g. VRSBench / XLRS-Bench")
     parser.add_argument("--root", default=None, help="dataset root directory")
-    parser.add_argument("--split", default=None, help="dataset split, e.g. val")
+    parser.add_argument("--split", default=None, help="dataset split, e.g. train / val")
+    parser.add_argument(
+        "--image-root",
+        default=None,
+        help="root that JSONL image paths are relative to (default: --root)",
+    )
+    parser.add_argument(
+        "--input",
+        default=None,
+        help="prepared JSONL produced by prepare_caption_payload.py",
+    )
     parser.add_argument(
         "--run-id", default=None, help="reuse an existing run (skips inference)"
     )
@@ -392,12 +458,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if not args.run_id and not (args.dataset and args.root and args.split):
+    if not args.run_id and not (
+        args.dataset and args.root and args.split and args.input
+    ):
         print(
             json.dumps(
                 {
                     "status": "failed",
-                    "error": "require --dataset/--root/--split, or --run-id",
+                    "error": "require --dataset/--root/--split/--input, or --run-id",
                 }
             ),
             file=sys.stderr,
