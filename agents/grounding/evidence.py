@@ -9,7 +9,8 @@ Grounding 证据执行器消费 v5 planner 已校验的 canonical leaves，并�
 Flow / 流程:
 
     planned ROI + requested leaves
-      -> each ROI one full YOLO inference
+      -> catalog leaves: each ROI one full YOLO inference
+      -> open-vocabulary leaves: skip YOLO and route directly to Qwen
       -> filter requested labels (unrequested labels are dropped)
       -> one final Grounding Qwen call:
            YOLO-hit leaf: choose existing box_id only
@@ -195,7 +196,9 @@ class GroundingCallAudit(BaseModel):
 # The two downstream leaf states of 14C: "有 YOLO 候选" or "没有候选框、标签
 # 不支持或 YOLO 不可用". The diagnostic prefixes stay auditable.
 # 14C 的两种下游叶子状态；诊断前缀保持可审计。
-GroundingLeafState = Literal["hit", "missing", "unsupported", "unavailable", "error"]
+GroundingLeafState = Literal[
+    "hit", "missing", "unsupported", "unavailable", "error", "open_vocabulary"
+]
 
 
 class GroundingEvidenceBundle(BaseModel):
@@ -214,6 +217,7 @@ class GroundingEvidenceBundle(BaseModel):
     candidates: list[GroundingCandidateRecord] = Field(default_factory=list)
     leaf_states: dict[str, GroundingLeafState] = Field(default_factory=dict)
     missing_leaves: list[str] = Field(default_factory=list)
+    open_vocabulary_categories: list[str] = Field(default_factory=list)
     selected_box_ids: list[str] = Field(default_factory=list)
     fallback_boxes: list[GroundingFallbackBox] = Field(default_factory=list)
     dropped: dict[str, int] = Field(default_factory=dict)
@@ -356,6 +360,54 @@ def _valid_fallback_bbox(bbox: tuple[int, int, int, int]) -> bool:
     return bbox[0] < bbox[2] and bbox[1] < bbox[3]
 
 
+def _normalize_open_vocabulary_category(value: str) -> str:
+    """Normalize an unmapped planner category for direct-Qwen authority.
+
+    Open-vocabulary labels are still untrusted planner output: they are
+    bounded, path-free, and control-character-free before entering the Qwen
+    payload or persisted evidence.
+    """
+    if not isinstance(value, str):
+        raise GroundingEvidenceError("PLAN_INVALID")
+    normalized = " ".join(value.split()).casefold()
+    if not normalized or len(normalized) > 80:
+        raise GroundingEvidenceError("PLAN_INVALID")
+    if any(ord(character) < 32 or ord(character) == 127 for character in normalized):
+        raise GroundingEvidenceError("PLAN_INVALID")
+    if "/" in normalized or "\\" in normalized:
+        raise GroundingEvidenceError("PLAN_INVALID")
+    return normalized
+
+
+def _partition_requested_categories(
+    catalog: EvidenceCatalog,
+    categories: list[str],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Split catalog/YOLO leaves from categories requiring direct Qwen.
+
+    A category outside the Grounding capability list is intentionally not sent
+    to YOLO. It becomes an explicitly audited open-vocabulary request instead
+    of being silently coerced to an unrelated detector class.
+    """
+    allowed = set(catalog.executable_leaves_for_task("grounding"))
+    known: list[str] = []
+    open_categories: list[str] = []
+    seen: set[str] = set()
+    for raw in categories:
+        canonical = catalog.canonicalize_alias(raw)
+        if canonical in allowed:
+            category = canonical
+        else:
+            category = _normalize_open_vocabulary_category(raw)
+        if category in seen:
+            raise GroundingEvidenceError("PLAN_INVALID")
+        seen.add(category)
+        (known if category in allowed else open_categories).append(category)
+    if not known and not open_categories:
+        raise GroundingEvidenceError("PLAN_INVALID")
+    return tuple(known), tuple(open_categories)
+
+
 def _audit_identity(
     outputs: list[ObjectDetectionOutput],
     client: object | None,
@@ -461,9 +513,9 @@ class GroundingEvidenceExecutor:
                 raise GroundingEvidenceError("PLAN_WITHOUT_VISUAL_ASSISTANCE")
             if not materialized_views:
                 raise GroundingEvidenceError("MATERIALIZED_VIEWS_MISSING")
-            leaves = self._catalog.validate_plan_leaves(
+            leaves, open_categories = _partition_requested_categories(
+                self._catalog,
                 plan.object_categories,
-                task="grounding",
             )
         except CatalogCategoryError as exc:
             raise GroundingEvidenceError("PLAN_INVALID") from exc
@@ -473,13 +525,20 @@ class GroundingEvidenceExecutor:
         except ValueError as exc:
             raise GroundingEvidenceError("PLAN_INVALID") from exc
 
-        detections, outcomes, audits, dropped = self._yolo_phase(
-            images, records, leaves
-        )
+        if leaves:
+            detections, outcomes, audits, dropped = self._yolo_phase(
+                images, records, leaves
+            )
+        else:
+            # No catalog/YOLO category is available. This is an intentional
+            # direct-Qwen route, not a detector failure.
+            detections, outcomes, audits, dropped = [], [], [], {}
         candidates = self._assign_box_ids(detections)
         leaf_states, missing_leaves = self._aggregate_leaves(
             leaves, outcomes, candidates
         )
+        for category in open_categories:
+            leaf_states[category] = "open_vocabulary"
 
         response, audits = await self._final_qwen(
             sample,
@@ -487,6 +546,7 @@ class GroundingEvidenceExecutor:
             records,
             candidates,
             missing_leaves,
+            open_categories,
             base_user_payload=base_user_payload,
             artifact_dir=artifact_dir,
             budget=budget,
@@ -500,6 +560,7 @@ class GroundingEvidenceExecutor:
             leaves=leaves,
             leaf_states=leaf_states,
             missing_leaves=missing_leaves,
+            open_vocabulary_categories=open_categories,
             audits=audits,
             dropped=dropped,
         )
@@ -763,6 +824,7 @@ class GroundingEvidenceExecutor:
         records: list[GroundingRoiRecord],
         candidates: list[GroundingCandidateRecord],
         missing_leaves: list[str],
+        open_categories: tuple[str, ...],
         *,
         base_user_payload: Mapping[str, Any],
         artifact_dir: Path,
@@ -805,7 +867,7 @@ class GroundingEvidenceExecutor:
             raise GroundingEvidenceError("BASE_PAYLOAD_INVALID")
         user_payload = dict(base_user_payload)
         user_payload["coordinate_frame"] = "roi_normalized_0_999_top_left"
-        user_payload["evidence"] = {
+        evidence = {
             "visual_inputs": [
                 {
                     "content_image_index": index,
@@ -833,6 +895,9 @@ class GroundingEvidenceExecutor:
             ],
             "missing_categories": list(missing_leaves),
         }
+        if open_categories:
+            evidence["open_vocabulary_categories"] = list(open_categories)
+        user_payload["evidence"] = evidence
         content: list[dict[str, object]] = [
             *[{"type": "image_url", "image_url": {"url": url}} for url in data_urls],
             {"type": "text", "text": json.dumps(user_payload, ensure_ascii=False)},
@@ -913,6 +978,7 @@ class GroundingEvidenceExecutor:
         leaves: tuple[str, ...],
         leaf_states: dict[str, GroundingLeafState],
         missing_leaves: list[str],
+        open_vocabulary_categories: tuple[str, ...],
         audits: list[GroundingCallAudit],
         dropped: dict[str, int],
     ) -> GroundingEvidenceBundle:
@@ -926,8 +992,8 @@ class GroundingEvidenceExecutor:
         dropped = dict(dropped)
         candidates_by_id = {candidate.box_id: candidate for candidate in candidates}
         records_by_id = {record.roi_id: record for record in records}
-        leaf_set = set(leaves)
-        missing_set = set(missing_leaves)
+        leaf_set = set(leaves) | set(open_vocabulary_categories)
+        missing_set = set(missing_leaves) | set(open_vocabulary_categories)
 
         selected: list[str] = []
         seen: set[str] = set()
@@ -977,6 +1043,7 @@ class GroundingEvidenceExecutor:
             candidates=candidates,
             leaf_states=leaf_states,
             missing_leaves=missing_leaves,
+            open_vocabulary_categories=list(open_vocabulary_categories),
             selected_box_ids=selected,
             fallback_boxes=fallbacks,
             dropped=dropped,
