@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", "--per-device-train-batch-size", "--per_device_train_batch_size", dest="batch_size", type=int, default=1)
     parser.add_argument("--max-seq-length", "--max_seq_length", dest="max_seq_length", type=int, default=4096)
     parser.add_argument("--gradient-accumulation", "--gradient-accumulation-steps", "--gradient_accumulation_steps", dest="gradient_accumulation", type=int, default=1)
+    parser.add_argument("--gradient-checkpointing", "--gradient_checkpointing", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--epochs", "--num-train-epochs", "--num_train_epochs", dest="epochs", type=int, default=1)
     parser.add_argument("--max-steps", type=int)
     parser.add_argument("--seed", type=int, default=1234)
@@ -150,6 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logging_steps=args.logging_steps,
                 batch_size=args.batch_size,
                 max_seq_length=args.max_seq_length,
+                gradient_checkpointing=args.gradient_checkpointing,
                 repeat_group_key=args.repeat_group_key,
                 repeat_weights=repeat_weights,
                 save_steps=args.save_steps,

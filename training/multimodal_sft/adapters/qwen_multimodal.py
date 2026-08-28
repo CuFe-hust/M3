@@ -51,6 +51,29 @@ def collate(encoded_examples: Sequence[Mapping[str, Any]]) -> tuple[dict[str, An
 
     return _legacy().Phase2DataCollator()(list(encoded_examples))
 
+def prepare_selective_loss_inputs(batch: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Select only positions with assistant targets before Qwen computes logits."""
+
+    import torch
+
+    labels = batch.get("labels")
+    if labels is None:
+        raise AdapterContractError("labels are required for selective causal loss")
+    if labels.ndim == 1:
+        labels = labels.unsqueeze(0)
+    valid = labels[:, 1:] != _legacy().IGNORE_INDEX
+    positions = torch.nonzero(valid.any(dim=0), as_tuple=False).flatten()
+    if positions.numel() == 0:
+        raise AdapterContractError("selective causal loss has no supervised targets")
+    model_inputs = dict(batch)
+    model_inputs.pop("labels", None)
+    model_inputs["logits_to_keep"] = positions.to(labels.device)
+    return model_inputs, {
+        "targets": labels[:, positions + 1],
+        "target_mask": valid[:, positions],
+        "chunk_size": 64,
+    }
+
 
 def validate_image_placeholder_gate(messages: list[dict[str, Any]], image_count: int) -> None:
     placeholders = 0
@@ -303,3 +326,32 @@ def __getattr__(name: str) -> Any:
         globals()[name] = value
         return value
     raise AttributeError(name)
+
+def compute_selective_causal_lm_loss(output: Any, context: Mapping[str, Any]) -> Any:
+    """Compute standard shifted CE in small vocab chunks to avoid float-logit OOM."""
+
+    import torch
+    import torch.nn.functional as functional
+
+    logits = output.get("logits") if isinstance(output, Mapping) else getattr(output, "logits", None)
+    if logits is None:
+        raise AdapterContractError("model output has no logits for selective causal loss")
+    targets = context["targets"]
+    target_mask = context["target_mask"]
+    chunk_size = max(1, int(context.get("chunk_size", 64)))
+    total = logits.new_zeros((), dtype=torch.float32)
+    count = int(target_mask.sum().item())
+    if count <= 0:
+        raise AdapterContractError("selective causal loss has no supervised targets")
+    for start in range(0, int(logits.shape[1]), chunk_size):
+        end = min(int(logits.shape[1]), start + chunk_size)
+        mask = target_mask[:, start:end]
+        if not bool(mask.any().item()):
+            continue
+        chunk_logits = logits[:, start:end, :][mask].float()
+        chunk_targets = targets[:, start:end][mask]
+        total = total + functional.cross_entropy(
+            chunk_logits, chunk_targets, reduction="sum"
+        )
+    return total / count
+
