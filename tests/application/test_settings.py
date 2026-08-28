@@ -525,17 +525,38 @@ def test_visual_planning_defaults_to_v5_planner_state() -> None:
     assert settings.visual_planning.segmenters == {}
 
 
-def test_evidence_preprocessing_defaults_to_frozen_greedy_1024_identity() -> None:
-    """The preprocessing identity is typed and frozen, never free dict fields.
-    预处理身份是类型化且冻结的，绝不放进自由 dict。"""
+def test_evidence_preprocessing_defaults_to_fresh_v2_identity() -> None:
+    """The preprocessing identity is typed and frozen, never free dict
+    fields; fresh runs default to the combined yolo-v1-segformer-pad-v1
+    identity with backend-specific versions. 预处理身份是类型化且冻结的，绝不
+    放进自由 dict；新鲜运行默认使用 yolo-v1-segformer-pad-v1 组合身份与
+    backend-specific 版本。"""
     preprocessing = AppSettings().visual_planning.preprocessing
-    assert preprocessing.version == "greedy-1024-stretch-v1"
+    assert preprocessing.version == "yolo-v1-segformer-pad-v1"
     assert preprocessing.tile_size == 1024
     assert preprocessing.partition_policy == "greedy-row-major-no-overlap"
     assert preprocessing.remainder_resize == "stretch"
     assert preprocessing.rgb_interpolation == "lanczos"
     assert preprocessing.mask_inverse_interpolation == "nearest"
     assert preprocessing.max_tile_concurrency == 4
+    assert preprocessing.yolo_version == "greedy-1024-stretch-v1"
+    assert preprocessing.segformer_version == "pad-multiple-1024-resize-square-v1"
+    assert preprocessing.segformer_padding_mode == "constant-black-right-bottom"
+    assert preprocessing.segformer_rgb_interpolation == "lanczos"
+    assert preprocessing.segformer_mask_inverse_interpolation == "nearest"
+
+
+def test_evidence_preprocessing_accepts_explicit_legacy_v1_identity() -> None:
+    """The legacy v1 combined identity stays expressible as an explicit
+    configuration for historical interpretation; it never silently upgrades
+    to the pad protocol. 旧 v1 组合身份仍可作为显式配置表达历史解释；绝不静默
+    升级为 pad 协议。"""
+    settings = AppSettings(
+        visual_planning={"preprocessing": {"version": "greedy-1024-stretch-v1"}}
+    )
+    preprocessing = settings.visual_planning.preprocessing
+    assert preprocessing.version == "greedy-1024-stretch-v1"
+    assert preprocessing.segformer_version == "pad-multiple-1024-resize-square-v1"
 
 
 def test_evidence_preprocessing_rejects_unknown_policies_and_extra_fields() -> None:
@@ -561,6 +582,24 @@ def test_evidence_preprocessing_rejects_unknown_policies_and_extra_fields() -> N
         AppSettings(
             visual_planning={
                 "preprocessing": {"surprise": True},
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"version": "pad-v9"},
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"segformer_version": "stretch-v1"},
+            }
+        )
+    with pytest.raises(ValueError):
+        AppSettings(
+            visual_planning={
+                "preprocessing": {"segformer_padding_mode": "constant-black-all"},
             }
         )
 

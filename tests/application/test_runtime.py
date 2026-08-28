@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from PIL import Image
 
@@ -374,26 +375,32 @@ def test_normal_resume_preserves_manifest_identity(tmp_path: Path) -> None:
 
 
 def test_fresh_run_round_trips_evidence_preprocessing_identity(tmp_path: Path) -> None:
-    """Fresh runs persist the frozen evidence preprocessing identity and resume
-    reconstructs exactly the same sub-object. 新鲜运行持久化冻结 evidence
-    预处理身份，resume 重建出完全相同的子对象。"""
+    """Fresh runs persist the frozen v2 evidence preprocessing identity and
+    resume reconstructs exactly the same sub-object.
+    新鲜运行持久化冻结的 v2 evidence 预处理身份，resume 重建出完全相同的
+    子对象。"""
     data_root = tmp_path / "data"
     _make_dataset(data_root)
     runtime = _runtime(tmp_path)
-    options = _options(root=data_root, run_id="v1-run")
+    options = _options(root=data_root, run_id="v2-run")
     assert _run(runtime, options)["auto"].succeeded == 1
     request = json.loads(
-        (tmp_path / "runs" / "v1-run" / "run_request.json").read_text(encoding="utf-8")
+        (tmp_path / "runs" / "v2-run" / "run_request.json").read_text(encoding="utf-8")
     )
     identity = request["evidence_preprocessing"]
-    assert identity["version"] == "greedy-1024-stretch-v1"
+    assert identity["version"] == "yolo-v1-segformer-pad-v1"
     assert identity["tile_size"] == 1024
     assert identity["max_tile_concurrency"] == 4
     assert identity["rgb_interpolation"] == "lanczos"
     assert identity["mask_inverse_interpolation"] == "nearest"
+    assert identity["yolo_version"] == "greedy-1024-stretch-v1"
+    assert identity["segformer_version"] == "pad-multiple-1024-resize-square-v1"
+    assert identity["segformer_padding_mode"] == "constant-black-right-bottom"
+    assert identity["segformer_rgb_interpolation"] == "lanczos"
+    assert identity["segformer_mask_inverse_interpolation"] == "nearest"
 
-    resumed = _options(root=data_root, run_id="v1-run", resume=True)
-    assert _run(runtime, resumed)["auto"].run_id == "v1-run"
+    resumed = _options(root=data_root, run_id="v2-run", resume=True)
+    assert _run(runtime, resumed)["auto"].run_id == "v2-run"
 
 
 def test_resume_evidence_preprocessing_conflict_fails_closed(tmp_path: Path) -> None:
@@ -403,15 +410,153 @@ def test_resume_evidence_preprocessing_conflict_fails_closed(tmp_path: Path) -> 
     data_root = tmp_path / "data"
     _make_dataset(data_root)
     runtime = _runtime(tmp_path)
-    _run(runtime, _options(root=data_root, run_id="v1-run"))
+    _run(runtime, _options(root=data_root, run_id="v2-run"))
     calls_after_fresh = runtime.components.qwen_client.calls
     drifted = dataclasses.replace(
-        _options(root=data_root, run_id="v1-run", resume=True),
+        _options(root=data_root, run_id="v2-run", resume=True),
         evidence_preprocessing=EvidencePreprocessingIdentity(max_tile_concurrency=8),
     )
     with pytest.raises(ValueError, match="evidence preprocessing mismatch"):
         _run(runtime, drifted)
     assert runtime.components.qwen_client.calls == calls_after_fresh
+
+
+def test_resume_v1_run_with_v2_identity_is_rejected_before_models(
+    tmp_path: Path,
+) -> None:
+    """A persisted v1 run resumed with an explicitly supplied v2 identity
+    fails on the identity comparison before any model call: the same version
+    string never represents two algorithms.
+    持久化 v1 运行以调用方显式提供的 v2 身份 resume 时，身份比较在任何模型
+    调用前失败：同一版本字符串绝不代表两种算法。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    _run(runtime, _options(root=data_root, run_id="v1-run"))
+    calls_after_fresh = runtime.components.qwen_client.calls
+    request_path = tmp_path / "runs" / "v1-run" / "run_request.json"
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    identity = request["evidence_preprocessing"]
+    # Rewrite the persisted identity to the v1 combined version without any
+    # v2-only fields, exactly like a run created before this change.
+    # 把持久化身份改写为不带任何 v2 专属字段的 v1 组合版本，恰如本改动前创建
+    # 的运行。
+    for field in (
+        "yolo_version",
+        "segformer_version",
+        "segformer_padding_mode",
+        "segformer_rgb_interpolation",
+        "segformer_mask_inverse_interpolation",
+    ):
+        identity.pop(field, None)
+    identity["version"] = "greedy-1024-stretch-v1"
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+    # The caller explicitly supplies the fresh v2 identity.
+    # 调用方显式提供新鲜 v2 身份。
+    v2 = EvidencePreprocessingIdentity(
+        version="yolo-v1-segformer-pad-v1",
+        tile_size=1024,
+        partition_policy="greedy-row-major-no-overlap",
+        remainder_resize="stretch",
+        rgb_interpolation="lanczos",
+        mask_inverse_interpolation="nearest",
+        max_tile_concurrency=4,
+        yolo_version="greedy-1024-stretch-v1",
+        segformer_version="pad-multiple-1024-resize-square-v1",
+        segformer_padding_mode="constant-black-right-bottom",
+        segformer_rgb_interpolation="lanczos",
+        segformer_mask_inverse_interpolation="nearest",
+    )
+    drifted = dataclasses.replace(
+        _options(root=data_root, run_id="v1-run", resume=True),
+        evidence_preprocessing=v2,
+    )
+    with pytest.raises(ValueError, match="evidence preprocessing mismatch"):
+        _run(runtime, drifted)
+    assert runtime.components.qwen_client.calls == calls_after_fresh
+
+
+def test_resume_v2_run_with_v1_identity_is_rejected_before_models(
+    tmp_path: Path,
+) -> None:
+    """A persisted v2 run resumed with an explicit legacy v1 identity fails
+    on the identity comparison before any model call.
+    持久化 v2 运行以显式旧 v1 身份 resume 时，身份比较在任何模型调用前失败。"""
+    data_root = tmp_path / "data"
+    _make_dataset(data_root)
+    runtime = _runtime(tmp_path)
+    _run(runtime, _options(root=data_root, run_id="v2-run"))
+    calls_after_fresh = runtime.components.qwen_client.calls
+    v1 = EvidencePreprocessingIdentity(
+        version="greedy-1024-stretch-v1",
+        tile_size=1024,
+        partition_policy="greedy-row-major-no-overlap",
+        remainder_resize="stretch",
+        rgb_interpolation="lanczos",
+        mask_inverse_interpolation="nearest",
+        max_tile_concurrency=4,
+    )
+    drifted = dataclasses.replace(
+        _options(root=data_root, run_id="v2-run", resume=True),
+        evidence_preprocessing=v1,
+    )
+    with pytest.raises(ValueError, match="evidence preprocessing mismatch"):
+        _run(runtime, drifted)
+    assert runtime.components.qwen_client.calls == calls_after_fresh
+
+
+def test_v2_identity_requires_every_field_explicitly() -> None:
+    """A v2 identity missing any required field fails parsing instead of
+    filling schema defaults; a v1 object never carries v2-only fields.
+    v2 身份缺少任一必填字段时解析失败而非用 schema 默认值补齐；v1 对象绝不
+    携带 v2 专属字段。"""
+    with pytest.raises(ValidationError):
+        EvidencePreprocessingIdentity(
+            version="yolo-v1-segformer-pad-v1",
+            tile_size=1024,
+            partition_policy="greedy-row-major-no-overlap",
+            remainder_resize="stretch",
+            rgb_interpolation="lanczos",
+            mask_inverse_interpolation="nearest",
+            max_tile_concurrency=4,
+            yolo_version="greedy-1024-stretch-v1",
+            segformer_version="pad-multiple-1024-resize-square-v1",
+            segformer_padding_mode="constant-black-right-bottom",
+            segformer_rgb_interpolation="lanczos",
+            # segformer_mask_inverse_interpolation missing
+        )
+    with pytest.raises(ValidationError):
+        EvidencePreprocessingIdentity(
+            version="greedy-1024-stretch-v1",
+            tile_size=1024,
+            partition_policy="greedy-row-major-no-overlap",
+            remainder_resize="stretch",
+            rgb_interpolation="lanczos",
+            mask_inverse_interpolation="nearest",
+            max_tile_concurrency=4,
+            yolo_version="greedy-1024-stretch-v1",
+        )
+    legacy = {
+        "version": "greedy-1024-stretch-v1",
+        "tile_size": 1024,
+        "partition_policy": "greedy-row-major-no-overlap",
+        "remainder_resize": "stretch",
+        "rgb_interpolation": "lanczos",
+        "mask_inverse_interpolation": "nearest",
+        "max_tile_concurrency": 4,
+    }
+    round_tripped = EvidencePreprocessingIdentity.model_validate(legacy)
+    assert round_tripped.version == "greedy-1024-stretch-v1"
+    assert round_tripped.segformer_version is None
+    dumped = round_tripped.model_dump(mode="json")
+    for field in (
+        "yolo_version",
+        "segformer_version",
+        "segformer_padding_mode",
+        "segformer_rgb_interpolation",
+        "segformer_mask_inverse_interpolation",
+    ):
+        assert dumped[field] is None
 
 
 def test_fresh_run_persists_and_resume_reconstructs_vqa_assistance_scope(

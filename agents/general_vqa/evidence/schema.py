@@ -203,6 +203,83 @@ class EvidenceTileRecord(BaseModel):
         return self
 
 
+class SegFormerPreprocessRecord(BaseModel):
+    """Strict JSON-safe geometry of one fresh SegFormer (ROI, binding) model
+    call under the pad-multiple-1024-resize-square-v1 protocol: the whole ROI
+    is padded on the right and bottom with constant black to the minimal
+    multiples of 1024, then resized to one strict 1024×1024 model input.
+    The validator recomputes the minimal ceiling padding and requires exact
+    equality — over-padding, hidden offsets, or a non-1024 model input fail
+    closed. Only geometry and protocol identity are persisted; PIL/tensor/
+    mask/Base64/physical model paths never appear here.
+    一次新鲜 SegFormer（ROI，binding）模型调用在
+    pad-multiple-1024-resize-square-v1 协议下的严格 JSON 安全几何：整张 ROI
+    在右侧与底部以固定黑色 padding 到 1024 的最小倍数，再缩放到严格 1024×1024
+    模型输入。validator 重新计算最小上取整 padding 并要求精确相等——过度
+    padding、隐式偏移或非 1024 模型输入都严格失败。只持久化几何与协议身份；
+    PIL/tensor/mask/Base64/物理模型路径绝不出现。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    roi_id: str = Field(min_length=1, pattern=_BOX_PATTERN)
+    source_size: tuple[int, int]
+    padded_size: tuple[int, int]
+    padding_right: int = Field(ge=0)
+    padding_bottom: int = Field(ge=0)
+    # Plain tuple + explicit validator instead of Literal[(1024, 1024)]:
+    # pydantic flattens a tuple literal into scalar choices, which would make
+    # an explicit tuple input fail validation.
+    # 用普通 tuple + 显式 validator 而非 Literal[(1024, 1024)]：pydantic 会把
+    # tuple literal 展开成标量选择，导致显式 tuple 输入校验失败。
+    model_input_size: tuple[int, int] = (1024, 1024)
+    scale_x: float = Field(gt=0)
+    scale_y: float = Field(gt=0)
+    padding_mode: Literal["constant-black-right-bottom"] = (
+        "constant-black-right-bottom"
+    )
+    rgb_interpolation: Literal["lanczos"] = "lanczos"
+    mask_inverse_interpolation: Literal["nearest"] = "nearest"
+
+    @model_validator(mode="after")
+    def validate_geometry(self) -> "SegFormerPreprocessRecord":
+        """Require the minimal ceiling padding: the padded size must equal the
+        smallest 1024 multiples of the source size, the right/bottom padding
+        must match exactly, and the scales must equal 1024 / padded extent.
+        Over-padding, hidden offsets, or a non-1024 model input fail closed.
+        要求最小上取整 padding：padded size 必须等于源尺寸最小的 1024 倍数，
+        right/bottom padding 必须精确匹配，scale 必须等于 1024 / padded 尺寸。
+        过度 padding、隐式偏移或非 1024 模型输入都严格失败。"""
+        _validate_size(self.source_size, "source_size")
+        _validate_size(self.padded_size, "padded_size")
+        if self.model_input_size != (1024, 1024):
+            raise ValueError("model_input_size must be the strict 1024x1024 model input")
+        source_width, source_height = self.source_size
+        padded_width, padded_height = self.padded_size
+        expected_width = ((source_width + 1023) // 1024) * 1024
+        expected_height = ((source_height + 1023) // 1024) * 1024
+        if padded_width != expected_width or padded_height != expected_height:
+            raise ValueError(
+                "padded_size must be the minimal 1024 multiples of source_size"
+            )
+        if self.padding_right != expected_width - source_width:
+            raise ValueError("padding_right must equal padded_width - source_width")
+        if self.padding_bottom != expected_height - source_height:
+            raise ValueError("padding_bottom must equal padded_height - source_height")
+        if self.padding_right >= 1024 or self.padding_bottom >= 1024:
+            raise ValueError("padding must stay within [0, 1023]")
+        if not (math.isfinite(self.scale_x) and math.isfinite(self.scale_y)):
+            raise ValueError("segformer scales must be finite")
+        if not math.isclose(
+            self.scale_x, 1024 / padded_width, rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ValueError("scale_x must equal 1024 / padded_width")
+        if not math.isclose(
+            self.scale_y, 1024 / padded_height, rel_tol=1e-9, abs_tol=1e-9
+        ):
+            raise ValueError("scale_y must equal 1024 / padded_height")
+        return self
+
+
 class LayerStateRecord(BaseModel):
     """One per-(leaf, layer) diagnostic state. The final leaf state is the
     deepest layer's state; hit leaves reach no further layer.
@@ -258,13 +335,23 @@ class EvidencePreprocessing(BaseModel):
     root. agents never import application settings, so this local contract
     mirrors the settings identity without importing it. The values are
     inject-only: no production default is invented anywhere else.
-    组合根注入的冻结 evidence tile 预处理值。agents 绝不导入 application
-    settings，因此本地契约镜像该身份而不导入之。值为仅注入：其他位置绝不
-    杜撰生产默认值。"""
+    version names the complete algorithm combination: v1
+    (greedy-1024-stretch-v1) keeps the legacy stretch semantics for both
+    phases; v2 (yolo-v1-segformer-pad-v1) keeps YOLO on greedy tiles while
+    SegFormer moves to the pad-multiple-1024-resize-square protocol. The
+    backend-specific v2 fields are never defaulted into a v1 identity.
+    组合根注入的冻结 evidence 预处理值。agents 绝不导入 application settings，
+    因此本地契约镜像该身份而不导入之。值为仅注入：其他位置绝不杜撰生产默认
+    值。version 标识完整算法组合：v1（greedy-1024-stretch-v1）两个阶段都保持
+    旧 stretch 语义；v2（yolo-v1-segformer-pad-v1）YOLO 保持 greedy tiles，
+    SegFormer 改为 pad-multiple-1024-resize-square 协议。backend-specific 的
+    v2 字段绝不通过默认值注入 v1 身份。"""
 
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    version: Literal["greedy-1024-stretch-v1", "yolo-v1-segformer-pad-v1"] = (
+        "yolo-v1-segformer-pad-v1"
+    )
     tile_size: Literal[1024] = 1024
     partition_policy: Literal["greedy-row-major-no-overlap"] = (
         "greedy-row-major-no-overlap"
@@ -273,6 +360,47 @@ class EvidencePreprocessing(BaseModel):
     rgb_interpolation: Literal["lanczos"] = "lanczos"
     mask_inverse_interpolation: Literal["nearest"] = "nearest"
     max_tile_concurrency: int = Field(default=4, ge=1, le=32)
+    # Backend-specific frozen identities: YOLO stays on the v1 tile protocol
+    # under both combined versions; SegFormer is v2-only here because the
+    # legacy stretch path is read-only for historical artifacts. The default
+    # values are the frozen v2 ones; a v1 identity is expressed by explicit
+    # None for every v2 field.
+    # 后端特定冻结身份：两种组合版本下 YOLO 都保持 v1 tile 协议；此处
+    # SegFormer 仅 v2，因为旧 stretch 路径只用于历史 artifact 只读解释。
+    # 默认值即冻结的 v2 值；v1 身份通过把所有 v2 字段显式置 None 表达。
+    yolo_version: Literal["greedy-1024-stretch-v1"] | None = "greedy-1024-stretch-v1"
+    segformer_version: Literal["pad-multiple-1024-resize-square-v1"] | None = (
+        "pad-multiple-1024-resize-square-v1"
+    )
+    segformer_padding_mode: Literal["constant-black-right-bottom"] | None = (
+        "constant-black-right-bottom"
+    )
+    segformer_rgb_interpolation: Literal["lanczos"] | None = "lanczos"
+    segformer_mask_inverse_interpolation: Literal["nearest"] | None = "nearest"
+
+    @model_validator(mode="after")
+    def validate_version_consistency(self) -> "EvidencePreprocessing":
+        """The same version string never represents two algorithms: a v1
+        identity must not carry v2-only fields and a v2 identity must carry
+        all of them. 一个版本字符串不得代表两种算法：v1 身份不得携带 v2 专属
+        字段，v2 身份必须携带全部 v2 字段。"""
+        v2_fields = (
+            "yolo_version",
+            "segformer_version",
+            "segformer_padding_mode",
+            "segformer_rgb_interpolation",
+            "segformer_mask_inverse_interpolation",
+        )
+        if self.version == "greedy-1024-stretch-v1":
+            if any(getattr(self, name) is not None for name in v2_fields):
+                raise ValueError(
+                    "greedy-1024-stretch-v1 preprocessing must not carry v2-only fields"
+                )
+        elif any(getattr(self, name) is None for name in v2_fields):
+            raise ValueError(
+                "yolo-v1-segformer-pad-v1 preprocessing requires every v2 field"
+            )
+        return self
 
 
 class VqaEvidenceBundle(BaseModel):
@@ -291,11 +419,18 @@ class VqaEvidenceBundle(BaseModel):
     # resume 可据此核验来源。
     catalog_version: str = Field(min_length=1)
     # Frozen tile-preprocessing identity and the deterministic tile record of
-    # every model call (6.2). Old artifacts may lack both: fresh v1 executors
+    # every model call (6.2). Old artifacts may lack both: fresh executors
     # must fill them. 冻结的 tile 预处理身份与每次模型调用的确定性 tile 记录
-    # （6.2）。旧 artifact 可能缺失两者：fresh v1 executor 必须填满。
+    # （6.2）。旧 artifact 可能缺失两者：fresh executor 必须填满。
     preprocessing_version: str | None = None
     tiles: list[EvidenceTileRecord] = Field(default_factory=list)
+    # Fresh SegFormer geometry records under the pad protocol: one per ROI
+    # with a fresh SegFormer call. Old artifacts without them stay readable.
+    # pad 协议下新鲜 SegFormer 的几何记录：每个发生过新鲜 SegFormer 调用的
+    # ROI 一条。旧 artifact 缺失时仍可只读解析。
+    segformer_preprocess: list[SegFormerPreprocessRecord] = Field(
+        default_factory=list
+    )
     rois: list[RoiEvidenceRecord] = Field(default_factory=list)
     detections: list[YoloDetectionRecord] = Field(default_factory=list)
     segments: list[SegFormerEvidenceRecord] = Field(default_factory=list)
@@ -310,7 +445,7 @@ class VqaEvidenceBundle(BaseModel):
         every missing leaf. 强制跨记录引用：每条检测/掩膜 roi 必须存在，每个
         缺失叶子必须未命中，leaf_states 必须覆盖全部缺失叶子。"""
         roi_ids = {record.roi_id for record in self.rois}
-        for record in [*self.detections, *self.segments]:
+        for record in [*self.detections, *self.segments, *self.segformer_preprocess]:
             if record.roi_id not in roi_ids:
                 raise ValueError(f"evidence references unknown roi_id {record.roi_id!r}")
         seen_leaves: list[str] = []

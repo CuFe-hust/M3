@@ -197,10 +197,20 @@ class VisualSegmenterSettings(BaseModel):
 
 
 class VisualEvidencePreprocessSettings(BaseModel):
-    """Frozen evidence-tile preprocessing identity shared by VQA evidence
-    phases. One deterministic identity for every model call made inside the
-    planner ROI pipeline. 冻结的 evidence tile 预处理身份，由 VQA evidence
-    各阶段共享；planner ROI 管线内的每次模型调用使用同一个确定性身份。
+    """Frozen evidence preprocessing identity shared by VQA evidence phases.
+    One deterministic identity for every model call made inside the planner
+    ROI pipeline. version names the complete algorithm combination: fresh
+    runs default to ``yolo-v1-segformer-pad-v1`` (YOLO on greedy tiles,
+    SegFormer on the pad-multiple-1024-resize-square protocol); the legacy
+    ``greedy-1024-stretch-v1`` remains expressible only as an explicit
+    configuration for historical interpretation. The backend-specific
+    yolo_version/segformer_version fields freeze each phase's own protocol.
+    冻结的 evidence 预处理身份，由 VQA evidence 各阶段共享；planner ROI 管线
+    内的每次模型调用使用同一个确定性身份。version 标识完整算法组合：新鲜运行
+    默认 ``yolo-v1-segformer-pad-v1``（YOLO 走 greedy tiles，SegFormer 走
+    pad-multiple-1024-resize-square 协议）；旧 ``greedy-1024-stretch-v1``
+    只允许作为显式配置表达历史解释。backend-specific 的
+    yolo_version/segformer_version 字段分别冻结各阶段的协议。
 
     Identifiers of the form ``*_v1`` are a typed capability contract: when the
     pipeline semantics change, a new version must be declared instead of
@@ -209,7 +219,9 @@ class VisualEvidencePreprocessSettings(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    version: Literal["greedy-1024-stretch-v1", "yolo-v1-segformer-pad-v1"] = (
+        "yolo-v1-segformer-pad-v1"
+    )
     tile_size: Literal[1024] = 1024
     partition_policy: Literal["greedy-row-major-no-overlap"] = (
         "greedy-row-major-no-overlap"
@@ -218,6 +230,19 @@ class VisualEvidencePreprocessSettings(BaseModel):
     rgb_interpolation: Literal["lanczos"] = "lanczos"
     mask_inverse_interpolation: Literal["nearest"] = "nearest"
     max_tile_concurrency: int = Field(default=4, ge=1, le=32)
+    # Backend-specific frozen identities: YOLO stays on the v1 tile protocol
+    # under both combined versions; SegFormer defaults to the fresh pad
+    # protocol. 后端特定冻结身份：两种组合版本下 YOLO 都保持 v1 tile 协议；
+    # SegFormer 默认使用新鲜 pad 协议。
+    yolo_version: Literal["greedy-1024-stretch-v1"] = "greedy-1024-stretch-v1"
+    segformer_version: Literal["pad-multiple-1024-resize-square-v1"] = (
+        "pad-multiple-1024-resize-square-v1"
+    )
+    segformer_padding_mode: Literal["constant-black-right-bottom"] = (
+        "constant-black-right-bottom"
+    )
+    segformer_rgb_interpolation: Literal["lanczos"] = "lanczos"
+    segformer_mask_inverse_interpolation: Literal["nearest"] = "nearest"
 
 
 class VisualPlanningSettings(BaseModel):

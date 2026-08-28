@@ -15,8 +15,9 @@ import pytest
 from PIL import Image
 
 from data.adapters.base import DatasetProbeError
-from data.adapters.vrsbench.adapter import VRSBenchAdapter
+from data.adapters.vrsbench.adapter import CAPTION_QUESTION, VRSBenchAdapter
 from data.registry import REGISTRY, DatasetRegistry, register_default_adapters
+from data.schema import stable_sample_id
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -91,7 +92,11 @@ def test_vqa_sample_id_is_stable_and_question_scoped(tmp_path: Path) -> None:
 # ── Caption / grounding / 加载 ──────────────────────────────────────────────
 
 
-def test_caption_release_loads(tmp_path: Path) -> None:
+def test_caption_release_loads_with_canonical_question(tmp_path: Path) -> None:
+    """Caption samples always carry the canonical fixed question, regardless of
+    whether the source row provides one.
+    caption 样本始终携带规范化固定问句，与源行是否提供 question 无关。"""
+
     root = tmp_path / "vrsbench_cap"
     _make_image(root / "Images_val" / "img_1.png")
     _write_json(root / "VRSBench_EVAL_Cap.json",
@@ -99,9 +104,57 @@ def test_caption_release_loads(tmp_path: Path) -> None:
     samples = list(VRSBenchAdapter().iter_samples(root, "validation", "caption"))
     assert len(samples) == 1
     assert samples[0].task == "caption"
-    assert samples[0].question == ""
+    assert samples[0].question == CAPTION_QUESTION == "Describe the image in detail."
     assert samples[0].ground_truth is not None
     assert samples[0].ground_truth.answers == ["A harbor with ships."]
+    # The source row stays available for audit.
+    # 源行仍保留供审计。
+    assert samples[0].ground_truth.raw["source_row"]["caption"] == "A harbor with ships."
+
+
+def test_caption_question_cannot_be_overridden_by_source_row(tmp_path: Path) -> None:
+    """A source question in the official no-period form (or any other wording)
+    never overrides the canonical fixed question.
+    官方无句点形式（或其他任何措辞）的源 question 都不能覆盖规范化固定问句。"""
+
+    root = tmp_path / "vrsbench_cap_q"
+    _make_image(root / "Images_val" / "img_1.png")
+    _write_json(root / "VRSBench_EVAL_Cap.json",
+                [{"image_id": "img_1.png",
+                  "question": "Describe the image in detail",
+                  "caption": "A harbor with ships."}])
+    samples = list(VRSBenchAdapter().iter_samples(root, "validation", "caption"))
+    assert len(samples) == 1
+    assert samples[0].question == "Describe the image in detail."
+    # The original source question is preserved for audit.
+    # 原始源 question 保留供审计。
+    assert samples[0].ground_truth.raw["source_row"]["question"] == "Describe the image in detail"
+
+
+def test_caption_sample_id_is_stable_and_uses_canonical_question(tmp_path: Path) -> None:
+    """Repeated loads yield the same caption sample ID, and the ID is computed
+    from the canonical question — a future change that only touches
+    ``UnifiedSample.question`` without the identity hash must fail here.
+    重复加载 caption 样本 ID 相同，且 ID 由规范化固定问句计算——未来若只改
+    ``UnifiedSample.question`` 而遗漏身份哈希，本测试必须失败。"""
+
+    root = tmp_path / "vrsbench_cap_id"
+    _make_image(root / "Images_val" / "img_1.png")
+    _write_json(root / "VRSBench_EVAL_Cap.json",
+                [{"image_id": "img_1.png", "caption": "A harbor with ships."}])
+    adapter = VRSBenchAdapter()
+    first = list(adapter.iter_samples(root, "validation", "caption"))[0]
+    second = list(adapter.iter_samples(root, "validation", "caption"))[0]
+    assert first.sample_id == second.sample_id
+    expected = stable_sample_id(
+        dataset="VRSBench",
+        split="validation",
+        source_id=None,
+        relative_image_paths=[Path("Images_val/img_1.png")],
+        question=CAPTION_QUESTION,
+        source_index=0,
+    )
+    assert first.sample_id == expected
 
 
 def test_grounding_release_loads_one_sample_per_object(tmp_path: Path) -> None:

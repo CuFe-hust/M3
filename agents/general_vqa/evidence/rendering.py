@@ -33,7 +33,11 @@ from agents.general_vqa.evidence.geometry import (
     MODEL_INPUT_SIZE,
     compute_preview_size,
 )
-from agents.general_vqa.evidence.schema import EvidenceTileRecord, RoiEvidenceRecord
+from agents.general_vqa.evidence.schema import (
+    EvidenceTileRecord,
+    RoiEvidenceRecord,
+    SegFormerPreprocessRecord,
+)
 from models.images import (
     crop_image_box,
     image_to_data_url,
@@ -163,6 +167,99 @@ def restore_class_id_mask(
         tile_record.source_tile_size,
         resample=Image.Resampling.NEAREST,
     )
+
+
+def prepare_segformer_roi(
+    roi_image: Image.Image,
+    *,
+    roi_id: str,
+    source_size: tuple[int, int],
+) -> tuple[SegFormerPreprocessRecord, Image.Image]:
+    """Materialize the single strict 1024×1024 RGB model input of the fresh
+    SegFormer pad protocol (26 §3.1-3.3): pad the whole ROI on the right and
+    bottom with constant black to the minimal 1024 multiples, then resize the
+    padded canvas to 1024 square with LANCZOS. The ROI origin stays (0, 0)
+    with no coordinate shift, so restore/crop and the YOLO ROI-local boxes
+    stay aligned. A new image is always returned; the ROI source is never
+    modified. 物化新鲜 SegFormer pad 协议（26 §3.1-3.3）的单一严格 1024×1024
+    RGB 模型输入：整张 ROI 在右侧与底部以固定黑色 padding 到 1024 最小倍数，
+    再把 padded canvas 用 LANCZOS 缩放到 1024 方形。ROI 原点保持 (0, 0)、无
+    坐标平移，因此恢复/裁切与 YOLO ROI-local 框保持对齐。始终返回新图像；
+    绝不修改 ROI 源。"""
+
+    width, height = source_size
+    if width <= 0 or height <= 0:
+        raise ValueError(f"source_size must be positive, got {source_size!r}")
+    if roi_image.size != source_size:
+        raise ValueError(
+            f"ROI image size {roi_image.size!r} does not match source_size "
+            f"{source_size!r}"
+        )
+    padded_width = ((width + 1023) // 1024) * 1024
+    padded_height = ((height + 1023) // 1024) * 1024
+    canvas = Image.new("RGB", (padded_width, padded_height), (0, 0, 0))
+    canvas.paste(roi_image.convert("RGB"), (0, 0))
+    model_input = canvas.resize(
+        (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+        resample=Image.Resampling.LANCZOS,
+    )
+    preprocess = SegFormerPreprocessRecord(
+        roi_id=roi_id,
+        source_size=(width, height),
+        padded_size=(padded_width, padded_height),
+        padding_right=padded_width - width,
+        padding_bottom=padded_height - height,
+        model_input_size=(MODEL_INPUT_SIZE, MODEL_INPUT_SIZE),
+        scale_x=MODEL_INPUT_SIZE / padded_width,
+        scale_y=MODEL_INPUT_SIZE / padded_height,
+        padding_mode="constant-black-right-bottom",
+        rgb_interpolation="lanczos",
+        mask_inverse_interpolation="nearest",
+    )
+    return preprocess, model_input
+
+
+def restore_segformer_class_id_mask(
+    model_mask: Image.Image,
+    preprocess: SegFormerPreprocessRecord,
+) -> Image.Image:
+    """Restore one strict 1024×1024 integer class-id model mask to the source
+    ROI size: NEAREST back to the padded canvas, then crop [0:W, 0:H] so the
+    padding region can never appear in the final mask. The input must be a
+    strict 1024 square integer grid ("L" or "I" mode); bilinear/LANCZOS are
+    never used on class ids, which could fabricate class values. The returned
+    grid is exactly preprocess.source_size, aligned to the ROI-local frame.
+    将一个严格 1024×1024 整数 class-id model mask 恢复到源 ROI 尺寸：NEAREST
+    缩回 padded canvas，再裁切 [0:W, 0:H] 使 padding 区域绝不出现在最终 mask。
+    输入必须是严格 1024 方形整数网格（"L" 或 "I" 模式）；class id 绝不使用
+    bilinear/LANCZOS，以免杜撰类别值。返回网格尺寸恰为 preprocess.source_size，
+    与 ROI 局部坐标系对齐。"""
+
+    if model_mask.mode not in ("L", "I"):
+        raise ValueError(
+            f"model mask mode {model_mask.mode!r} must be an integer class-id grid"
+        )
+    if model_mask.size != (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        raise ValueError("model mask must be a strict 1024x1024 model input")
+    minimum, _ = model_mask.getextrema()
+    if minimum < 0:
+        raise ValueError("model mask class ids must be non-negative")
+    width, height = preprocess.source_size
+    padded_width, padded_height = preprocess.padded_size
+    if (padded_width, padded_height) == (MODEL_INPUT_SIZE, MODEL_INPUT_SIZE):
+        restored = model_mask.copy()
+    else:
+        restored = model_mask.resize(
+            (padded_width, padded_height),
+            resample=Image.Resampling.NEAREST,
+        )
+    cropped = restored.crop((0, 0, width, height))
+    if cropped.size != (width, height):
+        raise ValueError(
+            f"restored mask size {cropped.size!r} must equal source_size "
+            f"{(width, height)!r}"
+        )
+    return cropped
 
 
 def stitch_class_id_masks(
@@ -327,20 +424,32 @@ def render_yolo_annotation(
     image: Image.Image,
     boxes: Sequence[tuple[str, tuple[float, float, float, float]]],
     *,
+    source_size: tuple[int, int] | None = None,
     resample: Image.Resampling = Image.Resampling.LANCZOS,
 ) -> Image.Image:
     """Annotate one image with the frozen high-contrast YOLO boxes: shrink
     only to <=1080 first (never upscale), then a black 5px outer stroke, a
     magenta 3px inner stroke, and a black label plate with a magenta border
     and white leaf text — confidence never appears. Boxes are given in the
-    input image's pixel frame and scale with the preview. A new image is
-    always returned; the source is never modified. 用冻结高对比 YOLO 框标注
-    一张图像：先只缩到 <=1080（绝不放大），再画黑色 5px 外描边、品红 3px
-    内描边，以及黑底、品红边框、白色叶子文字的标签底板——confidence 绝不
-    出现。框以输入图像像素帧给出，随预览等比缩放。始终返回新图像；绝不
-    修改源。"""
+    input image's pixel frame and scale with the preview. When the caller
+    already shrunk the image (e.g. a NEAREST pre-shrunk pure mask) it must
+    pass ``source_size`` — the pixel frame the boxes live in — so the boxes
+    scale onto the preview instead of being drawn at scale 1.0 on the smaller
+    canvas. A new image is always returned; the source is never modified.
+    用冻结高对比 YOLO 框标注一张图像：先只缩到 <=1080（绝不放大），再画黑色
+    5px 外描边、品红 3px 内描边，以及黑底、品红边框、白色叶子文字的标签底板
+    ——confidence 绝不出现。框以输入图像像素帧给出，随预览等比缩放。调用方
+    若已预先缩小图像（如 NEAREST 预缩的纯色 mask），必须传 ``source_size``
+    ——框所在的像素帧——使框按预览缩放，而不是以 scale 1.0 画在更小的画布上。
+    始终返回新图像；绝不修改源。"""
     preview = make_preview(image, resample=resample)
-    if preview.size == image.size:
+    if source_size is not None:
+        src_width, src_height = source_size
+        if src_width <= 0 or src_height <= 0:
+            raise ValueError("source_size must be positive")
+        scale_x = preview.width / src_width
+        scale_y = preview.height / src_height
+    elif preview.size == image.size:
         scale_x = scale_y = 1.0
     else:
         scale_x = preview.width / image.width
@@ -371,15 +480,27 @@ def _draw_label_plate(
     text. 在框上方绘制叶子标签底板（框贴顶时画在框内）；底板为黑色、品红
     边框、白色文字。"""
     left, top, right, _ = box
-    plate_left = int(left)
-    plate_top = int(top)
+    image_width = draw.im.size[0]
+    image_height = draw.im.size[1]
     text_width, text_height = draw.textbbox((0, 0), leaf, font=font)[2:4]
     plate_width = text_width + 2 * _LABEL_PLATE_PADDING
     plate_height = text_height + 2 * _LABEL_PLATE_PADDING
+    # Clamp the plate inside the image. A degenerate/near-edge YOLO box must
+    # not produce an inverted rectangle (x1 < x0 or y1 < y0).
+    # 把底板限制在图像内。退化/贴边 YOLO 框绝不能产生反转矩形（x1 < x0 或 y1 < y0）。
+    max_left = max(0, image_width - plate_width - 1)
+    plate_left = min(max(0, int(left)), max_left)
+    plate_top = int(top)
     if plate_top - plate_height - 2 >= 0:
         plate_top = plate_top - plate_height - 2
-    plate_right = min(draw.im.size[0] - 1, plate_left + plate_width)
-    plate_bottom = min(draw.im.size[1] - 1, plate_top + plate_height)
+    max_top = max(0, image_height - plate_height - 1)
+    plate_top = min(max(0, plate_top), max_top)
+    plate_right = min(image_width - 1, plate_left + plate_width)
+    plate_bottom = min(image_height - 1, plate_top + plate_height)
+    if plate_right < plate_left:
+        plate_right = plate_left
+    if plate_bottom < plate_top:
+        plate_bottom = plate_top
     draw.rectangle(
         (plate_left, plate_top, plate_right, plate_bottom),
         fill=_MASK_BACKGROUND,

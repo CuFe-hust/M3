@@ -420,6 +420,14 @@ class GeneralVQAAgent(VisualAgentBase):
                             resample=Image.Resampling.NEAREST,
                         ),
                         yolo_boxes,
+                        # The pure mask is already shrunk with NEAREST, but the
+                        # boxes still live in the source ROI pixel frame: pass
+                        # source_size so they scale onto the preview instead of
+                        # being drawn at scale 1.0 on the smaller canvas.
+                        # 纯色 mask 已用 NEAREST 缩小，但框仍位于源 ROI 像素帧：
+                        # 传入 source_size 使框按预览缩放，而不是以 scale 1.0
+                        # 画在更小的画布上。
+                        source_size=record.crop_size,
                         # The pure mask is already shrunk with NEAREST;
                         # keep that discrete palette while drawing YOLO.
                         # 纯色 mask 已经用 NEAREST 缩小；绘制 YOLO 框时继续

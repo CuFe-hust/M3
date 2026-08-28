@@ -21,15 +21,21 @@ from agents.general_vqa.evidence.geometry import partition_roi
 from agents.general_vqa.evidence.rendering import (
     make_preview,
     prepare_model_tile,
+    prepare_segformer_roi,
     preview_from_path,
     render_pure_mask,
     render_roi_crop,
     render_yolo_annotation,
     restore_class_id_mask,
+    restore_segformer_class_id_mask,
     segformer_palette,
     stitch_class_id_masks,
 )
-from agents.general_vqa.evidence.schema import EvidenceTileRecord, RoiEvidenceRecord
+from agents.general_vqa.evidence.schema import (
+    EvidenceTileRecord,
+    RoiEvidenceRecord,
+    SegFormerPreprocessRecord,
+)
 from models.images import crop_image_box
 
 
@@ -423,3 +429,214 @@ def test_stitch_class_id_masks_fails_closed_on_hole_overlap_and_drift() -> None:
             [(full, Image.new("F", (1024, 1024), 0.5))],
             roi_size,
         )
+
+
+# ── SegFormer pad protocol (26 §3) / SegFormer pad 协议 ───────────────────
+
+
+def _pad_record(
+    source_size: tuple[int, int],
+    *,
+    roi_id: str = "roi-0",
+) -> SegFormerPreprocessRecord:
+    """Build the exact pad geometry for a source size under the frozen
+    minimal-ceiling protocol. 按冻结最小上取整协议构造指定源尺寸的 pad 几何。"""
+    width, height = source_size
+    padded_width = ((width + 1023) // 1024) * 1024
+    padded_height = ((height + 1023) // 1024) * 1024
+    return SegFormerPreprocessRecord(
+        roi_id=roi_id,
+        source_size=source_size,
+        padded_size=(padded_width, padded_height),
+        padding_right=padded_width - width,
+        padding_bottom=padded_height - height,
+        scale_x=1024 / padded_width,
+        scale_y=1024 / padded_height,
+    )
+
+
+@pytest.mark.parametrize(
+    "source_size,padded_size,padding_right,padding_bottom",
+    [
+        ((1024, 1024), (1024, 1024), 0, 0),
+        ((1024, 2048), (1024, 2048), 0, 0),
+        ((976, 1024), (1024, 1024), 48, 0),
+        ((1025, 1025), (2048, 2048), 1023, 1023),
+        ((2000, 1536), (2048, 2048), 48, 512),
+        ((1, 1), (1024, 1024), 1023, 1023),
+    ],
+)
+def test_prepare_segformer_roi_pads_right_bottom_black_and_resizes(
+    source_size: tuple[int, int],
+    padded_size: tuple[int, int],
+    padding_right: int,
+    padding_bottom: int,
+) -> None:
+    """The whole ROI is padded only on the right and bottom with constant
+    black to the minimal 1024 multiples, then resized to one strict 1024x1024
+    RGB model input; the source image is never modified and every original
+    pixel stays at the top-left of the padded canvas.
+    整张 ROI 只在右侧与底部以固定黑色 padding 到 1024 最小倍数，再缩放到单一
+    严格 1024×1024 RGB 模型输入；源图像绝不修改，原始像素全部保留在 padded
+    canvas 左上角。"""
+    width, height = source_size
+    roi = _image(source_size, fill=11)
+    before = roi.tobytes()
+    preprocess, model_input = prepare_segformer_roi(
+        roi, roi_id="roi-0", source_size=source_size
+    )
+    assert roi.tobytes() == before  # source untouched / 源未修改
+    assert model_input.mode == "RGB"
+    assert model_input.size == (1024, 1024)
+    assert preprocess.source_size == source_size
+    assert preprocess.padded_size == padded_size
+    assert preprocess.padding_right == padding_right
+    assert preprocess.padding_bottom == padding_bottom
+    assert preprocess.model_input_size == (1024, 1024)
+    assert preprocess.scale_x == pytest.approx(1024 / padded_size[0])
+    assert preprocess.scale_y == pytest.approx(1024 / padded_size[1])
+    # Independent spec reconstruction: black padded canvas with the ROI pasted
+    # at (0, 0), LANCZOS-resized, must be byte-identical to the model input.
+    # 独立按规格重建：黑色 padded canvas 在 (0, 0) 粘贴 ROI 并 LANCZOS 缩放，
+    # 必须与模型输入字节级一致。
+    canvas = Image.new("RGB", padded_size, (0, 0, 0))
+    canvas.paste(roi.convert("RGB"), (0, 0))
+    expected = canvas.resize((1024, 1024), resample=Image.Resampling.LANCZOS)
+    assert model_input.tobytes() == expected.tobytes()
+
+
+def test_prepare_segformer_roi_exact_1024_roi_gets_no_padding() -> None:
+    """An ROI whose axes are already 1024 multiples gets zero padding and no
+    extra 1024 interval. 轴已为 1024 倍数的 ROI 零 padding，绝不额外补一个
+    完整 1024 区间。"""
+    roi = _image((1024, 2048), fill=3)
+    preprocess, model_input = prepare_segformer_roi(
+        roi, roi_id="roi-0", source_size=(1024, 2048)
+    )
+    assert preprocess.padding_right == 0
+    assert preprocess.padding_bottom == 0
+    assert preprocess.padded_size == (1024, 2048)
+    assert model_input.size == (1024, 1024)
+
+
+def test_prepare_segformer_roi_rejects_invalid_geometry() -> None:
+    roi = _image((100, 100))
+    with pytest.raises(ValueError, match="positive"):
+        prepare_segformer_roi(roi, roi_id="roi-0", source_size=(0, 100))
+    with pytest.raises(ValueError, match="does not match"):
+        prepare_segformer_roi(roi, roi_id="roi-0", source_size=(200, 100))
+
+
+def test_restore_segformer_mask_crops_padding_and_keeps_coordinates() -> None:
+    """NEAREST restore to the padded size followed by a deterministic
+    [0:W, 0:H] crop: the final grid is exactly the source ROI size, the crop
+    has no offset, and the padding region can never appear in it.
+    NEAREST 恢复到 padded 尺寸后确定性裁切 [0:W, 0:H]：最终网格恰为源 ROI
+    尺寸，裁切无偏移，padding 区域绝不可能出现。"""
+    source_size = (1500, 800)
+    preprocess = _pad_record(source_size)
+    assert preprocess.padded_size == (2048, 1024)
+    assert preprocess.padding_right == 548
+    assert preprocess.padding_bottom == 224
+    padded_width = preprocess.padded_size[0]
+    # Coordinate-encoded padded grid; the padding region gets a distinct id.
+    # 坐标编码的 padded 网格；padding 区域使用独立 id。
+    values = array.array(
+        "i",
+        (
+            777777 if x >= 1500 or y >= 800 else y * padded_width + x
+            for y in range(1024)
+            for x in range(2048)
+        ),
+    )
+    padded_grid = Image.frombytes("I", (2048, 1024), values.tobytes())
+    model_mask = padded_grid.resize((1024, 1024), resample=Image.Resampling.NEAREST)
+    restored = restore_segformer_class_id_mask(model_mask, preprocess)
+    assert restored.size == source_size
+    for x, y in ((0, 0), (1499, 799), (700, 400), (1200, 50), (10, 790)):
+        value = restored.getpixel((x, y))
+        assert value // padded_width == y, (x, y, value)
+        assert abs(value % padded_width - x) <= 2, (x, y, value)
+        assert value != 777777
+    # Padding-sourced ids never leak into the crop.
+    # padding 来源的 id 绝不泄漏进裁切区域。
+    for y in range(0, 800, 100):
+        for x in range(0, 1500, 100):
+            assert restored.getpixel((x, y)) != 777777
+
+
+def test_restore_segformer_mask_exact_1024_source_is_a_copy() -> None:
+    """A 1024x1024 source has no padding: restore is an exact copy of the
+    strict model grid. 1024×1024 源无 padding：恢复是严格模型网格的精确副本。"""
+    preprocess = _pad_record((1024, 1024))
+    assert (preprocess.padding_right, preprocess.padding_bottom) == (0, 0)
+    model_mask = _coord_mask((1024, 1024), roi_width=1024)
+    restored = restore_segformer_class_id_mask(model_mask, preprocess)
+    assert restored is not model_mask
+    assert restored.size == (1024, 1024)
+    assert restored.tobytes() == model_mask.tobytes()
+
+
+def test_restore_segformer_mask_rejects_non_integer_or_off_inputs() -> None:
+    preprocess = _pad_record((1500, 800))
+    with pytest.raises(ValueError, match="integer class-id grid"):
+        restore_segformer_class_id_mask(Image.new("F", (1024, 1024), 0.5), preprocess)
+    with pytest.raises(ValueError, match="strict 1024x1024"):
+        restore_segformer_class_id_mask(
+            _coord_mask((512, 512), roi_width=2048), preprocess
+        )
+    with pytest.raises(ValueError, match="strict 1024x1024"):
+        restore_segformer_class_id_mask(
+            _coord_mask((1024, 512), roi_width=2048), preprocess
+        )
+    negative = Image.new("I", (1024, 1024), 0)
+    negative.putpixel((3, 4), -7)
+    with pytest.raises(ValueError, match="non-negative"):
+        restore_segformer_class_id_mask(negative, preprocess)
+
+
+def test_render_yolo_annotation_edge_boxes_do_not_invert_plate() -> None:
+    """Boxes touching the right/bottom edges or the top-left corner must not
+    produce an inverted label plate (x1 < x0 / y1 < y0): the plate clamps
+    inside the image instead of raising ValueError.
+    贴右/下边缘或左上角的框绝不能产生反转 label plate（x1 < x0 / y1 < y0）：
+    底板被限制在图像内，而不是抛 ValueError。"""
+    source = _image((200, 100))
+    annotated = render_yolo_annotation(
+        source,
+        [
+            ("small_vehicle", (190, 10, 199, 90)),  # right edge
+            ("building", (10, 90, 100, 99)),        # bottom edge
+            ("water", (0, 0, 5, 5)),                # top-left corner
+        ],
+    )
+    assert annotated.size == source.size
+    assert _scan(annotated, (10, 60, 40, 90), (255, 255, 255))  # plate text still drawn
+
+
+def test_render_yolo_annotation_pre_shrunk_image_scales_boxes_from_source_size() -> None:
+    """When the caller passes an already-shrunk image (e.g. a NEAREST pure
+    mask) with boxes in the source pixel frame, source_size must scale the
+    boxes onto the preview; without it they render at scale 1.0 on the
+    smaller canvas (off-image boxes, plates piled on the bottom edge).
+    调用方传入已缩小图像（如 NEAREST 纯色 mask）而框位于源像素帧时，必须用
+    source_size 把框缩放到预览上；否则框以 scale 1.0 画在更小画布上（框越界、
+    标签底板堆在底部边缘）。"""
+    source = Image.new("RGB", (3072, 3072), (7, 8, 9))
+    preview = source.resize((1080, 1080), Image.Resampling.NEAREST)
+    # Box at source (666, 152)-(780, 264) must land at preview (234, 53)-(274, 93).
+    # 源坐标 (666, 152)-(780, 264) 的框必须落在预览 (234, 53)-(274, 93)。
+    annotated = render_yolo_annotation(
+        preview,
+        [("small_vehicle", (666.0, 152.0, 780.0, 264.0))],
+        source_size=(3072, 3072),
+        resample=Image.Resampling.NEAREST,
+    )
+    assert annotated.size == (1080, 1080)
+    assert _scan(annotated, (232, 50, 278, 100), (255, 0, 255))
+    # Not at the unscaled position on the shrunk canvas.
+    # 不得出现在缩小画布上的未缩放位置。
+    assert not _scan(annotated, (660, 148, 790, 268), (255, 0, 255))
+    # No plate pile at the bottom edge either.
+    # 底部边缘也不得有标签底板堆积。
+    assert not _scan(annotated, (0, 1040, 1080, 1080), (255, 0, 255))

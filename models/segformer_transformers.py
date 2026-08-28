@@ -299,6 +299,17 @@ class SegFormerRuntime:
             if isinstance(image, Path)
             else image.convert("RGB")
         )
+        try:
+            from scripts.gpu_memory_monitor import log_cuda_memory_event
+        except Exception:
+            log_cuda_memory_event = None
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event(
+                "segformer",
+                "before_predict",
+                logical_model_id=self.settings.logical_model_id,
+                device=self._resolved_device,
+            )
         runner = self._inference_runner or _run_transformers_inference
         try:
             prediction = runner(
@@ -337,6 +348,13 @@ class SegFormerRuntime:
         if invalid:
             raise SegFormerInferenceError(
                 "SegFormer mask contains a class ID outside checkpoint metadata"
+            )
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event(
+                "segformer",
+                "after_predict",
+                logical_model_id=self.settings.logical_model_id,
+                device=self._resolved_device,
             )
         return SegmentationResult(
             mask=mask,
@@ -383,6 +401,17 @@ class SegFormerRuntime:
         assert self._metadata is not None
         assert self._resolved_device is not None
         assert self._actual_weights_sha256 is not None
+        try:
+            from scripts.gpu_memory_monitor import log_cuda_memory_event
+        except Exception:
+            log_cuda_memory_event = None
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event(
+                "segformer",
+                "before_segment",
+                logical_model_id=self.settings.logical_model_id,
+                device=self._resolved_device,
+            )
         runner = self._inference_runner or _run_semantic_mask_tile
         try:
             prediction = runner(
@@ -415,6 +444,13 @@ class SegFormerRuntime:
         if invalid:
             raise SegFormerInferenceError(
                 "SegFormer mask tile contains a class ID outside checkpoint metadata"
+            )
+        if log_cuda_memory_event is not None:
+            log_cuda_memory_event(
+                "segformer",
+                "after_segment",
+                logical_model_id=self.settings.logical_model_id,
+                device=self._resolved_device,
             )
         return SemanticMaskOutput(
             class_id_map=mask,

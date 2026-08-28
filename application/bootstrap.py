@@ -1606,6 +1606,26 @@ def _evidence_preprocessing(
     将冻结的 settings 身份镜像进 agents 局部契约；agents 绝不导入 application
     settings，因此每个值都显式注入，并由共享 Literal 版本互相校验。"""
 
+    if pre.version == "greedy-1024-stretch-v1":
+        # A v1 identity never carries v2-only fields: the legacy stretch
+        # protocol is read-only for historical artifacts and the fresh
+        # executor fails closed for any SegFormer leaf under it.
+        # v1 身份绝不携带 v2 专属字段：旧 stretch 协议只用于历史 artifact
+        # 只读解释，其下任何 SegFormer 叶子都由新鲜 executor 严格失败。
+        return EvidencePreprocessing(
+            version=pre.version,
+            tile_size=pre.tile_size,
+            partition_policy=pre.partition_policy,
+            remainder_resize=pre.remainder_resize,
+            rgb_interpolation=pre.rgb_interpolation,
+            mask_inverse_interpolation=pre.mask_inverse_interpolation,
+            max_tile_concurrency=pre.max_tile_concurrency,
+            yolo_version=None,
+            segformer_version=None,
+            segformer_padding_mode=None,
+            segformer_rgb_interpolation=None,
+            segformer_mask_inverse_interpolation=None,
+        )
     return EvidencePreprocessing(
         version=pre.version,
         tile_size=pre.tile_size,
@@ -1614,6 +1634,11 @@ def _evidence_preprocessing(
         rgb_interpolation=pre.rgb_interpolation,
         mask_inverse_interpolation=pre.mask_inverse_interpolation,
         max_tile_concurrency=pre.max_tile_concurrency,
+        yolo_version=pre.yolo_version,
+        segformer_version=pre.segformer_version,
+        segformer_padding_mode=pre.segformer_padding_mode,
+        segformer_rgb_interpolation=pre.segformer_rgb_interpolation,
+        segformer_mask_inverse_interpolation=pre.segformer_mask_inverse_interpolation,
     )
 
 

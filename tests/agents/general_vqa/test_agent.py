@@ -296,7 +296,7 @@ def _four_branch_bundle() -> VqaEvidenceBundle:
     覆盖全部四个分支的 ROI：仅 YOLO、仅 SegFormer、两者、均无。"""
     return VqaEvidenceBundle(
         catalog_version="test-catalog-v1",
-        preprocessing_version="greedy-1024-stretch-v1",
+        preprocessing_version="yolo-v1-segformer-pad-v1",
         rois=[
             _roi("r_yolo", (0, 0, 4, 3)),
             _roi("r_seg", (4, 0, 8, 3)),
@@ -617,7 +617,7 @@ def test_segformer_only_agent_image_shrinks_large_mask_with_nearest(
     mask.paste(255, (300, 300, 1700, 900))
     bundle = VqaEvidenceBundle(
         catalog_version="test-catalog-v1",
-        preprocessing_version="greedy-1024-stretch-v1",
+        preprocessing_version="yolo-v1-segformer-pad-v1",
         rois=[roi],
         segments=[SegFormerEvidenceRecord(leaf_category="building", roi_id="full")],
         leaf_states={"building": "hit"},
@@ -677,7 +677,7 @@ def test_segformer_only_clean_roi_uses_exact_expanded_roi(tmp_path: Path) -> Non
     mask.putpixel((1, 1), 255)
     bundle = VqaEvidenceBundle(
         catalog_version="test-catalog-v1",
-        preprocessing_version="greedy-1024-stretch-v1",
+        preprocessing_version="yolo-v1-segformer-pad-v1",
         rois=[roi],
         segments=[SegFormerEvidenceRecord(leaf_category="building", roi_id="seg")],
         leaf_states={"building": "hit"},
@@ -808,6 +808,13 @@ def test_evidence_request_hash_changes_with_each_semantic_input(
     bundle = _four_branch_bundle()
     bundle.catalog_version = "test-catalog-v2"
     assert_differs("catalog version", bundle=bundle)
+    # Preprocessing identity: switching the combined version changes the
+    # request hash, so old v1 caches never hit new pad-protocol requests.
+    # 预处理身份：切换组合版本改变请求 hash，使旧 v1 cache 绝不命中新 pad
+    # 协议请求。
+    bundle = _four_branch_bundle()
+    bundle.preprocessing_version = "greedy-1024-stretch-v1"
+    assert_differs("preprocessing version", bundle=bundle)
     # Image order: swapping the two ROIs reorders the rendered image blocks
     # and the geometry text.  图像顺序：交换两个 ROI 重排渲染图像块与几何文本。
     bundle = _four_branch_bundle()

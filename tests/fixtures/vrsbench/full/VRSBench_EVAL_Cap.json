@@ -1,6 +1,7 @@
 [
   {
     "image_id": "img_1.png",
+    "question": "Describe the image in detail",
     "caption": [
       "A harbor with ships.",
       "A busy harbor scene."
