@@ -147,35 +147,38 @@
       }
     },
     {
-      "backend_name": "detector_yolo_detect_001",
-      "kind": "yolo_detect",
-      "logical_model_id": "YOLO11s:iSAID:tiles1024-o20:epoch111",
+      "backend_name": "detector_obb_ultralytics_001",
+      "kind": "yolo_obb",
+      "logical_model_id": "YOLO11m-OBB:VRSBench-QA1024:best",
       "enabled": true,
       "status": "active",
       "priority": 200,
       "asset": {
-        "model_dir": "models/isaid-yolo11s-tiles1024-o20",
+        "model_dir": "models/vrsbench-yolo11m-obb-1024",
         "class_map": "configs/local.yaml",
-        "weights": "models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt",
-        "sha256": "f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266"
+        "weights": "models/vrsbench-yolo11m-obb-1024/vrsbench_yolo11m_obb_best.pt",
+        "sha256": "4a86331ed43b316e60050c5a890f3149f48bf34ce6f5c0e61a15382969feaf52"
       },
       "verification": {"class_map": "verified"},
       "supports": {
-        "baseball-diamond": {"model_labels": ["baseball_diamond"], "counting_mode": "native_detection"},
-        "basketball-court": {"model_labels": ["basketball_court"], "counting_mode": "native_detection"},
+        "airport": {"model_labels": ["airport"], "counting_mode": "native_detection"},
+        "baseball-diamond": {"model_labels": ["baseball-diamond"], "counting_mode": "native_detection"},
+        "basketball-court": {"model_labels": ["basketball-court"], "counting_mode": "native_detection"},
         "bridge": {"model_labels": ["bridge"], "counting_mode": "native_detection"},
-        "ground-track-field": {"model_labels": ["ground_track_field"], "counting_mode": "native_detection"},
+        "container-crane": {"model_labels": ["container-crane"], "counting_mode": "native_detection"},
+        "ground-track-field": {"model_labels": ["ground-track-field"], "counting_mode": "native_detection"},
         "harbor": {"model_labels": ["harbor"], "counting_mode": "native_detection"},
         "helicopter": {"model_labels": ["helicopter"], "counting_mode": "native_detection"},
-        "large-vehicle": {"model_labels": ["large_vehicle"], "counting_mode": "native_detection"},
+        "helipad": {"model_labels": ["helipad"], "counting_mode": "native_detection"},
+        "large-vehicle": {"model_labels": ["large-vehicle"], "counting_mode": "native_detection"},
         "plane": {"model_labels": ["plane"], "counting_mode": "native_detection"},
         "roundabout": {"model_labels": ["roundabout"], "counting_mode": "native_detection"},
         "ship": {"model_labels": ["ship"], "counting_mode": "native_detection"},
-        "small-vehicle": {"model_labels": ["small_vehicle"], "counting_mode": "native_detection"},
-        "soccer-ball-field": {"model_labels": ["soccer_ball_field"], "counting_mode": "native_detection"},
-        "storage-tank": {"model_labels": ["storage_tank"], "counting_mode": "native_detection"},
-        "swimming-pool": {"model_labels": ["swimming_pool"], "counting_mode": "native_detection"},
-        "tennis-court": {"model_labels": ["tennis_court"], "counting_mode": "native_detection"}
+        "small-vehicle": {"model_labels": ["small-vehicle"], "counting_mode": "native_detection"},
+        "soccer-ball-field": {"model_labels": ["soccer-ball-field"], "counting_mode": "native_detection"},
+        "storage-tank": {"model_labels": ["storage-tank"], "counting_mode": "native_detection"},
+        "swimming-pool": {"model_labels": ["swimming-pool"], "counting_mode": "native_detection"},
+        "tennis-court": {"model_labels": ["tennis-court"], "counting_mode": "native_detection"}
       }
     },
     {

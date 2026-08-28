@@ -1057,7 +1057,8 @@ VisualTaskPlanner v5 count_target
 experts are intentionally CPU-only:
 
 - `detector_obb_csl_001`: ONNX Runtime `CPUExecutionProvider` only;
-- `detector_yolo_detect_001`: Ultralytics inference with `device=cpu`.
+- `detector_obb_ultralytics_001`: VRSBench YOLO11m-OBB Ultralytics inference with
+  `device=cpu`.
 
 The GB10 profile never requests `CUDAExecutionProvider` for YOLO, and CPU
 execution is not recorded as a fallback. This policy applies only to YOLO;
@@ -1076,8 +1077,11 @@ for this profile.
 Python settings 只定义通用 schema，默认 `enabled=false`、`detectors=[]`，不内置具体
 checkpoint inventory。`ExpertCatalog` 声明专家能力与逻辑身份；部署配置（当前本地样例为
 `configs/local.yaml`）声明是否启用、物理权重路径、provider/device 与阈值。加载该配置后会
-注册 `detector_obb_csl_001`；不加载部署配置时不注册 YOLO。权重与 ONNX Runtime 仍由本地
-环境准备且不自动下载，模型加载保持惰性。
+注册 `detector_obb_csl_001` 和 `detector_obb_ultralytics_001`；不加载部署配置时不注册
+YOLO。计数选择器按 canonical label 过滤支持该类别的 detector，同 kind 下按 priority
+排序，因此 VRSBench YOLO11m-OBB（priority 200）优先，DOTA-v2.0 YOLOv5-OBB
+（priority 100）作为后备。权重与 ONNX Runtime 仍由本地环境准备且不自动下载，模型加载
+保持惰性。
 
 部署启用方式：
 

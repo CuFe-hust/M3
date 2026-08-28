@@ -608,7 +608,7 @@ def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> N
     ("detector_index", "task", "expected_message"),
     [
         (0, "detect", "catalog declaration is not enabled"),
-        (1, "obb", "catalog declaration is not enabled"),
+        (1, "detect", "catalog declaration is not enabled"),
     ],
 )
 def test_yolo_catalog_kind_matches_detector_task(
@@ -655,7 +655,7 @@ def test_both_configured_yolo_detectors_register_with_matching_catalog() -> None
         "qwen_point",
         "quantity_proposal",
         "detector_obb_csl_001",
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
     ]
 
 
@@ -743,7 +743,7 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     )
 
 
-def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class(
+def test_local_inventory_selects_vrsbench_then_dota_for_shared_labels(
     tmp_path: Path,
 ) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
@@ -780,7 +780,7 @@ def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class
     shared = plan_for("plane", ("plane",))
     assert shared is not None
     assert shared.selected_detector_expert_names == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
     )
     assert shared.fallback_backend_names == (
@@ -788,10 +788,12 @@ def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class
         "qwen_point",
     )
 
-    dota_only = plan_for("airport", ("airport",))
-    assert dota_only is not None
-    assert dota_only.selected_detector_expert_names == ("detector_obb_csl_001",)
-    assert dota_only.ensemble_backend_names == ()
+    airport = plan_for("airport", ("airport",))
+    assert airport is not None
+    assert airport.selected_detector_expert_names == (
+        "detector_obb_ultralytics_001",
+        "detector_obb_csl_001",
+    )
 
 
 def test_composed_schema_default_plan_uses_segformer_or_qwen_only(
