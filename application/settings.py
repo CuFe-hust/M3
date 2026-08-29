@@ -196,6 +196,44 @@ class VisualSegmenterSettings(BaseModel):
         return self
 
 
+class EvidenceGpuWorkerLimitSettings(BaseModel):
+    """One restartable evidence worker memory policy.
+    一个可重启 evidence worker 的显存策略。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    soft_limit_gib: float = Field(gt=0)
+    hard_limit_gib: float = Field(gt=0)
+
+    @model_validator(mode="after")
+    def require_ordered_limits(self) -> "EvidenceGpuWorkerLimitSettings":
+        if self.soft_limit_gib >= self.hard_limit_gib:
+            raise ValueError("evidence worker requires soft_limit_gib < hard_limit_gib")
+        return self
+
+
+class EvidenceGpuWorkersSettings(BaseModel):
+    """Isolated YOLO/SegFormer GPU worker guard. / 隔离的 GPU worker 保护。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    yolo: EvidenceGpuWorkerLimitSettings = Field(
+        default_factory=lambda: EvidenceGpuWorkerLimitSettings(
+            soft_limit_gib=6, hard_limit_gib=8
+        )
+    )
+    segformer: EvidenceGpuWorkerLimitSettings = Field(
+        default_factory=lambda: EvidenceGpuWorkerLimitSettings(
+            soft_limit_gib=10, hard_limit_gib=12
+        )
+    )
+    device_free_floor_gib: float = Field(default=8, gt=0)
+    poll_interval_seconds: float = Field(default=1, gt=0)
+    max_retries: Literal[1] = 1
+
+
 class VisualEvidencePreprocessSettings(BaseModel):
     """Frozen evidence preprocessing identity shared by VQA evidence phases.
     One deterministic identity for every model call made inside the planner
@@ -257,6 +295,9 @@ class VisualPlanningSettings(BaseModel):
     planner: VisualPlannerSettings = Field(default_factory=VisualPlannerSettings)
     detectors: dict[str, VisualDetectorSettings] = Field(default_factory=dict)
     segmenters: dict[str, VisualSegmenterSettings] = Field(default_factory=dict)
+    gpu_workers: EvidenceGpuWorkersSettings = Field(
+        default_factory=EvidenceGpuWorkersSettings
+    )
     preprocessing: VisualEvidencePreprocessSettings = Field(
         default_factory=VisualEvidencePreprocessSettings
     )

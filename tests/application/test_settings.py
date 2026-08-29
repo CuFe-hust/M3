@@ -76,8 +76,13 @@ def test_local_config_declares_detector_inventory() -> None:
         "detector_obb_csl_001", "detector_yolo_detect_001"
     ]
     assert all(item.enabled for item in settings.backend.yolo.detectors)
-    assert all(item.device == "cpu" for item in settings.backend.yolo.detectors)
-    assert all(item.require_cuda is False for item in settings.backend.yolo.detectors)
+    assert settings.backend.yolo.detectors[0].device == "0"
+    assert settings.backend.yolo.detectors[0].require_cuda is True
+    assert settings.backend.yolo.detectors[0].gpu_mem_limit_gib == 8
+    assert settings.backend.yolo.detectors[1].device == "cpu"
+    assert settings.visual_planning.gpu_workers.enabled is True
+    assert settings.visual_planning.gpu_workers.yolo.hard_limit_gib == 8
+    assert settings.visual_planning.gpu_workers.segformer.hard_limit_gib == 12
     assert all(item.allow_cpu_fallback is False for item in settings.backend.yolo.detectors)
     assert settings.models.qwen.model == "models/Qwen3.5-9B"
     assert settings.models.qwen.cache_model_id == "Qwen/Qwen3.5-9B:local"

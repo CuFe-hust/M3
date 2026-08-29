@@ -49,11 +49,13 @@ backend:
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        # GB10 production invariant: explicit CPU-only ONNX YOLO.
-        device: cpu
+        # VQA evidence runs this detector in an isolated, restartable CUDA worker.
+        # VQA evidence 在隔离且可重启的 CUDA worker 中运行该检测器。
+        device: "0"
         max_detections: 1000
-        require_cuda: false
+        require_cuda: true
         allow_cpu_fallback: false
+        gpu_mem_limit_gib: 8
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
       - name: detector_yolo_detect_001
@@ -83,6 +85,17 @@ backend:
 # VQA 视觉证据校准：binding 是稳定逻辑身份；组合根把它们映射到已验证客户端，
 # 绝不映射到裸路径。
 visual_planning:
+  gpu_workers:
+    enabled: true
+    yolo:
+      soft_limit_gib: 6
+      hard_limit_gib: 8
+    segformer:
+      soft_limit_gib: 10
+      hard_limit_gib: 12
+    device_free_floor_gib: 8
+    poll_interval_seconds: 1
+    max_retries: 1
   detectors:
     detector_obb_csl_001:
       confidence_threshold: 0.20
@@ -96,7 +109,7 @@ visual_planning:
       enabled: true
       class_map_version: verified-2026-08-20
   preprocessing:
-    version: greedy-1024-stretch-v1
+    version: yolo-v1-segformer-pad-v1
     tile_size: 1024
     partition_policy: greedy-row-major-no-overlap
     remainder_resize: stretch

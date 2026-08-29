@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any
+from typing import Any, Literal
 
 from agents.base import CallBudget as _CallBudgetProtocol
 from agents.base import VisualPlanBindings
@@ -76,6 +76,11 @@ from models.base import (
 )
 from models.cache import JsonResponseCache
 from models.entry import create_model
+from application.evidence_gpu_worker import (
+    EvidenceGpuWorkerPolicy,
+    segformer_worker_client,
+    yolo_worker_client,
+)
 from models.settings import SegFormerSettings
 from reporting.builder import build_report
 from reporting.schema import Report
@@ -944,7 +949,17 @@ def _build_vqa_segmenter_clients(
             expected_version=settings.visual_planning.segmenters[binding].class_map_version,
             required_labels=required_labels,
         )
-        client = counting_clients.get(expert.logical_model_id)
+        if settings.visual_planning.gpu_workers.enabled:
+            client = created.get(expert.logical_model_id)
+            if client is None:
+                client = segformer_worker_client(
+                    runtime,
+                    labels,
+                    _evidence_worker_policy(settings, "segformer"),
+                )
+                created[expert.logical_model_id] = client
+        else:
+            client = counting_clients.get(expert.logical_model_id)
         if client is None:
             client = created.get(expert.logical_model_id)
             if client is None:
@@ -1401,6 +1416,23 @@ class _LazyObjectDetectionClient:
         )
 
 
+def _evidence_worker_policy(
+    settings: AppSettings, kind: Literal["yolo", "segformer"]
+) -> EvidenceGpuWorkerPolicy:
+    """Translate application settings into a model-layer worker policy.
+    将 application 配置转换为模型层 worker 策略。
+    """
+    workers = settings.visual_planning.gpu_workers
+    limits = workers.yolo if kind == "yolo" else workers.segformer
+    return EvidenceGpuWorkerPolicy(
+        soft_limit_gib=limits.soft_limit_gib,
+        hard_limit_gib=limits.hard_limit_gib,
+        device_free_floor_gib=workers.device_free_floor_gib,
+        poll_interval_seconds=workers.poll_interval_seconds,
+        max_retries=workers.max_retries,
+    )
+
+
 def _build_vqa_evidence_service(
     settings: AppSettings,
     evidence_catalog: EvidenceCatalog,
@@ -1443,7 +1475,13 @@ def _build_vqa_evidence_service(
         # The detector is wired lazily: composition never loads weights; the
         # first inference goes through the shared audited store.
         # 检测器惰性接线：组合期绝不加载权重；首次推理经共享审计 store。
-        yolo_client = _LazyObjectDetectionClient(model_store, detector)
+        yolo_client = (
+            yolo_worker_client(
+                detector, _evidence_worker_policy(settings, "yolo")
+            )
+            if settings.visual_planning.gpu_workers.enabled
+            else _LazyObjectDetectionClient(model_store, detector)
+        )
         yolo_device = detector.device
         yolo_image_size = detector.image_size
     enabled_segmenters = {

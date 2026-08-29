@@ -516,6 +516,52 @@ def test_direct_path_never_calls_evidence_service_for_any_supported_task(
         assert execution.payload.answer == "yes"
 
 
+@pytest.mark.parametrize(
+    ("source_size", "expected_size"),
+    [
+        ((2048, 1024), (1080, 540)),
+        ((1024, 2048), (540, 1080)),
+        ((800, 600), (800, 600)),
+    ],
+)
+def test_direct_path_shrinks_materialized_view_for_final_qwen(
+    tmp_path: Path,
+    source_size: tuple[int, int],
+    expected_size: tuple[int, int],
+) -> None:
+    """Direct VQA sends a shrink-only <=1080 preview while keeping the
+    materialized source geometry authoritative. direct VQA 向最终 Qwen 发送
+    只缩不放的 <=1080 预览，同时保留已物化源几何的权威性。
+    """
+    sample = _sample(tmp_path)
+    Image.new("RGB", source_size, (17, 18, 19)).save(tmp_path / "img.png")
+    view = MaterializedVisualView(
+        image_id="img1",
+        view_mode="full_image",
+        source_size=source_size,
+        crop_xyxy=(0, 0, *source_size),
+        crop_size=source_size,
+    )
+    client = _RecordingClient()
+    execution = asyncio.run(
+        GeneralVQAAgent(client).run(
+            sample,
+            _context(
+                tmp_path,
+                client,
+                plan=_plan(assistance=False),
+                views=(view,),
+            ),
+        )
+    )
+
+    image_block = client.calls[0]["messages"][1]["content"][0]
+    encoded = image_block["image_url"]["url"].split(",", 1)[1]
+    received = Image.open(io.BytesIO(base64.b64decode(encoded)))
+    assert received.size == expected_size
+    assert execution.trace["visual_view_modes"][0]["crop_size"] == list(source_size)
+
+
 def test_assistance_without_service_fails_stably_for_all_supported_tasks(
     tmp_path: Path,
 ) -> None:

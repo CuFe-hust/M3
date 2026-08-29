@@ -194,6 +194,16 @@ class GeneralVQAAgent(VisualAgentBase):
 
         return await super().run(sample, context)
 
+    def prepare_materialized_model_image(self, image: Image.Image) -> Image.Image:
+        """Shrink direct final-Qwen views to the canonical VQA preview size.
+
+        Source/ROI geometry remains authoritative; this preview is transport
+        only and therefore must not replace persisted detector coordinates.
+        将 direct 最终 Qwen 视图只缩小到规范 VQA 预览尺寸。源图/ROI 几何仍是
+        权威坐标；该预览仅用于传输，不得覆盖持久化检测坐标。
+        """
+        return make_preview(image)
+
     async def _run_object_evidence(
         self,
         sample: UnifiedSample,
@@ -372,6 +382,7 @@ class GeneralVQAAgent(VisualAgentBase):
         segformer_hits: list[dict[str, Any]] = []
 
         yolo_by_roi: dict[str, list[tuple[str, tuple[float, float, float, float]]]] = {}
+        roi_image_ids = {record.roi_id: record.image_id for record in bundle.rois}
         for record in bundle.detections:
             yolo_by_roi.setdefault(record.roi_id, []).append(
                 (record.leaf_category, tuple(record.local_xyxy))
@@ -380,12 +391,21 @@ class GeneralVQAAgent(VisualAgentBase):
                 {
                     "category": record.leaf_category,
                     "roi_id": record.roi_id,
+                    "image_id": roi_image_ids[record.roi_id],
                     # The final Qwen sees an ROI crop, so expose only its local
                     # geometry in the same integer 0..999 JSON frame as SFT.
                     # 最终 Qwen 看到的是 ROI 裁切图，因此只暴露局部几何，并统一
                     # 为与 SFT 相同的 0..999 整数 JSON 坐标。
                     "box": _pixel_xyxy_to_999(
                         record.local_xyxy, record.local_roi_size
+                    ),
+                    # AgentResult evidence uses normalized whole-image geometry;
+                    # expose the matching detector geometry so training and
+                    # inference never relabel an ROI-local box as global.
+                    # AgentResult 证据使用整图归一化几何；同时暴露对应的检测框，
+                    # 避免训练或推理把 ROI 局部框误标为整图框。
+                    "global_box": _pixel_xyxy_to_999(
+                        record.global_xyxy, record.global_image_size
                     ),
                 }
             )

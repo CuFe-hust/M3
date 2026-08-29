@@ -103,6 +103,11 @@ class YoloModelStore:
                 device=detector.device,
                 require_cuda=detector.require_cuda,
                 allow_cpu_fallback=detector.allow_cpu_fallback,
+                gpu_mem_limit_bytes=(
+                    None
+                    if detector.gpu_mem_limit_gib is None
+                    else int(detector.gpu_mem_limit_gib * 1024**3)
+                ),
             )
         try:
             from ultralytics import YOLO

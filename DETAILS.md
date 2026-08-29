@@ -1306,6 +1306,25 @@ catalog version、source/core/expanded geometry 等审计与回映事实不对�
 `scripts/migrate_vqa_agent_sft_v2.py`；它原子写入并校验 sample ID、question、
 答案、split 与图片映射不变，同时重算 manifest SHA256。
 
+`scripts/finetune_qwen35_9b_general_vqa_agent_lora.py` 的 preparation v2 继续运行
+生产 evidence path，并监督 `AgentResult` 的稳定 JSON 结构、`answer`、`agent_name`、
+`status`，以及 executor 已按 VisualTaskPlan 叶子类别、阈值、NMS 和跨 ROI 去重筛选的
+YOLO 证据。监督框使用整图 `normalized_0_999_top_left` 坐标并保留 `image_id`；ROI
+局部框只作为 final-Qwen 输入证据。SegFormer 命中仍只作为输入 mask/存在性证据，
+不得转框；`geometry` 的值由运行时校验/修复拥有，不进入 causal-LM loss。该变更只调整
+assistant token labels，不改变 Qwen、视觉编码器或 LoRA 模块结构。
+
+VQA evidence 的生产配置将 YOLO ONNX 与 SegFormer 放入两个使用 `spawn` 的独立
+GPU worker；PIL/CPU 输入和协议输出通过 IPC 传递，CUDA tensor 不跨进程。YOLO
+CUDA EP 使用显式 `gpu_mem_limit` 与 `kSameAsRequested` arena；两个 worker 分别按
+PID 使用 `nvidia-smi` 监控。默认生产阈值为 YOLO `6/8 GiB`、SegFormer
+`10/12 GiB`（soft/hard），目标 GPU 空闲显存低于 `8 GiB` 也触发保护。soft
+阈值保留已完成结果并在下次调用前重建；hard 阈值或 allocation failure 终止对应
+worker，当前调用最多重试一次。任何 evidence worker 回收均不得调用 Qwen 主进程的
+CUDA allocator，也不得重建或 offload Qwen。
+VQA LoRA 脚本在 preparation 产物原子持久化完成后显式关闭全部 evidence GPU
+worker，再加载 Qwen 权重进入优化阶段，避免两个阶段的 CUDA context 重叠驻留。
+
 ## 21.4 CountingAgent
 
 覆盖：
