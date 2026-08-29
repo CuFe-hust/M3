@@ -92,7 +92,12 @@ class _FakeQwen:
         return response_model.model_validate(self.response)
 
 
-def _sample(tmp_path: Path, size: tuple[int, int] = (100, 80)) -> UnifiedSample:
+def _sample(
+    tmp_path: Path,
+    size: tuple[int, int] = (100, 80),
+    *,
+    question: str = "Locate the building.",
+) -> UnifiedSample:
     Image.new("RGB", size, (1, 2, 3)).save(tmp_path / "img.png", format="PNG")
     return UnifiedSample(
         sample_id="s1",
@@ -100,7 +105,7 @@ def _sample(tmp_path: Path, size: tuple[int, int] = (100, 80)) -> UnifiedSample:
         split="test",
         task="grounding",
         images=[ImageRef(image_id="img1", path="img.png", role="image")],
-        question="Locate the building.",
+        question=question,
         ground_truth=GroundTruth(answers=["building"]),
     )
 
@@ -111,6 +116,16 @@ def _plan() -> VisualTaskPlan:
         task="grounding",
         needs_visual_assistance=True,
         object_categories=["building-outline"],
+        reason_codes=["test"],
+    )
+
+
+def _open_vocabulary_plan() -> VisualTaskPlan:
+    return VisualTaskPlan(
+        version="visual-task-plan-v5",
+        task="grounding",
+        needs_visual_assistance=True,
+        object_categories=["windmill"],
         reason_codes=["test"],
     )
 
@@ -165,15 +180,17 @@ def _run(
     *,
     view: MaterializedVisualView | None = None,
     source_size: tuple[int, int] = (100, 80),
+    plan: VisualTaskPlan | None = None,
+    question: str = "Locate the building.",
 ):
     return asyncio.run(
         executor.run(
-            _plan(),
-            _sample(tmp_path, source_size),
+            plan or _plan(),
+            _sample(tmp_path, source_size, question=question),
             {"img1": Image.open(tmp_path / "img.png")},
             base_user_payload={
                 "task": "grounding",
-                "question": "Locate the building.",
+                "question": question,
                 "coordinate_frame": "normalized_0_999_top_left",
                 "box_format": "integer_xyxy_json",
             },
@@ -230,6 +247,35 @@ def test_v2_executor_calls_each_model_once_and_returns_whole_image_box(tmp_path:
     }
     for forbidden in ("catalog_version", "source_size", "core_xyxy", "expanded_xyxy"):
         assert forbidden not in json.dumps(model_payload)
+
+
+def test_open_vocabulary_category_skips_yolo_and_uses_qwen_fallback(
+    tmp_path: Path,
+) -> None:
+    yolo = _FakeYolo()
+    qwen = _FakeQwen(
+        {
+            "selected_box_ids": [],
+            "fallback_boxes": [
+                {"leaf_category": "windmill", "roi_id": "full", "xyxy": (100, 100, 300, 300)}
+            ],
+        }
+    )
+    result = _run(
+        _executor(qwen, yolo=yolo),
+        tmp_path,
+        plan=_open_vocabulary_plan(),
+        question="Locate the windmill.",
+    )
+
+    assert yolo.calls == []
+    assert result.bundle.candidates == []
+    assert result.bundle.open_vocabulary_categories == ["windmill"]
+    assert result.bundle.leaf_states["windmill"] == "open_vocabulary"
+    assert result.whole_image_boxes[0].label == "windmill"
+    payload = json.loads(qwen.calls[0]["messages"][1]["content"][-1]["text"])
+    assert payload["evidence"]["open_vocabulary_categories"] == ["windmill"]
+    assert payload["evidence"]["candidates"] == []
 
 
 def test_v2_executor_uses_exact_quantized_roi_pixels(tmp_path: Path) -> None:

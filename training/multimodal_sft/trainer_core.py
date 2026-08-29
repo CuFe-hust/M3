@@ -42,6 +42,7 @@ class TrainingConfig:
     gradient_accumulation_steps: int = 1
     batch_size: int = 1
     max_seq_length: int = 4096
+    gradient_checkpointing: bool = False
     seed: int = 1234
     mixed_precision: str = "off"
     preflight_only: bool = False
@@ -184,6 +185,15 @@ class GenericTrainerCore:
             return output.get("loss")
         return getattr(output, "loss", None)
 
+    def _forward_loss(self, model: Any, batch: Mapping[str, Any]) -> Any:
+        model_inputs = self._forward_inputs(model, batch)
+        prepare_loss_inputs = getattr(self.adapter, "prepare_loss_inputs", None)
+        compute_loss = getattr(self.adapter, "compute_loss", None)
+        if callable(prepare_loss_inputs) and callable(compute_loss):
+            model_inputs, loss_context = prepare_loss_inputs(model_inputs)
+            return compute_loss(model(**model_inputs), loss_context)
+        return self._loss(model(**model_inputs))
+
     @staticmethod
     def _repeat_rows(rows: Sequence[Any], *, group_key: str | None, weights: Mapping[str, int]) -> list[Any]:
         if not group_key or not weights:
@@ -245,8 +255,7 @@ class GenericTrainerCore:
             parameter.grad = None
         encoded = self._encode(processor, prepared, max_seq_length=max_seq_length)
         batch, _meta = self._collate([encoded])
-        output = model(**self._forward_inputs(model, batch))
-        loss = self._loss(output)
+        loss = self._forward_loss(model, batch)
         if loss is None:
             raise ValueError("gradient smoke requires a model loss")
         if not bool(torch.isfinite(loss).all().item()):
@@ -299,8 +308,7 @@ class GenericTrainerCore:
             for start in range(0, len(prepared_rows), max(1, int(batch_size))):
                 encoded = [self._encode(processor, episode, max_seq_length=max_seq_length) for episode in prepared_rows[start:start + max(1, int(batch_size))]]
                 batch, _meta = self._collate(encoded)
-                output = model(**self._forward_inputs(model, batch))
-                loss = self._loss(output)
+                loss = self._forward_loss(model, batch)
                 if loss is not None:
                     losses.append(float(loss.detach().cpu().item()))
         if was_training:
@@ -559,6 +567,23 @@ class GenericTrainerCore:
         if callable(validate_trainable):
             validate_trainable(model, plan)
 
+        if config.gradient_checkpointing:
+            enable_input_require_grads = getattr(model, "enable_input_require_grads", None)
+            if callable(enable_input_require_grads):
+                enable_input_require_grads()
+            gradient_checkpointing_enable = getattr(model, "gradient_checkpointing_enable", None)
+            if not callable(gradient_checkpointing_enable):
+                raise ValueError("gradient_checkpointing is not supported by the selected model")
+            try:
+                gradient_checkpointing_enable(
+                    gradient_checkpointing_kwargs={"use_reentrant": False}
+                )
+            except TypeError:
+                gradient_checkpointing_enable()
+            model_config = getattr(model, "config", None)
+            if model_config is not None and hasattr(model_config, "use_cache"):
+                model_config.use_cache = False
+
         micro_batches_per_epoch = max(1, (len(train_rows) + config.batch_size - 1) // config.batch_size)
         updates_per_epoch = max(1, (micro_batches_per_epoch + config.gradient_accumulation_steps - 1) // config.gradient_accumulation_steps)
         planned_total_steps = config.max_steps or max(1, updates_per_epoch * config.epochs)
@@ -632,8 +657,7 @@ class GenericTrainerCore:
                 total_batches = (len(train_rows) + config.batch_size - 1) // config.batch_size
                 window_size = min(config.gradient_accumulation_steps, total_batches - window_start)
                 with autocast_context(str(getattr(model, "device", "cpu")), config.mixed_precision):
-                    output = model(**self._forward_inputs(model, batch))
-                    loss = self._loss(output)
+                    loss = self._forward_loss(model, batch)
                     if loss is None:
                         raise ValueError("adapter/model forward did not return loss; labels are required")
                     sample_weight = float((getattr(batch_rows[0], "metadata", {}) or {}).get("sample_weight", 1.0)) if len(batch_rows) == 1 else 1.0

@@ -131,6 +131,13 @@ class Qwen35Adapter:
     def prepare_forward_inputs(self, batch: dict[str, Any]) -> dict[str, Any]:
         return dict(batch)
 
+
+    def prepare_loss_inputs(self, batch: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        return qwen_multimodal.prepare_selective_loss_inputs(batch)
+
+    def compute_loss(self, output: Any, context: Mapping[str, Any]) -> Any:
+        return qwen_multimodal.compute_selective_causal_lm_loss(output, context)
+
     def apply_tuning_policy(self, model: Any, parameter_plan: Any, policy: Any) -> Any:
         return _hf.apply_tuning_policy(model, parameter_plan, policy)
 
