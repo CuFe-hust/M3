@@ -12,7 +12,7 @@ def row(tmp_path):
     Image.new("RGB", (8, 8), (20, 40, 60)).save(image_root / "sample.png")
     target = {
         "agent_name": "grounding_agent",
-        "answer": "{<10><79><17><85>}",
+        "answer": "[100,789,170,849]",
         "evidence_items": [{"label": "roundabout", "box": [100, 789, 170, 849]}],
         "status": "completed",
     }
@@ -23,7 +23,7 @@ def row(tmp_path):
         "image": "sample.png",
         "question": "Find the roundabout.",
         "planner_output": {"object_categories": ["roundabout"]},
-        "evidence_items": target["evidence_items"],
+        "evidence_items": [{"label": "roundabout", "box": [100, 789, 170, 849]}],
         "target": {"response_schema": GROUNDING_TARGET_SCHEMA, "result": target},
     }
 
@@ -46,3 +46,11 @@ def test_grounding_profile_renders_public_agent_result(tmp_path):
     )
     assert prepared.images[0].size == (8, 8)
     assert prepared.target_schema == GROUNDING_TARGET_SCHEMA
+
+
+def test_grounding_profile_accepts_empty_evidence_for_fallback_target(tmp_path):
+    image_root, episode = row(tmp_path)
+    episode["target"]["result"]["evidence_items"] = []
+    profile = GroundingAgentDataProfile()
+    profile.validate(episode)
+    assert json.loads(profile.render_messages(episode)[-1]["content"][0]["text"])["evidence_items"] == []

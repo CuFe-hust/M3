@@ -44,8 +44,14 @@ _CATALOG_DATA = {
 
 
 class _FakeYolo:
-    def __init__(self, *, error: Exception | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        boxes: tuple[tuple[float, float, float, float], ...] | None = None,
+    ) -> None:
         self.error = error
+        self.boxes = boxes if boxes is not None else ((10.0, 10.0, 40.0, 40.0),)
         self.calls: list[Image.Image] = []
 
     @property
@@ -63,8 +69,8 @@ class _FakeYolo:
         return [
             ObjectDetectionOutput(
                 label="building",
-                confidence=0.9,
-                xyxy=(10.0, 10.0, 40.0, 40.0),
+                confidence=0.9 - index * 0.1,
+                xyxy=box,
                 polygon=None,
                 input_width=image.width,
                 input_height=image.height,
@@ -72,6 +78,7 @@ class _FakeYolo:
                 weights_sha256="a" * 64,
                 provider_audit={},
             )
+            for index, box in enumerate(self.boxes)
         ]
 
 
@@ -89,7 +96,38 @@ class _FakeQwen:
         self.calls.append({"messages": messages, "request_meta": request_meta})
         if self.error is not None:
             raise self.error
-        return response_model.model_validate(self.response)
+        response = self.response
+        if "selected_box_ids" in response or "fallback_boxes" in response:
+            payload = json.loads(messages[1]["content"][-1]["text"])
+            candidates = {
+                item["candidate_id"]: item
+                for item in payload["evidence"]["candidates"]
+            }
+            evidence_items = [
+                {
+                    "label": candidates[box_id]["category"],
+                    "image_id": candidates[box_id]["roi_id"],
+                    "box": candidates[box_id]["box"],
+                }
+                for box_id in response.get("selected_box_ids", [])
+                if box_id in candidates
+            ]
+            for item in response.get("fallback_boxes", []):
+                evidence_items.append(
+                    {
+                        "label": item["leaf_category"],
+                        "image_id": item["roi_id"],
+                        "box": item["xyxy"],
+                    }
+                )
+            first_box = evidence_items[0]["box"] if evidence_items else [0, 0, 1, 1]
+            response = {
+                "agent_name": "grounding_agent",
+                "answer": json.dumps(first_box, separators=(",", ":")),
+                "evidence_items": evidence_items,
+                "status": "completed",
+            }
+        return response_model.model_validate(response)
 
 
 def _sample(
@@ -247,6 +285,53 @@ def test_v2_executor_calls_each_model_once_and_returns_whole_image_box(tmp_path:
     }
     for forbidden in ("catalog_version", "source_size", "core_xyxy", "expanded_xyxy"):
         assert forbidden not in json.dumps(model_payload)
+
+
+def test_public_agentresult_response_selects_exact_yolo_candidate(tmp_path: Path) -> None:
+    yolo = _FakeYolo()
+    qwen = _FakeQwen(
+        {
+            "agent_name": "grounding_agent",
+            "answer": "[100,125,400,500]",
+            "evidence_items": [
+                {"label": "building-outline", "image_id": "full", "box": [100, 125, 400, 500]}
+            ],
+            "status": "completed",
+        }
+    )
+    result = _run(_executor(qwen, yolo=yolo), tmp_path)
+    assert result.bundle.selected_box_ids == ["full-box-1"]
+    assert result.bundle.fallback_boxes == []
+    assert result.whole_image_boxes[0].box == (100, 125, 400, 500)
+
+
+def test_public_agentresult_evidence_keeps_all_yolo_candidates(tmp_path: Path) -> None:
+    yolo = _FakeYolo(boxes=((10.0, 10.0, 40.0, 40.0), (50.0, 20.0, 80.0, 60.0)))
+    qwen = _FakeQwen({"selected_box_ids": ["full-box-1"], "fallback_boxes": []})
+    result = _run(_executor(qwen, yolo=yolo), tmp_path)
+
+    assert result.bundle.selected_box_ids == ["full-box-1"]
+    assert [item.box for item in result.whole_image_boxes] == [
+        (100, 125, 400, 500),
+        (500, 250, 799, 749),
+    ]
+
+
+
+def test_public_agentresult_response_rejects_non_candidate_answer(tmp_path: Path) -> None:
+    yolo = _FakeYolo()
+    qwen = _FakeQwen(
+        {
+            "agent_name": "grounding_agent",
+            "answer": "[110,130,390,490]",
+            "evidence_items": [
+                {"label": "building-outline", "image_id": "full", "box": [100, 125, 400, 500]}
+            ],
+            "status": "completed",
+        }
+    )
+    with pytest.raises(GroundingEvidenceError, match="NO_VALID_BOXES"):
+        _run(_executor(qwen, yolo=yolo), tmp_path)
 
 
 def test_open_vocabulary_category_skips_yolo_and_uses_qwen_fallback(

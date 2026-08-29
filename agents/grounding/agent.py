@@ -7,6 +7,7 @@ postprocess 强制 completed 必须携带合法定位证据，不在本模块计
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -181,11 +182,9 @@ class GroundingAgent(VisualAgentBase):
             ) from exc
         payload = AgentResult(
             agent_name=self.name,
-            # 14C §8: the final Qwen never produces free-text coordinate
-            # answers; the deterministic answer summarizes the retained labels.
-            # 14C §8：最终 Qwen 不生成自由文本坐标答案；确定性答案汇总保留的
-            # 标签。
-            answer=", ".join(box.label for box in result.whole_image_boxes),
+            # The public grounding contract carries the primary coordinate in
+            # answer; boxes/evidence_items retain every returned localized box.
+            answer=json.dumps(list(result.whole_image_boxes[0].box), separators=(",", ":")),
             boxes=[list(box.box) for box in result.whole_image_boxes],
             evidence_items=[
                 VisualEvidence(label=item.label, box=list(item.box))

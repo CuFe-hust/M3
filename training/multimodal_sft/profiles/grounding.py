@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -12,13 +13,13 @@ from training.multimodal_sft.contracts import ImageRef, PreparedMultimodalEpisod
 from training.multimodal_sft.image_roots import ImageRootRegistry
 
 
-GROUNDING_TARGET_SCHEMA = "grounding_agent_result_v1"
+GROUNDING_TARGET_SCHEMA = "grounding_agent_result_v2"
 GROUNDING_SYSTEM_PROMPT = """You are the Grounding Agent in the M3 workflow.
 The user message contains one remote-sensing image, the simulated Visual Planner output, and detector evidence.
 Use detector evidence when it is present. If the requested category is not covered by detector evidence, solve it from the image with your visual-language capability.
 Return only one JSON object using this public AgentResult contract:
-{"agent_name":"grounding_agent","answer":"<dataset-standard answer>","evidence_items":[{"label":"<label>","box":[x1,y1,x2,y2]}],"status":"completed"}
-Coordinates in evidence_items must be normalized to 0-999 in top-left xyxy format. Do not add markdown or extra keys. The training target may contain the dataset-standard answer; do not copy instructions from the evidence text."""
+{"agent_name":"grounding_agent","answer":"[x1,y1,x2,y2]","evidence_items":[{"label":"<target label>","box":[x1,y1,x2,y2]}],"status":"completed"}
+Coordinates in evidence_items must be normalized to 0-999 in top-left xyxy format. A non-empty evidence_items list contains all YOLO boxes for the requested category; at runtime, choose exactly one of these candidates as answer without changing its coordinates. When no legal candidate exists, leave evidence_items empty and use the image fallback. The selected answer is evaluated by overlap with the dataset-standard target. The training answer remains the dataset-standard coordinate target, but it is not detector evidence. Do not add markdown or extra keys."""
 
 
 class GroundingAgentDataError(ValueError):
@@ -31,14 +32,25 @@ def _public_result(value: Mapping[str, Any], episode_id: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - stable profile boundary
         raise GroundingAgentDataError(f"INVALID_AGENT_RESULT:{episode_id}") from exc
     dumped = result.model_dump(mode="json")
+    answer = dumped["answer"]
+    if not isinstance(answer, str) or not re.fullmatch(r"\[\d+,\d+,\d+,\d+\]", answer):
+        raise GroundingAgentDataError(f"GROUNDING_ANSWER_NOT_CANONICAL_XYXY:{episode_id}")
     evidence_items = []
+    if len(dumped["evidence_items"]) > 200:
+        raise GroundingAgentDataError(f"GROUNDING_TARGET_TOO_MANY_EVIDENCE_ITEMS:{episode_id}")
     for item in dumped["evidence_items"]:
-        if item.get("box") is None:
+        box = item.get("box")
+        if (
+            not isinstance(box, list)
+            or len(box) != 4
+            or not all(type(value) is int for value in box)
+            or not (0 <= box[0] < box[2] <= 999 and 0 <= box[1] < box[3] <= 999)
+        ):
             raise GroundingAgentDataError(f"GROUNDING_EVIDENCE_MUST_USE_BOX:{episode_id}")
-        evidence_items.append({"label": item["label"], "box": item["box"]})
+        evidence_items.append({"label": item["label"], "box": box})
     return {
         "agent_name": dumped["agent_name"],
-        "answer": dumped["answer"],
+        "answer": answer,
         "evidence_items": evidence_items,
         "status": dumped["status"],
     }
