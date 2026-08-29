@@ -73,7 +73,7 @@ def test_local_config_declares_detector_inventory() -> None:
 
     assert settings.backend.yolo.enabled is True
     assert [item.name for item in settings.backend.yolo.detectors] == [
-        "detector_obb_csl_001", "detector_yolo_detect_001"
+        "detector_obb_csl_001", "detector_obb_ultralytics_001"
     ]
     assert all(item.enabled for item in settings.backend.yolo.detectors)
     assert settings.backend.yolo.detectors[0].device == "0"
@@ -84,6 +84,11 @@ def test_local_config_declares_detector_inventory() -> None:
     assert settings.visual_planning.gpu_workers.yolo.hard_limit_gib == 8
     assert settings.visual_planning.gpu_workers.segformer.hard_limit_gib == 12
     assert all(item.allow_cpu_fallback is False for item in settings.backend.yolo.detectors)
+    vrsbench = settings.backend.yolo.detectors[1]
+    assert vrsbench.task == "obb"
+    assert vrsbench.model_id == "YOLO11m-OBB:VRSBench-QA1024:best"
+    assert vrsbench.classes[0] == "plane"
+    assert vrsbench.classes[-1] == "helipad"
     assert settings.models.qwen.model == "models/Qwen3.5-9B"
     assert settings.models.qwen.cache_model_id == "Qwen/Qwen3.5-9B:local"
     assert set(settings.visual_planning.detectors) == {"detector_obb_csl_001"}

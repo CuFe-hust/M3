@@ -198,7 +198,7 @@ def test_explicit_alias_resolves_to_canonical_target() -> None:
     hints = catalog.target_hints(_target("car"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -259,13 +259,13 @@ def test_verified_oem_expert_is_active_with_landcover_semantics() -> None:
     assert oem.change_semantics.rescue_strategy == "building_footprint_delta"
 
 
-def test_separator_and_case_normalization_maps_isaid_label() -> None:
+def test_separator_and_case_normalization_maps_vrsbench_label() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     candidates = catalog.candidates(_target("Small_Vehicle"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -279,7 +279,7 @@ def test_unsupported_target_has_no_candidates_or_hints() -> None:
     assert catalog.target_hints(_target("water")) == {}
     assert tuple(
         expert.backend_name for expert in catalog.candidates(_target("bridge"))
-    ) == ("detector_yolo_detect_001", "detector_obb_csl_001")
+    ) == ("detector_obb_ultralytics_001", "detector_obb_csl_001")
     assert "background" not in isaid.supports
     assert isaid.supports["bridge"].counting_mode == "unsupported"
     assert isaid.supports["harbor"].counting_mode == "unsupported"
@@ -363,7 +363,7 @@ def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
 
     assert isinstance(enabled, tuple)
     assert tuple(expert.backend_name for expert in enabled) == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
         "segmenter_oem_001",

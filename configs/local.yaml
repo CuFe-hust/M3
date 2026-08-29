@@ -58,21 +58,21 @@ backend:
         gpu_mem_limit_gib: 8
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
-      - name: detector_yolo_detect_001
+      - name: detector_obb_ultralytics_001
         enabled: true
-        weights: models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
+        weights: models/vrsbench-yolo11m-obb-1024/vrsbench_yolo11m_obb_best.pt
         runtime: ultralytics
-        task: detect
-        model_id: YOLO11s:iSAID:tiles1024-o20:epoch111
-        sha256: f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266
-        source_dataset: iSAID
+        task: obb
+        model_id: YOLO11m-OBB:VRSBench-QA1024:best
+        sha256: 4a86331ed43b316e60050c5a890f3149f48bf34ce6f5c0e61a15382969feaf52
+        source_dataset: VRSBench-QA1024
         priority: 200
-        classes: [baseball_diamond, basketball_court, bridge, ground_track_field, harbor, helicopter, large_vehicle, plane, roundabout, ship, small_vehicle, soccer_ball_field, storage_tank, swimming_pool, tennis_court]
-        aliases: {baseball diamond: baseball_diamond, basketball court: basketball_court, ground track field: ground_track_field, large vehicle: large_vehicle, small vehicle: small_vehicle, soccer ball field: soccer_ball_field, storage tank: storage_tank, swimming pool: swimming_pool, tennis court: tennis_court}
+        classes: [plane, ship, storage-tank, baseball-diamond, tennis-court, basketball-court, ground-track-field, harbor, bridge, large-vehicle, small-vehicle, helicopter, roundabout, soccer-ball-field, swimming-pool, container-crane, airport, helipad]
+        aliases: {storage tank: storage-tank, baseball diamond: baseball-diamond, tennis court: tennis-court, basketball court: basketball-court, ground track field: ground-track-field, large vehicle: large-vehicle, small vehicle: small-vehicle, soccer ball field: soccer-ball-field, swimming pool: swimming-pool, container crane: container-crane}
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        # GB10 production invariant: explicit CPU-only Ultralytics YOLO.
+        # GB10 production invariant: explicit CPU-only Ultralytics YOLO OBB.
         device: cpu
         max_detections: 2000
         require_cuda: false

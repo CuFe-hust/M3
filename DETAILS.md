@@ -801,6 +801,11 @@ YOLO 的新版 Counting 实现已经是旧版的加强版，仍保持唯一实�
 通用 `models.base.validate_local_model_asset` 在模型 runtime 之前统一拦截 LFS
 pointer；没有新增第二套 YOLO loader。
 
+当前本地部署 inventory 包含 DOTA-v2.0 YOLOv5-OBB 与 VRSBench-QA1024
+YOLO11m-OBB。后者使用权重内嵌并经 SHA-256 绑定的 DOTA 18 类顺序，替代旧 iSAID
+YOLO11s detect 资产。Counting selector 先按 canonical label 检查 detector class capability，
+再在同 kind 内按 priority 选择：VRSBench 专家 priority 200，DOTA 专家 priority 100。
+
 `agents/counting/backends/semantic_segmentation.py` 只消费 ExpertCatalog 明确批准的
 `connected_components` capability：按 per-label confidence/area/morphology policy
 将 semantic component centroid 转成共享 `GlobalPointObservation`，随后复用 owner-core

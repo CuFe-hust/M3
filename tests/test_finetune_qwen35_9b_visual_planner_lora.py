@@ -326,6 +326,8 @@ def test_exact_target_regex_does_not_match_same_name_vision_module() -> None:
 def test_local_path_cannot_be_persisted_as_model_identity() -> None:
     with pytest.raises(ft.TrainingConfigurationError, match="path_independent"):
         ft._safe_model_identity("/home/user/models/Qwen3.5-9B")
+    with pytest.raises(ft.TrainingConfigurationError, match="path_independent"):
+        ft._safe_model_identity(r"C:\models\Qwen3.5-9B")
     assert ft._safe_model_identity("Qwen/Qwen3.5-9B") == "Qwen/Qwen3.5-9B"
 
 
