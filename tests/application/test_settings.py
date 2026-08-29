@@ -84,6 +84,17 @@ def test_local_config_declares_detector_inventory() -> None:
     assert settings.visual_planning.gpu_workers.yolo.hard_limit_gib == 8
     assert settings.visual_planning.gpu_workers.segformer.hard_limit_gib == 12
     assert all(item.allow_cpu_fallback is False for item in settings.backend.yolo.detectors)
+    dota = settings.backend.yolo.detectors[0]
+    assert dota.runtime == "ultralytics"
+    assert dota.model_id == "YOLO11m-OBB:DOTA-v2.0:best"
+    assert dota.weights == Path("models/yolo_obb/dota_v2_yolo11m_obb_best.pt")
+    assert dota.classes == [
+        "plane", "ship", "storage-tank", "baseball-diamond", "tennis-court",
+        "basketball-court", "ground-track-field", "harbor", "bridge",
+        "large-vehicle", "small-vehicle", "helicopter", "roundabout",
+        "soccer-ball-field", "swimming-pool", "container-crane", "airport",
+        "helipad",
+    ]
     vrsbench = settings.backend.yolo.detectors[1]
     assert vrsbench.task == "obb"
     assert vrsbench.model_id == "YOLO11m-OBB:VRSBench-QA1024:best"

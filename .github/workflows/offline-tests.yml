@@ -169,14 +169,14 @@ jobs:
           detector = YoloDetectorSettings(
               name="detector_obb_csl_001",
               enabled=True,
-              weights=Path("models/yolo_obb/yolov5m_obb_csl_dotav20.onnx"),
-              runtime="onnx_yolov5_obb",
-              model_id="YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m",
-              sha256="c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a",
+              weights=Path("models/yolo_obb/dota_v2_yolo11m_obb_best.pt"),
+              runtime="ultralytics",
+              model_id="YOLO11m-OBB:DOTA-v2.0:best",
+              sha256="f9db8b4165421f64f8a380a7f1a365de7c94dff98eb5b9606d0e93969ae8eb21",
               source_dataset="DOTAv2.0",
               priority=100,
-              classes=["plane", "baseball diamond", "bridge", "ground track field", "small vehicle", "large vehicle", "ship", "tennis court", "basketball court", "storage tank", "soccer ball field", "roundabout", "harbor", "swimming pool", "helicopter", "container crane", "airport", "helipad"],
-              aliases={"airplane": "plane", "aeroplane": "plane", "vessel": "ship", "boat": "ship", "storage-tank": "storage tank", "oil tank": "storage tank", "large-vehicle": "large vehicle", "small-vehicle": "small vehicle", "football field": "soccer ball field", "soccer field": "soccer ball field", "swimming-pool": "swimming pool"},
+              classes=["plane", "ship", "storage-tank", "baseball-diamond", "tennis-court", "basketball-court", "ground-track-field", "harbor", "bridge", "large-vehicle", "small-vehicle", "helicopter", "roundabout", "soccer-ball-field", "swimming-pool", "container-crane", "airport", "helipad"],
+              aliases={"storage tank": "storage-tank", "baseball diamond": "baseball-diamond", "tennis court": "tennis-court", "basketball court": "basketball-court", "ground track field": "ground-track-field", "large vehicle": "large-vehicle", "small vehicle": "small-vehicle", "soccer ball field": "soccer-ball-field", "swimming pool": "swimming-pool", "container crane": "container-crane"},
           )
           settings = AppSettings(
               backend=BackendSettings(

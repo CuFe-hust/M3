@@ -37,7 +37,7 @@
       "segformer_binding": "segmenter_mitb2_001"
     },
     "baseball-diamond": {
-      "yolo_labels": ["baseball diamond"],
+      "yolo_labels": ["baseball-diamond"],
       "segformer_labels": ["baseball_diamond"],
       "yolo_enabled": true,
       "segformer_enabled": true,
@@ -51,21 +51,21 @@
       "segformer_binding": "segmenter_mitb2_001"
     },
     "ground-track-field": {
-      "yolo_labels": ["ground track field"],
+      "yolo_labels": ["ground-track-field"],
       "segformer_labels": ["Ground_Track_Field"],
       "yolo_enabled": true,
       "segformer_enabled": true,
       "segformer_binding": "segmenter_mitb2_001"
     },
     "small-vehicle": {
-      "yolo_labels": ["small vehicle"],
+      "yolo_labels": ["small-vehicle"],
       "segformer_labels": ["Small_Vehicle"],
       "yolo_enabled": true,
       "segformer_enabled": true,
       "segformer_binding": "segmenter_mitb2_001"
     },
     "large-vehicle": {
-      "yolo_labels": ["large vehicle"],
+      "yolo_labels": ["large-vehicle"],
       "segformer_labels": ["Large_Vehicle"],
       "yolo_enabled": true,
       "segformer_enabled": true,
@@ -79,28 +79,28 @@
       "segformer_binding": "segmenter_mitb2_001"
     },
     "tennis-court": {
-      "yolo_labels": ["tennis court"],
+      "yolo_labels": ["tennis-court"],
       "segformer_labels": ["tennis_court"],
       "yolo_enabled": true,
       "segformer_enabled": true,
       "segformer_binding": "segmenter_mitb2_001"
     },
     "basketball-court": {
-      "yolo_labels": ["basketball court"],
+      "yolo_labels": ["basketball-court"],
       "segformer_labels": ["basketball_court"],
       "yolo_enabled": true,
       "segformer_enabled": true,
       "segformer_binding": "segmenter_mitb2_001"
     },
     "storage-tank": {
-      "yolo_labels": ["storage tank"],
+      "yolo_labels": ["storage-tank"],
       "segformer_labels": ["storage_tank"],
       "yolo_enabled": true,
       "segformer_enabled": true,
       "segformer_binding": "segmenter_mitb2_001"
     },
     "soccer-ball-field": {
-      "yolo_labels": ["soccer ball field"],
+      "yolo_labels": ["soccer-ball-field"],
       "segformer_labels": ["Soccer_ball_field"],
       "yolo_enabled": true,
       "segformer_enabled": true,
@@ -121,7 +121,7 @@
       "segformer_binding": "segmenter_mitb2_001"
     },
     "swimming-pool": {
-      "yolo_labels": ["swimming pool"],
+      "yolo_labels": ["swimming-pool"],
       "segformer_labels": ["Swimming_pool"],
       "yolo_enabled": true,
       "segformer_enabled": true,
@@ -135,7 +135,7 @@
       "segformer_binding": "segmenter_mitb2_001"
     },
     "container-crane": {
-      "yolo_labels": ["container crane"],
+      "yolo_labels": ["container-crane"],
       "segformer_labels": null,
       "yolo_enabled": true,
       "segformer_enabled": false

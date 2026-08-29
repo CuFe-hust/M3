@@ -500,10 +500,10 @@ def test_yolo_catalog_class_mismatch_fails_fast(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "yolo.example.yaml", environ={})
     detector = settings.backend.yolo.detectors[0].model_copy(
         update={
-            "classes": [
-                value for value in settings.backend.yolo.detectors[0].classes
-                if value != "small vehicle"
-            ]
+                "classes": [
+                    value for value in settings.backend.yolo.detectors[0].classes
+                    if value != "small-vehicle"
+                ]
         }
     )
     yolo = settings.backend.yolo.model_copy(update={"detectors": [detector]})
@@ -574,14 +574,14 @@ def test_relative_yolo_weights_resolve_against_project_root(
     resolved = _resolve_yolo_detector(detector, project_root)
 
     assert resolved.weights == (
-        project_root / "models" / "yolo_obb" / "yolov5m_obb_csl_dotav20.onnx"
+        project_root / "models" / "yolo_obb" / "dota_v2_yolo11m_obb_best.pt"
     ).resolve()
     assert elsewhere not in resolved.weights.parents
 
 
 def test_absolute_yolo_weights_are_preserved(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
-    external = tmp_path / "mounted-models" / "detector.onnx"
+    external = tmp_path / "mounted-models" / "detector.pt"
     detector = settings.backend.yolo.detectors[0].model_copy(
         update={"weights": external}
     )
@@ -594,7 +594,7 @@ def test_absolute_yolo_weights_are_preserved(tmp_path: Path) -> None:
 def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
     detector = settings.backend.yolo.detectors[0].model_copy(
-        update={"weights": tmp_path / "external" / "detector.onnx"}
+        update={"weights": tmp_path / "external" / "detector.pt"}
     )
     catalog = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
 

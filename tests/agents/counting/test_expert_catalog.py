@@ -124,6 +124,15 @@ def test_yolo_capabilities_use_declared_detector_identity_and_labels() -> None:
     assert expert.backend_name == detector["name"]
     assert expert.logical_model_id == detector["model_id"]
     assert expert.asset.sha256 == detector["sha256"]
+    assert detector["runtime"] == "ultralytics"
+    assert expert.asset.weights == "models/yolo_obb/dota_v2_yolo11m_obb_best.pt"
+    assert detector["classes"] == [
+        "plane", "ship", "storage-tank", "baseball-diamond", "tennis-court",
+        "basketball-court", "ground-track-field", "harbor", "bridge",
+        "large-vehicle", "small-vehicle", "helicopter", "roundabout",
+        "soccer-ball-field", "swimming-pool", "container-crane", "airport",
+        "helipad",
+    ]
     assert capability_labels <= set(detector["classes"])
 
 

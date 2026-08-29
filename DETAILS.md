@@ -801,10 +801,15 @@ YOLO 的新版 Counting 实现已经是旧版的加强版，仍保持唯一实�
 通用 `models.base.validate_local_model_asset` 在模型 runtime 之前统一拦截 LFS
 pointer；没有新增第二套 YOLO loader。
 
-当前本地部署 inventory 包含 DOTA-v2.0 YOLOv5-OBB 与 VRSBench-QA1024
-YOLO11m-OBB。后者使用权重内嵌并经 SHA-256 绑定的 DOTA 18 类顺序，替代旧 iSAID
-YOLO11s detect 资产。Counting selector 先按 canonical label 检查 detector class capability，
+当前本地部署 inventory 包含 DOTA-v2.0 YOLO11m-OBB 与 VRSBench-QA1024
+YOLO11m-OBB。两者使用权重内嵌并经 SHA-256 绑定的 DOTA 18 类顺序；DOTA checkpoint
+替代旧 YOLOv5m-OBB CSL ONNX 资产，VRSBench checkpoint 替代旧 iSAID YOLO11s detect
+资产。为兼容既有 artifact 与外部配置，DOTA deployment slot 仍使用稳定 backend 名
+`detector_obb_csl_001`，实际模型身份由新的 logical model ID 与 SHA 决定。Counting
+selector 先按 canonical label 检查 detector class capability，
 再在同 kind 内按 priority 选择：VRSBench 专家 priority 200，DOTA 专家 priority 100。
+`visual-evidence-catalog-v4` 的 YOLO raw labels 同步使用两个 checkpoint 内嵌的连字符
+类别名；面向用户的空格写法仍由 canonical alias normalization 处理。
 
 `agents/counting/backends/semantic_segmentation.py` 只消费 ExpertCatalog 明确批准的
 `connected_components` capability：按 per-label confidence/area/morphology policy
@@ -1665,15 +1670,16 @@ parent expansion 与 dataset-neutral hints 匹配；planner/VLM 不返回 backen
 
 ## 25.5 YOLO
 
-YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
+YOLO 模型存储、Ultralytics adapter 与兼容保留的 ONNX 实现保持惰性和可选。
 
 Python `YoloCountingSettings` 只保留 schema 与通用默认值：默认 `enabled=false`、
 `detectors=[]`，不包含具体 checkpoint、labels 或 backend id。`ExpertCatalog` 是 capability、
 logical identity、SHA、labels 与 priority 的事实源；`configs/local.yaml` 等部署配置是 enabled、
 物理权重路径、provider/device 与阈值的事实源。只有显式部署 inventory 才注册 YOLO。
 相对权重路径在 composition root 按 `project_root` canonicalize，绝对外部挂载路径保持不变；
-物理路径不参与 catalog identity。权重与 ONNX Runtime 不自动下载，缺失时仍按通用 fallback
-策略进入下一专家。
+物理路径不参与 catalog identity。权重与可选 runtime 依赖不自动下载，缺失时仍按通用
+fallback 策略进入下一专家。当前正式 DOTA/VRSBench inventory 均使用 Ultralytics；
+ONNX adapter 仅保留给显式配置的兼容 detector。
 
 硬件策略由 settings 决定，例如：
 

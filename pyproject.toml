@@ -28,7 +28,7 @@ dev = [
 ]
 change = ["numpy>=1.26", "opencv-python>=4.8", "Pillow>=10.0.0"]
 yolo = ["ultralytics==8.4.102"]
-# GB10 production uses CPU ONNX Runtime for YOLO.
+# Optional compatibility runtime for explicitly configured legacy ONNX detectors.
 yolo-onnx = ["onnxruntime>=1.23", "numpy>=1.26", "opencv-python>=4.8"]
 segformer = ["torch>=2.2", "transformers>=5.14.1,<5.15", "safetensors>=0.4"]
 change-semantic = ["torch>=2.2", "transformers>=5.14.1,<5.15", "safetensors>=0.4"]
