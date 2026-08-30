@@ -42,7 +42,7 @@ backend:
     detectors:
       - name: detector_obb_csl_001
         enabled: true
-        weights: models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+        weights: /home/lijia/M3/models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
         runtime: onnx_yolov5_obb
         task: obb
         model_id: YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m
@@ -63,7 +63,7 @@ backend:
         boundary_duplicate_center_px: 16.0
       - name: detector_yolo_detect_001
         enabled: true
-        weights: models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
+        weights: /home/lijia/M3/models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
         runtime: ultralytics
         task: detect
         model_id: YOLO11s:iSAID:tiles1024-o20:epoch111
