@@ -12,12 +12,22 @@ models:
       logical_id: qwen35-9b-visual-planner-supplement-20260824
       revision: e59d7f5afe0f3c75a06e785579a74d4a7a9880a589be8d91197d699569dea170
       enabled: true
+    visual-planner-final-v1-lr5e-5:
+      path: outputs/finetune/qwen35-9b-visual-planner-final-v1-lr5e-5/final_adapter
+      logical_id: qwen35-9b-visual-planner-final-v1-lr5e-5
+      revision: f6c5ab9d71a68f64893fc26fcb524702511abf5cda713bf691a9cf23ffeef1b0
+      enabled: true
+    general-vqa-agent-lora-full:
+      path: outputs/finetune/qwen35-9b-general-vqa-agent-lora-full/final_adapter
+      logical_id: qwen35-9b-general-vqa-agent-lora-full
+      revision: 08e79e4c316d718c60655fb69d477655042f4ebd04776aa0c5ad73fe510bde62
+      enabled: true
   qwen_adapter_bindings:
-    planner: visual-planner-supplement
+    planner: visual-planner-final-v1-lr5e-5
     counting: visual-planner-supplement
     change: visual-planner-supplement
     grounding: visual-planner-supplement
-    general_vqa: visual-planner-supplement
+    general_vqa: general-vqa-agent-lora-full
     caption: visual-planner-supplement
 
 reporting:

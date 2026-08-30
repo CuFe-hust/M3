@@ -667,6 +667,14 @@ Describe the image in detail.
 | `XLRS-Bench` | `XLRS` |
 | `XLRS-Bench-lite` | `XLRS-lite` |
 
+`MME-RealWorld` adapter version `official-v2-question-with-choices` 将源 `Text`
+与 `Answer choices` 按原始顺序以换行符合并为 canonical
+`UnifiedSample.question`。因此 fresh VisualTaskPlanner 与最终 VQA Agent 都能
+看到完整题面；Ground Truth 仍仅保留于 `ground_truth`，不进入
+question。`TaskNormalization.choices/allow_multiple` 继续作为结构化答案
+约束权威。该 v2 改变 sample ID / planner request / model cache 输入身份，
+不与 v1 run 混用。
+
 `XLRS-Bench-lite` 当前 registry 配置的 supported task 为：
 
 ```text
@@ -1249,8 +1257,11 @@ source geometry 与 evidence protocol identity 仍共同覆盖 request hash（14
 `0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
 
 GeneralVQA 基础 payload 不含 `answer_constraints`。非空 `semantic_subtype` 才进入
-payload；`multiple_choice_vqa` 只从 `TaskNormalization.choices/allow_multiple`
-在顶层输出唯一一份选项事实，缺失选项会在读图、budget 与 Qwen 前稳定失败。
+payload；`multiple_choice_vqa` 从 `TaskNormalization.choices/allow_multiple`
+输出结构化答案约束，缺失选项会在读图、budget 与 Qwen 前稳定失败。
+MME-RealWorld v2 同时在 canonical question 中保留人类可读的原始
+选项行，使首次 Planner 调用也拥有完整题面；顶层字段仍是
+Agent postprocess 的权威结构化来源。
 
 Doc 24：GeneralVQAAgent 的四个 supported task（`general_vqa`、
 `scene_classification`、`multiple_choice_vqa`、`spatial_relation`）统一由

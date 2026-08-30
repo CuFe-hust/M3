@@ -93,6 +93,7 @@ VISUAL_INPUT_ROLES = frozenset(
     }
 )
 VISUAL_CONTENT_VERSION = "v2"
+MAX_FINAL_QWEN_DETECTIONS = 4
 
 
 class GeneralVQAAgent(VisualAgentBase):

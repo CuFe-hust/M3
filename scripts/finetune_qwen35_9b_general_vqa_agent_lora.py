@@ -191,6 +191,8 @@ def load_source_records(
                         raise TrainingConfigurationError(
                             f"image_missing_or_unsafe:{dataset}:{line_number}"
                         )
+                if sample_id in set(getattr(args, "exclude_episode_id", ())):
+                    continue
                 loaded.append(SourceRecord(dataset, split, path, line_number, record, data_root))
                 if max_samples is not None and len(loaded) >= max_samples:
                     return loaded
@@ -409,8 +411,13 @@ async def prepare_records(
         status_path = sample_dir / "status.json"
         if cached_path.is_file() and status_path.is_file():
             cached_status = json.loads(status_path.read_text(encoding="utf-8"))
-            if cached_status.get("state") == "succeeded" and cached_status.get("identity") == identity:
-                prepared.append(json.loads(cached_path.read_text(encoding="utf-8")))
+            cached_record = json.loads(cached_path.read_text(encoding="utf-8"))
+            if (
+                cached_status.get("state") == "succeeded"
+                and cached_status.get("identity") == identity
+                and _cached_record_respects_evidence_limit(cached_record)
+            ):
+                prepared.append(cached_record)
                 if gpu_monitor is not None:
                     gpu_monitor.sample("cached_skip", index=index, sample_id=sample_id, dataset=item.dataset)
                 continue
@@ -670,6 +677,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="outputs/finetune/qwen35-9b-general-vqa-agent-lora")
     parser.add_argument("--max-train-samples", type=int)
     parser.add_argument("--max-eval-samples", type=int)
+    parser.add_argument(
+        "--exclude-episode-id", action="append", default=[],
+        help="Exclude an explicitly identified corrupt episode; repeatable.",
+    )
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--max-seq-length", type=int, default=6144)
     parser.add_argument("--lora-rank", type=int, default=32)
@@ -743,6 +754,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status": "succeeded",
         "preparation_version": PREPARATION_VERSION,
         "config_sha256": config_sha256,
+        "excluded_episode_ids": sorted(set(args.exclude_episode_id)),
         "train": {**_summary(train_source), "sha256": sha256_file(train_path)},
         "validation": {**_summary(validation_source), "sha256": sha256_file(validation_path)},
     }
