@@ -1,17 +1,11 @@
-# Local Qwen3.5-9B base with one verified supplement LoRA shared by all
-# planner/Agent bindings. 本地 Qwen3.5-9B 基座；所有 planner/Agent 绑定共享
-# 一个已验证 supplement LoRA。
+# Local Qwen3.5-9B base with verified planner and General VQA LoRAs.
+# 本地 Qwen3.5-9B 基座，使用已验证的 Planner 与 General VQA LoRA。
 models:
   qwen:
     model: models/Qwen3.5-9B
     cache_model_id: Qwen/Qwen3.5-9B:local
     allow_download: false
   qwen_adapters:
-    visual-planner-supplement:
-      path: outputs/finetune/qwen35-9b-visual-planner-lora-supplement-20260824/final_adapter
-      logical_id: qwen35-9b-visual-planner-supplement-20260824
-      revision: e59d7f5afe0f3c75a06e785579a74d4a7a9880a589be8d91197d699569dea170
-      enabled: true
     visual-planner-final-v1-lr5e-5:
       path: outputs/finetune/qwen35-9b-visual-planner-final-v1-lr5e-5/final_adapter
       logical_id: qwen35-9b-visual-planner-final-v1-lr5e-5
@@ -24,11 +18,11 @@ models:
       enabled: true
   qwen_adapter_bindings:
     planner: visual-planner-final-v1-lr5e-5
-    counting: visual-planner-supplement
-    change: visual-planner-supplement
-    grounding: visual-planner-supplement
+    counting: visual-planner-final-v1-lr5e-5
+    change: visual-planner-final-v1-lr5e-5
+    grounding: visual-planner-final-v1-lr5e-5
     general_vqa: general-vqa-agent-lora-full
-    caption: visual-planner-supplement
+    caption: visual-planner-final-v1-lr5e-5
 
 reporting:
   native_html: true
