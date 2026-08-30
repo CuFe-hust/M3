@@ -40,7 +40,8 @@ from data.schema import (
 )
 
 ADAPTER_VERSION = "hf-disk-v1"
-_JSONL_ADAPTER_VERSION = "sharded-jsonl-base64-v1"
+_VQA_HF_ADAPTER_VERSION = "hf-disk-v2-question-with-choices"
+_JSONL_ADAPTER_VERSION = "sharded-jsonl-base64-v2-question-with-choices"
 # Official Hugging Face releases per task. / 各任务的官方 Hugging Face 发布。
 HF_REPOS = {
     "caption": "initiacms/XLRS-Bench_caption_en",
@@ -80,6 +81,7 @@ _CAPTION_TEXT_KEYS = ("caption", "text", "raw")
 _JSONL_PART_PATTERN = "XLRS-Bench-lite_part*.jsonl"
 _JSONL_PART_NUMBER = re.compile(r"XLRS-Bench-lite_part(\d+)\.jsonl\Z")
 _LABELED_CHOICE_LINE = re.compile(r"^\s*\(([A-E])\)\s*(\S.*)\s*$")
+_CHOICE_PREFIX = re.compile(r"^\s*(?:\([A-E]\)|[A-E][.)、:-])\s*", re.IGNORECASE)
 
 
 class _CaptionJsonRows:
@@ -309,13 +311,16 @@ class XLRSAdapter:
             observed = tuple(
                 sorted({key for row in itertools.islice(rows, 20) for key in row})
             )
-            return AdapterProbe(
-                dataset=self.name,
-                version=(
+            version = ADAPTER_VERSION
+            if task == "multiple_choice_vqa":
+                version = (
                     _JSONL_ADAPTER_VERSION
                     if _has_jsonl_parts(release_root)
-                    else ADAPTER_VERSION
-                ),
+                    else _VQA_HF_ADAPTER_VERSION
+                )
+            return AdapterProbe(
+                dataset=self.name,
+                version=version,
                 sample_file=release_root / "dataset_dict.json"
                 if (release_root / "dataset_dict.json").is_file()
                 else release_root,
@@ -798,8 +803,11 @@ class XLRSAdapter:
                     )
         source_id = _first_text(row, ("id", "question_id", "source_id"))
         adapter_version = (
-            _JSONL_ADAPTER_VERSION if "source_partition" in row else ADAPTER_VERSION
+            _JSONL_ADAPTER_VERSION
+            if "source_partition" in row
+            else _VQA_HF_ADAPTER_VERSION
         )
+        canonical_question = _canonical_vqa_question(question, choices)
         canonical_answers = (
             [", ".join(part.upper() for part in parts)]
             if answer is not None and allow_multiple and len(parts) > 1
@@ -809,13 +817,13 @@ class XLRSAdapter:
             sample_id=stable_sample_id(
                 dataset=self.name, split=split, source_id=source_id,
                 relative_image_paths=[image.path for image in images],
-                question=question, source_index=index,
+                question=canonical_question, source_index=index,
             ),
             dataset=self.name,
             split=split,
             task="multiple_choice_vqa",
             images=images,
-            question=question,
+            question=canonical_question,
             ground_truth=GroundTruth(
                 answers=canonical_answers,
                 raw={"adapter_version": adapter_version, "source_row": row},
@@ -980,6 +988,25 @@ def _choices(row: dict[str, Any]) -> list[Any] | None:
         return parsed
     option_values = [row[key] for key in _OPTION_LETTERS if row.get(key) not in (None, "")]
     return option_values or None
+
+
+def _canonical_vqa_question(question: str, choices: list[Any]) -> str:
+    """Append labeled choices to the raw stem for planner and final-agent use.
+    将带标签选项追加到原始题干，供 Planner 与最终 Agent 使用。"""
+    rendered: list[str] = []
+    for index, value in enumerate(choices):
+        text = str(value).strip()
+        if not text:
+            raise DatasetProbeError("XLRS Lite choice text must not be empty")
+        rendered.append(
+            text if _CHOICE_PREFIX.match(text) else _label_choice(index, text)
+        )
+    return f"{question}\n\nChoices:\n" + "\n".join(rendered)
+
+
+def _label_choice(index: int, text: str) -> str:
+    """Attach one deterministic positional option label. / 添加确定性位置标签。"""
+    return f"({chr(ord('A') + index)}) {text}"
 
 
 def _has_jsonl_parts(root: Path) -> bool:

@@ -687,6 +687,10 @@ Base64 图片按需解码到 dataset root 之外的内容寻址 cache；带 `(A)
 标签的 `multi-choice options` 字符串被严格解析为结构化 choices。经完整发布
 审计确认，`l2-category == "Overall Land use classification"` 是复选子类；其
 紧凑源答案（例如 `BCD`）规范为 `B, C, D`，原值仍保留在 Ground Truth raw。
+XLRS VQA canonical question 与 MME-RealWorld 一致，由原始题干和带标签 choices
+组成；因此 VisualTaskPlanner 的纯图片 + raw question 输入能够识别多选任务，
+最终 Agent 同时继续消费 `TaskNormalization.choices`。该 v2 question 契约会改变
+XLRS sample ID、planner request 和模型 cache 身份，不与旧 fresh run 混用。
 运行入口为：
 
 ```text

@@ -246,12 +246,13 @@ def test_sharded_jsonl_vqa_streams_base64_images_and_parses_choices(
     probe = adapter.probe(root, task="multiple_choice_vqa")
     samples = list(adapter.iter_samples(root, "train", "multiple_choice_vqa"))
 
-    assert probe.version == "sharded-jsonl-base64-v1"
+    assert probe.version == "sharded-jsonl-base64-v2-question-with-choices"
     assert probe.sample_count == 2
-    assert [sample.question for sample in samples] == [
-        "What comes first numerically?",
-        "Which scene is shown?",
-    ]
+    assert samples[0].question == (
+        "What comes first numerically?\n\nChoices:\n"
+        "(A) Airport\n(B) Harbor\n(C) Farmland\n(D) Forest"
+    )
+    assert samples[1].question.startswith("Which scene is shown?\n\nChoices:\n(A) Airport")
     assert samples[0].normalization is not None
     assert samples[0].normalization.choices == [
         "(A) Airport",
@@ -262,7 +263,9 @@ def test_sharded_jsonl_vqa_streams_base64_images_and_parses_choices(
     assert samples[0].ground_truth is not None
     assert samples[0].normalization.allow_multiple is True
     assert samples[0].ground_truth.answers == ["A, B, C"]
-    assert samples[0].metadata["adapter_version"] == "sharded-jsonl-base64-v1"
+    assert samples[0].metadata["adapter_version"] == (
+        "sharded-jsonl-base64-v2-question-with-choices"
+    )
     assert (cache / samples[0].images[0].path).is_file()
     assert encoded not in json.dumps(
         samples[0].model_dump(mode="json"), ensure_ascii=False
@@ -325,6 +328,12 @@ def test_vqa_lite_task_outputs_choices_and_multi_answer_hint(tmp_path: Path) -> 
     assert samples[0].normalization.allow_multiple is True
     assert samples[1].normalization.choices == ["x", "y", "z", "w"]  # A–E key fallback
     assert samples[1].normalization.allow_multiple is False
+    assert samples[0].question == (
+        "What is the overall land use type?\n\nChoices:\n(A) A\n(B) B\n(C) C\n(D) D"
+    )
+    assert samples[1].question == (
+        "Which class is the target?\n\nChoices:\n(A) x\n(B) y\n(C) z\n(D) w"
+    )
 
 
 def test_three_tasks_all_produce_unified_samples(tmp_path: Path) -> None:
