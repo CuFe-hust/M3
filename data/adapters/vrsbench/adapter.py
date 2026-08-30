@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+import re
 from typing import Any
 
 from data.adapters.base import AdapterProbe, DatasetProbeError, read_json_rows
@@ -93,6 +94,25 @@ def _parse_box(value: Any) -> list[float]:
     if len(box) not in (4, 8):
         raise DatasetProbeError(f"box must have 4 or 8 coordinates, got {len(box)}")
     return box
+
+
+def _parse_official_referring_box(value: Any) -> list[int]:
+    """Parse official VRSBench 0-100 box into M3 0-999 xyxy."""
+    if not isinstance(value, str):
+        raise DatasetProbeError(
+            "VRSBench official referring ground_truth must be a string"
+        )
+    values = [
+        float(item)
+        for item in re.findall(
+            r"<\s*(-?(?:\d+(?:\.\d*)?|\.\d+))\s*>", value
+        )
+    ]
+    if len(values) != 4 or any(item < 0 or item > 100 for item in values):
+        raise DatasetProbeError(
+            f"invalid VRSBench official referring ground_truth: {value!r}"
+        )
+    return [max(0, min(999, int(round(item * 999 / 100)))) for item in values]
 
 
 def _normalize_vrsbench_split(split: str) -> str:
@@ -351,22 +371,30 @@ class VRSBenchAdapter:
                     f"VRSBench grounding row {index} object {object_index} is not an object"
                 )
             text = _first_text(obj, text_keys)
-            box_value = _first_value(obj, _GROUNDING_BOX_KEYS)
-            if box_value is None:
-                raise DatasetProbeError(
-                    f"VRSBench grounding row {index} object {object_index} has no box"
-                )
             label = _first_text(obj, _GROUNDING_CLASS_KEYS)
             question_id = row.get("question_id")
             base_question_id = str(
                 row.get("question_id") or row.get("id") or index
             )
-            # Nested boxes=[[...]] are split explicitly; each box is one sample.
-            # 嵌套 boxes=[[...]] 显式拆分；每个框一条样本。
-            if isinstance(box_value, list) and box_value and isinstance(box_value[0], (list, tuple)):
-                boxes = [_parse_box(item) for item in box_value]
+            if annotation.name == "VRSBench_EVAL_referring.json":
+                official_box = _first_value(obj, ("ground_truth",))
+                if official_box is None:
+                    raise DatasetProbeError(
+                        f"VRSBench referring row {index} object {object_index} has no ground_truth"
+                    )
+                boxes = [_parse_official_referring_box(official_box)]
             else:
-                boxes = [_parse_box(box_value)]
+                box_value = _first_value(obj, _GROUNDING_BOX_KEYS)
+                if box_value is None:
+                    raise DatasetProbeError(
+                        f"VRSBench grounding row {index} object {object_index} has no box"
+                    )
+                # Nested boxes=[[...]] are split explicitly; each box is one sample.
+                # 嵌套 boxes=[[...]] 显式拆分；每个框一条样本。
+                if isinstance(box_value, list) and box_value and isinstance(box_value[0], (list, tuple)):
+                    boxes = [_parse_box(item) for item in box_value]
+                else:
+                    boxes = [_parse_box(box_value)]
             for box_position, box in enumerate(boxes):
                 question = text or (
                     f"Locate the {label}." if label else "Locate the target object."
@@ -524,5 +552,5 @@ def _grounding_coordinate_frame(annotation: Path) -> str:
     """
 
     if annotation.name == "VRSBench_EVAL_referring.json":
-        return "normalized_0_1_top_left"
+        return "normalized_0_999_top_left"
     return "source_pixels_top_left"

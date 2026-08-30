@@ -1,24 +1,29 @@
-# Local Qwen3.5-9B base with one verified supplement LoRA shared by all
-# planner/Agent bindings. 本地 Qwen3.5-9B 基座；所有 planner/Agent 绑定共享
-# 一个已验证 supplement LoRA。
+# Local Qwen3.5-9B base with separate final LoRA bindings for the
+# Visual Planner and Grounding Agent evaluation path.
+# 本地 Qwen3.5-9B 基座；Visual Planner 与 Grounding Agent 使用各自最终 LoRA。
 models:
   qwen:
-    model: models/Qwen3.5-9B
+    model: /home/lijia/M3/models/Qwen3.5-9B
     cache_model_id: Qwen/Qwen3.5-9B:local
     allow_download: false
   qwen_adapters:
-    visual-planner-supplement:
-      path: outputs/finetune/qwen35-9b-visual-planner-lora-supplement-20260824/final_adapter
-      logical_id: qwen35-9b-visual-planner-supplement-20260824
-      revision: e59d7f5afe0f3c75a06e785579a74d4a7a9880a589be8d91197d699569dea170
+    visual-planner-final:
+      path: /home/lijia/M3/outputs/finetune/qwen35-9b-visual-planner-final-v1-lr5e-5/final_adapter
+      logical_id: qwen35-9b-visual-planner-final-v1
+      revision: f6c5ab9d71a68f64893fc26fcb524702511abf5cda713bf691a9cf23ffeef1b0
+      enabled: true
+    grounding-agent-final:
+      path: /home/lijia/M3/outputs/grounding_sft_v4_lora_20260829/final_adapter
+      logical_id: qwen35-9b-grounding-agent-sft-v4-20260829
+      revision: 591e32f2d68db305dbe5580494871bec4b8fc82548b169538e32638d2c7ef3af
       enabled: true
   qwen_adapter_bindings:
-    planner: visual-planner-supplement
-    counting: visual-planner-supplement
-    change: visual-planner-supplement
-    grounding: visual-planner-supplement
-    general_vqa: visual-planner-supplement
-    caption: visual-planner-supplement
+    planner: visual-planner-final
+    counting: base
+    change: base
+    grounding: grounding-agent-final
+    general_vqa: base
+    caption: base
 
 reporting:
   native_html: true
