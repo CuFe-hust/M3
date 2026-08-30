@@ -681,6 +681,21 @@ question。`TaskNormalization.choices/allow_multiple` 继续作为结构化答�
 multiple_choice_vqa
 ```
 
+除 Hugging Face `save_to_disk` 布局外，adapter 也只读支持本地
+`XLRS-Bench-lite_part<N>.jsonl` 分片布局。分片按数字序号稳定迭代，行内
+Base64 图片按需解码到 dataset root 之外的内容寻址 cache；带 `(A)`—`(E)`
+标签的 `multi-choice options` 字符串被严格解析为结构化 choices。经完整发布
+审计确认，`l2-category == "Overall Land use classification"` 是复选子类；其
+紧凑源答案（例如 `BCD`）规范为 `B, C, D`，原值仍保留在 Ground Truth raw。
+运行入口为：
+
+```text
+bash scripts/run_xlrs_lite_vqa.sh
+```
+
+可通过 `XLRS_VQA_CACHE_PARENT` 指定图片 cache 的父目录；完整数据运行需要
+为解码后的图片预留约 48 GB 空间。
+
 未知数据集显式失败。
 
 ---

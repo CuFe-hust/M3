@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import itertools
 import json
 import re
@@ -38,6 +40,7 @@ from data.schema import (
 )
 
 ADAPTER_VERSION = "hf-disk-v1"
+_JSONL_ADAPTER_VERSION = "sharded-jsonl-base64-v1"
 # Official Hugging Face releases per task. / 各任务的官方 Hugging Face 发布。
 HF_REPOS = {
     "caption": "initiacms/XLRS-Bench_caption_en",
@@ -69,11 +72,14 @@ _OPTION_LETTERS = ("A", "B", "C", "D", "E")
 _GROUNDING_BOX_KEYS = ("bbox", "box", "boxes", "polygon", "answer")
 _GROUNDING_LABEL_KEYS = ("name", "label", "class", "category")
 _EXPLICIT_MULTI_ANSWER_KEYS = ("allow_multiple", "multi_answer")
-# Values proven from the audited official release only; empty until proven.
-# 仅来自已审计官方发布的值；目前为空，直到有真实证据。
-_AUDITED_MULTI_ANSWER_TYPES = frozenset()
+# Values proven from the audited official release only.
+# 仅包含从官方发布中审计确认的值。
+_AUDITED_MULTI_ANSWER_TYPES = frozenset({"overall land use classification"})
 _ANSWER_SEPARATOR = re.compile(r"[\s,，、]+")
 _CAPTION_TEXT_KEYS = ("caption", "text", "raw")
+_JSONL_PART_PATTERN = "XLRS-Bench-lite_part*.jsonl"
+_JSONL_PART_NUMBER = re.compile(r"XLRS-Bench-lite_part(\d+)\.jsonl\Z")
+_LABELED_CHOICE_LINE = re.compile(r"^\s*\(([A-E])\)\s*(\S.*)\s*$")
 
 
 class _CaptionJsonRows:
@@ -106,6 +112,95 @@ class _CaptionJsonRows:
 
     def __iter__(self) -> Iterator[dict[str, Any]]:
         return iter(self._rows)
+
+
+class _ShardedJsonlRows:
+    """Lazy rows from the VLM-exported XLRS-lite JSONL partitions.
+
+    Only one JSON object and its decoded image are resident at a time. The
+    source files remain read-only; decoded bytes flow through the existing
+    content-addressed external image cache.
+    从 VLM 导出的 XLRS-lite JSONL 分片惰性读取行。内存中一次只保留一个
+    JSON 对象及其解码图片；源文件保持只读，解码字节进入既有外部内容寻址缓存。
+    """
+
+    def __init__(self, root: Path) -> None:
+        parts: list[tuple[int, Path]] = []
+        for path in root.glob(_JSONL_PART_PATTERN):
+            match = _JSONL_PART_NUMBER.fullmatch(path.name)
+            if match is not None and path.is_file():
+                parts.append((int(match.group(1)), path))
+        self._parts = tuple(path for _, path in sorted(parts))
+        if not self._parts:
+            raise DatasetProbeError(f"no XLRS-lite JSONL partitions under {root}")
+        self._length: int | None = None
+
+    def __len__(self) -> int:
+        if self._length is None:
+            self._length = sum(_count_nonempty_lines(path) for path in self._parts)
+        return self._length
+
+    def __iter__(self) -> Iterator[dict[str, Any]]:
+        for path in self._parts:
+            with path.open("r", encoding="utf-8") as handle:
+                for line_number, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                    except (UnicodeError, json.JSONDecodeError) as error:
+                        raise DatasetProbeError(
+                            f"invalid XLRS-lite JSONL row at {path.name}:{line_number}"
+                        ) from error
+                    if not isinstance(row, dict):
+                        raise DatasetProbeError(
+                            f"XLRS-lite JSONL row at {path.name}:{line_number} must be an object"
+                        )
+                    yield _decode_jsonl_images(row, path.name, line_number)
+
+
+def _count_nonempty_lines(path: Path) -> int:
+    """Count records without parsing or retaining the large Base64 payloads.
+    不解析、不保留大型 Base64 载荷，仅统计记录数。"""
+    with path.open("rb") as handle:
+        return sum(bool(line.strip()) for line in handle)
+
+
+def _decode_jsonl_images(
+    row: dict[str, Any], part_name: str, line_number: int
+) -> dict[str, Any]:
+    """Decode only the declared JSONL image list into HF-style byte features.
+    仅将声明的 JSONL 图片列表解码为 HF 风格 bytes feature。"""
+    values = row.get("image")
+    if not isinstance(values, list) or not values:
+        raise DatasetProbeError(
+            f"XLRS-lite JSONL row at {part_name}:{line_number} has no image list"
+        )
+    decoded: list[dict[str, bytes]] = []
+    for position, value in enumerate(values):
+        if not isinstance(value, str) or not value:
+            raise DatasetProbeError(
+                f"XLRS-lite JSONL image {position} at {part_name}:{line_number} "
+                "must be a non-empty Base64 string"
+            )
+        try:
+            payload = base64.b64decode(value, validate=True)
+        except (ValueError, binascii.Error) as error:
+            raise DatasetProbeError(
+                f"invalid XLRS-lite Base64 image at {part_name}:{line_number}"
+            ) from error
+        if not payload:
+            raise DatasetProbeError(
+                f"empty XLRS-lite Base64 image at {part_name}:{line_number}"
+            )
+        decoded.append({"bytes": payload})
+    safe = dict(row)
+    safe["image"] = decoded
+    source_index = row.get("index")
+    if source_index is not None:
+        safe["source_id"] = str(source_index)
+    safe["source_partition"] = part_name
+    return safe
 
 class LazyRows(Protocol):
     """Minimal lazy row container: cheap len() plus streaming iteration.
@@ -216,7 +311,11 @@ class XLRSAdapter:
             )
             return AdapterProbe(
                 dataset=self.name,
-                version=ADAPTER_VERSION,
+                version=(
+                    _JSONL_ADAPTER_VERSION
+                    if _has_jsonl_parts(release_root)
+                    else ADAPTER_VERSION
+                ),
                 sample_file=release_root / "dataset_dict.json"
                 if (release_root / "dataset_dict.json").is_file()
                 else release_root,
@@ -323,6 +422,10 @@ class XLRSAdapter:
             root / split / "state.json"
         ).is_file():
             return True
+        if task == "multiple_choice_vqa" and any(
+            root.glob(_JSONL_PART_PATTERN)
+        ):
+            return True
         return task == "caption" and (
             root / split / "captions.json"
         ).is_file()
@@ -387,6 +490,10 @@ class XLRSAdapter:
         annotations = release_root / split / "captions.json"
         if task == "caption" and annotations.is_file():
             return _CaptionJsonRows(annotations)
+        if task == "multiple_choice_vqa" and any(
+            release_root.glob(_JSONL_PART_PATTERN)
+        ):
+            return _ShardedJsonlRows(release_root)
         try:
             from datasets import load_from_disk
         except ImportError as error:
@@ -671,9 +778,9 @@ class XLRSAdapter:
             raise DatasetProbeError(f"XLRS Lite row {index} is missing VQA fields")
         answer = _first_text(row, ("answer", "label", "ground_truth"))
         allow_multiple = _multi_answer_hint(row)
+        parts = _vqa_answer_parts(answer, allow_multiple=allow_multiple)
         if answer is not None and len(choices) <= 5:
             allowed_set = set("ABCDE"[: len(choices)])
-            parts = [part.strip() for part in _ANSWER_SEPARATOR.split(answer) if part.strip()]
             if any(len(part) != 1 or part.upper() not in allowed_set for part in parts):
                 raise DatasetProbeError(
                     f"XLRS Lite row {index} has invalid answer {answer!r} "
@@ -690,6 +797,14 @@ class XLRSAdapter:
                         f"XLRS Lite row {index} repeats an answer letter: {answer!r}"
                     )
         source_id = _first_text(row, ("id", "question_id", "source_id"))
+        adapter_version = (
+            _JSONL_ADAPTER_VERSION if "source_partition" in row else ADAPTER_VERSION
+        )
+        canonical_answers = (
+            [", ".join(part.upper() for part in parts)]
+            if answer is not None and allow_multiple and len(parts) > 1
+            else [answer] if answer else []
+        )
         return UnifiedSample(
             sample_id=stable_sample_id(
                 dataset=self.name, split=split, source_id=source_id,
@@ -702,8 +817,8 @@ class XLRSAdapter:
             images=images,
             question=question,
             ground_truth=GroundTruth(
-                answers=[answer] if answer else [],
-                raw={"adapter_version": ADAPTER_VERSION, "source_row": row},
+                answers=canonical_answers,
+                raw={"adapter_version": adapter_version, "source_row": row},
             ),
             metadata={
                 "source": "XLRS-Bench-lite",
@@ -711,13 +826,13 @@ class XLRSAdapter:
                 "release_split": RELEASE_SPLITS["multiple_choice_vqa"],
                 "source_index": index,
                 "image_root_kind": image_root_kind,
-                "adapter_version": ADAPTER_VERSION,
+                "adapter_version": adapter_version,
             },
             normalization=TaskNormalization(
                 source_task="xlrs_vqa_lite",
                 normalized_task="multiple_choice_vqa",
                 normalizer="xlrs_vqa_lite_adapter",
-                version=ADAPTER_VERSION,
+                version=adapter_version,
                 choices=[str(choice) for choice in choices],
                 allow_multiple=allow_multiple,
             ),
@@ -747,10 +862,24 @@ def _multi_answer_hint(row: dict[str, Any]) -> bool:
         raise DatasetProbeError(
             f"invalid boolean value {value!r} for {key}"
         )
-    question_type = _first_text(row, ("question_type", "type", "subtask", "task_type"))
+    question_type = _first_text(
+        row, ("question_type", "type", "subtask", "task_type", "l2-category")
+    )
     if question_type is None:
         return False
     return question_type.casefold() in _AUDITED_MULTI_ANSWER_TYPES
+
+
+def _vqa_answer_parts(answer: str | None, *, allow_multiple: bool) -> list[str]:
+    """Parse separated answers and the audited compact multi-label form.
+    解析分隔答案以及已审计的紧凑多标签形式。"""
+    if answer is None:
+        return []
+    parts = [part.strip() for part in _ANSWER_SEPARATOR.split(answer) if part.strip()]
+    compact = answer.strip().upper()
+    if allow_multiple and len(parts) == 1 and len(compact) > 1 and compact.isalpha():
+        return list(compact)
+    return parts
 
 
 def _caption_texts(row: dict[str, Any], index: int) -> list[str]:
@@ -832,8 +961,31 @@ def _choices(row: dict[str, Any]) -> list[Any] | None:
     value = _first_value(row, _CHOICE_KEYS)
     if isinstance(value, list):
         return value
+    if isinstance(value, str):
+        parsed: list[str] = []
+        expected = ord("A")
+        for line in value.splitlines():
+            match = _LABELED_CHOICE_LINE.fullmatch(line)
+            if match is None:
+                continue
+            label, text = match.groups()
+            if ord(label) != expected:
+                raise DatasetProbeError(
+                    f"XLRS Lite choices have non-sequential label {label!r}"
+                )
+            parsed.append(f"({label}) {text.strip()}")
+            expected += 1
+        if len(parsed) < 2:
+            raise DatasetProbeError("XLRS Lite choices string has fewer than two options")
+        return parsed
     option_values = [row[key] for key in _OPTION_LETTERS if row.get(key) not in (None, "")]
     return option_values or None
+
+
+def _has_jsonl_parts(root: Path) -> bool:
+    """Return whether the audited sharded JSONL layout is present.
+    返回是否存在已审计的分片 JSONL 布局。"""
+    return any(root.glob(_JSONL_PART_PATTERN))
 
 
 def _is_json_safe(value: Any) -> bool:
