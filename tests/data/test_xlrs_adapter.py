@@ -266,6 +266,11 @@ def test_sharded_jsonl_vqa_streams_base64_images_and_parses_choices(
     assert samples[0].metadata["adapter_version"] == (
         "sharded-jsonl-base64-v2-question-with-choices"
     )
+    assert samples[0].sample_id.endswith(
+        "sharded-jsonl-base64-v2-question-with-choices"
+    )
+    assert samples[0].sample_id != "2"
+    assert adapter.resolve_image_root(root, "multiple_choice_vqa") == cache
     assert (cache / samples[0].images[0].path).is_file()
     assert encoded not in json.dumps(
         samples[0].model_dump(mode="json"), ensure_ascii=False

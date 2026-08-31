@@ -691,6 +691,12 @@ XLRS VQA canonical question 与 MME-RealWorld 一致，由原始题干和带标�
 组成；因此 VisualTaskPlanner 的纯图片 + raw question 输入能够识别多选任务，
 最终 Agent 同时继续消费 `TaskNormalization.choices`。该 v2 question 契约会改变
 XLRS sample ID、planner request 和模型 cache 身份，不与旧 fresh run 混用。
+分片 JSONL 的 `ImageRef.path` 相对外部内容寻址 cache；XLRS adapter 通过
+`resolve_image_root(...)` 向 DatasetRunner 声明该任务图片根，Runner 在调度前
+将同一根绑定到 Planner 与 Agent。v2 sample ID 使用带 adapter version 的 source
+identity；resume 在覆盖 task 级 `dataset_probe.json` 或执行模型前严格比较冻结的
+adapter version；损坏或漂移均拒绝。缺少 task probe 的更早期 legacy run 不猜测
+版本，也不在 resume 时补写 probe，继续服从既有逐样本 legacy 门禁。
 运行入口为：
 
 ```text
@@ -1226,7 +1232,11 @@ spatial_relation
 `spatial_relation` 复用 general_vqa_v3 Prompt 与单次 Qwen 调用，输出
 `agent_result.json`；保留 `requires_tiling=False` 与 VQA 确定性评测/Judge 族。
 
-多选题 postprocess 会约束最终答案落在 choices 合法范围。
+多选题 postprocess 采用宽松、确定性的尽力规范化：对带标签选项，
+`D` / `(D)` / `(D) White` / `White` 统一为源标签 `D`；无标签
+选项保留 canonical 选项文本。无法明确映射的自由文本保留原输出并继续
+以 `completed` 进入确定性评测，不记录 `answer_constraint_violation`，
+不仅因选项格式降级为 `partial`。
 
 v5 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
 GeneralVQAAgent 消费 `VqaEvidenceService` 产出的

@@ -31,12 +31,28 @@ dataset 名、source task、metadata 与答案仍不进入 Planner 请求。
 
 ## Comparability / 可比性
 
-Because canonical question text participates in stable sample IDs and model
-request hashes, v2 changes XLRS sample IDs, planner requests, and cache keys.
+The adapter versions the source identity used by `stable_sample_id`, while the
+canonical question participates in model request hashes. v2 therefore changes
+XLRS sample IDs, planner requests, and cache keys.
 Fresh v1 and v2 XLRS runs must not be resumed or compared as identical input
 populations. Source annotations and deterministic metric definitions are
 unchanged.
 
-由于 canonical question 参与稳定 sample ID 与模型请求哈希，v2 会改变 XLRS
-sample ID、Planner 请求和 cache key。v1/v2 fresh XLRS run 不得作为相同输入总体
-混合 resume 或直接比较。源标注与确定性指标定义没有变化。
+adapter 将 version 纳入 `stable_sample_id` 使用的 source identity，同时 canonical
+question 参与模型请求哈希，因此 v2 会改变 XLRS sample ID、Planner 请求和 cache
+key。v1/v2 fresh XLRS run 不得作为相同输入总体混合 resume 或直接比较。源标注
+与确定性指标定义没有变化。
+
+Task-level `dataset_probe.json` freezes the adapter version. Resume validates
+the current probe against the persisted version before overwriting artifacts
+or scheduling model work; corrupt or drifting probe identity fails closed.
+Earlier legacy runs without a task probe do not invent one during resume and
+remain subject to the existing per-sample legacy gates. JSONL image paths
+resolve against the adapter-declared external cache root, and DatasetRunner
+binds that same root to both Planner and Agent.
+
+task 级 `dataset_probe.json` 冻结 adapter version。resume 在覆盖产物或调度模型
+前比较当前 probe 与持久化版本；身份损坏或漂移均 fail closed。缺少 task probe
+的更早期 legacy run 不在 resume 时猜测或补写 probe，并继续服从既有逐样本
+legacy 门禁。JSONL 图片路径相对 adapter 声明的外部 cache 根解析，DatasetRunner
+将同一根绑定到 Planner 与 Agent。

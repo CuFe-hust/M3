@@ -21,7 +21,7 @@ from PIL import Image
 from agents.base import AgentContext, AgentExecution, VisualPlanBindings
 from agents.errors import AgentExecutionError, AgentTaskMismatchError
 from agents.general_vqa import GeneralVQAAgent
-from agents.general_vqa.agent import _match_choice, _validate_choice_answer
+from agents.general_vqa.agent import _match_choice, _normalize_choice_answer
 from agents.general_vqa.evidence.executor import (
     EvidenceExecution,
     SegFormerPreviewEvidence,
@@ -269,10 +269,10 @@ def test_multiple_choice_constraints_remain_on_direct_path(tmp_path: Path) -> No
     assert execution.payload.answer == "yes"
 
 
-@pytest.mark.parametrize("answer", ["B", "Water", "(B) Water"])
+@pytest.mark.parametrize("answer", ["B", "B.", "(B)", "Water", "(B) Water"])
 def test_parenthesized_choice_answers_are_accepted(answer: str) -> None:
     choices = ["(A) Road", "(B) Water"]
-    assert _validate_choice_answer(answer, choices, False) == (None, None)
+    assert _normalize_choice_answer(answer, choices, False) == "B"
 
 
 def test_letter_maps_by_position_for_unlabeled_choices() -> None:
@@ -283,10 +283,14 @@ def test_letter_maps_by_position_for_unlabeled_choices() -> None:
 
 def test_compact_multiple_choice_letters_are_accepted() -> None:
     choices = ["(A) Road", "(B) Water", "(C) Forest"]
-    assert _validate_choice_answer("AC", choices, True) == (
-        None,
-        "(A) Road, (C) Forest",
-    )
+    assert _normalize_choice_answer("AC", choices, True) == "A, C"
+
+
+def test_unmatched_multiple_choice_text_is_preserved() -> None:
+    choices = ["(A) Road", "(B) Water"]
+    assert _normalize_choice_answer(
+        "It appears to be water", choices, False
+    ) == "It appears to be water"
 
 
 @pytest.mark.parametrize(
@@ -592,15 +596,11 @@ def test_assistance_without_service_fails_stably_for_all_supported_tasks(
         assert client.calls == [], task
 
 
-def test_multiple_choice_evidence_path_still_enforces_choice_constraints(
+def test_multiple_choice_evidence_path_preserves_unmatched_answer(
     tmp_path: Path,
 ) -> None:
-    """The multiple_choice_vqa evidence path still runs the choice constraint
-    postprocess after the evidence final Qwen: an out-of-vocabulary answer is
-    downgraded to partial with answer_constraint_violation recorded.
-    multiple_choice_vqa 的 evidence 路径在证据 final Qwen 后仍执行 choice
-    constraint postprocess：越界答案降级为 partial 并记录
-    answer_constraint_violation。"""
+    """Unmatched free text remains a completed model answer for evaluation.
+    无法匹配的自由文本仍是供评测的 completed 模型答案。"""
     client = _RecordingClient(answer="maybe")
     service = _FakeVqaEvidenceService(_bundle())
     execution = asyncio.run(
@@ -617,11 +617,9 @@ def test_multiple_choice_evidence_path_still_enforces_choice_constraints(
     )
     assert len(service.calls) == 1
     assert len(client.calls) == 1
-    assert execution.payload.status == "partial"
-    assert (
-        execution.payload.geometry["answer_constraint_violation"]
-        == "answer 'maybe' does not map to a single choice"
-    )
+    assert execution.payload.status == "completed"
+    assert execution.payload.answer == "maybe"
+    assert "answer_constraint_violation" not in execution.payload.geometry
     assert "vqa_evidence.json" in execution.additional_results
 
 

@@ -406,18 +406,19 @@ class XLRSAdapter:
                     image_root_kind=image_root_kind,
                 )
 
-    def image_root_for_sample(self, sample: UnifiedSample, release_root: Path) -> Path:
-        """Resolution root for one sample's ImageRef paths, from the sample's
-        own metadata; never depends on iterator state.
-        单样本 ImageRef 路径的解析根，取自样本自身 metadata；不依赖迭代器状态。"""
-        kind = sample.metadata.get("image_root_kind")
-        if kind == "cache":
+    def resolve_image_root(self, dataset_root: Path, task: str) -> Path:
+        """Return the task-level root used to resolve emitted ImageRef paths.
+
+        Sharded JSONL VQA rows are uniformly materialized in the external
+        cache; path-backed releases resolve against their concrete
+        release directory. 返回解析该任务所产出 ImageRef 的任务级根目录。
+        JSONL/HF bytes VQA 行统一物化到外部 cache；路径型发布相对其具体
+        release 目录解析。
+        """
+        release_root = self._resolve_release_root(dataset_root, task)
+        if task == "multiple_choice_vqa" and _has_jsonl_parts(release_root):
             return self._effective_cache_root()
-        if kind == "release":
-            return release_root
-        raise DatasetProbeError(
-            f"sample {sample.sample_id} has no image_root_kind metadata"
-        )
+        return release_root
 
     # ── loading strategy / 加载策略 ─────────────────────────────────────────
 
@@ -808,6 +809,9 @@ class XLRSAdapter:
             else _VQA_HF_ADAPTER_VERSION
         )
         canonical_question = _canonical_vqa_question(question, choices)
+        versioned_source_id = (
+            f"{source_id}-{adapter_version}" if source_id is not None else None
+        )
         canonical_answers = (
             [", ".join(part.upper() for part in parts)]
             if answer is not None and allow_multiple and len(parts) > 1
@@ -815,7 +819,7 @@ class XLRSAdapter:
         )
         return UnifiedSample(
             sample_id=stable_sample_id(
-                dataset=self.name, split=split, source_id=source_id,
+                dataset=self.name, split=split, source_id=versioned_source_id,
                 relative_image_paths=[image.path for image in images],
                 question=canonical_question, source_index=index,
             ),
