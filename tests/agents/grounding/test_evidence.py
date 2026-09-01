@@ -287,19 +287,21 @@ def test_v2_executor_calls_each_model_once_and_returns_whole_image_box(tmp_path:
         assert forbidden not in json.dumps(model_payload)
 
 
-def test_public_agentresult_response_selects_exact_yolo_candidate(tmp_path: Path) -> None:
+def test_public_agentresult_response_keeps_gt_answer_and_injects_yolo_evidence(
+    tmp_path: Path,
+) -> None:
     yolo = _FakeYolo()
     qwen = _FakeQwen(
         {
             "agent_name": "grounding_agent",
-            "answer": "[100,125,400,500]",
-            "evidence_items": [
-                {"label": "building-outline", "image_id": "full", "box": [100, 125, 400, 500]}
-            ],
+            "answer": "[110,130,390,490]",
+            "evidence_items": [],
             "status": "completed",
         }
     )
     result = _run(_executor(qwen, yolo=yolo), tmp_path)
+
+    assert result.answer_box == (110, 130, 390, 490)
     assert result.bundle.selected_box_ids == ["full-box-1"]
     assert result.bundle.fallback_boxes == []
     assert result.whole_image_boxes[0].box == (100, 125, 400, 500)
@@ -307,10 +309,18 @@ def test_public_agentresult_response_selects_exact_yolo_candidate(tmp_path: Path
 
 def test_public_agentresult_evidence_keeps_all_yolo_candidates(tmp_path: Path) -> None:
     yolo = _FakeYolo(boxes=((10.0, 10.0, 40.0, 40.0), (50.0, 20.0, 80.0, 60.0)))
-    qwen = _FakeQwen({"selected_box_ids": ["full-box-1"], "fallback_boxes": []})
+    qwen = _FakeQwen(
+        {
+            "agent_name": "grounding_agent",
+            "answer": "[120,140,380,480]",
+            "evidence_items": [],
+            "status": "completed",
+        }
+    )
     result = _run(_executor(qwen, yolo=yolo), tmp_path)
 
-    assert result.bundle.selected_box_ids == ["full-box-1"]
+    assert result.bundle.selected_box_ids == ["full-box-1", "full-box-2"]
+    assert result.answer_box == (120, 140, 380, 480)
     assert [item.box for item in result.whole_image_boxes] == [
         (100, 125, 400, 500),
         (500, 250, 799, 749),
@@ -318,20 +328,21 @@ def test_public_agentresult_evidence_keeps_all_yolo_candidates(tmp_path: Path) -
 
 
 
-def test_public_agentresult_response_rejects_non_candidate_answer(tmp_path: Path) -> None:
-    yolo = _FakeYolo()
+def test_answer_only_fallback_preserves_answer_and_empty_evidence(tmp_path: Path) -> None:
+    yolo = _FakeYolo(boxes=())
     qwen = _FakeQwen(
         {
             "agent_name": "grounding_agent",
-            "answer": "[110,130,390,490]",
-            "evidence_items": [
-                {"label": "building-outline", "image_id": "full", "box": [100, 125, 400, 500]}
-            ],
+            "answer": "[100,125,400,500]",
+            "evidence_items": [],
             "status": "completed",
         }
     )
-    with pytest.raises(GroundingEvidenceError, match="NO_VALID_BOXES"):
-        _run(_executor(qwen, yolo=yolo), tmp_path)
+    result = _run(_executor(qwen, yolo=yolo), tmp_path)
+
+    assert result.bundle.candidates == []
+    assert result.answer_box == (100, 125, 400, 500)
+    assert result.whole_image_boxes == []
 
 
 def test_open_vocabulary_category_skips_yolo_and_uses_qwen_fallback(

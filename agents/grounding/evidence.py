@@ -219,12 +219,18 @@ class WholeImageBox(BaseModel):
 
 class GroundingEvidenceResult(BaseModel):
     """Outcome of one grounding evidence pass: the persisted bundle plus the
-    final whole-image boxes. 一次 Grounding 证据执行的结果：持久化 bundle 加
-    最终整图框。"""
+    primary answer and any evidence boxes. 一次 grounding evidence pass 的结果：
+    持久化 bundle、唯一主答案及可选证据框。"""
 
     model_config = ConfigDict(extra="forbid")
 
     bundle: GroundingEvidenceBundle
+    # Internal whole-image answer; the public AgentResult schema is unchanged.
+    # 内部整图主答案；公开 AgentResult schema 不变。
+    answer_box: tuple[int, int, int, int] | None = None
+    # Candidate/fallback evidence only; an answer-only fallback legitimately has
+    # no entries here.
+    # 这里只保存候选/证据框；answer-only fallback 合法地可以为空。
     whole_image_boxes: list[WholeImageBox] = Field(default_factory=list)
 
 
@@ -563,8 +569,13 @@ class GroundingEvidenceExecutor:
             audits=audits,
             dropped=dropped,
         )
-        result = self._convert_to_whole_image(bundle, records)
-        if not result.whole_image_boxes:
+        answer_box = _parse_answer_box(response.answer)
+        result = self._convert_to_whole_image(
+            bundle,
+            records,
+            answer_box=answer_box,
+        )
+        if result.answer_box is None:
             raise GroundingEvidenceError("NO_VALID_BOXES")
         return result
 
@@ -981,11 +992,11 @@ class GroundingEvidenceExecutor:
         audits: list[GroundingCallAudit],
         dropped: dict[str, int],
     ) -> GroundingEvidenceBundle:
-        """The public answer is the single final prediction. When YOLO
-        candidates exist, it must identify exactly one existing candidate box.
-        Without candidates, it is accepted as an authorized visual fallback.
-        evidence_items remains the complete candidate/fallback evidence and is
-        not treated as multiple final answers.
+        """The public answer is the single final prediction. YOLO
+        candidates are evidence only; the answer remains Qwen's GT-style
+        coordinate prediction. Without candidates, an answer-only visual
+        fallback is authorized. evidence_items is deterministic executor-owned
+        evidence and is not treated as multiple final answers.
         """
         dropped = dict(dropped)
         records_by_id = {record.roi_id: record for record in records}
@@ -1003,27 +1014,17 @@ class GroundingEvidenceExecutor:
         candidate_leaves = {candidate.leaf_category for candidate in candidates}
 
         if answer_box is not None and candidates:
-            answer_roi_ids = {
-                item.image_id
-                for item in response.evidence_items
-                if item.box is not None
-                and tuple(item.box) == answer_box
-                and item.image_id is not None
-            }
-            matching = [
-                candidate
-                for candidate in candidates
-                if _normalized_box_to_999(candidate.roi_normalized_xyxy) == list(answer_box)
-                and (not answer_roi_ids or candidate.roi_id in answer_roi_ids)
-            ]
-            if matching:
-                selected.append(matching[0].box_id)
-            else:
-                dropped["answer_not_existing_candidate"] = (
-                    dropped.get("answer_not_existing_candidate", 0) + 1
-                )
+            # YOLO candidates are deterministic evidence, not the public answer
+            # target. Keep every retained candidate for the requested hit
+            # category even when Qwen omits or paraphrases evidence_items.
+            selected.extend(candidate.box_id for candidate in candidates)
 
         elif answer_box is not None:
+            # An answer-only fallback is valid: no category, ROI id, or internal
+            # candidate record is required. Optional legacy fallback evidence is
+            # still converted only when Qwen supplied a valid requested label.
+            # answer-only fallback 合法地不要求类别、ROI id 或内部 candidate；
+            # 只有 Qwen 明确提供合法请求标签时，才兼容性转换旧式证据。
             fallback_items = [
                 item
                 for item in response.evidence_items
@@ -1032,30 +1033,22 @@ class GroundingEvidenceExecutor:
                 and item.label in missing_set
             ]
             fallback_item = fallback_items[0] if fallback_items else None
-            leaf_category = fallback_item.label if fallback_item else None
-            roi_id = fallback_item.image_id if fallback_item else None
-            if leaf_category is None:
-                missing_categories = list(missing_leaves) + list(open_vocabulary_categories)
-                if len(missing_categories) == 1:
-                    leaf_category = missing_categories[0]
-            if roi_id is None and len(records) == 1:
-                roi_id = records[0].roi_id
-            if leaf_category is None:
-                dropped["answer_missing_fallback_category"] = (
-                    dropped.get("answer_missing_fallback_category", 0) + 1
-                )
-            elif roi_id not in records_by_id:
-                dropped["answer_unknown_fallback_roi"] = (
-                    dropped.get("answer_unknown_fallback_roi", 0) + 1
-                )
-            else:
-                fallbacks.append(
-                    GroundingFallbackBox(
-                        leaf_category=leaf_category,
-                        roi_id=roi_id,
-                        bbox=_fallback_box_to_normalized(answer_box),
+            if fallback_item is not None:
+                roi_id = fallback_item.image_id
+                if roi_id is None and len(records) == 1:
+                    roi_id = records[0].roi_id
+                if roi_id not in records_by_id:
+                    dropped["answer_unknown_fallback_roi"] = (
+                        dropped.get("answer_unknown_fallback_roi", 0) + 1
                     )
-                )
+                else:
+                    fallbacks.append(
+                        GroundingFallbackBox(
+                            leaf_category=fallback_item.label,
+                            roi_id=roi_id,
+                            bbox=_fallback_box_to_normalized(answer_box),
+                        )
+                    )
 
         for item in response.evidence_items:
             if item.box is None:
@@ -1085,6 +1078,8 @@ class GroundingEvidenceExecutor:
         self,
         bundle: GroundingEvidenceBundle,
         records: list[GroundingRoiRecord],
+        *,
+        answer_box: tuple[int, int, int, int] | None,
     ) -> GroundingEvidenceResult:
         """Convert the selected answer and all same-category YOLO candidates
         to whole-image coordinates. The selected candidate is first so the
@@ -1138,10 +1133,32 @@ class GroundingEvidenceExecutor:
 
         if converted_candidates:
             converted = converted_candidates + self._final_dedup(converted_fallbacks)
+            if answer_box is None:
+                primary_answer = None
+            elif len(records) == 1:
+                primary_answer = self._to_whole_image_999(
+                    _fallback_box_to_normalized(answer_box), records[0]
+                )
+            else:
+                # GT-style answers are whole-image normalized coordinates when
+                # no public ROI id accompanies the answer.
+                primary_answer = answer_box
         else:
             converted = self._final_dedup(converted_fallbacks)
+            primary_answer = converted[0][1] if converted else None
+            if primary_answer is None and answer_box is not None and not bundle.candidates:
+                # The final Qwen answer is ROI-normalized. With one materialized
+                # image/ROI, preserve it directly without inventing category or
+                # candidate evidence.
+                # 最终 Qwen answer 是 ROI 归一化坐标；单图/单 ROI 时直接保留，
+                # 不凭空制造类别或 candidate 证据。
+                if len(records) == 1:
+                    primary_answer = self._to_whole_image_999(
+                        _fallback_box_to_normalized(answer_box), records[0]
+                    )
         return GroundingEvidenceResult(
             bundle=bundle,
+            answer_box=primary_answer,
             whole_image_boxes=[
                 WholeImageBox(label=label, box=box) for label, box in converted
             ],

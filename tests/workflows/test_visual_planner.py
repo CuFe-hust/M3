@@ -505,6 +505,23 @@ def test_planner_accepts_schema_valid_plan_without_subjective_score(tmp_path: Pa
         )
 
 
+def test_grounding_accepts_canonical_non_executable_leaf_for_qwen_fallback(
+    tmp_path: Path,
+) -> None:
+    client = _FakeClient(
+        identity=_identity(),
+        response=_response(
+            task= 'grounding',
+            assistance=True,
+            categories=('building-outline',),
+        ),
+    )
+    plan, _views = _run(_planner(client), _sample(tmp_path), tmp_path)
+    assert plan.task == 'grounding'
+    assert plan.needs_visual_assistance is True
+    assert plan.object_categories == ['building-outline']
+
+
 def test_planner_schema_and_image_index_fail_closed(tmp_path: Path) -> None:
     invalid = _FakeClient(identity=_identity(), response=_response(task="unknown_task"))
     with pytest.raises(VisualTaskPlanError, match="SCHEMA_INVALID"):

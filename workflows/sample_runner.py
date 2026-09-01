@@ -18,6 +18,7 @@ PromptCatalog/reporting/CLI——所有依赖注入构造。它只消费已经�
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -60,6 +61,33 @@ MAX_ATTEMPTS = 3
 # Agent 契约（agents.schema.VisualEvidence）强制的预测坐标系。真值必须声明
 # 相同坐标系才计算 IoU；其他坐标系一律 fail-closed。
 _GROUNDING_PREDICTION_FRAME = "normalized_0_999_top_left"
+
+
+def _parse_grounding_answer_box(
+    answer: object,
+) -> tuple[int, int, int, int] | None:
+    """Parse the unique public Grounding answer as a strict 0..999 xyxy box.
+    将 Grounding 公开唯一 answer 严格解析为 0..999 xyxy 框。"""
+
+    if not isinstance(answer, str):
+        return None
+    try:
+        value = json.loads(answer)
+    except json.JSONDecodeError:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(
+            isinstance(item, int) and not isinstance(item, bool)
+            for item in value
+        )
+        or not all(0 <= item <= 999 for item in value)
+        or value[0] >= value[2]
+        or value[1] >= value[3]
+    ):
+        return None
+    return tuple(value)  # type: ignore[return-value]
 
 # A routing fallback may deliberately execute a different task contract than
 # the resolved route task. Keep this remap explicit and narrow; agent
@@ -645,19 +673,20 @@ def _grounding_evaluation(
     sample: UnifiedSample,
     execution_payload: object,
 ) -> EvaluationRecord | None:
-    """Axis-aligned grounding IoU, computed only when prediction and ground
-    truth agree on the normalized_0_999_top_left frame with 4-value xyxy
-    boxes. source_pixels_top_left, unlabelled frames, 8-value polygons, and
-    non-4 prediction boxes all yield None — a fake IoU is never fabricated,
-    official oriented metrics stay upstream. 轴对齐 grounding IoU，仅在预测与
-    真值同为 normalized_0_999_top_left 且均为 4-value xyxy 时计算。
-    source_pixels_top_left、未声明坐标系、8-value 多边形与非 4-value 预测框
-    一律返回 None——绝不伪造 IoU，官方 oriented 指标留在上游评测器。"""
+    """Score the unique public answer against the first GT box.
+    使用公开唯一 answer 与第一个 GT 框计算轴对齐 IoU。
+
+    The evidence ``boxes`` and ``evidence_items`` are intentionally ignored;
+    they are traceability fields, not alternate final predictions.
+    evidence ``boxes`` 和 ``evidence_items`` 有意忽略；它们是追溯字段，不是
+    其他最终预测。"""
 
     ground_truth = sample.ground_truth
     gt_boxes = ground_truth.boxes if ground_truth is not None else []
-    prediction_boxes = getattr(execution_payload, "boxes", None) or []
-    if not prediction_boxes or not gt_boxes:
+    prediction = _parse_grounding_answer_box(
+        getattr(execution_payload, "answer", None)
+    )
+    if prediction is None or not gt_boxes:
         return None
     # Frame contract: the Agent contract always emits normalized_0_999_top_left
     # boxes; the ground truth must declare the identical frame explicitly.
@@ -665,7 +694,6 @@ def _grounding_evaluation(
     # 显式声明相同坐标系。
     if ground_truth is None or ground_truth.coordinate_frame != _GROUNDING_PREDICTION_FRAME:
         return None
-    prediction = prediction_boxes[0]
     truth = gt_boxes[0]
     if not isinstance(prediction, (list, tuple)) or len(prediction) != 4:
         return None
