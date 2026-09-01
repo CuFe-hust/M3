@@ -48,7 +48,8 @@ def build_html(report: Report) -> str:
         '<details class="aggregate-panel"><summary>Runtime</summary>'
         + _runtime_section(report) + "</details>",
         '<section><h2>Visual legend</h2><div class="legend">'
-        '<span class="green">● Prediction / accepted</span><span class="red">● Rejected</span>'
+        '<span class="red">■ Final answer / model prediction</span>'
+        '<span class="green">■ YOLO evidence / accepted</span><span class="red">● Rejected</span>'
         '<span class="cyan">● GT / ground truth</span><span class="amber">● Unresolved</span>'
         '<span class="purple">● Reviewer</span></div></section>',
         '<div id="image-modal" class="image-modal" hidden role="dialog" aria-modal="true" '

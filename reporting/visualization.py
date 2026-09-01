@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import tempfile
 from pathlib import Path
 from typing import Iterable
 
@@ -25,6 +27,7 @@ _REJECTED_COLOR = (239, 68, 68)
 _GT_COLOR = (56, 189, 248)
 _UNRESOLVED_COLOR = (245, 158, 11)
 _REVIEWER_COLOR = (168, 85, 247)
+_ANSWER_COLOR = (239, 68, 68)
 
 
 def render_counting_overlay(
@@ -127,7 +130,10 @@ def _materialize_visual(
         visual.status = "invalid_source"
         return
     try:
-        root = dataset_root.resolve(strict=True)
+        root = dataset_root
+        if sample.metadata.get("image_root_kind") == "cache":
+            root = Path(tempfile.gettempdir()) / "m3-xlrs-image-cache"
+        root = root.resolve(strict=True)
         source = (root / image_ref.path).resolve(strict=True)
         if not source.is_relative_to(root) or not source.is_file():
             visual.status = "invalid_source"
@@ -181,7 +187,8 @@ def _materialize_visual(
             else []
         )
         gt, gt_frame = _safe_ground_truth(sample, visual.image_id)
-        if not evidence and not top_level_boxes and not gt:
+        answer_box = _parse_answer_box(getattr(payload, "answer", None))
+        if not evidence and not top_level_boxes and answer_box is None and not gt:
             visual.status = "unsupported_geometry"
             return
         canvas = preview.copy()
@@ -190,6 +197,14 @@ def _materialize_visual(
             _draw_normalized(draw, item, canvas.size, _ACCEPTED_COLOR)
         for box in top_level_boxes:
             _draw_geometry(draw, [float(value) for value in box], canvas.size, _ACCEPTED_COLOR)
+        if answer_box is not None:
+            _draw_geometry(
+                draw,
+                answer_box,
+                canvas.size,
+                _ANSWER_COLOR,
+                width_override=max(3, _line_width(canvas.width, canvas.height) + 1),
+            )
         for geometry in gt:
             _draw_geometry(
                 draw,
@@ -297,6 +312,32 @@ def _draw_normalized(
         _draw_geometry(draw, [float(value) for value in geometry], size, color)
 
 
+def _parse_answer_box(answer: object) -> list[float] | None:
+    """Parse a public grounding answer for visualization only.
+
+    The report must show the same valid integer 0..999 xyxy answer that the
+    grounding contract exposes; it must not repair or reinterpret model text.
+    """
+
+    if not isinstance(answer, str):
+        return None
+    try:
+        value = json.loads(answer)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+    ):
+        return None
+    if not all(0 <= item <= 999 for item in value):
+        return None
+    if value[0] >= value[2] or value[1] >= value[3]:
+        return None
+    return [float(item) for item in value]
+
+
 def _draw_geometry(
     draw: ImageDraw.ImageDraw,
     geometry: list[float],
@@ -305,9 +346,10 @@ def _draw_geometry(
     *,
     coordinate_frame: str | None = "normalized_0_999_top_left",
     source_size: tuple[int, int] | None = None,
+    width_override: int | None = None,
 ) -> None:
     width, height = size
-    line_width = _line_width(width, height)
+    line_width = width_override or _line_width(width, height)
     if coordinate_frame == "normalized_0_999_top_left":
         x_scale = y_scale = 999.0
         points = [
