@@ -498,7 +498,15 @@ class VRSBenchAdapter:
             root / "Images_val" / "Images_val" / image_id,
             annotation_root / "Images_val" / "Images_val" / image_id,
         )
-        existing = sorted({candidate.resolve() for candidate in candidates if candidate.is_file()})
+        # Keep the lexical candidate path for the returned ImageRef. This is
+        # important for derived runner roots that expose an existing image
+        # tree through a symlink: resolving here would move the path outside
+        # the dataset root and make the later relative-path contract fail.
+        # Deduplicate and detect ambiguity by canonical target instead.
+        existing: dict[Path, Path] = {}
+        for candidate in candidates:
+            if candidate.is_file():
+                existing.setdefault(candidate.resolve(), candidate)
         if not existing:
             raise DatasetProbeError(f"Official VRSBench image is missing: {image_id}")
         if len(existing) > 1:
@@ -506,7 +514,7 @@ class VRSBenchAdapter:
                 f"Official VRSBench image is ambiguous: {image_id} matches "
                 f"{len(existing)} different files"
             )
-        return existing[0]
+        return next(iter(existing.values()))
 
 
 def _caption_texts(value: Any, index: int) -> list[str]:

@@ -5,6 +5,9 @@ models:
   qwen:
     model: /home/lijia/M3/models/Qwen3.5-9B
     cache_model_id: Qwen/Qwen3.5-9B:local
+    # Keep Qwen3.5 visual input at the training-aligned 1792-token budget:
+    # 1792 * patch_size(16)^2 * merge_size(2)^2 pixels.
+    max_pixels: 1835008
     allow_download: false
   qwen_adapters:
     visual-planner-final:

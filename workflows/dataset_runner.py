@@ -481,9 +481,13 @@ class DatasetRunner:
             )
         budget = self.call_budget_factory.create_for_sample("sample")
         try:
+            planner_data_root = self.data_root
+            image_root_for_sample = getattr(self.adapter, "image_root_for_sample", None)
+            if callable(image_root_for_sample):
+                planner_data_root = image_root_for_sample(sample, self.data_root)
             plan, views = await self.visual_task_planner.plan_with_views(
                 sample,
-                data_root=self.data_root,
+                data_root=planner_data_root,
                 artifact_dir=sample_dir,
                 budget=budget,
             )
@@ -510,6 +514,10 @@ class DatasetRunner:
             return self._write_planning_failure(
                 sample, sample_dir, task=None, code=_stable_error_code(error)
             )
+        runner_has_data_root = hasattr(self.sample_runner, "data_root")
+        previous_data_root = getattr(self.sample_runner, "data_root", None)
+        if runner_has_data_root:
+            self.sample_runner.data_root = planner_data_root
         try:
             outcome = await self.sample_runner.run_one(
                 rebuilt,
@@ -523,6 +531,9 @@ class DatasetRunner:
             return self._write_planning_failure(
                 sample, sample_dir, task=plan.task, code=_stable_error_code(error)
             )
+        finally:
+            if runner_has_data_root:
+                self.sample_runner.data_root = previous_data_root
         return outcome.status
 
     async def _run_draft(

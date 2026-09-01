@@ -388,7 +388,7 @@ class XLRSAdapter:
         if task == "caption" and annotations.is_file():
             return _CaptionJsonRows(annotations)
         try:
-            from datasets import load_from_disk
+            from datasets import Image as HFImage, load_from_disk
         except ImportError as error:
             raise RuntimeError(
                 "Install the datasets package to load local XLRS releases."
@@ -397,6 +397,11 @@ class XLRSAdapter:
             dataset = load_from_disk(release_root)[split]
         else:
             dataset = load_from_disk(release_root / split)
+        # Keep Arrow image payloads compressed until a selected sample reaches
+        # the planner. Decoding every 10000x10000 image to PIL and re-encoding
+        # it as PNG during sample-id selection is prohibitively expensive.
+        if "image" in dataset.column_names:
+            dataset = dataset.cast_column("image", HFImage(decode=False))
         return dataset
 
     @staticmethod
