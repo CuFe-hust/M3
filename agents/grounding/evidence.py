@@ -63,6 +63,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from agents.base import CallBudget
 from agents.evidence_catalog import CatalogCategoryError, EvidenceCatalog
 from agents.schema import (
+    AgentResult,
     MaterializedVisualView,
     VisualTaskPlan,
 )
@@ -152,29 +153,10 @@ class GroundingFallbackBox(BaseModel):
     bbox: tuple[float, float, float, float]
 
 
-class GroundingModelFallbackBox(BaseModel):
-    """Model-facing free box in the Phase 2 integer 0..999 xyxy JSON frame.
-    模型侧自由框使用 Phase 2 的 0..999 整数 xyxy JSON 坐标。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    leaf_category: str = Field(min_length=1)
-    roi_id: str = Field(min_length=1, pattern=_ROI_ID_PATTERN)
-    xyxy: tuple[int, int, int, int]
-
-
-class GroundingQwenResponse(BaseModel):
-    """Strict structured output of the one final Grounding Qwen call. The two
-    lists are mutually exclusive authorities by leaf: YOLO-hit leaves may only
-    appear via selected_box_ids, missing leaves only via fallback_boxes.
-    最终 Grounding Qwen 一次调用的严格结构化输出。两个列表按叶子互斥授权：
-    YOLO-hit 叶子只能经 selected_box_ids 出现，缺失叶子只能经
-    fallback_boxes。"""
-
-    model_config = ConfigDict(extra="forbid")
-
-    selected_box_ids: list[str] = Field(default_factory=list)
-    fallback_boxes: list[GroundingModelFallbackBox] = Field(default_factory=list)
+# The final Qwen speaks the public AgentResult contract. Candidate authority is
+# still enforced deterministically below by matching returned evidence boxes to
+# the offered YOLO candidates.
+GroundingQwenResponse = AgentResult
 
 
 class GroundingCallAudit(BaseModel):
@@ -237,12 +219,18 @@ class WholeImageBox(BaseModel):
 
 class GroundingEvidenceResult(BaseModel):
     """Outcome of one grounding evidence pass: the persisted bundle plus the
-    final whole-image boxes. 一次 Grounding 证据执行的结果：持久化 bundle 加
-    最终整图框。"""
+    primary answer and any evidence boxes. 一次 grounding evidence pass 的结果：
+    持久化 bundle、唯一主答案及可选证据框。"""
 
     model_config = ConfigDict(extra="forbid")
 
     bundle: GroundingEvidenceBundle
+    # Internal whole-image answer; the public AgentResult schema is unchanged.
+    # 内部整图主答案；公开 AgentResult schema 不变。
+    answer_box: tuple[int, int, int, int] | None = None
+    # Candidate/fallback evidence only; an answer-only fallback legitimately has
+    # no entries here.
+    # 这里只保存候选/证据框；answer-only fallback 合法地可以为空。
     whole_image_boxes: list[WholeImageBox] = Field(default_factory=list)
 
 
@@ -358,6 +346,23 @@ def _valid_fallback_bbox(bbox: tuple[int, int, int, int]) -> bool:
     if not all(0 <= value <= _MAX_999 for value in bbox):
         return False
     return bbox[0] < bbox[2] and bbox[1] < bbox[3]
+
+
+def _parse_answer_box(answer: str) -> tuple[int, int, int, int] | None:
+    """Parse the public answer coordinate without repairing model output.
+    解析公共 answer 坐标，不对模型输出做修复。"""
+    try:
+        value = json.loads(answer)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 4
+        or not all(isinstance(item, int) and not isinstance(item, bool) for item in value)
+    ):
+        return None
+    box = tuple(value)
+    return box if _valid_fallback_bbox(box) else None  # type: ignore[return-value]
 
 
 def _normalize_open_vocabulary_category(value: str) -> str:
@@ -564,8 +569,13 @@ class GroundingEvidenceExecutor:
             audits=audits,
             dropped=dropped,
         )
-        result = self._convert_to_whole_image(bundle, records)
-        if not result.whole_image_boxes:
+        answer_box = _parse_answer_box(response.answer)
+        result = self._convert_to_whole_image(
+            bundle,
+            records,
+            answer_box=answer_box,
+        )
+        if result.answer_box is None:
             raise GroundingEvidenceError("NO_VALID_BOXES")
         return result
 
@@ -982,60 +992,74 @@ class GroundingEvidenceExecutor:
         audits: list[GroundingCallAudit],
         dropped: dict[str, int],
     ) -> GroundingEvidenceBundle:
-        """Deterministic authority enforcement and cleanup: unknown box_id,
-        out-of-authority free boxes (hit leaf / unrequested leaf / unknown
-        ROI), and invalid coordinates are dropped with stable counters. The
-        cleaned selection and fallback boxes are the only persisted Qwen
-        output. 确定性权限强制与清理：未知 box_id、越权自由框（hit 叶子/未请
-        求叶子/未知 ROI）与非法坐标以稳定计数丢弃。清理后的选择与自由框是唯
-        一持久化的 Qwen 输出。"""
+        """The public answer is the single final prediction. YOLO
+        candidates are evidence only; the answer remains Qwen's GT-style
+        coordinate prediction. Without candidates, an answer-only visual
+        fallback is authorized. evidence_items is deterministic executor-owned
+        evidence and is not treated as multiple final answers.
+        """
         dropped = dict(dropped)
-        candidates_by_id = {candidate.box_id: candidate for candidate in candidates}
         records_by_id = {record.roi_id: record for record in records}
         leaf_set = set(leaves) | set(open_vocabulary_categories)
         missing_set = set(missing_leaves) | set(open_vocabulary_categories)
 
-        selected: list[str] = []
-        seen: set[str] = set()
-        for box_id in response.selected_box_ids:
-            if box_id in seen:
-                dropped["box_id_duplicate"] = dropped.get("box_id_duplicate", 0) + 1
-                continue
-            seen.add(box_id)
-            if box_id not in candidates_by_id:
-                dropped["unknown_box_id"] = dropped.get("unknown_box_id", 0) + 1
-                continue
-            selected.append(box_id)
-
-        fallbacks: list[GroundingFallbackBox] = []
-        for box in response.fallback_boxes:
-            if box.leaf_category not in leaf_set:
-                dropped["free_box_unrequested_leaf"] = (
-                    dropped.get("free_box_unrequested_leaf", 0) + 1
-                )
-                continue
-            if box.leaf_category not in missing_set:
-                dropped["free_box_for_hit_leaf"] = (
-                    dropped.get("free_box_for_hit_leaf", 0) + 1
-                )
-                continue
-            if box.roi_id not in records_by_id:
-                dropped["free_box_unknown_roi"] = (
-                    dropped.get("free_box_unknown_roi", 0) + 1
-                )
-                continue
-            if not _valid_fallback_bbox(box.xyxy):
-                dropped["free_box_invalid_coordinates"] = (
-                    dropped.get("free_box_invalid_coordinates", 0) + 1
-                )
-                continue
-            fallbacks.append(
-                GroundingFallbackBox(
-                    leaf_category=box.leaf_category,
-                    roi_id=box.roi_id,
-                    bbox=_fallback_box_to_normalized(box.xyxy),
-                )
+        answer_box = _parse_answer_box(response.answer)
+        if answer_box is None:
+            dropped["answer_invalid_coordinates"] = (
+                dropped.get("answer_invalid_coordinates", 0) + 1
             )
+
+        selected: list[str] = []
+        fallbacks: list[GroundingFallbackBox] = []
+        candidate_leaves = {candidate.leaf_category for candidate in candidates}
+
+        if answer_box is not None and candidates:
+            # YOLO candidates are deterministic evidence, not the public answer
+            # target. Keep every retained candidate for the requested hit
+            # category even when Qwen omits or paraphrases evidence_items.
+            selected.extend(candidate.box_id for candidate in candidates)
+
+        elif answer_box is not None:
+            # An answer-only fallback is valid: no category, ROI id, or internal
+            # candidate record is required. Optional legacy fallback evidence is
+            # still converted only when Qwen supplied a valid requested label.
+            # answer-only fallback 合法地不要求类别、ROI id 或内部 candidate；
+            # 只有 Qwen 明确提供合法请求标签时，才兼容性转换旧式证据。
+            fallback_items = [
+                item
+                for item in response.evidence_items
+                if item.box is not None
+                and tuple(item.box) == answer_box
+                and item.label in missing_set
+            ]
+            fallback_item = fallback_items[0] if fallback_items else None
+            if fallback_item is not None:
+                roi_id = fallback_item.image_id
+                if roi_id is None and len(records) == 1:
+                    roi_id = records[0].roi_id
+                if roi_id not in records_by_id:
+                    dropped["answer_unknown_fallback_roi"] = (
+                        dropped.get("answer_unknown_fallback_roi", 0) + 1
+                    )
+                else:
+                    fallbacks.append(
+                        GroundingFallbackBox(
+                            leaf_category=fallback_item.label,
+                            roi_id=roi_id,
+                            bbox=_fallback_box_to_normalized(answer_box),
+                        )
+                    )
+
+        for item in response.evidence_items:
+            if item.box is None:
+                dropped["evidence_without_box"] = (
+                    dropped.get("evidence_without_box", 0) + 1
+                )
+                continue
+            if item.label not in candidate_leaves and item.label not in leaf_set:
+                dropped["evidence_unrequested_leaf"] = (
+                    dropped.get("evidence_unrequested_leaf", 0) + 1
+                )
 
         return GroundingEvidenceBundle(
             catalog_version=self._catalog.catalog_version,
@@ -1054,39 +1078,87 @@ class GroundingEvidenceExecutor:
         self,
         bundle: GroundingEvidenceBundle,
         records: list[GroundingRoiRecord],
+        *,
+        answer_box: tuple[int, int, int, int] | None,
     ) -> GroundingEvidenceResult:
-        """Deterministic ROI-local [0,1] -> whole-image pixels ->
-        normalized_0_999_top_left conversion, then the final same-leaf
-        geometric dedup. Degenerate-after-rounding boxes are dropped honestly;
-        a box is never fabricated. 确定性 ROI-local [0,1] -> 整图像素 ->
-        normalized_0_999_top_left 转换，再做最终同叶子几何去重。取整后退化的
-        框被如实丢弃；绝不伪造框。"""
+        """Convert the selected answer and all same-category YOLO candidates
+        to whole-image coordinates. The selected candidate is first so the
+        public AgentResult answer remains the unique first prediction; the
+        remaining candidates are retained as evidence_items.
+        """
         records_by_id = {record.roi_id: record for record in records}
         candidates_by_id = {candidate.box_id: candidate for candidate in bundle.candidates}
-        merged: list[tuple[str, tuple[float, float, float, float], GroundingRoiRecord]] = []
-        for box_id in bundle.selected_box_ids:
-            candidate = candidates_by_id[box_id]
-            record = records_by_id[candidate.roi_id]
-            merged.append((candidate.leaf_category, candidate.roi_normalized_xyxy, record))
+
+        selected_candidates = [
+            candidates_by_id[box_id]
+            for box_id in bundle.selected_box_ids
+            if box_id in candidates_by_id
+        ]
+        candidate_merged: list[
+            tuple[str, tuple[float, float, float, float], GroundingRoiRecord]
+        ] = []
+        if selected_candidates:
+            selected_leaf = selected_candidates[0].leaf_category
+            selected_ids = {candidate.box_id for candidate in selected_candidates}
+            ordered_candidates = selected_candidates + [
+                candidate
+                for candidate in bundle.candidates
+                if candidate.leaf_category == selected_leaf
+                and candidate.box_id not in selected_ids
+            ]
+            for candidate in ordered_candidates:
+                record = records_by_id[candidate.roi_id]
+                candidate_merged.append(
+                    (candidate.leaf_category, candidate.roi_normalized_xyxy, record)
+                )
+
+        fallback_merged: list[
+            tuple[str, tuple[float, float, float, float], GroundingRoiRecord]
+        ] = []
         for box in bundle.fallback_boxes:
             record = records_by_id[box.roi_id]
-            merged.append(
-                (
-                    box.leaf_category,
-                    box.bbox,
-                    record,
-                )
-            )
+            fallback_merged.append((box.leaf_category, box.bbox, record))
 
-        converted: list[tuple[str, tuple[int, int, int, int]]] = []
-        for label, roi_normalized, record in merged:
+        converted_candidates: list[tuple[str, tuple[int, int, int, int]]] = []
+        for label, roi_normalized, record in candidate_merged:
             box = self._to_whole_image_999(roi_normalized, record)
-            if box is None:
-                continue
-            converted.append((label, box))
-        converted = self._final_dedup(converted)
+            if box is not None:
+                converted_candidates.append((label, box))
+
+        converted_fallbacks: list[tuple[str, tuple[int, int, int, int]]] = []
+        for label, roi_normalized, record in fallback_merged:
+            box = self._to_whole_image_999(roi_normalized, record)
+            if box is not None:
+                converted_fallbacks.append((label, box))
+
+        if converted_candidates:
+            converted = converted_candidates + self._final_dedup(converted_fallbacks)
+            if answer_box is None:
+                primary_answer = None
+            elif len(records) == 1:
+                primary_answer = self._to_whole_image_999(
+                    _fallback_box_to_normalized(answer_box), records[0]
+                )
+            else:
+                # GT-style answers are whole-image normalized coordinates when
+                # no public ROI id accompanies the answer.
+                primary_answer = answer_box
+        else:
+            converted = self._final_dedup(converted_fallbacks)
+            primary_answer = converted[0][1] if converted else None
+            if primary_answer is None and answer_box is not None and not bundle.candidates:
+                # The final Qwen answer is ROI-normalized. With one materialized
+                # image/ROI, preserve it directly without inventing category or
+                # candidate evidence.
+                # 最终 Qwen answer 是 ROI 归一化坐标；单图/单 ROI 时直接保留，
+                # 不凭空制造类别或 candidate 证据。
+                if len(records) == 1:
+                    primary_answer = self._to_whole_image_999(
+                        _fallback_box_to_normalized(answer_box), records[0]
+                    )
         return GroundingEvidenceResult(
             bundle=bundle,
+            answer_box=primary_answer,
             whole_image_boxes=[
                 WholeImageBox(label=label, box=box) for label, box in converted
             ],

@@ -95,7 +95,7 @@ def evaluate_checkpoint(args: argparse.Namespace, checkpoint: Path, rows: list[d
 def main() -> int:
     args = build_parser().parse_args()
     profile = profile_for("grounding")
-    rows = profile.read(args.validation_file)
+    rows = list(profile.read(args.validation_file))
     if args.max_eval_samples is not None:
         rows = rows[: args.max_eval_samples]
     if not rows:

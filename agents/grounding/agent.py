@@ -7,6 +7,7 @@ postprocess 强制 completed 必须携带合法定位证据，不在本模块计
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -179,13 +180,22 @@ class GroundingAgent(VisualAgentBase):
                 sample.sample_id,
                 cause=f"grounding_evidence_failed:{type(exc).__name__}",
             ) from exc
+        primary_box = result.answer_box
+        if primary_box is None and result.whole_image_boxes:
+            # Compatibility for injected services that predate the internal
+            # answer_box field; the real executor always sets it.
+            primary_box = result.whole_image_boxes[0].box
+        if primary_box is None:
+            raise AgentExecutionError(
+                self.name,
+                sample.sample_id,
+                cause="grounding_evidence_missing_answer",
+            )
         payload = AgentResult(
             agent_name=self.name,
-            # 14C §8: the final Qwen never produces free-text coordinate
-            # answers; the deterministic answer summarizes the retained labels.
-            # 14C §8：最终 Qwen 不生成自由文本坐标答案；确定性答案汇总保留的
-            # 标签。
-            answer=", ".join(box.label for box in result.whole_image_boxes),
+            # The public grounding contract carries the primary coordinate in
+            # answer; boxes/evidence_items retain only available evidence boxes.
+            answer=json.dumps(list(primary_box), separators=(",", ":")),
             boxes=[list(box.box) for box in result.whole_image_boxes],
             evidence_items=[
                 VisualEvidence(label=item.label, box=list(item.box))
@@ -193,7 +203,11 @@ class GroundingAgent(VisualAgentBase):
             ],
             status="completed",
         )
-        payload = await self.postprocess(sample, payload)
+        # The evidence executor has already validated answer-only fallback boxes.
+        # Keep its intentionally empty public evidence fields instead of applying
+        # the direct-grounding geometry requirement a second time.
+        if result.whole_image_boxes:
+            payload = await self.postprocess(sample, payload)
         return AgentExecution(
             agent_name=self.name,
             payload=payload,

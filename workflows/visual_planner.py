@@ -410,10 +410,24 @@ class VisualTaskPlanner:
         执行 v5 叶子类别一致性与图像索引策略校验。"""
         if plan.needs_visual_assistance:
             try:
-                self._catalog.validate_plan_leaves(
-                    plan.object_categories,
-                    task=_vqa_capability_owner(plan.task),
-                )
+                if plan.task == "grounding":
+                    # Grounding keeps canonical categories that are outside
+                    # the YOLO executable set so the evidence executor can
+                    # route them through its direct-Qwen fallback. Other
+                    # VQA capabilities remain strictly executable-only.
+                    seen: set[str] = set()
+                    for category in plan.object_categories:
+                        if not self._catalog.is_leaf(category) or category in seen:
+                            raise CatalogCategoryError(
+                                "PLAN_CATEGORY_NOT_CANONICAL_LEAF",
+                                categories=[category],
+                            )
+                        seen.add(category)
+                else:
+                    self._catalog.validate_plan_leaves(
+                        plan.object_categories,
+                        task=_vqa_capability_owner(plan.task),
+                    )
             except CatalogCategoryError as exc:
                 raise VisualTaskPlanError("SCHEMA_INVALID") from exc
             unavailable = [
@@ -421,7 +435,7 @@ class VisualTaskPlanner:
                 for category in plan.object_categories
                 if category not in self._runtime_executable_by_task[plan.task]
             ]
-            if unavailable:
+            if unavailable and plan.task != "grounding":
                 raise VisualTaskPlanError("CAPABILITY_UNAVAILABLE")
             deduped = list(dict.fromkeys(plan.object_categories))
             if deduped != plan.object_categories:

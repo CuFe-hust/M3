@@ -14,6 +14,7 @@ from . import qwen_multimodal
 
 class Qwen35Adapter:
     name = "qwen3_5"
+    max_visual_tokens = 1792
     model_types = frozenset({"qwen3_5"})
 
     def probe(self, model_id: str | Path, *, local_files_only: bool = True) -> AdapterProbe:
@@ -41,6 +42,9 @@ class Qwen35Adapter:
             kwargs["device_map"] = device
         model = model_factory.from_pretrained(model_id, **kwargs)
         processor = _hf.auto_processor(model_id, local_files_only=local_files_only)
+        qwen_multimodal.configure_visual_token_budget(
+            processor, max_visual_tokens=self.max_visual_tokens
+        )
         return model, processor, probe
 
     def encode(self, processor: Any, episode: PreparedMultimodalEpisode | CanonicalEpisode, *, max_seq_length: int = 4096, return_tensors: str = "pt") -> Mapping[str, Any]:
@@ -53,7 +57,11 @@ class Qwen35Adapter:
         return qwen_multimodal.processor_identity(processor)
 
     def load_processor(self, processor_dir: str | Path, *, local_files_only: bool = True) -> Any:
-        return _hf.auto_processor(processor_dir, local_files_only=local_files_only)
+        processor = _hf.auto_processor(processor_dir, local_files_only=local_files_only)
+        qwen_multimodal.configure_visual_token_budget(
+            processor, max_visual_tokens=self.max_visual_tokens
+        )
+        return processor
 
     def saved_processor_identity(self, processor: Any, processor_dir: str | Path) -> dict[str, Any]:
         return qwen_multimodal.saved_processor_identity(processor, str(processor_dir))

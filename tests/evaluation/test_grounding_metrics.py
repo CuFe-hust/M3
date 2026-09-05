@@ -10,12 +10,15 @@ from pathlib import Path
 
 import pytest
 
+from agents.schema import AgentResult
+from data.schema import GroundTruth, ImageRef, UnifiedSample
 from evaluation.metrics.grounding import (
     aggregate_grounding,
     box_iou,
     grounding_deterministic_metrics,
 )
 from evaluation.records import EvaluationRecord
+from workflows.sample_runner import build_deterministic_evaluation
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -121,3 +124,54 @@ def test_aggregate_uses_stored_threshold_flag() -> None:
     summary = aggregate_grounding(records)
     assert summary["accuracy"] == pytest.approx(2 / 3)
     assert summary["mean_iou"] == pytest.approx((0.4999996 + 0.5 + 0.5000004) / 3)
+
+
+def _grounding_sample() -> UnifiedSample:
+    return UnifiedSample(
+        sample_id="grounding-answer-eval",
+        dataset="demo",
+        split="test",
+        task="grounding",
+        images=[ImageRef(image_id="image", path="image.png", role="image")],
+        question="Locate the target.",
+        ground_truth=GroundTruth(
+            boxes=[[100, 100, 200, 200]],
+            coordinate_frame="normalized_0_999_top_left",
+        ),
+    )
+
+
+def test_grounding_evaluation_scores_answer_not_evidence_boxes() -> None:
+    sample = _grounding_sample()
+    payload = AgentResult(
+        agent_name="grounding_agent",
+        answer="[100,100,200,200]",
+        boxes=[[700, 700, 800, 800]],
+    )
+
+    evaluation, filename = build_deterministic_evaluation(
+        sample=sample,
+        execution_payload=payload,
+    )
+
+    assert filename == "grounding_evaluation.json"
+    assert evaluation is not None
+    assert evaluation.deterministic_metrics.iou == pytest.approx(1.0)
+
+
+def test_grounding_evaluation_accepts_answer_only_fallback() -> None:
+    sample = _grounding_sample()
+    payload = AgentResult(
+        agent_name="grounding_agent",
+        answer="[100,100,200,200]",
+        boxes=[],
+        evidence_items=[],
+    )
+
+    evaluation, _ = build_deterministic_evaluation(
+        sample=sample,
+        execution_payload=payload,
+    )
+
+    assert evaluation is not None
+    assert evaluation.deterministic_metrics.iou == pytest.approx(1.0)

@@ -176,11 +176,8 @@ def test_grounding_release_loads_one_sample_per_object(tmp_path: Path) -> None:
     assert samples[0].ground_truth.labels == ["small-vehicle"]
 
 
-def test_official_referring_release_preserves_normalized_polygon(tmp_path: Path) -> None:
-    """Load the official VRSBench referring release without flattening its
-    four-corner polygon into an unlabelled xyxy box.
-    加载官方 VRSBench referring 发布，并保留四角 polygon，不把它静默压成
-    无标签 xyxy 框。"""
+def test_official_referring_release_maps_official_box_to_m3_frame(tmp_path: Path) -> None:
+    """Use official ground_truth and map it to M3 canonical frame."""
 
     root = tmp_path / "vrsbench_referring"
     _make_image(root / "Images_val" / "img_1.png")
@@ -201,10 +198,13 @@ def test_official_referring_release_preserves_normalized_polygon(tmp_path: Path)
     assert len(samples) == 1
     sample = samples[0]
     assert sample.ground_truth is not None
-    assert sample.ground_truth.coordinate_frame == "normalized_0_1_top_left"
-    assert sample.ground_truth.boxes == [[0.10, 0.20, 0.30, 0.20, 0.30, 0.40, 0.10, 0.40]]
+    assert sample.ground_truth.coordinate_frame == "normalized_0_999_top_left"
+    assert sample.ground_truth.boxes == [[250, 400, 330, 599]]
     assert sample.ground_truth.labels == ["vehicle"]
-    assert sample.ground_truth.raw["coordinate_frame"] == "normalized_0_1_top_left"
+    assert sample.ground_truth.raw["coordinate_frame"] == "normalized_0_999_top_left"
+    assert sample.ground_truth.raw["source_row"]["obj_corner"] == [
+        0.10, 0.20, 0.30, 0.20, 0.30, 0.40, 0.10, 0.40
+    ]
 
 
 def test_probe_discovers_official_referring_grounding_file(tmp_path: Path) -> None:

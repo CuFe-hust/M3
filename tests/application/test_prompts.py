@@ -85,10 +85,16 @@ def test_grounding_final_prompt_declares_candidate_authority() -> None:
     prompt = PromptCatalog(REPO_ROOT / "prompts")["grounding_final"].casefold()
     for required in (
         "candidate_id",
-        "missing_categories",
+        "copy all candidate boxes",
+        "answer-only fallback",
+        "boxes and evidence_items may both be empty",
+        "do not require or invent a category",
+        "keep those candidate coordinates unchanged",
+        "single best gt-style coordinate prediction",
+        "overlap with the dataset ground truth",
         "roi-local",
         "0..999",
-        "groundingqwenresponse",
+        "agentresult",
         "do not output confidence",
         "return valid json only",
     ):

@@ -1,28 +1,32 @@
-# Local Qwen3.5-9B base with verified planner and General VQA LoRAs.
-# 本地 Qwen3.5-9B 基座，使用已验证的 Planner 与 General VQA LoRA。
+# Local Qwen3.5-9B base with separate final LoRA bindings for the
+# Visual Planner and Grounding Agent evaluation path.
+# 本地 Qwen3.5-9B 基座；Visual Planner 与 Grounding Agent 使用各自最终 LoRA。
 models:
   qwen:
-    model: models/Qwen3.5-9B
+    model: /home/lijia/M3/models/Qwen3.5-9B
     cache_model_id: Qwen/Qwen3.5-9B:local
+    # Keep Qwen3.5 visual input at the training-aligned 1792-token budget:
+    # 1792 * patch_size(16)^2 * merge_size(2)^2 pixels.
+    max_pixels: 1835008
     allow_download: false
   qwen_adapters:
-    visual-planner-final-v1-lr5e-5:
-      path: outputs/finetune/qwen35-9b-visual-planner-final-v1-lr5e-5/final_adapter
-      logical_id: qwen35-9b-visual-planner-final-v1-lr5e-5
+    visual-planner-final:
+      path: /home/lijia/M3/outputs/finetune/qwen35-9b-visual-planner-final-v1-lr5e-5/final_adapter
+      logical_id: qwen35-9b-visual-planner-final-v1
       revision: f6c5ab9d71a68f64893fc26fcb524702511abf5cda713bf691a9cf23ffeef1b0
       enabled: true
-    general-vqa-agent-lora-full:
-      path: outputs/finetune/qwen35-9b-general-vqa-agent-lora-full/final_adapter
-      logical_id: qwen35-9b-general-vqa-agent-lora-full
-      revision: 08e79e4c316d718c60655fb69d477655042f4ebd04776aa0c5ad73fe510bde62
+    grounding-agent-final:
+      path: /home/lijia/M3/outputs/grounding_sft_v4_lora_20260829/final_adapter
+      logical_id: qwen35-9b-grounding-agent-sft-v4-20260829
+      revision: 591e32f2d68db305dbe5580494871bec4b8fc82548b169538e32638d2c7ef3af
       enabled: true
   qwen_adapter_bindings:
-    planner: visual-planner-final-v1-lr5e-5
-    counting: visual-planner-final-v1-lr5e-5
-    change: visual-planner-final-v1-lr5e-5
-    grounding: visual-planner-final-v1-lr5e-5
-    general_vqa: general-vqa-agent-lora-full
-    caption: visual-planner-final-v1-lr5e-5
+    planner: visual-planner-final
+    counting: base
+    change: base
+    grounding: grounding-agent-final
+    general_vqa: base
+    caption: base
 
 reporting:
   native_html: true
@@ -31,9 +35,8 @@ reporting:
 # Concrete expert deployment inventory belongs here, not in Python settings.
 backend:
   yolo:
-    # GB10 production invariant:
-    # The DOTA expert runs in the isolated, restartable CUDA evidence worker;
-    # the VRSBench expert remains explicit CPU-only inference.
+    # Main-branch deployment invariant:
+    # Match the main-branch detector deployment: DOTA uses the isolated restartable CUDA worker; VRSBench remains explicit CPU-only.
     # This does not change the Qwen or SegFormer device policy.
     enabled: true
     detectors:
@@ -51,9 +54,8 @@ backend:
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        # VQA evidence runs this detector in an isolated, restartable CUDA worker.
-        # VQA evidence 在隔离且可重启的 CUDA worker 中运行该检测器。
-        device: "0"
+        # DOTA YOLO11m uses the isolated CUDA evidence worker.
+        device: '0'
         max_detections: 1000
         require_cuda: true
         allow_cpu_fallback: false
@@ -74,7 +76,7 @@ backend:
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        # GB10 production invariant: explicit CPU-only Ultralytics YOLO OBB.
+        # VRSBench YOLO11m is explicit CPU-only.
         device: cpu
         max_detections: 2000
         require_cuda: false
@@ -111,7 +113,7 @@ visual_planning:
       enabled: true
       class_map_version: verified-2026-08-20
   preprocessing:
-    version: yolo-v1-segformer-pad-v1
+    version: greedy-1024-stretch-v1
     tile_size: 1024
     partition_policy: greedy-row-major-no-overlap
     remainder_resize: stretch
