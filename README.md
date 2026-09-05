@@ -259,12 +259,13 @@ allow_download = false
 
 ### 本地专家模型
 
-仓库声明三份本地专家模型资产：
+仓库声明四份本地专家模型资产：
 
 ```text
 models/segformer_mitb2_isaid/model.safetensors
 models/segformer_mitb2_oem/model.safetensors
-models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+models/yolo_obb/dota_v2_yolo11m_obb_best.pt
+models/vrsbench-yolo11m-obb-1024/vrsbench_yolo11m_obb_best.pt
 ```
 
 大权重通过 Git LFS 或本地外部存储管理；Git 对象不得直接包含大 binary。工作树中的
@@ -1053,31 +1054,39 @@ VisualTaskPlanner v5 count_target
 
 ### GB10 production profile
 
-`configs/local.yaml` is the current formal GB10 profile. Both enabled YOLO
-experts are intentionally CPU-only:
+`configs/local.yaml` is the current formal GB10 profile. The enabled
+Ultralytics YOLO11m-OBB experts use explicit per-detector device policies:
 
-- `detector_obb_csl_001`: ONNX Runtime `CPUExecutionProvider` only;
-- `detector_yolo_detect_001`: Ultralytics inference with `device=cpu`.
+- `detector_obb_csl_001`: DOTA-v2.0 YOLO11m-OBB with `device="0"`,
+  `require_cuda=true`, and an 8 GiB limit in the isolated restartable evidence
+  worker;
+- `detector_obb_ultralytics_001`: VRSBench YOLO11m-OBB Ultralytics inference with
+  `device=cpu`.
 
-The GB10 profile never requests `CUDAExecutionProvider` for YOLO, and CPU
-execution is not recorded as a fallback. This policy applies only to YOLO;
-Qwen and SegFormer retain their existing device policies.
+The legacy-named `detector_obb_csl_001` deployment slot is retained for
+artifact/config compatibility. Its catalog identity, weight digest and runtime
+now bind the DOTA YOLO11m checkpoint, not the removed YOLOv5 CSL ONNX asset.
+
+Neither detector silently falls back between CUDA and CPU. These policies apply
+only to YOLO; Qwen and SegFormer retain their existing device policies.
 
 Install the standard YOLO dependencies with:
 
 ```bash
-pip install -e ".[yolo,yolo-onnx]"
+pip install -e ".[yolo]"
 ```
 
-The `yolo-onnx` extra uses CPU `onnxruntime`. Do not manage
-`onnxruntime` and `onnxruntime-gpu` as simultaneous production dependencies
-for this profile.
+The optional `yolo-onnx` extra remains available only for explicitly configured
+legacy/external ONNX detectors; it is not required by the current inventory.
 
 Python settings 只定义通用 schema，默认 `enabled=false`、`detectors=[]`，不内置具体
 checkpoint inventory。`ExpertCatalog` 声明专家能力与逻辑身份；部署配置（当前本地样例为
 `configs/local.yaml`）声明是否启用、物理权重路径、provider/device 与阈值。加载该配置后会
-注册 `detector_obb_csl_001`；不加载部署配置时不注册 YOLO。权重与 ONNX Runtime 仍由本地
-环境准备且不自动下载，模型加载保持惰性。
+注册 `detector_obb_csl_001` 和 `detector_obb_ultralytics_001`；不加载部署配置时不注册
+YOLO。计数选择器按 canonical label 过滤支持该类别的 detector，同 kind 下按 priority
+排序，因此 VRSBench YOLO11m-OBB（priority 200）优先，DOTA-v2.0 YOLO11m-OBB
+（priority 100）作为后备。权重与 runtime 依赖仍由本地环境准备且不自动下载，模型加载
+保持惰性。
 
 部署启用方式：
 
@@ -1087,7 +1096,7 @@ backend:
     enabled: true
     detectors:
       - name: detector_obb_csl_001
-        weights: models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
+        weights: models/yolo_obb/dota_v2_yolo11m_obb_best.pt
         # 其余 identity/runtime 字段见 configs/local.yaml
 ```
 
@@ -1109,9 +1118,9 @@ catalog、class/config/preprocessor metadata 和 prompts，不包含大模型权
 installed-wheel runtime 在任意工作目录会依次尝试显式 prompt root、项目 prompt root，
 最后使用 wheel 内 packaged prompts；无效显式 override 会稳定失败而不会静默 fallback。
 
-当前 `pyproject.toml` 声明了 `yolo` / `yolo-onnx` extras。二者按目标 runtime
-择一安装；不要同时无条件安装 CPU 与 GPU ONNX Runtime。CUDA provider、驱动
-和 ONNX Runtime 版本仍应以目标部署机器的已验证环境为准。
+当前正式 inventory 使用 `yolo` extra。`yolo-onnx` extra 仅供显式外部兼容配置；
+不要同时无条件安装 CPU 与 GPU ONNX Runtime。CUDA provider、驱动和可选 ONNX
+Runtime 版本仍应以目标部署机器的已验证环境为准。
 
 ---
 

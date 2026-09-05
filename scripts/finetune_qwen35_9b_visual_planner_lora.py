@@ -698,7 +698,12 @@ def _safe_model_identity(model_id: str) -> str:
     """Reject local paths as persisted logical model identities.
     拒绝将本地路径持久化为逻辑模型身份。
     """
-    if not model_id or Path(model_id).is_absolute() or model_id.startswith((".", "~")):
+    if (
+        not model_id
+        or PurePosixPath(model_id).is_absolute()
+        or PureWindowsPath(model_id).is_absolute()
+        or model_id.startswith((".", "~"))
+    ):
         raise TrainingConfigurationError("base_model_id_must_be_path_independent")
     return model_id
 

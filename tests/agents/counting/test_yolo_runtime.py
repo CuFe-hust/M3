@@ -650,6 +650,11 @@ def _onnx_model(tmp_path: Path, monkeypatch, providers_result, **detector_overri
         device=detector.device,
         require_cuda=detector.require_cuda,
         allow_cpu_fallback=detector.allow_cpu_fallback,
+        gpu_mem_limit_bytes=(
+            None
+            if detector.gpu_mem_limit_gib is None
+            else int(detector.gpu_mem_limit_gib * 1024**3)
+        ),
     )
     return model, captured
 
@@ -660,7 +665,15 @@ def test_onnx_cuda_device_binding(tmp_path: Path, monkeypatch) -> None:
         device="1",
     )
     assert captured["providers"] == [
-        ("CUDAExecutionProvider", {"device_id": 1}),
+        (
+            "CUDAExecutionProvider",
+            {
+                "device_id": 1,
+                "arena_extend_strategy": "kSameAsRequested",
+                "cudnn_conv_use_max_workspace": "0",
+                "do_copy_in_default_stream": "1",
+            },
+        ),
     ]
     assert model.requested_provider == "CUDAExecutionProvider"
     assert model.requested_device == "1"
@@ -675,7 +688,31 @@ def test_onnx_cuda_device_zero(tmp_path: Path, monkeypatch) -> None:
         tmp_path, monkeypatch, ["CUDAExecutionProvider"],
         device="0",
     )
-    assert captured["providers"] == [("CUDAExecutionProvider", {"device_id": 0})]
+    assert captured["providers"] == [
+        (
+            "CUDAExecutionProvider",
+            {
+                "device_id": 0,
+                "arena_extend_strategy": "kSameAsRequested",
+                "cudnn_conv_use_max_workspace": "0",
+                "do_copy_in_default_stream": "1",
+            },
+        )
+    ]
+
+
+def test_onnx_cuda_provider_receives_explicit_gpu_memory_limit(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _, captured = _onnx_model(
+        tmp_path,
+        monkeypatch,
+        ["CUDAExecutionProvider"],
+        device="0",
+        gpu_mem_limit_gib=8,
+    )
+
+    assert captured["providers"][0][1]["gpu_mem_limit"] == 8 * 1024**3
 
 
 def test_onnx_cpu_mode_never_requests_cuda(tmp_path: Path, monkeypatch) -> None:

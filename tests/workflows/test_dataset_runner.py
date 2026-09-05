@@ -39,15 +39,23 @@ class _FakeAdapter:
     name = "fake"
     supported_tasks = frozenset({"general_vqa", "caption", "counting"})
 
-    def __init__(self, samples: list[UnifiedSample]) -> None:
+    def __init__(
+        self,
+        samples: list[UnifiedSample],
+        *,
+        version: str = "1",
+        image_root: Path | None = None,
+    ) -> None:
         self._samples = samples
+        self.version = version
+        self.image_root = image_root
         self.probe_calls = 0
 
     def probe(self, root: Path, task: str | None = None) -> AdapterProbe:
         self.probe_calls += 1
         return AdapterProbe(
             dataset="fake",
-            version="1",
+            version=self.version,
             sample_file=root / "samples.jsonl",  # root-anchored / 锚定 root
             observed_fields=("id",),
             sample_count=len(self._samples),
@@ -58,6 +66,9 @@ class _FakeAdapter:
     def iter_samples(self, root: Path, split: str, task: str):
         for sample in self._samples:
             yield sample
+
+    def resolve_image_root(self, root: Path, task: str) -> Path:
+        return self.image_root or root
 
 
 class _StubSampleRunner:
@@ -559,6 +570,56 @@ def test_probe_per_task_not_overwritten(tmp_path: Path) -> None:
     assert second["task"] == "caption"
     assert first["sample_file"] == "samples.jsonl"  # dataset-relative / root 相对
     assert first != second
+
+
+def test_adapter_image_root_reaches_planner_and_sample_runner(tmp_path: Path) -> None:
+    sample = _sample("cache-backed")
+    run_dir, _ = _create_run(tmp_path, run_id="image-root")
+    cache = tmp_path / "external-cache"
+    cache.mkdir()
+    (cache / "img.png").write_bytes(b"cache-backed-image")
+
+    class _ReadingPlanner(_FakeVisualPlanner):
+        async def plan_with_views(self, sample, *, data_root, artifact_dir, budget):
+            assert (data_root / sample.images[0].path).read_bytes() == (
+                b"cache-backed-image"
+            )
+            return await super().plan_with_views(
+                sample,
+                data_root=data_root,
+                artifact_dir=artifact_dir,
+                budget=budget,
+            )
+
+    planner = _ReadingPlanner()
+    stub = _StubSampleRunner()
+    runner = _runner(
+        _FakeAdapter([sample], image_root=cache),
+        stub,
+        run_dir,
+        visual_task_planner=planner,
+    )
+
+    _run(runner)
+
+    assert planner.calls[0][1] == cache.resolve()
+    assert stub.data_root == cache.resolve()
+
+
+def test_resume_rejects_dataset_adapter_version_drift(tmp_path: Path) -> None:
+    sample = _sample("adapter-version")
+    run_dir, _ = _create_run(tmp_path, run_id="adapter-version")
+    _run(_runner(_FakeAdapter([sample], version="v1"), _StubSampleRunner(), run_dir))
+    runner = _runner(
+        _FakeAdapter([sample], version="v2"), _StubSampleRunner(), run_dir
+    )
+
+    with pytest.raises(ValueError, match="adapter version mismatch"):
+        _run(runner, resume=True)
+
+    assert _read_json(
+        run_dir / "tasks" / "general_vqa" / "dataset_probe.json"
+    )["version"] == "v1"
 
 
 # ── argument validation / 参数校验 ──────────────────────────────────────────

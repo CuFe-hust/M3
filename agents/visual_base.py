@@ -104,6 +104,18 @@ class VisualAgentBase:
         默认结果文件名；子类可覆盖。"""
         return "agent_result.json"
 
+    def prepare_materialized_model_image(self, image: Image.Image) -> Image.Image:
+        """Prepare one materialized view for the final model request.
+
+        The default preserves the frozen bytes/geometry semantics. Agents with
+        an explicit final-preview contract may override this hook without
+        changing source-space materialization or persisted coordinates.
+        为最终模型请求准备一个已物化视图。默认保留冻结的字节与
+        几何语义；具有明确最终预览契约的 Agent 可覆盖此 hook，而不改变
+        源空间物化或持久化坐标。
+        """
+        return image
+
     # ── core execution / 核心执行 ────────────────────────────────────────
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
@@ -299,6 +311,7 @@ class VisualAgentBase:
             )
             if view.view_mode == "full_image" and materialized.size != view.crop_size:
                 raise ValueError("materialized full-image size drift")
+            materialized = self.prepare_materialized_model_image(materialized)
             buffer = io.BytesIO()
             materialized.save(buffer, format="PNG")
             return buffer.getvalue(), "image/png"

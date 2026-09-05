@@ -9,6 +9,7 @@ multi-answer 提示、Registry 注册。datasets 库通过注入 loader 边界�
 from __future__ import annotations
 
 import ast
+import base64
 import json
 from collections.abc import Iterator
 from pathlib import Path
@@ -203,6 +204,97 @@ def test_extracted_caption_release_rejects_invalid_annotations(tmp_path: Path) -
         XLRSAdapter().probe(release, task="caption")
 
 
+def test_sharded_jsonl_vqa_streams_base64_images_and_parses_choices(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "XLRS-Bench-lite_VLM"
+    root.mkdir()
+    image_path = tmp_path / "source.jpg"
+    _make_image(image_path)
+    encoded = base64.b64encode(image_path.read_bytes()).decode("ascii")
+    choices = (
+        "The choices are listed below:\n"
+        "(A) Airport\n(B) Harbor\n(C) Farmland\n(D) Forest\n\n"
+        "Only respond with the letter."
+    )
+    rows = [
+        {
+            "index": 10,
+            "question": "Which scene is shown?",
+            "multi-choice options": choices,
+            "answer": "B",
+            "category": "Recognition",
+            "image": [encoded],
+        },
+        {
+            "index": 2,
+            "question": "What comes first numerically?",
+            "multi-choice options": choices,
+            "answer": "ABC",
+            "category": "Land use classification",
+            "l2-category": "Overall Land use classification",
+            "image": [encoded],
+        },
+    ]
+    # Numeric partition order must be part2 then part10, not lexical order.
+    # 分片顺序必须按数字 part2、part10，而不是词法顺序。
+    for part, row in ((10, rows[0]), (2, rows[1])):
+        _write_json(root / f"XLRS-Bench-lite_part{part}.jsonl", row)
+
+    cache = tmp_path / "cache"
+    adapter = XLRSAdapter(cache_root=cache)
+    probe = adapter.probe(root, task="multiple_choice_vqa")
+    samples = list(adapter.iter_samples(root, "train", "multiple_choice_vqa"))
+
+    assert probe.version == "sharded-jsonl-base64-v2-question-with-choices"
+    assert probe.sample_count == 2
+    assert samples[0].question == (
+        "What comes first numerically?\n\nChoices:\n"
+        "(A) Airport\n(B) Harbor\n(C) Farmland\n(D) Forest"
+    )
+    assert samples[1].question.startswith("Which scene is shown?\n\nChoices:\n(A) Airport")
+    assert samples[0].normalization is not None
+    assert samples[0].normalization.choices == [
+        "(A) Airport",
+        "(B) Harbor",
+        "(C) Farmland",
+        "(D) Forest",
+    ]
+    assert samples[0].ground_truth is not None
+    assert samples[0].normalization.allow_multiple is True
+    assert samples[0].ground_truth.answers == ["A, B, C"]
+    assert samples[0].metadata["adapter_version"] == (
+        "sharded-jsonl-base64-v2-question-with-choices"
+    )
+    assert samples[0].sample_id.endswith(
+        "sharded-jsonl-base64-v2-question-with-choices"
+    )
+    assert samples[0].sample_id != "2"
+    assert adapter.resolve_image_root(root, "multiple_choice_vqa") == cache
+    assert (cache / samples[0].images[0].path).is_file()
+    assert encoded not in json.dumps(
+        samples[0].model_dump(mode="json"), ensure_ascii=False
+    )
+
+
+def test_sharded_jsonl_rejects_invalid_base64_and_choice_labels(tmp_path: Path) -> None:
+    root = tmp_path / "XLRS-Bench-lite_VLM"
+    root.mkdir()
+    _write_json(
+        root / "XLRS-Bench-lite_part0.jsonl",
+        {
+            "index": 0,
+            "question": "Broken row?",
+            "multi-choice options": "(A) One\n(C) Three",
+            "answer": "A",
+            "image": ["not-base64!"],
+        },
+    )
+    adapter = XLRSAdapter(cache_root=tmp_path / "cache")
+    with pytest.raises(DatasetProbeError, match="Base64"):
+        list(adapter.iter_samples(root, "train", "multiple_choice_vqa"))
+
+
 # ── 三任务产出 / three tasks produce UnifiedSample ─────────────────────────
 
 
@@ -241,6 +333,12 @@ def test_vqa_lite_task_outputs_choices_and_multi_answer_hint(tmp_path: Path) -> 
     assert samples[0].normalization.allow_multiple is True
     assert samples[1].normalization.choices == ["x", "y", "z", "w"]  # A–E key fallback
     assert samples[1].normalization.allow_multiple is False
+    assert samples[0].question == (
+        "What is the overall land use type?\n\nChoices:\n(A) A\n(B) B\n(C) C\n(D) D"
+    )
+    assert samples[1].question == (
+        "Which class is the target?\n\nChoices:\n(A) x\n(B) y\n(C) z\n(D) w"
+    )
 
 
 def test_three_tasks_all_produce_unified_samples(tmp_path: Path) -> None:

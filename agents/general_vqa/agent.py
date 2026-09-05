@@ -2,8 +2,9 @@
 
 通用 VQA Agent — 开放问答的轻量 VisualAgentBase 子类。覆盖 general_vqa、
 scene_classification、multiple_choice_vqa 与 spatial_relation 四个 task；
-选择题载荷包含 choices 与单/多选约束，输出在 postprocess 中按 choices 约束
-校验。spatial_relation 与通用 VQA 共享同一条单次 Qwen 调用路径，不做任何
+选择题载荷包含 choices 与单/多选事实；postprocess 只尽力将可识别的
+标签/选项文本规范化，无法匹配的自由文本不因格式降级。spatial_relation
+与通用 VQA 共享同一条单次 Qwen 调用路径，不做任何
 专用几何后处理，也不读取 Prompt 文件（提示文本以中性 PromptBinding 注入）。
 """
 
@@ -93,6 +94,7 @@ VISUAL_INPUT_ROLES = frozenset(
     }
 )
 VISUAL_CONTENT_VERSION = "v2"
+MAX_FINAL_QWEN_DETECTIONS = 4
 
 
 class GeneralVQAAgent(VisualAgentBase):
@@ -142,26 +144,24 @@ class GeneralVQAAgent(VisualAgentBase):
         sample: UnifiedSample,
         result: AgentResult,
     ) -> AgentResult:
-        """Enforce the multiple-choice output constraint: a single-choice
-        answer must map to exactly one choice; a multi-choice answer must
-        contain only choices, deduplicated in stable choice order. Violations
-        downgrade status to partial and record answer_constraint_violation.
-        强制选择题输出约束：单选答案必须唯一映射到一个选项；多选答案只能
-        包含选项、去重并按选项稳定顺序排列。违规将状态降级为 partial 并记录
-        answer_constraint_violation。"""
+        """Best-effort normalize recognizable multiple-choice answers.
+
+        Labeled choices normalize letters, full choices, and choice text to the
+        source label; unlabeled choices retain their canonical text. Unmatched
+        free text is preserved without downgrading the sample: deterministic
+        evaluation, not format policing, decides whether it matches.
+        尽力规范化可识别的选择题答案：带标签选项将字母、完整选项或选项
+        文本统一为源标签，无标签选项保留规范文本。无法明确映射的自由
+        文本原样保留且不降级样本；是否匹配由确定性评测决定。"""
         if sample.task != "multiple_choice_vqa":
             return result
         choices, allow_multiple = _canonical_choices(sample)
-        violation, normalized_answer = _validate_choice_answer(
+        normalized_answer = _normalize_choice_answer(
             result.answer, choices, allow_multiple
         )
-        if violation is None:
-            if normalized_answer is not None and normalized_answer != result.answer.strip():
-                result = result.model_copy(update={"answer": normalized_answer})
-            return result
-        geometry = dict(result.geometry or {})
-        geometry["answer_constraint_violation"] = violation
-        return result.model_copy(update={"status": "partial", "geometry": geometry})
+        if normalized_answer != result.answer.strip():
+            return result.model_copy(update={"answer": normalized_answer})
+        return result
 
     async def run(self, sample: UnifiedSample, context: AgentContext) -> AgentExecution:
         """Run direct VQA or the canonical v3 evidence path.
@@ -193,6 +193,16 @@ class GeneralVQAAgent(VisualAgentBase):
             )
 
         return await super().run(sample, context)
+
+    def prepare_materialized_model_image(self, image: Image.Image) -> Image.Image:
+        """Shrink direct final-Qwen views to the canonical VQA preview size.
+
+        Source/ROI geometry remains authoritative; this preview is transport
+        only and therefore must not replace persisted detector coordinates.
+        将 direct 最终 Qwen 视图只缩小到规范 VQA 预览尺寸。源图/ROI 几何仍是
+        权威坐标；该预览仅用于传输，不得覆盖持久化检测坐标。
+        """
+        return make_preview(image)
 
     async def _run_object_evidence(
         self,
@@ -372,6 +382,7 @@ class GeneralVQAAgent(VisualAgentBase):
         segformer_hits: list[dict[str, Any]] = []
 
         yolo_by_roi: dict[str, list[tuple[str, tuple[float, float, float, float]]]] = {}
+        roi_image_ids = {record.roi_id: record.image_id for record in bundle.rois}
         for record in bundle.detections:
             yolo_by_roi.setdefault(record.roi_id, []).append(
                 (record.leaf_category, tuple(record.local_xyxy))
@@ -380,12 +391,21 @@ class GeneralVQAAgent(VisualAgentBase):
                 {
                     "category": record.leaf_category,
                     "roi_id": record.roi_id,
+                    "image_id": roi_image_ids[record.roi_id],
                     # The final Qwen sees an ROI crop, so expose only its local
                     # geometry in the same integer 0..999 JSON frame as SFT.
                     # 最终 Qwen 看到的是 ROI 裁切图，因此只暴露局部几何，并统一
                     # 为与 SFT 相同的 0..999 整数 JSON 坐标。
                     "box": _pixel_xyxy_to_999(
                         record.local_xyxy, record.local_roi_size
+                    ),
+                    # AgentResult evidence uses normalized whole-image geometry;
+                    # expose the matching detector geometry so training and
+                    # inference never relabel an ROI-local box as global.
+                    # AgentResult 证据使用整图归一化几何；同时暴露对应的检测框，
+                    # 避免训练或推理把 ROI 局部框误标为整图框。
+                    "global_box": _pixel_xyxy_to_999(
+                        record.global_xyxy, record.global_image_size
                     ),
                 }
             )
@@ -666,8 +686,9 @@ def _match_choice(value: str, choices: list[str]) -> str | None:
     for choice, (_, text) in zip(choices, parsed):
         if _normalize_choice(text) == normalized:
             return choice
-    letter = value.strip().upper()
-    if len(letter) == 1 and "A" <= letter <= "Z":
+    label_match = re.fullmatch(r"\s*\(?([A-Za-z])\)?[.,;:!]?\s*", value)
+    if label_match is not None:
+        letter = label_match.group(1).upper()
         for choice, (label, _) in zip(choices, parsed):
             if label == letter:
                 return choice
@@ -678,18 +699,22 @@ def _match_choice(value: str, choices: list[str]) -> str | None:
     return None
 
 
-def _validate_choice_answer(
+def _normalize_choice_answer(
     answer: str,
     choices: list[str],
     allow_multiple: bool,
-) -> tuple[str | None, str | None]:
-    """Return (violation, normalized_answer); both None when the answer
-    satisfies the constraint. 返回（违规描述、规范化答案）；满足约束时两者
-    均为 None。"""
+) -> str:
+    """Normalize recognizable choices and preserve unmatched free text.
+    规范化可识别选项，保留无法匹配的自由文本。"""
+
+    stripped = answer.strip()
     if not allow_multiple:
-        if _match_choice(answer, choices) is not None:
-            return None, None
-        return f"answer {answer!r} does not map to a single choice", None
+        matched = _match_choice(stripped, choices)
+        return (
+            _canonical_choice_output(matched)
+            if matched is not None
+            else stripped
+        )
     parts = [part.strip() for part in re.split(r"[,;，；]", answer) if part.strip()]
     labels = {label for label, _ in map(_parse_choice, choices) if label is not None}
     compact = answer.strip().upper()
@@ -703,14 +728,22 @@ def _validate_choice_answer(
         # 一些数据集将多选字母紧凑序列化为 "ABC"。
         parts = list(compact)
     if not parts:
-        return "empty multiple-choice answer", None
+        return stripped
     matched: list[str] = []
     for part in parts:
         choice = _match_choice(part, choices)
         if choice is None:
-            return f"answer item {part!r} is not among the choices", None
+            return stripped
         if choice not in matched:
             matched.append(choice)
     # Stable order follows the choice list. / 稳定顺序遵循选项列表。
     ordered = [choice for choice in choices if choice in matched]
-    return None, ", ".join(ordered)
+    return ", ".join(_canonical_choice_output(choice) for choice in ordered)
+
+
+def _canonical_choice_output(choice: str) -> str:
+    """Use an explicit source label when present, otherwise canonical text.
+    存在显式源标签时输出标签，否则输出规范选项文本。"""
+
+    label, _ = _parse_choice(choice)
+    return label if label is not None else choice

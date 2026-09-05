@@ -124,6 +124,15 @@ def test_yolo_capabilities_use_declared_detector_identity_and_labels() -> None:
     assert expert.backend_name == detector["name"]
     assert expert.logical_model_id == detector["model_id"]
     assert expert.asset.sha256 == detector["sha256"]
+    assert detector["runtime"] == "ultralytics"
+    assert expert.asset.weights == "models/yolo_obb/dota_v2_yolo11m_obb_best.pt"
+    assert detector["classes"] == [
+        "plane", "ship", "storage-tank", "baseball-diamond", "tennis-court",
+        "basketball-court", "ground-track-field", "harbor", "bridge",
+        "large-vehicle", "small-vehicle", "helicopter", "roundabout",
+        "soccer-ball-field", "swimming-pool", "container-crane", "airport",
+        "helipad",
+    ]
     assert capability_labels <= set(detector["classes"])
 
 
@@ -198,7 +207,7 @@ def test_explicit_alias_resolves_to_canonical_target() -> None:
     hints = catalog.target_hints(_target("car"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -259,13 +268,13 @@ def test_verified_oem_expert_is_active_with_landcover_semantics() -> None:
     assert oem.change_semantics.rescue_strategy == "building_footprint_delta"
 
 
-def test_separator_and_case_normalization_maps_isaid_label() -> None:
+def test_separator_and_case_normalization_maps_vrsbench_label() -> None:
     catalog = ExpertCatalog.load(CATALOG_PATH)
 
     candidates = catalog.candidates(_target("Small_Vehicle"))
 
     assert tuple(expert.backend_name for expert in candidates) == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
     )
@@ -279,7 +288,7 @@ def test_unsupported_target_has_no_candidates_or_hints() -> None:
     assert catalog.target_hints(_target("water")) == {}
     assert tuple(
         expert.backend_name for expert in catalog.candidates(_target("bridge"))
-    ) == ("detector_yolo_detect_001", "detector_obb_csl_001")
+    ) == ("detector_obb_ultralytics_001", "detector_obb_csl_001")
     assert "background" not in isaid.supports
     assert isaid.supports["bridge"].counting_mode == "unsupported"
     assert isaid.supports["harbor"].counting_mode == "unsupported"
@@ -363,7 +372,7 @@ def test_public_expert_enumeration_is_immutable_stable_and_filtered() -> None:
 
     assert isinstance(enabled, tuple)
     assert tuple(expert.backend_name for expert in enabled) == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
         "segmenter_mitb2_001",
         "segmenter_oem_001",

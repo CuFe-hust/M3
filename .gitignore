@@ -68,7 +68,8 @@ weights/
 *.safetensors
 !models/segformer_mitb2_isaid/model.safetensors
 !models/segformer_mitb2_oem/model.safetensors
-!models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
+!models/yolo_obb/dota_v2_yolo11m_obb_best.pt
+!models/vrsbench-yolo11m-obb-1024/vrsbench_yolo11m_obb_best.pt
 *.ckpt
 *.bin
 *.om

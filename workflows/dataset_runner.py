@@ -35,7 +35,7 @@ from agents.schema import (
     GENERAL_VQA_AGENT_TASKS,
     AgentResult,
 )
-from data.adapters.base import DatasetAdapter
+from data.adapters.base import AdapterProbe, DatasetAdapter
 from data.schema import SampleDraft, SampleMaterializationError, UnifiedSample, materialize_sample
 from evaluation.records import (
     EVALUATION_FILENAME_BY_TASK,
@@ -215,9 +215,14 @@ class DatasetRunner:
             )
         probe = self.adapter.probe(root, task)
         task_dir = self.run_dir / "tasks" / task
-        self.artifact_writer.write_dataset_probe(task_dir, probe, dataset_root=root)
         if resume:
+            self._validate_persisted_probe(task_dir, probe)
             self._restore_persisted_judge_rate(task_dir)
+        else:
+            self.artifact_writer.write_dataset_probe(
+                task_dir, probe, dataset_root=root
+            )
+        self._set_task_image_root(root, task)
         selected = select_samples(
             self.adapter.iter_samples(root, split, task),
             start_index=start_index,
@@ -235,6 +240,43 @@ class DatasetRunner:
             sample_concurrency=sample_concurrency,
             run_item=self._run_sample,
         )
+
+    def _set_task_image_root(self, dataset_root: Path, task: str) -> None:
+        """Apply an adapter-declared task image root to planner and agents.
+        将 adapter 声明的任务图片根同时应用到 Planner 与 Agent。"""
+        resolver = getattr(self.adapter, "resolve_image_root", None)
+        resolved = (
+            resolver(dataset_root, task)
+            if callable(resolver)
+            else dataset_root
+        )
+        if not isinstance(resolved, Path):
+            raise TypeError("adapter image root resolver must return Path")
+        self.data_root = resolved.expanduser().resolve()
+        # SampleRunner is assembled once per dataset task; updating its
+        # lightweight path dependency before scheduling samples is safe.
+        # SampleRunner 每个数据集任务只组装一次；在调度样本前更新其轻量路径
+        # 依赖是安全的。
+        self.sample_runner.data_root = self.data_root
+
+    @staticmethod
+    def _validate_persisted_probe(task_dir: Path, probe: AdapterProbe) -> None:
+        """Reject adapter-version drift before overwriting or model work.
+        在覆盖产物或模型执行前拒绝 adapter version 漂移。"""
+        path = task_dir / "dataset_probe.json"
+        if not path.exists():
+            # Historical hand-built runs may predate task-level probes. Their
+            # existing per-sample legacy gates remain authoritative; never
+            # invent or overwrite a probe during resume.
+            # 历史手工构造运行可能早于 task 级 probe；继续服从既有逐样本
+            # legacy 门禁，resume 时绝不猜测或覆盖 probe。
+            return
+        try:
+            persisted = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError("resume dataset probe is missing or invalid") from exc
+        if not isinstance(persisted, dict) or persisted.get("version") != probe.version:
+            raise ValueError("resume dataset adapter version mismatch")
 
     async def _run_draft_task(
         self,
@@ -265,9 +307,13 @@ class DatasetRunner:
             raise TypeError(f"adapter {self.adapter.name!r} does not yield drafts")
         probe = self.adapter.probe(root, None)
         task_dir = self.run_dir / "tasks" / "auto"
-        self.artifact_writer.write_dataset_probe(task_dir, probe, dataset_root=root)
         if resume:
+            self._validate_persisted_probe(task_dir, probe)
             self._restore_persisted_judge_rate(task_dir)
+        else:
+            self.artifact_writer.write_dataset_probe(
+                task_dir, probe, dataset_root=root
+            )
         drafts = select_samples(
             self.adapter.iter_drafts(root, split),
             start_index=start_index,

@@ -4,8 +4,8 @@
 - 读取唯一 MME_RealWorld.json；
 - 只保留 Remote Sensing 子任务（subtask 或 question_id 匹配），非遥感记录
   不进入样本流；
-- 保留原始选项与问题文本事实，不拼接字母选项 Prompt、不构造 system
-  instruction、不把正确答案写进 question；
+- 按源顺序将原始选项追加到问题文本，使 Planner 与 Agent 都看到完整题面；
+  不构造 system instruction，不把正确答案写进 question；
 - 输出 multiple_choice_vqa，TaskNormalization 保存规范 choices 与
   allow_multiple，metadata 只保留 source subtask；答案必须存在且属于合法
   选项字母格式。
@@ -30,7 +30,7 @@ from data.schema import (
 
 ANNOTATION_NAME = "MME_RealWorld.json"
 SUPPORTED_TASKS = frozenset({"multiple_choice_vqa"})
-ADAPTER_VERSION = "official-v1"
+ADAPTER_VERSION = "official-v2-question-with-choices"
 _IMAGE_KEYS = ("image", "Image", "image_path", "img_path", "img", "image_name", "file_name", "filename", "image_id")
 # Multi-answer separators: space, comma, Chinese comma, ideographic comma.
 # 多答案分隔符：空格、逗号、中文逗号、顿号。
@@ -52,6 +52,13 @@ def _as_bool(value: Any) -> bool:
     if isinstance(value, str):
         return value.strip().lower() in {"true", "1", "yes"}
     return bool(value)
+
+
+def _question_with_choices(question: str, choices: list[Any]) -> str:
+    """Append source choices verbatim in source order without answer leakage.
+    按源顺序原样追加选项，不引入正确答案。"""
+
+    return "\n".join((question, *(str(choice) for choice in choices)))
 
 
 class MMERealWorldAdapter:
@@ -108,10 +115,11 @@ class MMERealWorldAdapter:
             if not self._is_remote_sensing(row):
                 continue
             self._validate_row(row, index)
-            question = _first_text(row, ("Text", "text", "question"))
-            if question is None:
+            raw_question = _first_text(row, ("Text", "text", "question"))
+            if raw_question is None:
                 raise DatasetProbeError(f"MME-RealWorld RS row {index} has no question text")
             choices = row.get("Answer choices", row.get("answer_choices", []))
+            question = _question_with_choices(raw_question, choices)
             ground_truth = _first_text(row, ("Ground truth", "ground_truth", "answer"))
             if ground_truth is None:
                 raise DatasetProbeError(f"MME-RealWorld RS row {index} has no ground truth")

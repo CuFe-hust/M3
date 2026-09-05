@@ -641,6 +641,20 @@ class ObjectEvidenceExecutor:
             return None, "unexpected_model_input_size"
         return output, None
 
+    def close_gpu_workers(self) -> None:
+        """Close injected restartable GPU clients without touching Qwen.
+        关闭注入的可重启 GPU 客户端，且绝不触碰 Qwen。
+        """
+        clients = [self._yolo_client, *self._segmenter_clients.values()]
+        seen: set[int] = set()
+        for client in clients:
+            if client is None or id(client) in seen:
+                continue
+            seen.add(id(client))
+            close = getattr(client, "close", None)
+            if callable(close):
+                close()
+
     # ── helpers / 辅助 ─────────────────────────────────────────────────
 
     def _yolo_phase(

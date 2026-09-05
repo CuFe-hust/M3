@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Mapping, Sequence
+from contextlib import redirect_stdout
+from io import StringIO
 from typing import Any
 
 from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
@@ -17,6 +19,18 @@ from evaluation.records import CaptionDeterministicMetrics, EvaluationRecord
 class CaptionMetricDependencyError(RuntimeError):
     """The optional caption-metric runtime is not installed.
     可选 caption 指标运行时未安装。"""
+
+
+def _compute_score_silently(
+    scorer: Any,
+    references: Mapping[str, Sequence[str]],
+    candidates: Mapping[str, Sequence[str]],
+) -> tuple[Any, Any]:
+    """Keep third-party diagnostics out of the public JSON stdout stream.
+    防止第三方 scorer 的诊断输出污染公共 JSON stdout。"""
+
+    with redirect_stdout(StringIO()):
+        return scorer.compute_score(references, candidates)
 
 
 def evaluate_caption(
@@ -39,7 +53,7 @@ def evaluate_caption(
         ) from error
 
     results: dict[str, Any] = {"total": len(references)}
-    bleu, _ = Bleu(4).compute_score(references, candidates)
+    bleu, _ = _compute_score_silently(Bleu(4), references, candidates)
     for index, score in enumerate(bleu, start=1):
         results[f"BLEU_{index}"] = score
 
@@ -48,13 +62,13 @@ def evaluate_caption(
         not_computed.append("METEOR")
     else:
         try:
-            score, _ = Meteor().compute_score(references, candidates)
+            score, _ = _compute_score_silently(Meteor(), references, candidates)
             results["METEOR"] = score
         except OSError:
             not_computed.append("METEOR")
 
     for name, scorer in (("ROUGE_L", Rouge()), ("CIDEr", Cider())):
-        score, _ = scorer.compute_score(references, candidates)
+        score, _ = _compute_score_silently(scorer, references, candidates)
         results[name] = score
     if not_computed:
         # Keep independent scorers useful when one optional external runtime is

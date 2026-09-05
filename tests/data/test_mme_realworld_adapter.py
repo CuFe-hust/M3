@@ -1,6 +1,6 @@
 """Contract tests for the MME-RealWorld remote-sensing adapter.
 
-MME-RealWorld 遥感子集适配器测试：RS 筛选、原始选项保留、答案格式校验、
+MME-RealWorld 遥感子集适配器测试：RS 筛选、原始选项追加、答案格式校验、
 allow_multiple/subtask metadata、非遥感记录排除、Registry 注册。
 不调用模型；不把正确答案写进 question；不构造 system instruction。
 """
@@ -103,15 +103,33 @@ def test_question_and_choices_facts_are_preserved(tmp_path: Path) -> None:
     root = _build_root(tmp_path)
     sample = next(MMERealWorldAdapter().iter_samples(root, "test", "multiple_choice_vqa"))
     assert sample.task == "multiple_choice_vqa"
-    assert sample.question == "How many ships are visible?"
+    assert sample.question == "How many ships are visible?\n0\n1\n2\n3\n4"
     assert sample.normalization is not None
     assert sample.normalization.choices == ["0", "1", "2", "3", "4"]
     assert sample.ground_truth is not None
     assert sample.ground_truth.answers == ["B"]
     assert sample.ground_truth.raw["choices"] == ["0", "1", "2", "3", "4"]
-    # The correct answer must never leak into the question text. / 答案不得写进问题。
-    assert sample.question == "How many ships are visible?"
-    assert "B" not in sample.question
+    # The answer key is not appended; only source question and choices appear.
+    # 不追加答案键；question 只包含源问题和选项。
+    assert sample.question.splitlines() == [
+        "How many ships are visible?", "0", "1", "2", "3", "4"
+    ]
+
+
+def test_labeled_choices_are_appended_verbatim_in_source_order(tmp_path: Path) -> None:
+    root = tmp_path / "mme_labeled"
+    _make_image(root / "img_1.png")
+    choices = ["(A) Yellow", "(B) Blue", "(C) Gray", "(D) White"]
+    _write_json(
+        root / "MME_RealWorld.json",
+        [_rs_row(**{"Answer choices": choices, "Ground truth": "D"})],
+    )
+
+    sample = next(MMERealWorldAdapter().iter_samples(root, "test", "multiple_choice_vqa"))
+
+    assert sample.question == "How many ships are visible?\n" + "\n".join(choices)
+    assert sample.normalization is not None
+    assert sample.normalization.choices == choices
 
 
 def test_normalization_holds_choices_and_allow_multiple(tmp_path: Path) -> None:

@@ -418,12 +418,11 @@ def test_scene_classification_evidence_vertical_slice(tmp_path: Path) -> None:
     assert plan_payload["task"] == "scene_classification"
 
 
-def test_multiple_choice_evidence_vertical_slice_enforces_choices(
+def test_multiple_choice_evidence_vertical_slice_preserves_free_text(
     tmp_path: Path,
 ) -> None:
-    """End-to-end: a multiple_choice_vqa evidence sample whose final answer is
-    not among the choices ends partial with the constraint violation recorded,
-    and the evidence bundle is still persisted. 端到端：最终答案不在选项中的\n    multiple_choice_vqa evidence 样本以 partial 结束并记录约束违规，证据包\n    仍然持久化。"""
+    """End-to-end: unmatched free text stays completed and is evaluated.
+    端到端：无法匹配的自由文本保持 completed 并进入评测。"""
     root = tmp_path / "data"
     root.mkdir()
     from PIL import Image
@@ -466,19 +465,17 @@ def test_multiple_choice_evidence_vertical_slice_enforces_choices(
     summary = asyncio.run(
         dataset_runner.run(root=root, split="test", task="multiple_choice_vqa", sample_concurrency=1)
     )
-    assert summary.partial == 1
+    assert summary.succeeded == 1
     assert service.calls == 1
     assert client.calls == 1
     sample_dir = run_dir / "tasks" / "multiple_choice_vqa" / "samples" / storage_key("mc-1")
     status = json.loads((sample_dir / "status.json").read_text(encoding="utf-8"))
     assert status["task"] == "multiple_choice_vqa"
-    assert status["state"] == "partial"
+    assert status["state"] == "succeeded"
     assert (sample_dir / "vqa_evidence.json").is_file()
     agent_result = json.loads(
         (sample_dir / "agent_result.json").read_text(encoding="utf-8")
     )
-    assert agent_result["status"] == "partial"
-    assert (
-        agent_result["geometry"]["answer_constraint_violation"]
-        == "answer 'grass' does not map to a single choice"
-    )
+    assert agent_result["status"] == "completed"
+    assert agent_result["answer"] == "grass"
+    assert "answer_constraint_violation" not in agent_result["geometry"]

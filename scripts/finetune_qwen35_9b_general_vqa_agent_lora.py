@@ -3,7 +3,7 @@
 
 通过生产 GeneralVQAAgent 输入路径微调 Qwen3.5-9B LoRA。每条样本先消费冻结的
 VisualTaskPlan，运行真实 ROI/YOLO/SegFormer 流程并持久化 evidence artifacts；随后
-仅对 AgentResult.answer token 计算 causal-LM loss。
+监督稳定 AgentResult JSON 结构、answer 与经过 planner 筛选的 YOLO 证据。
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from functools import lru_cache
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
@@ -29,6 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 from agents.base import AgentContext  # noqa: E402
+from agents.general_vqa.evidence.rendering import make_preview  # noqa: E402
 from agents.schema import AgentResult, VisualTaskPlan  # noqa: E402
 from application.bootstrap import assemble_runtime  # noqa: E402
 from application.settings import load_settings  # noqa: E402
@@ -40,7 +42,8 @@ LOGGER = logging.getLogger("finetune_qwen35_9b_general_vqa_agent_lora")
 IGNORE_INDEX = -100
 MANIFEST_NAME = "general_vqa_agent_training_manifest.json"
 AUDIT_NAME = "parameter_audit.json"
-PREPARATION_VERSION = "general-vqa-agent-request-preparation-v1"
+PREPARATION_VERSION = "general-vqa-agent-request-preparation-v2"
+MAX_SUPERVISED_EVIDENCE_ITEMS = 200
 
 TRAIN_SOURCES = (
     ("VRSBench", "VRSBench/train_5000_image_grouped_v1.jsonl"),
@@ -188,6 +191,8 @@ def load_source_records(
                         raise TrainingConfigurationError(
                             f"image_missing_or_unsafe:{dataset}:{line_number}"
                         )
+                if sample_id in set(getattr(args, "exclude_episode_id", ())):
+                    continue
                 loaded.append(SourceRecord(dataset, split, path, line_number, record, data_root))
                 if max_samples is not None and len(loaded) >= max_samples:
                     return loaded
@@ -264,6 +269,114 @@ def _sanitize_captured_messages(
     return sanitized, visuals
 
 
+def _supervised_target(
+    source_target: AgentResult,
+    plan: VisualTaskPlan,
+    evidence_bundle: Mapping[str, Any] | None,
+) -> AgentResult:
+    """Build the target from planner-filtered YOLO detections only.
+    仅使用经过 planner 筛选的 YOLO 检测构造监督目标。
+
+    SegFormer hits deliberately remain input-only evidence because the runtime
+    contract does not convert semantic masks into boxes. Stable executor order
+    is retained and capped at the AgentResult schema limit.
+    SegFormer 命中有意只作为输入证据，因为运行时契约不把语义掩膜转换成框。
+    保留 executor 的稳定顺序，并按 AgentResult Schema 上限截断。
+    """
+    if not plan.needs_visual_assistance or not isinstance(evidence_bundle, Mapping):
+        return source_target.model_copy(
+            update={"boxes": [], "evidence_items": [], "geometry": {}}
+        )
+    rois = evidence_bundle.get("rois")
+    detections = evidence_bundle.get("detections")
+    leaf_states = evidence_bundle.get("leaf_states")
+    if (
+        not isinstance(rois, list)
+        or not isinstance(detections, list)
+        or not isinstance(leaf_states, Mapping)
+    ):
+        raise TrainingConfigurationError("evidence_bundle_shape_invalid")
+    hit_leaves = {leaf for leaf, state in leaf_states.items() if state == "hit"}
+    roi_images = {
+        roi.get("roi_id"): roi.get("image_id")
+        for roi in rois
+        if isinstance(roi, Mapping)
+        and isinstance(roi.get("roi_id"), str)
+        and isinstance(roi.get("image_id"), str)
+    }
+    items: list[dict[str, Any]] = []
+    for detection in detections:
+        if not isinstance(detection, Mapping):
+            raise TrainingConfigurationError("yolo_detection_shape_invalid")
+        label = detection.get("leaf_category")
+        # Composite planner categories are expanded into canonical leaves by
+        # the executor; the validated hit-state map is therefore authoritative.
+        # planner 复合类别由 executor 展开为 canonical leaves；因此以已校验的
+        # hit 状态映射作为权威集合。
+        if not isinstance(label, str) or label not in hit_leaves:
+            raise TrainingConfigurationError("yolo_detection_not_requested_by_plan")
+        global_xyxy = detection.get("global_xyxy")
+        global_size = detection.get("global_image_size")
+        roi_id = detection.get("roi_id")
+        image_id = roi_images.get(roi_id)
+        if (
+            not isinstance(global_xyxy, (list, tuple))
+            or len(global_xyxy) != 4
+            or not isinstance(global_size, (list, tuple))
+            or len(global_size) != 2
+            or image_id is None
+        ):
+            raise TrainingConfigurationError("yolo_detection_geometry_invalid")
+        box = _pixel_xyxy_to_999(global_xyxy, global_size)
+        if box[0] >= box[2] or box[1] >= box[3]:
+            continue
+        items.append(
+            {
+                "label": label,
+                "box": box,
+                "image_id": image_id,
+                "coordinate_frame": "normalized_0_999_top_left",
+            }
+        )
+        if len(items) == MAX_SUPERVISED_EVIDENCE_ITEMS:
+            break
+    validated = AgentResult.model_validate(
+        {
+            "agent_name": source_target.agent_name,
+            "answer": source_target.answer,
+            "boxes": [item["box"] for item in items],
+            "evidence_items": items,
+            "geometry": {},
+            "status": source_target.status,
+        }
+    )
+    # AgentResult validation records input-repair diagnostics in geometry;
+    # training targets keep that runtime-owned field intentionally empty.
+    # AgentResult 校验会在 geometry 中记录输入修复诊断；训练目标有意将这个
+    # 运行时字段保持为空。
+    return validated.model_copy(update={"geometry": {}})
+
+
+def _pixel_xyxy_to_999(xyxy: Sequence[Any], size: Sequence[Any]) -> list[int]:
+    """Normalize whole-image pixel xyxy to strict integer 0..999 geometry.
+    将整图像素 xyxy 归一化为严格的 0..999 整数几何。
+    """
+    try:
+        width, height = float(size[0]), float(size[1])
+        values = [float(value) for value in xyxy]
+    except (TypeError, ValueError, IndexError) as error:
+        raise TrainingConfigurationError("yolo_detection_geometry_invalid") from error
+    if width <= 0 or height <= 0:
+        raise TrainingConfigurationError("yolo_detection_geometry_invalid")
+    if not all(math.isfinite(value) for value in [width, height, *values]):
+        raise TrainingConfigurationError("yolo_detection_geometry_invalid")
+    scales = (width, height, width, height)
+    return [
+        max(0, min(999, int(round(value / scale * 999))))
+        for value, scale in zip(values, scales, strict=True)
+    ]
+
+
 async def prepare_records(
     args: argparse.Namespace,
     records: Sequence[SourceRecord],
@@ -298,8 +411,13 @@ async def prepare_records(
         status_path = sample_dir / "status.json"
         if cached_path.is_file() and status_path.is_file():
             cached_status = json.loads(status_path.read_text(encoding="utf-8"))
-            if cached_status.get("state") == "succeeded" and cached_status.get("identity") == identity:
-                prepared.append(json.loads(cached_path.read_text(encoding="utf-8")))
+            cached_record = json.loads(cached_path.read_text(encoding="utf-8"))
+            if (
+                cached_status.get("state") == "succeeded"
+                and cached_status.get("identity") == identity
+                and _cached_record_respects_evidence_limit(cached_record)
+            ):
+                prepared.append(cached_record)
                 if gpu_monitor is not None:
                     gpu_monitor.sample("cached_skip", index=index, sample_id=sample_id, dataset=item.dataset)
                 continue
@@ -340,6 +458,8 @@ async def prepare_records(
             messages, visuals = _sanitize_captured_messages(
                 capture.messages, sample_dir, output_dir
             )
+            evidence_bundle = execution.additional_results.get("vqa_evidence.json")
+            target = _supervised_target(target, plan, evidence_bundle)
             target_text = json.dumps(
                 target.model_dump(mode="json"), ensure_ascii=False, separators=(",", ":")
             )
@@ -350,6 +470,12 @@ async def prepare_records(
                 "dataset": item.dataset,
                 "split": split,
                 "answer": target.answer,
+                "supervision": {
+                    "scope": "agent_result_without_geometry_value",
+                    "evidence_source": "planner_filtered_yolo",
+                    "evidence_items": len(target.evidence_items),
+                    "segformer_box_supervision": False,
+                },
                 "messages": [
                     *messages,
                     {"role": "assistant", "content": [{"type": "text", "text": target_text}]},
@@ -432,7 +558,6 @@ def _template_messages(record: dict[str, Any]) -> list[dict[str, Any]]:
 def encode_prepared_record(
     record: dict[str, Any], *, root: Path, processor: Any, max_length: int
 ) -> dict[str, Any]:
-    torch = base_ft._torch()
     messages = _template_messages(record)
     full_text = processor.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=False, enable_thinking=False
@@ -441,15 +566,13 @@ def encode_prepared_record(
         messages[:2], tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
     target_text = record["messages"][2]["content"][0]["text"]
-    answer_literal = json.dumps(record["answer"], ensure_ascii=False)
-    answer_key = '"answer":'
-    key_offset = target_text.find(answer_key)
-    answer_offset = target_text.find(answer_literal, key_offset + len(answer_key))
     target_offset = full_text.rfind(target_text)
-    if min(key_offset, answer_offset, target_offset) < 0:
-        raise TrainingConfigurationError("answer_span_not_found")
-    answer_char_start = target_offset + answer_offset
-    answer_char_end = answer_char_start + len(answer_literal)
+    geometry_marker = '"geometry":{}'
+    geometry_offset = target_text.find(geometry_marker)
+    if target_offset < 0 or geometry_offset < 0:
+        raise TrainingConfigurationError("supervision_span_not_found")
+    geometry_value_start = target_offset + geometry_offset + len('"geometry":')
+    geometry_value_end = geometry_value_start + 2
     tokenizer = processor.tokenizer
     tokenized = tokenizer(
         full_text, add_special_tokens=False, return_offsets_mapping=True
@@ -459,9 +582,36 @@ def encode_prepared_record(
     prompt_ids = tokenizer(prompt_text, add_special_tokens=False).input_ids
     if plain_ids[: len(prompt_ids)] != prompt_ids:
         raise TrainingConfigurationError("chat_template_is_not_prefix_stable")
+    images = _load_prepared_images(record, root=root)
+    encoded = processor(text=[full_text], images=images, return_tensors="pt", padding=False)
+    return _finish_encoded_record(
+        encoded,
+        record=record,
+        max_length=max_length,
+        plain_ids=plain_ids,
+        offsets=offsets,
+        target_offset=target_offset,
+        target_text=target_text,
+        geometry_value_start=geometry_value_start,
+        geometry_value_end=geometry_value_end,
+    )
+
+
+def _load_prepared_images(
+    record: dict[str, Any], *, root: Path
+) -> list[Any]:
+    """Load cached prepared visuals through the final-Qwen preview contract.
+
+    Fresh records are already <=1080 at the Agent boundary. Reapplying the
+    shrink-only transform keeps older prepared caches safe without changing
+    source/ROI coordinate authority or upscaling current artifacts.
+    通过 final-Qwen 预览契约加载已缓存的 prepared 图像。新记录已在 Agent
+    边界缩至 <=1080；重复应用只缩不放变换可安全兼容旧缓存，且不改变
+    源图/ROI 坐标权威，也不放大当前产物。
+    """
     from PIL import Image
 
-    images = []
+    images: list[Any] = []
     for message in record["messages"][:2]:
         if not isinstance(message["content"], list):
             continue
@@ -473,8 +623,16 @@ def encode_prepared_record(
             if not path.is_relative_to(root):
                 raise TrainingConfigurationError("prepared_image_escaped_root")
             with Image.open(path) as image:
-                images.append(image.convert("RGB"))
-    encoded = processor(text=[full_text], images=images, return_tensors="pt", padding=False)
+                images.append(make_preview(image.convert("RGB")))
+    return images
+
+
+def _finish_encoded_record(
+    encoded: dict[str, Any], *, record: dict[str, Any], max_length: int,
+    plain_ids: list[int], offsets: list[tuple[int, int]], target_offset: int,
+    target_text: str, geometry_value_start: int, geometry_value_end: int,
+) -> dict[str, Any]:
+    torch = base_ft._torch()
     input_ids = encoded["input_ids"].squeeze(0)
     delta = int(input_ids.shape[0]) - len(plain_ids)
     if int(input_ids.shape[0]) > max_length:
@@ -484,14 +642,16 @@ def encode_prepared_record(
     labels = torch.full_like(input_ids, IGNORE_INDEX)
     supervised = 0
     for plain_index, (start, end) in enumerate(offsets):
-        if end > answer_char_start and start < answer_char_end:
+        in_target = end > target_offset and start < target_offset + len(target_text)
+        in_geometry_value = end > geometry_value_start and start < geometry_value_end
+        if in_target and not in_geometry_value:
             encoded_index = plain_index + delta
             if not 0 <= encoded_index < int(input_ids.shape[0]):
-                raise TrainingConfigurationError("answer_token_alignment_failed")
+                raise TrainingConfigurationError("target_token_alignment_failed")
             labels[encoded_index] = input_ids[encoded_index]
             supervised += 1
     if supervised < 1:
-        raise TrainingConfigurationError("answer_has_no_supervised_tokens")
+        raise TrainingConfigurationError("target_has_no_supervised_tokens")
     feature: dict[str, Any] = {
         "input_ids": input_ids,
         "attention_mask": encoded["attention_mask"].squeeze(0),
@@ -517,6 +677,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", default="outputs/finetune/qwen35-9b-general-vqa-agent-lora")
     parser.add_argument("--max-train-samples", type=int)
     parser.add_argument("--max-eval-samples", type=int)
+    parser.add_argument(
+        "--exclude-episode-id", action="append", default=[],
+        help="Exclude an explicitly identified corrupt episode; repeatable.",
+    )
     parser.add_argument("--prepare-only", action="store_true")
     parser.add_argument("--max-seq-length", type=int, default=6144)
     parser.add_argument("--lora-rank", type=int, default=32)
@@ -550,6 +714,15 @@ def _summary(records: Sequence[SourceRecord]) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    # The explicitly selected offline training corpora contain trusted remote-
+    # sensing rasters larger than Pillow's decompression-bomb threshold. Scope
+    # the opt-out to this training process; production image loading keeps its
+    # default protection.
+    # 显式选择的离线训练语料包含超过 Pillow 解压炸弹阈值的可信遥感大图。仅在
+    # 当前训练进程中解除限制；生产图片加载仍保留默认保护。
+    from PIL import Image
+
+    Image.MAX_IMAGE_PIXELS = None
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     config_path = Path(args.config).resolve(strict=True)
@@ -581,10 +754,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         "status": "succeeded",
         "preparation_version": PREPARATION_VERSION,
         "config_sha256": config_sha256,
+        "excluded_episode_ids": sorted(set(args.exclude_episode_id)),
         "train": {**_summary(train_source), "sha256": sha256_file(train_path)},
         "validation": {**_summary(validation_source), "sha256": sha256_file(validation_path)},
     }
     atomic_json(output_dir / "preparation_manifest.json", preparation_manifest)
+    evidence_service = components.visual_bindings.vqa_evidence
+    if evidence_service is not None:
+        # Preparation and LoRA optimization are disjoint GPU phases. Release
+        # only the isolated evidence workers before loading Qwen weights.
+        # preparation 与 LoRA 优化是互斥 GPU 阶段；加载 Qwen 权重前只释放隔离的
+        # evidence workers。
+        evidence_service.close_gpu_workers()
     if args.prepare_only:
         print(json.dumps(preparation_manifest, ensure_ascii=False, indent=2))
         return 0
@@ -619,8 +800,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     validation_dataset = PreparedDataset(
         validation_records, output_dir, processor, args.max_seq_length
     )
-    # Fail before Trainer construction if answer-only token alignment drifts.
-    # 若 answer-only token 对齐漂移，在构造 Trainer 前失败。
+    # Fail before Trainer construction if structured-target alignment drifts.
+    # 若结构化目标 token 对齐漂移，在构造 Trainer 前失败。
     train_probe = train_dataset[0]
     validation_probe = validation_dataset[0]
     probe = {
@@ -633,9 +814,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         "base_model_id": args.base_model_id,
         "preparation": preparation_manifest,
         "supervision": {
-            "scope": "output.agent_result.answer",
+            "scope": "output.agent_result_without_geometry_value",
             "ignore_index": IGNORE_INDEX,
-            "structure_loss": False,
+            "structure_loss": True,
+            "evidence_source": "planner_filtered_yolo",
+            "segformer_box_supervision": False,
         },
         "lora": {"rank": args.lora_rank, "alpha": args.lora_alpha,
                  "dropout": args.lora_dropout, "targets": targets},

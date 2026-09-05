@@ -667,11 +667,44 @@ Describe the image in detail.
 | `XLRS-Bench` | `XLRS` |
 | `XLRS-Bench-lite` | `XLRS-lite` |
 
+`MME-RealWorld` adapter version `official-v2-question-with-choices` 将源 `Text`
+与 `Answer choices` 按原始顺序以换行符合并为 canonical
+`UnifiedSample.question`。因此 fresh VisualTaskPlanner 与最终 VQA Agent 都能
+看到完整题面；Ground Truth 仍仅保留于 `ground_truth`，不进入
+question。`TaskNormalization.choices/allow_multiple` 继续作为结构化答案
+约束权威。该 v2 改变 sample ID / planner request / model cache 输入身份，
+不与 v1 run 混用。
+
 `XLRS-Bench-lite` 当前 registry 配置的 supported task 为：
 
 ```text
 multiple_choice_vqa
 ```
+
+除 Hugging Face `save_to_disk` 布局外，adapter 也只读支持本地
+`XLRS-Bench-lite_part<N>.jsonl` 分片布局。分片按数字序号稳定迭代，行内
+Base64 图片按需解码到 dataset root 之外的内容寻址 cache；带 `(A)`—`(E)`
+标签的 `multi-choice options` 字符串被严格解析为结构化 choices。经完整发布
+审计确认，`l2-category == "Overall Land use classification"` 是复选子类；其
+紧凑源答案（例如 `BCD`）规范为 `B, C, D`，原值仍保留在 Ground Truth raw。
+XLRS VQA canonical question 与 MME-RealWorld 一致，由原始题干和带标签 choices
+组成；因此 VisualTaskPlanner 的纯图片 + raw question 输入能够识别多选任务，
+最终 Agent 同时继续消费 `TaskNormalization.choices`。该 v2 question 契约会改变
+XLRS sample ID、planner request 和模型 cache 身份，不与旧 fresh run 混用。
+分片 JSONL 的 `ImageRef.path` 相对外部内容寻址 cache；XLRS adapter 通过
+`resolve_image_root(...)` 向 DatasetRunner 声明该任务图片根，Runner 在调度前
+将同一根绑定到 Planner 与 Agent。v2 sample ID 使用带 adapter version 的 source
+identity；resume 在覆盖 task 级 `dataset_probe.json` 或执行模型前严格比较冻结的
+adapter version；损坏或漂移均拒绝。缺少 task probe 的更早期 legacy run 不猜测
+版本，也不在 resume 时补写 probe，继续服从既有逐样本 legacy 门禁。
+运行入口为：
+
+```text
+bash scripts/run_xlrs_lite_vqa.sh
+```
+
+可通过 `XLRS_VQA_CACHE_PARENT` 指定图片 cache 的父目录；完整数据运行需要
+为解码后的图片预留约 48 GB 空间。
 
 未知数据集显式失败。
 
@@ -800,6 +833,16 @@ YOLO 的新版 Counting 实现已经是旧版的加强版，仍保持唯一实�
 预处理与解码，Counting backend 负责目标语义、切片、去重和 fallback。
 通用 `models.base.validate_local_model_asset` 在模型 runtime 之前统一拦截 LFS
 pointer；没有新增第二套 YOLO loader。
+
+当前本地部署 inventory 包含 DOTA-v2.0 YOLO11m-OBB 与 VRSBench-QA1024
+YOLO11m-OBB。两者使用权重内嵌并经 SHA-256 绑定的 DOTA 18 类顺序；DOTA checkpoint
+替代旧 YOLOv5m-OBB CSL ONNX 资产，VRSBench checkpoint 替代旧 iSAID YOLO11s detect
+资产。为兼容既有 artifact 与外部配置，DOTA deployment slot 仍使用稳定 backend 名
+`detector_obb_csl_001`，实际模型身份由新的 logical model ID 与 SHA 决定。Counting
+selector 先按 canonical label 检查 detector class capability，
+再在同 kind 内按 priority 选择：VRSBench 专家 priority 200，DOTA 专家 priority 100。
+`visual-evidence-catalog-v4` 的 YOLO raw labels 同步使用两个 checkpoint 内嵌的连字符
+类别名；面向用户的空格写法仍由 canonical alias normalization 处理。
 
 `agents/counting/backends/semantic_segmentation.py` 只消费 ExpertCatalog 明确批准的
 `connected_components` capability：按 per-label confidence/area/morphology policy
@@ -1189,7 +1232,11 @@ spatial_relation
 `spatial_relation` 复用 general_vqa_v3 Prompt 与单次 Qwen 调用，输出
 `agent_result.json`；保留 `requires_tiling=False` 与 VQA 确定性评测/Judge 族。
 
-多选题 postprocess 会约束最终答案落在 choices 合法范围。
+多选题 postprocess 采用宽松、确定性的尽力规范化：对带标签选项，
+`D` / `(D)` / `(D) White` / `White` 统一为源标签 `D`；无标签
+选项保留 canonical 选项文本。无法明确映射的自由文本保留原输出并继续
+以 `completed` 进入确定性评测，不记录 `answer_constraint_violation`，
+不仅因选项格式降级为 `partial`。
 
 v5 视觉工作流：当 `VisualTaskPlan.needs_visual_assistance` 为 true 时，
 GeneralVQAAgent 消费 `VqaEvidenceService` 产出的
@@ -1239,8 +1286,11 @@ source geometry 与 evidence protocol identity 仍共同覆盖 request hash（14
 `0..999` 整数 `xyxy` JSON 表示；内部像素/ROI 浮点坐标只保留在确定性几何处理中。
 
 GeneralVQA 基础 payload 不含 `answer_constraints`。非空 `semantic_subtype` 才进入
-payload；`multiple_choice_vqa` 只从 `TaskNormalization.choices/allow_multiple`
-在顶层输出唯一一份选项事实，缺失选项会在读图、budget 与 Qwen 前稳定失败。
+payload；`multiple_choice_vqa` 从 `TaskNormalization.choices/allow_multiple`
+输出结构化答案约束，缺失选项会在读图、budget 与 Qwen 前稳定失败。
+MME-RealWorld v2 同时在 canonical question 中保留人类可读的原始
+选项行，使首次 Planner 调用也拥有完整题面；顶层字段仍是
+Agent postprocess 的权威结构化来源。
 
 Doc 24：GeneralVQAAgent 的四个 supported task（`general_vqa`、
 `scene_classification`、`multiple_choice_vqa`、`spatial_relation`）统一由
@@ -1305,6 +1355,25 @@ catalog version、source/core/expanded geometry 等审计与回映事实不对�
 检测结果和完整 multimodal messages 不伪装成基础 payload。转换与校验入口是
 `scripts/migrate_vqa_agent_sft_v2.py`；它原子写入并校验 sample ID、question、
 答案、split 与图片映射不变，同时重算 manifest SHA256。
+
+`scripts/finetune_qwen35_9b_general_vqa_agent_lora.py` 的 preparation v2 继续运行
+生产 evidence path，并监督 `AgentResult` 的稳定 JSON 结构、`answer`、`agent_name`、
+`status`，以及 executor 已按 VisualTaskPlan 叶子类别、阈值、NMS 和跨 ROI 去重筛选的
+YOLO 证据。监督框使用整图 `normalized_0_999_top_left` 坐标并保留 `image_id`；ROI
+局部框只作为 final-Qwen 输入证据。SegFormer 命中仍只作为输入 mask/存在性证据，
+不得转框；`geometry` 的值由运行时校验/修复拥有，不进入 causal-LM loss。该变更只调整
+assistant token labels，不改变 Qwen、视觉编码器或 LoRA 模块结构。
+
+VQA evidence 的生产配置将 YOLO ONNX 与 SegFormer 放入两个使用 `spawn` 的独立
+GPU worker；PIL/CPU 输入和协议输出通过 IPC 传递，CUDA tensor 不跨进程。YOLO
+CUDA EP 使用显式 `gpu_mem_limit` 与 `kSameAsRequested` arena；两个 worker 分别按
+PID 使用 `nvidia-smi` 监控。默认生产阈值为 YOLO `6/8 GiB`、SegFormer
+`10/12 GiB`（soft/hard），目标 GPU 空闲显存低于 `8 GiB` 也触发保护。soft
+阈值保留已完成结果并在下次调用前重建；hard 阈值或 allocation failure 终止对应
+worker，当前调用最多重试一次。任何 evidence worker 回收均不得调用 Qwen 主进程的
+CUDA allocator，也不得重建或 offload Qwen。
+VQA LoRA 脚本在 preparation 产物原子持久化完成后显式关闭全部 evidence GPU
+worker，再加载 Qwen 权重进入优化阶段，避免两个阶段的 CUDA context 重叠驻留。
 
 ## 21.4 CountingAgent
 
@@ -1641,15 +1710,16 @@ parent expansion 与 dataset-neutral hints 匹配；planner/VLM 不返回 backen
 
 ## 25.5 YOLO
 
-YOLO 模型存储/adapter/ONNX 实现保持惰性和可选。
+YOLO 模型存储、Ultralytics adapter 与兼容保留的 ONNX 实现保持惰性和可选。
 
 Python `YoloCountingSettings` 只保留 schema 与通用默认值：默认 `enabled=false`、
 `detectors=[]`，不包含具体 checkpoint、labels 或 backend id。`ExpertCatalog` 是 capability、
 logical identity、SHA、labels 与 priority 的事实源；`configs/local.yaml` 等部署配置是 enabled、
 物理权重路径、provider/device 与阈值的事实源。只有显式部署 inventory 才注册 YOLO。
 相对权重路径在 composition root 按 `project_root` canonicalize，绝对外部挂载路径保持不变；
-物理路径不参与 catalog identity。权重与 ONNX Runtime 不自动下载，缺失时仍按通用 fallback
-策略进入下一专家。
+物理路径不参与 catalog identity。权重与可选 runtime 依赖不自动下载，缺失时仍按通用
+fallback 策略进入下一专家。当前正式 DOTA/VRSBench inventory 均使用 Ultralytics；
+ONNX adapter 仅保留给显式配置的兼容 detector。
 
 硬件策略由 settings 决定，例如：
 
