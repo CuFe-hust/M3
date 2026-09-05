@@ -500,10 +500,10 @@ def test_yolo_catalog_class_mismatch_fails_fast(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "yolo.example.yaml", environ={})
     detector = settings.backend.yolo.detectors[0].model_copy(
         update={
-            "classes": [
-                value for value in settings.backend.yolo.detectors[0].classes
-                if value != "small vehicle"
-            ]
+                "classes": [
+                    value for value in settings.backend.yolo.detectors[0].classes
+                    if value != "small-vehicle"
+                ]
         }
     )
     yolo = settings.backend.yolo.model_copy(update={"detectors": [detector]})
@@ -574,14 +574,14 @@ def test_relative_yolo_weights_resolve_against_project_root(
     resolved = _resolve_yolo_detector(detector, project_root)
 
     assert resolved.weights == (
-        project_root / "models" / "yolo_obb" / "yolov5m_obb_csl_dotav20.onnx"
+        project_root / "models" / "yolo_obb" / "dota_v2_yolo11m_obb_best.pt"
     ).resolve()
     assert elsewhere not in resolved.weights.parents
 
 
 def test_absolute_yolo_weights_are_preserved(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
-    external = tmp_path / "mounted-models" / "detector.onnx"
+    external = tmp_path / "mounted-models" / "detector.pt"
     detector = settings.backend.yolo.detectors[0].model_copy(
         update={"weights": external}
     )
@@ -594,7 +594,7 @@ def test_absolute_yolo_weights_are_preserved(tmp_path: Path) -> None:
 def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
     detector = settings.backend.yolo.detectors[0].model_copy(
-        update={"weights": tmp_path / "external" / "detector.onnx"}
+        update={"weights": tmp_path / "external" / "detector.pt"}
     )
     catalog = ExpertCatalog.load(CATALOG_PATH, asset_root=REPO_ROOT)
 
@@ -608,7 +608,7 @@ def test_yolo_runtime_path_does_not_affect_catalog_identity(tmp_path: Path) -> N
     ("detector_index", "task", "expected_message"),
     [
         (0, "detect", "catalog declaration is not enabled"),
-        (1, "obb", "catalog declaration is not enabled"),
+        (1, "detect", "catalog declaration is not enabled"),
     ],
 )
 def test_yolo_catalog_kind_matches_detector_task(
@@ -655,7 +655,7 @@ def test_both_configured_yolo_detectors_register_with_matching_catalog() -> None
         "qwen_point",
         "quantity_proposal",
         "detector_obb_csl_001",
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
     ]
 
 
@@ -743,7 +743,7 @@ def test_composed_auto_plan_uses_catalog_and_full_fixed_priority_chain(
     )
 
 
-def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class(
+def test_local_inventory_selects_vrsbench_then_dota_for_shared_labels(
     tmp_path: Path,
 ) -> None:
     settings = load_settings(REPO_ROOT / "configs" / "local.yaml", environ={})
@@ -757,9 +757,7 @@ def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class
         qwen_client=_FakeQwenClient(),
     )
     injected_identity = components.qwen_clients["counting_agent"].cache_identity
-    assert injected_identity.generation_payload()["adapter"]["logical_id"] == (
-        "qwen35-9b-visual-planner-supplement-20260824"
-    )
+    assert "adapter" not in injected_identity.generation_payload()
     agent = components.agent_registry.get("counting_agent")
     selector = getattr(agent, "_selector")
     catalog = getattr(agent, "_expert_catalog")
@@ -780,7 +778,7 @@ def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class
     shared = plan_for("plane", ("plane",))
     assert shared is not None
     assert shared.selected_detector_expert_names == (
-        "detector_yolo_detect_001",
+        "detector_obb_ultralytics_001",
         "detector_obb_csl_001",
     )
     assert shared.fallback_backend_names == (
@@ -788,10 +786,12 @@ def test_local_inventory_selects_both_shared_class_detectors_and_dota_only_class
         "qwen_point",
     )
 
-    dota_only = plan_for("airport", ("airport",))
-    assert dota_only is not None
-    assert dota_only.selected_detector_expert_names == ("detector_obb_csl_001",)
-    assert dota_only.ensemble_backend_names == ()
+    airport = plan_for("airport", ("airport",))
+    assert airport is not None
+    assert airport.selected_detector_expert_names == (
+        "detector_obb_ultralytics_001",
+        "detector_obb_csl_001",
+    )
 
 
 def test_composed_schema_default_plan_uses_segformer_or_qwen_only(

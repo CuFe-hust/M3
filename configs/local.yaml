@@ -35,50 +35,48 @@ reporting:
 # Concrete expert deployment inventory belongs here, not in Python settings.
 backend:
   yolo:
-    # GB10 production invariant:
-    # YOLO inference is CPU-only.
-    # The YOLOv5-OBB ONNX CUDA Execution Provider is not used on GB10
-    # because it is not sufficiently stable for production runs.
-    # Both ONNX and Ultralytics YOLO experts therefore use device=cpu.
+    # Main-branch deployment invariant:
+    # Match the main-branch detector deployment: DOTA uses the isolated restartable CUDA worker; VRSBench remains explicit CPU-only.
     # This does not change the Qwen or SegFormer device policy.
     enabled: true
     detectors:
       - name: detector_obb_csl_001
         enabled: true
-        weights: /home/lijia/M3/models/yolo_obb/yolov5m_obb_csl_dotav20.onnx
-        runtime: onnx_yolov5_obb
+        weights: models/yolo_obb/dota_v2_yolo11m_obb_best.pt
+        runtime: ultralytics
         task: obb
-        model_id: YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m
-        sha256: c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a
+        model_id: YOLO11m-OBB:DOTA-v2.0:best
+        sha256: f9db8b4165421f64f8a380a7f1a365de7c94dff98eb5b9606d0e93969ae8eb21
         source_dataset: DOTAv2.0
         priority: 100
-        classes: [plane, baseball diamond, bridge, ground track field, small vehicle, large vehicle, ship, tennis court, basketball court, storage tank, soccer ball field, roundabout, harbor, swimming pool, helicopter, container crane, airport, helipad]
-        aliases: {}
+        classes: [plane, ship, storage-tank, baseball-diamond, tennis-court, basketball-court, ground-track-field, harbor, bridge, large-vehicle, small-vehicle, helicopter, roundabout, soccer-ball-field, swimming-pool, container-crane, airport, helipad]
+        aliases: {storage tank: storage-tank, baseball diamond: baseball-diamond, tennis court: tennis-court, basketball court: basketball-court, ground track field: ground-track-field, large vehicle: large-vehicle, small vehicle: small-vehicle, soccer ball field: soccer-ball-field, swimming pool: swimming-pool, container crane: container-crane}
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        # GB10 production invariant: explicit CPU-only ONNX YOLO.
-        device: cpu
+        # DOTA YOLO11m uses the isolated CUDA evidence worker.
+        device: '0'
         max_detections: 1000
-        require_cuda: false
+        require_cuda: true
         allow_cpu_fallback: false
+        gpu_mem_limit_gib: 8
         boundary_duplicate_iou: 0.50
         boundary_duplicate_center_px: 16.0
-      - name: detector_yolo_detect_001
+      - name: detector_obb_ultralytics_001
         enabled: true
-        weights: /home/lijia/M3/models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt
+        weights: models/vrsbench-yolo11m-obb-1024/vrsbench_yolo11m_obb_best.pt
         runtime: ultralytics
-        task: detect
-        model_id: YOLO11s:iSAID:tiles1024-o20:epoch111
-        sha256: f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266
-        source_dataset: iSAID
+        task: obb
+        model_id: YOLO11m-OBB:VRSBench-QA1024:best
+        sha256: 4a86331ed43b316e60050c5a890f3149f48bf34ce6f5c0e61a15382969feaf52
+        source_dataset: VRSBench-QA1024
         priority: 200
-        classes: [baseball_diamond, basketball_court, bridge, ground_track_field, harbor, helicopter, large_vehicle, plane, roundabout, ship, small_vehicle, soccer_ball_field, storage_tank, swimming_pool, tennis_court]
-        aliases: {baseball diamond: baseball_diamond, basketball court: basketball_court, ground track field: ground_track_field, large vehicle: large_vehicle, small vehicle: small_vehicle, soccer ball field: soccer_ball_field, storage tank: storage_tank, swimming pool: swimming_pool, tennis court: tennis_court}
+        classes: [plane, ship, storage-tank, baseball-diamond, tennis-court, basketball-court, ground-track-field, harbor, bridge, large-vehicle, small-vehicle, helicopter, roundabout, soccer-ball-field, swimming-pool, container-crane, airport, helipad]
+        aliases: {storage tank: storage-tank, baseball diamond: baseball-diamond, tennis court: tennis-court, basketball court: basketball-court, ground track field: ground-track-field, large vehicle: large-vehicle, small vehicle: small-vehicle, soccer ball field: soccer-ball-field, swimming pool: swimming-pool, container crane: container-crane}
         confidence: 0.20
         iou: 0.50
         image_size: 1024
-        # GB10 production invariant: explicit CPU-only Ultralytics YOLO.
+        # VRSBench YOLO11m is explicit CPU-only.
         device: cpu
         max_detections: 2000
         require_cuda: false
@@ -91,6 +89,17 @@ backend:
 # VQA 视觉证据校准：binding 是稳定逻辑身份；组合根把它们映射到已验证客户端，
 # 绝不映射到裸路径。
 visual_planning:
+  gpu_workers:
+    enabled: true
+    yolo:
+      soft_limit_gib: 6
+      hard_limit_gib: 8
+    segformer:
+      soft_limit_gib: 10
+      hard_limit_gib: 12
+    device_free_floor_gib: 8
+    poll_interval_seconds: 1
+    max_retries: 1
   detectors:
     detector_obb_csl_001:
       confidence_threshold: 0.20

@@ -1,7 +1,7 @@
 # Local model asset manifest
 
-Binary weights are local-only by default. The two SegFormer checkpoints listed
-below are explicit Git LFS assets: Git stores pointers while an LFS checkout
+Binary weights are local-only by default. The checkpoint files listed below are
+explicit Git LFS assets: Git stores pointers while an LFS checkout
 materializes the binaries in the worktree. Logical IDs are portable; physical
 checkpoint paths are supplied by application configuration.
 
@@ -9,8 +9,8 @@ checkpoint paths are supplied by application configuration.
 |---|---|---|---|---|---|---|---|
 | SegFormer MiT-B2 iSAID | `SegFormer-MiT-B2:iSAID:local` | semantic segmentation | iSAID | `models/segformer_mitb2_isaid/model.safetensors` | Transformers | `f8e60686ec41160b5cbc494e8a3c1d28a92f7afdd41708c7b77e3d5793908b9a` | `try_yolo` Git LFS; Spark hash verified |
 | SegFormer MiT-B2 OEM | `SegFormer-MiT-B2:OpenEarthMap:local` | semantic segmentation | OpenEarthMap | `models/segformer_mitb2_oem/model.safetensors` | Transformers | `d2141c79b2fc27ea5505db378b48e90e75e5ee06751df1c5b4028ef662fb2fab` | user-confirmed class map; verified 2026-08-20; active |
-| YOLOv5m OBB CSL | `YOLOv5-OBB-CSL:DOTA-v2.0:yolov5m` | OBB detection/counting | DOTA v2.0 | `models/yolo_obb/yolov5m_obb_csl_dotav20.onnx` | ONNX Runtime | `c964985b56ab05bcb679718f3fe5261246fd41f8cf0e4e620ba5b1c68092a81a` | `try_yolo` Git LFS; Spark hash verified |
-| YOLO11s iSAID tiled | `YOLO11s:iSAID:tiles1024-o20:epoch111` | axis-aligned detection/counting | iSAID | `models/isaid-yolo11s-tiles1024-o20/isaid_yolo11s_tiles1024_o20_best_epoch111.pt` | Ultralytics | `f3d741a8f1c6c78d2e3cf2c92392fd2547ef537c25ab4f8da093c2d938369266` | Git LFS; 1024 px tiles with 20% overlap; best epoch 111 |
+| YOLO11m OBB DOTA | `YOLO11m-OBB:DOTA-v2.0:best` | OBB detection/counting | DOTA v2.0 tiled 1024 | `models/yolo_obb/dota_v2_yolo11m_obb_best.pt` | Ultralytics | `f9db8b4165421f64f8a380a7f1a365de7c94dff98eb5b9606d0e93969ae8eb21` | Git LFS; 100 epochs completed; server and local hashes verified 2026-08-29 |
+| YOLO11m OBB VRSBench | `YOLO11m-OBB:VRSBench-QA1024:best` | OBB detection/counting | VRSBench QA1024 | `models/vrsbench-yolo11m-obb-1024/vrsbench_yolo11m_obb_best.pt` | Ultralytics | `4a86331ed43b316e60050c5a890f3149f48bf34ce6f5c0e61a15382969feaf52` | Git LFS; 100 epochs completed; server and local hashes verified 2026-08-28 |
 | Qwen3-VL 4B | `Qwen/Qwen3-VL-4B-Instruct` | main-flow VLM | — | configurable external checkpoint | Transformers | revision-based | Spark checkpoint verified |
 | Qwen3.5 9B | `Qwen/Qwen3.5-9B` | main-flow VLM | — | configurable external checkpoint | Transformers | revision-based | Spark checkpoint and invocation verified |
 
@@ -19,6 +19,17 @@ checkpoints. The OEM nine-channel order was confirmed by the user for this local
 checkpoint and recorded with its SHA256 and verification date in the class map.
 OEM labels are `background`, `bareland`, `rangeland`, `developed_space`, `road`,
 `tree`, `water`, `agriculture_land`, and `building` in ID order 0 through 8.
+
+Both YOLO11m-OBB checkpoints embed the canonical DOTA 18-class order. The DOTA
+checkpoint was trained on the verified 1024-tile DOTA-v2.0 export and replaces
+the previous YOLOv5m-OBB CSL ONNX asset. The stable deployment backend name
+`detector_obb_csl_001` is retained so existing run artifacts and external
+configuration references remain readable; the logical model ID and SHA256 are
+the authoritative new model identity.
+
+The VRSBench YOLO11m-OBB checkpoint embeds the same canonical class order.
+The accepted source export has zero training instances for `large-vehicle` and
+`small-vehicle`; this known taxonomy limitation was not repaired during training.
 
 Both SegFormer directories include the canonical NVIDIA MiT-B2
 `preprocessor_config.json` pinned from upstream revision

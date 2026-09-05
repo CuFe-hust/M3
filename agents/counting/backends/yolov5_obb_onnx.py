@@ -44,6 +44,7 @@ class YoloV5ObbOnnxModel:
         device: str = "0",
         require_cuda: bool = True,
         allow_cpu_fallback: bool = False,
+        gpu_mem_limit_bytes: int | None = None,
     ) -> None:
         try:
             import cv2  # noqa: PLC0415
@@ -72,8 +73,18 @@ class YoloV5ObbOnnxModel:
             # Preload NVIDIA site-package CUDA/cuDNN libraries only for the
             # explicitly requested CUDA execution provider.
             ort.preload_dlls(directory="")
+            provider_options: dict[str, Any] = {
+                "device_id": int(device),
+                "arena_extend_strategy": "kSameAsRequested",
+                "cudnn_conv_use_max_workspace": "0",
+                "do_copy_in_default_stream": "1",
+            }
+            if gpu_mem_limit_bytes is not None:
+                if gpu_mem_limit_bytes <= 0:
+                    raise ValueError("gpu_mem_limit_bytes must be positive")
+                provider_options["gpu_mem_limit"] = int(gpu_mem_limit_bytes)
             providers: list[object] = [
-                ("CUDAExecutionProvider", {"device_id": int(device)})
+                ("CUDAExecutionProvider", provider_options)
             ]
             if allow_cpu_fallback:
                 providers.append("CPUExecutionProvider")

@@ -176,6 +176,7 @@ class YoloDetectorSettings(BaseModel):
     # allowed. ONNX 运行时 provider 策略：默认 GPU，仅显式允许时使用 CPU。
     require_cuda: bool = True
     allow_cpu_fallback: bool = False
+    gpu_mem_limit_gib: float | None = Field(default=None, gt=0)
     boundary_duplicate_iou: float = Field(default=0.50, ge=0.0, le=1.0)
     boundary_duplicate_center_px: float = Field(default=16.0, gt=0.0)
 

@@ -73,12 +73,33 @@ def test_local_config_declares_detector_inventory() -> None:
 
     assert settings.backend.yolo.enabled is True
     assert [item.name for item in settings.backend.yolo.detectors] == [
-        "detector_obb_csl_001", "detector_yolo_detect_001"
+        "detector_obb_csl_001", "detector_obb_ultralytics_001"
     ]
     assert all(item.enabled for item in settings.backend.yolo.detectors)
-    assert all(item.device == "cpu" for item in settings.backend.yolo.detectors)
-    assert all(item.require_cuda is False for item in settings.backend.yolo.detectors)
+    assert settings.backend.yolo.detectors[0].device == "0"
+    assert settings.backend.yolo.detectors[0].require_cuda is True
+    assert settings.backend.yolo.detectors[0].gpu_mem_limit_gib == 8
+    assert settings.backend.yolo.detectors[1].device == "cpu"
+    assert settings.visual_planning.gpu_workers.enabled is True
+    assert settings.visual_planning.gpu_workers.yolo.hard_limit_gib == 8
+    assert settings.visual_planning.gpu_workers.segformer.hard_limit_gib == 12
     assert all(item.allow_cpu_fallback is False for item in settings.backend.yolo.detectors)
+    dota = settings.backend.yolo.detectors[0]
+    assert dota.runtime == "ultralytics"
+    assert dota.model_id == "YOLO11m-OBB:DOTA-v2.0:best"
+    assert dota.weights == Path("models/yolo_obb/dota_v2_yolo11m_obb_best.pt")
+    assert dota.classes == [
+        "plane", "ship", "storage-tank", "baseball-diamond", "tennis-court",
+        "basketball-court", "ground-track-field", "harbor", "bridge",
+        "large-vehicle", "small-vehicle", "helicopter", "roundabout",
+        "soccer-ball-field", "swimming-pool", "container-crane", "airport",
+        "helipad",
+    ]
+    vrsbench = settings.backend.yolo.detectors[1]
+    assert vrsbench.task == "obb"
+    assert vrsbench.model_id == "YOLO11m-OBB:VRSBench-QA1024:best"
+    assert vrsbench.classes[0] == "plane"
+    assert vrsbench.classes[-1] == "helipad"
     assert settings.models.qwen.model == "/home/lijia/M3/models/Qwen3.5-9B"
     assert settings.models.qwen.cache_model_id == "Qwen/Qwen3.5-9B:local"
     assert set(settings.visual_planning.detectors) == {"detector_obb_csl_001"}
@@ -103,12 +124,12 @@ def test_local_config_declares_detector_inventory() -> None:
         "caption": "base",
     }
     snapshot = settings.safe_snapshot()
-    assert snapshot["models"]["qwen_adapters"]["visual-planner-final"][
-        "path"
-    ].endswith("/final_adapter")
-    assert snapshot["models"]["qwen_adapters"]["grounding-agent-final"][
-        "path"
-    ].endswith("/final_adapter")
+    assert snapshot["models"]["qwen_adapters"]["visual-planner-final"]["path"].endswith(
+        "/final_adapter"
+    )
+    assert snapshot["models"]["qwen_adapters"]["grounding-agent-final"]["path"].endswith(
+        "/final_adapter"
+    )
 
 
 def test_qwen_adapter_settings_fail_closed() -> None:
