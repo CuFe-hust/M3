@@ -202,6 +202,16 @@ class M3RealModel:
                     if index + 1 < len(variants):
                         continue
                 raise
+            if kind == "enum" and self._enum_unmatched(request, answer):
+                # Sentence-style answer slipped through the normalize fallback;
+                # use the format-correction retry when one is available.
+                # 整句透传时改用格式纠正重试（若还有变体）。
+                if index + 1 < len(variants):
+                    log.warning(
+                        "item=%s enum answer not canonical; escalating format retry",
+                        sample.sample_id,
+                    )
+                    continue
             log.info(
                 "item=%s type=%s task=%s attempt=%d agent=%s elapsed=%.1fs answer=%s",
                 sample.sample_id,
@@ -214,6 +224,15 @@ class M3RealModel:
             )
             return answer
         raise last_error
+
+    @staticmethod
+    def _enum_unmatched(request: dict[str, Any], answer: Any) -> bool:
+        """True when an enum answer is not one of the allowed values (the
+        normalize fallback passed a sentence through).
+
+        枚举答案不在允许值内（规范化走了整句透传兜底）时为 True。"""
+        values = [str(v) for v in request["response_constraint"].get("values", [])]
+        return bool(values) and str(answer).strip() not in values
 
     async def _run_once(
         self, sample: Any, sample_dir: dict[str, Any], kind: str, task: str
@@ -256,15 +275,29 @@ class M3RealModel:
 
         按序尝试的题干变体；定位题在首答无可用框时做一次升级重试。"""
         base = compose_question(request)
-        if task != "grounding":
-            return (base,)
-        retry = base + (
-            "\n\nIMPORTANT: your previous reply contained no bounding box. You MUST "
-            "answer with exactly one bounding box as the first entry of boxes, using "
-            "integer whole-image 0..999 xyxy coordinates. Return your best estimate "
-            "even if you are not fully certain."
-        )
-        return (base, retry)
+        if task == "grounding":
+            retry = base + (
+                "\n\nIMPORTANT: your previous reply contained no bounding box. You MUST "
+                "answer with exactly one bounding box as the first entry of boxes, using "
+                "integer whole-image 0..999 xyxy coordinates. Return your best estimate "
+                "even if you are not fully certain."
+            )
+            return (base, retry)
+        # Observed 2026-10-09: change_qa answers are intermittently full
+        # sentences ("No significant semantic change detected") that are not
+        # canonical labels (0-2 items per run, all prompt versions). Give the
+        # enum path one format-correction retry as well.
+        # 实测：变化题会随机输出整句（非规范标签，每轮 0-2 题）；枚举题同做
+        # 一次格式纠正重试。
+        if task in CHANGE_TASKS:
+            values = ", ".join(str(v) for v in request["response_constraint"].get("values", []))
+            retry = base + (
+                "\n\nIMPORTANT: your previous reply was not one of the allowed "
+                f"values. Reply with EXACTLY one of these values verbatim, with "
+                f"nothing else: {values}"
+            )
+            return (base, retry)
+        return (base,)
 
     # -- planner-driven mode (full M3 system) --------------------------------
 
