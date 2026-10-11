@@ -199,6 +199,8 @@ class MultiAdapterQwenEngine:
                 "temperature": 0.0,
                 "do_sample": False,
                 "max_tokens": self.settings.max_tokens,
+                "min_pixels": self.settings.min_pixels,
+                "max_pixels": self.settings.max_pixels,
                 "adapter": {
                     "logical_id": adapter_logical_id,
                     "revision": adapter_revision,

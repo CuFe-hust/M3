@@ -458,7 +458,7 @@ def restore_trainable_state(
     model.load_state_dict(mapped, strict=False)
     for canonical, value in {**adapter_canonical, **full_state}.items():
         target_name = actual_by_canonical.get(_canonical_parameter_name(canonical))
-        if target_name is None or not model_state[target_name].equal(value.to(dtype=model_state[target_name].dtype)):
+        if target_name is None or not model_state[target_name].detach().cpu().equal(value.to(dtype=model_state[target_name].dtype).detach().cpu()):
             raise AdapterContractError(f"restored tensor equality check failed: {canonical}")
     return model
 
@@ -514,7 +514,7 @@ def restore_full_train_state_for_export(
         raise AdapterContractError("EXPORT_FULL_TRAIN_STATE_UNEXPECTED_KEYS")
     for canonical, value in full_state.items():
         target_name = actual_by_canonical[canonicalize_model_parameter_name(canonical)]
-        if not model_state[target_name].equal(value):
+        if not model_state[target_name].detach().cpu().equal(value.detach().cpu()):
             raise AdapterContractError(f"EXPORT_FULL_TRAIN_STATE_RESTORE_FAILED: {canonical}")
     return model
 

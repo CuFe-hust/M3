@@ -177,6 +177,35 @@ def test_direct_grounding_path_returns_unified_result(tmp_path: Path) -> None:
     }
 
 
+def test_v2_grounding_answer_only_fallback_keeps_empty_evidence(tmp_path: Path) -> None:
+    client = _RecordingClient()
+    service = _FakeGroundingService(
+        _result().model_copy(
+            update={
+                "answer_box": (120, 80, 340, 260),
+                "whole_image_boxes": [],
+            }
+        )
+    )
+    execution = asyncio.run(
+        GroundingAgent(client).run(
+            _sample(tmp_path),
+            _context(
+                tmp_path,
+                client,
+                plan=_plan(),
+                views=(_view(),),
+                bindings=VisualPlanBindings(grounding_evidence=service),
+            ),
+        )
+    )
+
+    assert execution.payload.answer == "[120,80,340,260]"
+    assert execution.payload.boxes == []
+    assert execution.payload.evidence_items == []
+    assert execution.payload.status == "completed"
+
+
 def test_v2_grounding_path_consumes_plan_and_views(tmp_path: Path) -> None:
     client = _RecordingClient()
     service = _FakeGroundingService(_result())

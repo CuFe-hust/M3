@@ -30,16 +30,22 @@ Rules:
   modifier. Never replace small vehicle or large vehicle with the broader
   vehicle.
 - For every non-counting task, set count_target to null.
-- object_categories may contain only canonical executable leaf categories
-  declared for the selected task in the planner binding. Never put a parent,
-  alias, raw model label, or unknown category in object_categories.
+- For grounding, object_categories may contain canonical leaf categories from
+  the catalog even when a category is not in the grounding executable set.
+  Such a category is handled by Grounding Agent's direct-Qwen fallback; it
+  must not make the grounding task fail. Never put a parent, alias, raw model
+  label, or unknown category in object_categories.
+- For other visual-assistance tasks, object_categories may contain only
+  canonical executable leaf categories declared for the selected task in the
+  planner binding.
 - For a known counting parent, expand it to the complete declared executable
   leaf set. For a counting target without a declared specialist, preserve
   count_target, set needs_visual_assistance to false, and return an empty
   object_categories list.
-- Set needs_visual_assistance to true only when deterministic visual assistance
-  is necessary and the complete executable leaf set is available. Otherwise
-  object_categories must be an empty list.
+- Set needs_visual_assistance to true when deterministic grounding assistance
+  is necessary, including when the requested grounding category requires the
+  direct-Qwen fallback. For other tasks, set it to true only when the complete
+  executable leaf set is available; otherwise object_categories must be empty.
 - Set region_request.explicit to true only when the question explicitly
   identifies a visual region or focus. Then identify exactly one zero-based
   image index and provide a relevant attention rectangle as integer

@@ -501,7 +501,7 @@ class XLRSAdapter:
         ):
             return _ShardedJsonlRows(release_root)
         try:
-            from datasets import load_from_disk
+            from datasets import Image as HFImage, load_from_disk
         except ImportError as error:
             raise RuntimeError(
                 "Install the datasets package to load local XLRS releases."
@@ -510,6 +510,11 @@ class XLRSAdapter:
             dataset = load_from_disk(release_root)[split]
         else:
             dataset = load_from_disk(release_root / split)
+        # Keep Arrow image payloads compressed until a selected sample reaches
+        # the planner. Decoding every 10000x10000 image to PIL and re-encoding
+        # it as PNG during sample-id selection is prohibitively expensive.
+        if "image" in dataset.column_names:
+            dataset = dataset.cast_column("image", HFImage(decode=False))
         return dataset
 
     @staticmethod
@@ -732,6 +737,11 @@ class XLRSAdapter:
         boxes = _parse_boxes(box_value, index)
         width = _first_value(row, ("image_width",))
         height = _first_value(row, ("image_height",))
+        if width is None or height is None or float(width) <= 0 or float(height) <= 0:
+            raise DatasetProbeError(
+                f"XLRS grounding row {index} is missing positive image dimensions"
+            )
+        boxes = [_normalize_grounding_box_to_m3(box, index=index) for box in boxes]
         label = _first_text(row, _GROUNDING_LABEL_KEYS)
         labels = [label] if label else []
         source_id = _first_text(row, ("id", "question_id", "source_id"))
@@ -750,7 +760,7 @@ class XLRSAdapter:
                 boxes=boxes,
                 labels=labels,
                 label_binding="boxes" if labels else None,
-                coordinate_frame="source_pixels_top_left",
+                coordinate_frame="normalized_0_999_top_left",
                 raw={
                     "adapter_version": ADAPTER_VERSION,
                     "box_source_field": _box_source_field(row),
@@ -765,6 +775,7 @@ class XLRSAdapter:
                 "image_root_kind": image_root_kind,
                 "image_width": float(width) if width is not None else None,
                 "image_height": float(height) if height is not None else None,
+                "coordinate_frame": "normalized_0_999_top_left",
                 "adapter_version": ADAPTER_VERSION,
             },
         )
@@ -960,6 +971,17 @@ def _single_box(value: Any, index: int) -> list[float]:
     if len(box) not in (4, 8):
         raise DatasetProbeError(f"XLRS row {index} box must have 4 or 8 coordinates, got {len(box)}")
     return box
+
+
+def _normalize_grounding_box_to_m3(
+    box: list[float], *, index: int
+) -> list[int]:
+    """Convert the official XLRS Arrow bbox from [0, 1] to M3 0-999 xyxy."""
+    if any(value < 0 or value > 1 for value in box):
+        raise DatasetProbeError(
+            f"XLRS grounding row {index} bbox must be normalized to [0, 1]"
+        )
+    return [max(0, min(999, int(round(value * 999)))) for value in box]
 
 
 def _box_source_field(row: dict[str, Any]) -> str | None:

@@ -757,9 +757,7 @@ def test_local_inventory_selects_vrsbench_then_dota_for_shared_labels(
         qwen_client=_FakeQwenClient(),
     )
     injected_identity = components.qwen_clients["counting_agent"].cache_identity
-    assert injected_identity.generation_payload()["adapter"]["logical_id"] == (
-        "qwen35-9b-visual-planner-supplement-20260824"
-    )
+    assert "adapter" not in injected_identity.generation_payload()
     agent = components.agent_registry.get("counting_agent")
     selector = getattr(agent, "_selector")
     catalog = getattr(agent, "_expert_catalog")

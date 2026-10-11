@@ -90,6 +90,8 @@ class QwenTransformersClient(VisionLanguageClient, CacheIdentifiedClient):
                 "temperature": 0.0,
                 "do_sample": False,
                 "max_tokens": self.settings.max_tokens,
+                "min_pixels": self.settings.min_pixels,
+                "max_pixels": self.settings.max_pixels,
             },
             client_version=QWEN_CLIENT_VERSION,
             revision=self.settings.revision,

@@ -408,6 +408,8 @@ def test_cache_identity_is_stable() -> None:
         "temperature": 0.0,
         "do_sample": False,
         "max_tokens": 64,
+        "min_pixels": None,
+        "max_pixels": None,
     }
 
 
@@ -611,9 +613,9 @@ def test_allow_download_is_single_source() -> None:
 # ── cache identity / 缓存身份 ───────────────────────────────────────────────
 
 
-def test_cache_identity_generation_matches_max_tokens() -> None:
+def test_cache_identity_generation_matches_generation_and_visual_pixels() -> None:
     client = QwenTransformersClient(
-        QwenSettings(model="fake", max_tokens=64),
+        QwenSettings(model="fake", max_tokens=64, max_pixels=1835008),
         model=_FakeModel(),
         processor=_FakeProcessor([]),
     )
@@ -621,4 +623,6 @@ def test_cache_identity_generation_matches_max_tokens() -> None:
         "temperature": 0.0,
         "do_sample": False,
         "max_tokens": 64,
+        "min_pixels": None,
+        "max_pixels": 1835008,
     }

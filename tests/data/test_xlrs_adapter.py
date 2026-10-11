@@ -42,7 +42,7 @@ def _caption_rows() -> list[dict]:
 
 def _grounding_rows() -> list[dict]:
     return [
-        {"question": "Locate the plane.", "bbox": [10, 20, 110, 120],
+        {"question": "Locate the plane.", "bbox": [0.02, 0.05, 0.22, 0.30],
          "image_width": 500, "image_height": 400, "image": "img_1.png"},
     ]
 
@@ -309,14 +309,14 @@ def test_caption_task_outputs_all_references(tmp_path: Path) -> None:
     assert samples[0].question == "Describe the scene."
 
 
-def test_grounding_task_preserves_box_size_and_coordinate_source(tmp_path: Path) -> None:
+def test_grounding_task_maps_normalized_box_to_m3_frame(tmp_path: Path) -> None:
     root = _root_with_image(tmp_path)
     adapter = XLRSAdapter(dataset_loader=_loader_for(_grounding_rows()))
     sample = next(adapter.iter_samples(root, "test", "grounding"))
     assert sample.task == "grounding"
     assert sample.ground_truth is not None
-    assert sample.ground_truth.boxes == [[10, 20, 110, 120]]
-    assert sample.ground_truth.coordinate_frame == "source_pixels_top_left"
+    assert sample.ground_truth.boxes == [[20, 50, 220, 300]]
+    assert sample.ground_truth.coordinate_frame == "normalized_0_999_top_left"
     assert sample.metadata["image_width"] == 500
     assert sample.metadata["image_height"] == 400
 

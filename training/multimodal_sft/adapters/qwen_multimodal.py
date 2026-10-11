@@ -25,6 +25,31 @@ def _episode_messages(episode: Any) -> list[dict[str, Any]]:
     return [dict(message) for message in episode.messages]
 
 
+def configure_visual_token_budget(processor: Any, *, max_visual_tokens: int) -> int:
+    """Configure Qwen image resizing so visual tokens stay within a fixed budget."""
+    if max_visual_tokens < 1:
+        raise AdapterContractError("max_visual_tokens must be positive")
+    image_processor = getattr(processor, "image_processor", None)
+    size = getattr(image_processor, "size", None)
+    if image_processor is None or size is None:
+        raise AdapterContractError("processor image resize configuration is unavailable")
+    patch_size = int(getattr(image_processor, "patch_size", 16) or 16)
+    merge_size = int(
+        getattr(image_processor, "merge_size", None)
+        or getattr(image_processor, "spatial_merge_size", None)
+        or 2
+    )
+    max_pixels = int(max_visual_tokens) * patch_size * patch_size * merge_size * merge_size
+    if hasattr(size, "longest_edge"):
+        size.longest_edge = max_pixels
+    elif isinstance(size, dict):
+        size["longest_edge"] = max_pixels
+    else:
+        raise AdapterContractError("processor image resize size is not mutable")
+    setattr(processor, "_m3_max_visual_tokens", int(max_visual_tokens))
+    return int(max_visual_tokens)
+
+
 def encode_multimodal_episode(
     processor: Any,
     episode: Any,

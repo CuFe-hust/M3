@@ -229,3 +229,22 @@ def test_generic_trainer_prepare_boundary_is_profile_owned() -> None:
     core = GenericTrainerCore(adapter=SimpleNamespace(), data_profile=profile)
     assert core._prepare_episode("source", image_roots=None, split="train", epoch=0, seed=1) == "prepared"
     assert profile.called
+
+
+def test_qwen_visual_token_budget_configures_image_resize() -> None:
+    class _Size:
+        shortest_edge = 65536
+        longest_edge = 16777216
+
+    processor = SimpleNamespace(
+        image_processor=SimpleNamespace(
+            size=_Size(),
+            patch_size=16,
+            merge_size=2,
+        )
+    )
+    assert qwen_multimodal.configure_visual_token_budget(
+        processor, max_visual_tokens=1792
+    ) == 1792
+    assert processor.image_processor.size.longest_edge == 1792 * 16 * 16 * 2 * 2
+    assert processor._m3_max_visual_tokens == 1792

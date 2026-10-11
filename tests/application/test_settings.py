@@ -100,7 +100,7 @@ def test_local_config_declares_detector_inventory() -> None:
     assert vrsbench.model_id == "YOLO11m-OBB:VRSBench-QA1024:best"
     assert vrsbench.classes[0] == "plane"
     assert vrsbench.classes[-1] == "helipad"
-    assert settings.models.qwen.model == "models/Qwen3.5-9B"
+    assert settings.models.qwen.model == "/home/lijia/M3/models/Qwen3.5-9B"
     assert settings.models.qwen.cache_model_id == "Qwen/Qwen3.5-9B:local"
     assert set(settings.visual_planning.detectors) == {"detector_obb_csl_001"}
     assert set(settings.visual_planning.segmenters) == {
@@ -111,17 +111,25 @@ def test_local_config_declares_detector_inventory() -> None:
     assert settings.agents.change.semantic.max_experts == 2
     assert settings.agents.change.building_rescue.enabled is True
     assert settings.agents.change.learned_change.enabled is False
-    adapter = settings.models.qwen_adapters["visual-planner-supplement"]
-    assert adapter.logical_id == (
-        "qwen35-9b-visual-planner-supplement-20260824"
-    )
-    assert set(settings.models.qwen_adapter_bindings.as_dict().values()) == {
-        "visual-planner-supplement"
+    planner_adapter = settings.models.qwen_adapters["visual-planner-final"]
+    grounding_adapter = settings.models.qwen_adapters["grounding-agent-final"]
+    assert planner_adapter.logical_id == "qwen35-9b-visual-planner-final-v1"
+    assert grounding_adapter.logical_id == "qwen35-9b-grounding-agent-sft-v4-20260829"
+    assert settings.models.qwen_adapter_bindings.as_dict() == {
+        "planner": "visual-planner-final",
+        "counting": "base",
+        "change": "base",
+        "grounding": "grounding-agent-final",
+        "general_vqa": "base",
+        "caption": "base",
     }
     snapshot = settings.safe_snapshot()
-    assert snapshot["models"]["qwen_adapters"]["visual-planner-supplement"][
-        "path"
-    ].endswith("/final_adapter")
+    assert snapshot["models"]["qwen_adapters"]["visual-planner-final"]["path"].endswith(
+        "/final_adapter"
+    )
+    assert snapshot["models"]["qwen_adapters"]["grounding-agent-final"]["path"].endswith(
+        "/final_adapter"
+    )
 
 
 def test_qwen_adapter_settings_fail_closed() -> None:
