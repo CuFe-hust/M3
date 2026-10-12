@@ -1,0 +1,152 @@
+{
+  "seed": 42,
+  "source_record_counts": {
+    "VRSBench_EVAL_Cap.json": 9350,
+    "VRSBench_EVAL_referring.json": 16159,
+    "VRSBench_EVAL_vqa.json": 37409
+  },
+  "filtered_counts": {
+    "object existence: answer is not yes/no": 380,
+    "object quantity: answer is not one clear nonnegative integer": 346
+  },
+  "final_task_counts": {
+    "caption": 250,
+    "referring": 250,
+    "vqa": 600,
+    "total": 1100
+  },
+  "caption_length_distribution": {
+    "short": 75,
+    "long": 75,
+    "medium": 100
+  },
+  "referring_cross_distribution": {
+    "unique=true|area=small": 37,
+    "unique=true|area=medium": 50,
+    "unique=true|area=large": 38,
+    "unique=false|area=small": 38,
+    "unique=false|area=medium": 50,
+    "unique=false|area=large": 37
+  },
+  "referring_obj_cls_distribution": {
+    "airplane": 12,
+    "airport": 6,
+    "baseball-diamond": 12,
+    "basketball-court": 12,
+    "bridge": 12,
+    "chimney": 12,
+    "container-crane": 6,
+    "dam": 5,
+    "expressway-service-area": 12,
+    "expressway-toll-station": 5,
+    "golffield": 6,
+    "ground-track-field": 12,
+    "harbor": 12,
+    "helicopter": 12,
+    "helipad": 1,
+    "overpass": 12,
+    "roundabout": 9,
+    "ship": 12,
+    "soccer-ball-field": 12,
+    "stadium": 7,
+    "storage-tank": 12,
+    "swimming-pool": 10,
+    "tennis-court": 12,
+    "trainstation": 7,
+    "vehicle": 11,
+    "windmill": 9
+  },
+  "vqa_type_distribution": {
+    "object category": 50,
+    "object existence": 50,
+    "object quantity": 50,
+    "object color": 50,
+    "object shape": 50,
+    "object size": 50,
+    "object position": 50,
+    "object direction": 50,
+    "scene type": 50,
+    "reasoning": 50,
+    "rural or urban": 50,
+    "image": 50
+  },
+  "vqa_length_distribution": {
+    "object category": {
+      "medium": 20,
+      "short": 15,
+      "long": 15
+    },
+    "object existence": {
+      "short": 15,
+      "medium": 20,
+      "long": 15
+    },
+    "object quantity": {
+      "short": 15,
+      "medium": 20,
+      "long": 15
+    },
+    "object color": {
+      "short": 15,
+      "medium": 20,
+      "long": 15
+    },
+    "object shape": {
+      "medium": 20,
+      "long": 15,
+      "short": 15
+    },
+    "object size": {
+      "medium": 20,
+      "short": 15,
+      "long": 15
+    },
+    "object position": {
+      "long": 15,
+      "medium": 20,
+      "short": 15
+    },
+    "object direction": {
+      "long": 15,
+      "medium": 20,
+      "short": 15
+    },
+    "scene type": {
+      "medium": 20,
+      "short": 15,
+      "long": 15
+    },
+    "reasoning": {
+      "short": 15,
+      "medium": 20,
+      "long": 15
+    },
+    "rural or urban": {
+      "medium": 20,
+      "short": 15,
+      "long": 15
+    },
+    "image": {
+      "long": 15,
+      "medium": 20,
+      "short": 15
+    }
+  },
+  "object_existence_answer_distribution": {
+    "yes": 25,
+    "no": 25
+  },
+  "object_quantity_distribution": {
+    "low": 17,
+    "medium": 16,
+    "high": 17
+  },
+  "unique_image_count": 1100,
+  "reused_record_count": 0,
+  "reuse_ratio": 0.0,
+  "usage_count_histogram": {
+    "1": 1100
+  },
+  "maximum_usage_count": 1,
+  "reused_images": {}
+}

@@ -1,0 +1,98 @@
+{
+  "total": 1100,
+  "overall": {
+    "easy": 433,
+    "hard": 167,
+    "medium": 500
+  },
+  "by_section": {
+    "caption": {
+      "easy": 75,
+      "hard": 75,
+      "medium": 100
+    },
+    "referring": {
+      "medium": 124,
+      "easy": 88,
+      "hard": 38
+    },
+    "core_vqa": {
+      "easy": 201,
+      "medium": 245,
+      "hard": 54
+    },
+    "supplemental_vqa": {
+      "easy": 69,
+      "medium": 31
+    }
+  },
+  "by_vqa_type": {
+    "object category": {
+      "easy": 30,
+      "medium": 20
+    },
+    "object existence": {
+      "easy": 34,
+      "medium": 16
+    },
+    "object quantity": {
+      "easy": 6,
+      "medium": 26,
+      "hard": 18
+    },
+    "object color": {
+      "easy": 30,
+      "hard": 1,
+      "medium": 19
+    },
+    "object shape": {
+      "easy": 33,
+      "medium": 17
+    },
+    "object size": {
+      "medium": 31,
+      "easy": 8,
+      "hard": 11
+    },
+    "object position": {
+      "medium": 37,
+      "easy": 11,
+      "hard": 2
+    },
+    "object direction": {
+      "hard": 3,
+      "medium": 32,
+      "easy": 15
+    },
+    "scene type": {
+      "easy": 34,
+      "medium": 16
+    },
+    "reasoning": {
+      "medium": 31,
+      "hard": 19
+    },
+    "rural or urban": {
+      "easy": 35,
+      "medium": 15
+    },
+    "image": {
+      "medium": 16,
+      "easy": 34
+    }
+  },
+  "caption_length_group": {
+    "short": 75,
+    "long": 75,
+    "medium": 100
+  },
+  "referring_unique": {
+    "false": 125,
+    "true": 125
+  },
+  "referring_area_group": {
+    "medium": 100,
+    "large": 75,
+    "small": 75
+  }
+}
